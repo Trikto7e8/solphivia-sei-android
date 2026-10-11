@@ -1,6 +1,7 @@
 // src/observers/targeting.js — handle table + targeting resolvers (D-25/D-35)
 import { Vec3 } from 'vec3'
 import mcDataLib from 'minecraft-data'
+import { isDeadEntity } from './entities.js'
 
 export const HANDLE_TTL_MS = 10_000
 
@@ -25,6 +26,16 @@ export function setHandles(entries) {
 /** @returns {Map<string, HandleEntry>} */
 export function getHandles() {
   return _handles
+}
+
+/** The live "#N" snapshot handle for an entity id, or null. */
+export function handleForEntity(entityId) {
+  if (entityId == null) return null
+  const now = Date.now()
+  for (const [tag, h] of _handles) {
+    if (h?.kind === 'entity' && h.entityId === entityId && h.expiresAt >= now) return tag
+  }
+  return null
 }
 
 function lookupHandle(key) {
@@ -142,6 +153,7 @@ function resolveEntityByName(name, bot) {
     const n = (e?.name ?? '').toLowerCase()
     const u = (e?.username ?? '').toLowerCase()
     if (n !== want && u !== want) return false
+    if (isDeadEntity(bot, e)) return false
     if (u) return true   // username match: don't apply distance cap
     if (!me?.position || !e?.position) return true
     try {
@@ -150,4 +162,30 @@ function resolveEntityByName(name, bot) {
       return true
     }
   }) ?? null
+}
+
+/**
+ * 261012: the nearest living mob with this name past the name-lookup bound,
+ * for the "no zombie within 16 blocks" result. Quality eval protect_player:
+ * the zombies heading for the player were 21-25 blocks out at the order, the
+ * name lookup refused them, and the turn was spent finding that out. The
+ * bound stays (it stops a chase across the map after a kill); the result now
+ * says where the nearest one is so the model can decide to go after it.
+ * @returns {{ entity:any, distance:number }|null}
+ */
+export function nearestNamedEntityBeyondBound(name, bot, maxDist = 48) {
+  const want = String(name ?? '').toLowerCase()
+  const me = bot?.entity
+  if (!want || !me?.position) return null
+  let best = null
+  for (const e of Object.values(bot.entities ?? {})) {
+    if (!e || e === me || e.username || !e.position) continue
+    if ((e.name ?? '').toLowerCase() !== want) continue
+    if (isDeadEntity(bot, e)) continue
+    let d
+    try { d = e.position.distanceTo(me.position) } catch { continue }
+    if (!Number.isFinite(d) || d > maxDist) continue
+    if (!best || d < best.distance) best = { entity: e, distance: d }
+  }
+  return best
 }

@@ -93,6 +93,14 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
         ownerLabel: payload.ownerLabel ?? 'the player',
         distance: typeof payload.distance === 'number' ? payload.distance : null,
         engaged: !!payload.engaged,
+        // 261012: the pre-hit owner-threat watch (combat.js) and the counts the
+        // defend turn needs to pick its move.
+        threat: payload.threat === true,
+        ownerDistance: typeof payload.ownerDistance === 'number' ? payload.ownerDistance : null,
+        ownerHp: typeof payload.ownerHp === 'number' ? payload.ownerHp : null,
+        count: typeof payload.count === 'number' ? payload.count : null,
+        othersOnOwner: typeof payload.othersOnOwner === 'number' ? payload.othersOnOwner : 0,
+        actionOnIt: payload.actionOnIt === true,
       })
     } catch (err) {
       console.error?.(`[sei/wires] onOwnerAttacked handler threw: ${err && err.message}`)

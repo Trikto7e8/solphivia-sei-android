@@ -4,6 +4,8 @@ import { createThrottle } from '../../../brain/debounce.js'
 import { HOSTILE_MOBS } from './hostiles.js'
 import { equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
 import { noteCombat } from './autoEat.js'
+import { ownerHealth } from '../observers/snapshot.js'
+import { isDeadEntity, trackEntityDeaths } from '../observers/entities.js'
 
 const { goals } = pkg
 
@@ -19,6 +21,16 @@ const DEFEND_FOLLOW_RANGE = 2
  * running the other way (reflex.js creeper-flee). The event still fires, so the
  * model can warn the player or place a block; it just does not walk into it.
  */
+// 261012: owner-threat watch cadence and thresholds (see watchOwnerThreats).
+const THREAT_TICK_MS = 500
+// A mob counts as closing when it got this much nearer the owner in one tick
+// (a chasing zombie covers ~1.1 blocks per 500ms; idle wandering is slower
+// and changes direction).
+const THREAT_CLOSING_MIN = 0.3
+const THREAT_REPEAT_MS = 15000
+// "On the player" for the defend turn's count of mobs nothing is swinging at.
+const OTHERS_ON_OWNER_RADIUS = 5
+
 const NO_MELEE_DEFEND = new Set(['creeper', 'ghast', 'blaze', 'elder_guardian', 'ravager', 'warden'])
 
 function resolveAttacker(bot, source) {
@@ -45,6 +57,7 @@ function resolveAttacker(bot, source) {
 }
 
 export function startCombat(bot, config) {
+  trackEntityDeaths(bot)
   let _target = null
   let _attackLoop = null
   let _exitTimer = null
@@ -128,6 +141,8 @@ export function startCombat(bot, config) {
     try { if (me && at) dist = me.distanceTo(at) } catch (_) { dist = null }
     if (dist == null || dist > defendRadius) return // too far to be our fight
 
+    let ownerHp = null
+    try { ownerHp = ownerHealth(bot.registry, owner) } catch { ownerHp = null }
     const payload = {
       attacker: target,
       attackerLabel: target.name ?? 'a mob',
@@ -137,13 +152,31 @@ export function startCombat(bot, config) {
       // The model needs to know whether the body already did something, so its
       // line matches what the player is watching happen.
       engaged: false,
+      // 261012: the automatic swing covers ONE mob. With a second one on the
+      // player the turn has to take it (protect_player eval: the turn said
+      // "on it" and nothing else, and the other zombie killed a 10 hp player).
+      othersOnOwner: hostilesNear(owner, OTHERS_ON_OWNER_RADIUS, target.id).length,
+      ownerHp,
     }
 
     // Engage: swing at the mob so its aggro moves off the player. Skipped for
     // the mobs melee cannot safely answer (NO_MELEE_DEFEND), while the bot is
     // paused/AFK, while a safety reflex owns the body, or when a fight of our
     // own is already running (that one is the more urgent of the two).
+    // 261012: an attackEntity action already owns the body (it set
+    // _seiOffensiveTarget; ours is tracked as _pursueTargetId). Taking over
+    // here used to wreck that chase: this engagement's 4s exit called
+    // pathfinder.stop() and attack.js never re-installed its goal, so in the
+    // protect_player eval she stood still for several seconds 9 blocks from
+    // the zombie that was on the player. Same mob: report it as handled by
+    // the action. Another mob: hold, the turn decides.
+    const actionTarget = _target == null && bot._seiOffensiveTarget != null ? bot._seiOffensiveTarget : null
+    if (actionTarget != null) {
+      payload.engaged = actionTarget === target.id
+      payload.actionOnIt = actionTarget === target.id
+    }
     const canMelee =
+      actionTarget == null &&
       defendOwner &&
       !bot._seiPaused &&
       !NO_MELEE_DEFEND.has(target.name) &&
@@ -168,6 +201,100 @@ export function startCombat(bot, config) {
     } else {
       bot.emit('sei:owner_attacked', payload)
     }
+  }
+
+  /** Living hostile mobs within `radius` of an entity (excluding one id). */
+  function hostilesNear(center, radius, excludeId = null) {
+    const out = []
+    const at = center?.position
+    if (!at) return out
+    for (const e of Object.values(bot.entities ?? {})) {
+      if (!e || e === bot.entity || e.username || !e.position) continue
+      if (!HOSTILE_MOBS.has(e.name) || e.id === excludeId) continue
+      if (isDeadEntity(bot, e)) continue
+      let d
+      try { d = e.position.distanceTo(at) } catch { continue }
+      if (Number.isFinite(d) && d <= radius) out.push({ entity: e, distance: d })
+    }
+    return out
+  }
+
+  // ── Owner threat watch (261012) ───────────────────────────────────────────
+  // The defend engagement above fires only once a mob has HIT the owner. At
+  // low health that is one or two hits from their death, and a model round
+  // trip on top of it is too slow (quality eval protect_player, a 10 hp player
+  // and two zombies 21 blocks out: in 4 of 5 trials the order turn called
+  // follow, which never swings, the loop ended, nothing else woke the brain
+  // until the first hit, and the second zombie killed the player). This watch
+  // wakes the brain while the mob is still on its way: a hostile within
+  // ownerThreatRadius of the owner that is getting closer to them, when the
+  // owner is hurt (ownerThreatHp or less) or two or more are closing. It
+  // swings nothing itself; the turn decides (attackEntity, a block, a
+  // warning). Skipped while a fight is already running (our own attackEntity
+  // or an automatic engagement) and once per mob per THREAT_REPEAT_MS.
+  const ownerThreatHp = Number.isFinite(mc.owner_threat_hp) ? mc.owner_threat_hp : 12
+  const ownerThreatRadius = Number.isFinite(mc.owner_threat_radius_blocks) ? mc.owner_threat_radius_blocks : 12
+  const lastOwnerDist = new Map()
+  const threatAnnouncedAt = new Map()
+
+  function ownerEntity() {
+    const want = ownerNames()
+    if (!want.length) return null
+    for (const [name, p] of Object.entries(bot.players ?? {})) {
+      if (p?.entity && want.includes(String(name).toLowerCase())) return p.entity
+    }
+    return null
+  }
+
+  function watchOwnerThreats() {
+    if (!defendOwner || ownerThreatRadius <= 0 || bot._seiPaused) return
+    const owner = ownerEntity()
+    const me = bot.entity
+    if (!owner?.position || !me?.position) { lastOwnerDist.clear(); return }
+    const seen = new Set()
+    const closing = []
+    for (const { entity: e, distance: dOwner } of hostilesNear(owner, ownerThreatRadius)) {
+      let dMe
+      try { dMe = e.position.distanceTo(me.position) } catch { continue }
+      if (!Number.isFinite(dMe) || dMe > defendRadius + ownerThreatRadius) continue
+      seen.add(e.id)
+      const prev = lastOwnerDist.get(e.id)
+      lastOwnerDist.set(e.id, dOwner)
+      if (prev != null && prev - dOwner >= THREAT_CLOSING_MIN) closing.push({ e, dOwner, dMe })
+    }
+    for (const id of [...lastOwnerDist.keys()]) if (!seen.has(id)) lastOwnerDist.delete(id)
+    if (closing.length === 0) return
+    if (_target || bot._seiOffensiveTarget != null) return
+    if (bot._seiReflexActive || bot._seiSurvivalActive || bot._seiCriticalRetreat) return
+    let hp = null
+    try { hp = ownerHealth(bot.registry, owner) } catch { hp = null }
+    const hurt = hp != null && hp <= ownerThreatHp
+    if (!hurt && closing.length < 2) return
+    const now = Date.now()
+    closing.sort((a, b) => a.dOwner - b.dOwner)
+    const fresh = closing.find((c) => now - (threatAnnouncedAt.get(c.e.id) ?? 0) >= THREAT_REPEAT_MS)
+    if (!fresh) return
+    for (const c of closing) threatAnnouncedAt.set(c.e.id, now)
+    for (const [id, at] of [...threatAnnouncedAt]) if (now - at > THREAT_REPEAT_MS * 4) threatAnnouncedAt.delete(id)
+    bot.emit('sei:owner_attacked', {
+      attacker: fresh.e,
+      attackerLabel: fresh.e.name ?? 'a mob',
+      attackerKind: 'defend',
+      threat: true,
+      ownerLabel: config?.player_display_name || owner?.username || 'the player',
+      distance: Math.round(fresh.dMe),
+      ownerDistance: Math.round(fresh.dOwner),
+      ownerHp: hp,
+      count: closing.length,
+      engaged: false,
+    })
+  }
+  if (defendOwner && ownerThreatRadius > 0) {
+    const threatTimer = setInterval(() => {
+      try { watchOwnerThreats() } catch (_) {}
+    }, THREAT_TICK_MS)
+    threatTimer.unref?.()
+    try { bot.on('end', () => clearInterval(threatTimer)) } catch (_) {}
   }
 
   /**

@@ -265,7 +265,7 @@ export const ACTION_DESCRIPTIONS = {
     'Bulk-mine one block type in one call: `{name:"<term>"}` (loose category or exact id) or an `{x,y,z}` anchor, `{count:N}` how many (default 16, max 64). Runs to completion before your next turn. Equips the best tool you own automatically, per block.',
 
   find:
-    'Return the nearest matching block (`{name:"<term>"}`) and its position; does not move.',
+    'Return the nearest matching block or creature (`{name:"<term>"}`) and its position; does not move.',
 
   explore:
     'Walk a short hop (default 16, max 48) to load new terrain when goTo fails or find comes up empty; `{orientation:"forward|backwards|left|right"}` or `{angle:0-360}`.',
@@ -286,13 +286,13 @@ export const ACTION_DESCRIPTIONS = {
     'Open a furnace (also blast_furnace/smoker) to smelt: `{block:"furnace"}` for the nearest, or aim with a target/coords. Must be within reach. Then smeltInput + addFuel to load it, wait, and takeSmelted to collect.',
 
   smeltInput:
-    'Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then wait a few seconds before takeSmelted.',
+    'Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then takeSmelted.',
 
   addFuel:
     'Add fuel to the OPEN furnace: `{item, count?}` (1-64) — coal/charcoal usually, planks/logs in a pinch. A furnace cooks only with BOTH an input (smeltInput) and fuel.',
 
   takeSmelted:
-    'Take the finished output from the OPEN furnace. No args. Smelting takes time, so `nothing smelted yet` just means wait and retry.',
+    'Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.',
 
   activateBlock:
     'Open or toggle a world block — door, gate, trapdoor, lever, button: `{block:"oak_door"}` for the nearest, or aim with a target/coords. Must be within reach. Use it to pass through a closed door or gate. Distinct from activating a HELD item.',

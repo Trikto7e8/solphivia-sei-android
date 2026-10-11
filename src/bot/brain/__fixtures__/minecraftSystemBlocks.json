@@ -314,7 +314,7 @@
       },
       {
         "name": "find",
-        "description": "Return the nearest matching block (`{name:\"<term>\"}`) and its position; does not move.",
+        "description": "Return the nearest matching block or creature (`{name:\"<term>\"}`) and its position; does not move.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -939,7 +939,7 @@
       },
       {
         "name": "smeltInput",
-        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then wait a few seconds before takeSmelted.",
+        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then takeSmelted.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -983,7 +983,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. Smelting takes time, so `nothing smelted yet` just means wait and retry.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -1308,7 +1308,7 @@
       },
       {
         "name": "find",
-        "description": "Return the nearest matching block (`{name:\"<term>\"}`) and its position; does not move.",
+        "description": "Return the nearest matching block or creature (`{name:\"<term>\"}`) and its position; does not move.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1933,7 +1933,7 @@
       },
       {
         "name": "smeltInput",
-        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then wait a few seconds before takeSmelted.",
+        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then takeSmelted.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1977,7 +1977,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. Smelting takes time, so `nothing smelted yet` just means wait and retry.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -2301,7 +2301,7 @@
       },
       {
         "name": "find",
-        "description": "Return the nearest matching block (`{name:\"<term>\"}`) and its position; does not move.",
+        "description": "Return the nearest matching block or creature (`{name:\"<term>\"}`) and its position; does not move.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2894,7 +2894,7 @@
       },
       {
         "name": "smeltInput",
-        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then wait a few seconds before takeSmelted.",
+        "description": "Load the input into the OPEN furnace: `{item, count?}` (1-64) — raw_iron→iron ingot, raw_beef→steak, cobblestone→stone. Needs an open furnace and the item on hand; pair with addFuel, then takeSmelted.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2938,7 +2938,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. Smelting takes time, so `nothing smelted yet` just means wait and retry.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},

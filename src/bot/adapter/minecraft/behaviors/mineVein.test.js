@@ -7,6 +7,7 @@
 // component whose digs all failed (no infinite loop).
 
 import { describe, it, expect, vi } from 'vitest'
+import { createRequire } from 'module'
 import { Vec3 } from 'vec3'
 import { gatherAction } from './mineVein.js'
 
@@ -229,5 +230,88 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     const digAction = vi.fn(async () => 'timeout') // all digs fail
     await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
     expect(goTo.mock.calls.filter(c => c[4] === 0)).toHaveLength(0)
+  })
+})
+
+describe('gatherAction — loose term that is also a block ID (261011)', () => {
+  const mcData = createRequire(import.meta.url)('minecraft-data')('1.21.1')
+  function makeMatchingWorld(blockList) {
+    const blocks = new Map()
+    for (const [x, y, z, name] of blockList) blocks.set(`${x},${y},${z}`, name)
+    const bot = {
+      version: '1.21.1',
+      entity: { position: new Vec3(0, 64, 0) },
+      blockAt(p) {
+        const name = blocks.get(`${p.x},${p.y},${p.z}`)
+        return name ? { name, position: p } : { name: 'air', position: p }
+      },
+      findBlocks({ matching, count }) {
+        const hits = []
+        for (const [k, name] of blocks) {
+          const id = mcData.blocksByName[name]?.id
+          if (!(Array.isArray(matching) ? matching.includes(id) : matching({ name }))) continue
+          const [x, y, z] = k.split(',').map(Number)
+          hits.push(new Vec3(x, y, z))
+        }
+        hits.sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position))
+        return hits.slice(0, count ?? 1)
+      },
+    }
+    const deps = {
+      goTo: vi.fn(async () => 'reached'),
+      digAction: vi.fn(async ({ x, y, z }) => {
+        const k = `${x},${y},${z}`
+        const name = blocks.get(k)
+        if (!name) return 'no block'
+        blocks.delete(k)
+        return `dug ${name} at ${k}`
+      }),
+      sleep: async () => {},
+    }
+    return { bot, blocks, deps }
+  }
+
+  it('gather("stone") mines stone even when diorite is closer', async () => {
+    const { bot, deps } = makeMatchingWorld([
+      [1, 64, 0, 'diorite'],
+      [6, 64, 0, 'stone'], [6, 65, 0, 'stone'],
+    ])
+    const r = await gatherAction({ name: 'stone', count: 2 }, bot, {}, deps)
+    expect(r).toBe('gathered 2/2 stone')
+  })
+
+  it('falls back to the variants when no plain stone is in range', async () => {
+    const { bot, deps } = makeMatchingWorld([[1, 64, 0, 'andesite']])
+    const r = await gatherAction({ name: 'stone', count: 1 }, bot, {}, deps)
+    expect(r).toBe('gathered 1/1 andesite')
+  })
+})
+
+describe('gatherAction — cobblestone comes from stone (261011)', () => {
+  it('mines stone, not placed cobblestone, and says so', async () => {
+    const mcData = createRequire(import.meta.url)('minecraft-data')('1.21.1')
+    const blocks = new Map([['1,64,0', 'cobblestone'], ['5,64,0', 'stone']])
+    const bot = {
+      version: '1.21.1',
+      entity: { position: new Vec3(0, 64, 0) },
+      blockAt(p) { const name = blocks.get(`${p.x},${p.y},${p.z}`); return { name: name ?? 'air', position: p } },
+      findBlocks({ matching }) {
+        const hits = []
+        for (const [k, name] of blocks) {
+          if (!matching.includes(mcData.blocksByName[name].id)) continue
+          const [x, y, z] = k.split(',').map(Number)
+          hits.push(new Vec3(x, y, z))
+        }
+        return hits
+      },
+    }
+    const deps = {
+      goTo: vi.fn(async () => 'reached'),
+      digAction: vi.fn(async ({ x, y, z }) => { const k = `${x},${y},${z}`; const n = blocks.get(k); blocks.delete(k); return `dug ${n}` }),
+      sleep: async () => {},
+    }
+    const r = await gatherAction({ name: 'cobblestone', count: 1 }, bot, {}, deps)
+    expect(r).toBe('gathered 1/1 stone (stone drops cobblestone)')
+    expect(blocks.has('1,64,0')).toBe(true)
   })
 })

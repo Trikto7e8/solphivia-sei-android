@@ -46,6 +46,9 @@ const NEIGHBOR_OFFSETS = [
 ]
 const BATCH_CAP = 64
 
+// Items that come from mining a different block.
+const MINED_FROM = { cobblestone: 'stone', cobbled_deepslate: 'deepslate' }
+
 // End-of-gather drop sweep bounds (260709). Radius covers the trees just
 // mined; the walk budget per drop is short because a resting item is almost
 // always on open ground a few blocks away.
@@ -131,8 +134,17 @@ export async function gatherAction(args, bot, config, _deps) {
   // Name-mode block matcher, resolved once. `matching` is either an array of
   // numeric block ids or a predicate, both accepted by bot.findBlocks.
   let matching = null
+  let wideMatching = null
+  let dropNote = ''
   if (!coordMode) {
     if (typeof args?.name !== 'string') return 'must specify name or x,y,z'
+    // 261011: cobblestone is the DROP of stone. gather("cobblestone") used to
+    // look for placed cobblestone blocks, which is usually a player's build.
+    const sourceBlock = MINED_FROM[String(args.name).toLowerCase().trim()]
+    if (sourceBlock) {
+      dropNote = ` (${sourceBlock} drops ${String(args.name).toLowerCase().trim()})`
+      args = { ...args, name: sourceBlock }
+    }
     const ids = resolveTerm(args.name)
     let mcData
     try { mcData = mcDataLib(bot.version) } catch { mcData = null }
@@ -144,6 +156,16 @@ export async function gatherAction(args, bot, config, _deps) {
     }
     if (Array.isArray(matching) && matching.length === 0) {
       return `no ${args.name} in loaded chunks`
+    }
+    // 261011: a loose term that is also a real block ID ("stone", "dirt",
+    // "sand") looks for that exact block first and widens to the variants
+    // only when none is in range. gather("stone") used to lock onto the
+    // nearest diorite and report "gathered 1/12 diorite".
+    const exact = String(args.name).toLowerCase().trim()
+    const exactId = mcData?.blocksByName?.[exact]?.id
+    if (ids.length > 1 && typeof exactId === 'number') {
+      wideMatching = matching
+      matching = [exactId]
     }
   }
 
@@ -288,6 +310,10 @@ export async function gatherAction(args, bot, config, _deps) {
     anchor = new Vec3(args.x, args.y, args.z)
   } else {
     anchor = nextAnchor()
+    if (!anchor && wideMatching) {
+      matching = wideMatching
+      anchor = nextAnchor()
+    }
     if (!anchor) return `no ${args.name} in loaded chunks`
   }
   const seedBlk = bot.blockAt(anchor)
@@ -350,5 +376,5 @@ export async function gatherAction(args, bot, config, _deps) {
   } else if (coordMode && attempted < want) {
     note = ` (that vein had only ${attempted})`
   }
-  return `gathered ${progress.dug}/${want} ${blockName}${note}`
+  return `gathered ${progress.dug}/${want} ${blockName}${note}${dropNote}`
 }

@@ -25,6 +25,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { parseSnapshot, makeSnapshotGate } from './snapshot.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(here, '..', '..')
@@ -94,40 +95,12 @@ function parseCalls(body) {
   return out
 }
 
-// Ground truth for the judge: a compact slice of what the bot's own snapshot
-// said about the world (hp, holding, inventory, nearby blocks/entities) at
-// each LLM turn, emitted when it changes and at most every 20s.
-let lastSnap = { t: 0, text: '' }
+// Ground truth for the judge: a compact slice of the bot's own snapshot at
+// each LLM turn (snapshot.mjs), rate limited.
+const snapGate = makeSnapshotGate()
 function grabSnapshot(s) {
-  const pick = (re) => (re.exec(s)?.[1] ?? '').trim()
-  const list = (header, n) => {
-    const i = s.indexOf(header)
-    if (i < 0) return []
-    const out = []
-    for (const ln of s.slice(i + header.length).split('\n').slice(1)) {
-      const m = /^\s+#\d+ (.*)$/.exec(ln)
-      if (!m) break
-      out.push(m[1].trim())
-      if (out.length >= n) break
-    }
-    return out
-  }
-  const snap = {
-    pos: pick(/snapshot: pos: ([^\n]+)/),
-    time: pick(/time: ([^\n]+)/),
-    hp: pick(/\n\s+hp: ([^\n]+)/),
-    holding: pick(/\n\s+holding: ([^\n]+)/),
-    inventory: pick(/\n\s+inventory \(([^\n]+)/),
-    blocks: list('nearby blocks:', 10),
-    entities: list('nearby entities:', 8),
-  }
-  if (!snap.pos) return
-  const text = JSON.stringify({ ...snap, pos: undefined })
-  const now = Date.now()
-  if (text === lastSnap.text && now - lastSnap.t < 60000) return
-  if (now - lastSnap.t < 20000 && lastSnap.text) return
-  lastSnap = { t: now, text }
-  emit({ kind: 'snapshot', ...snap })
+  const snap = parseSnapshot(s)
+  if (snap && snapGate(Date.now(), snap)) emit({ kind: 'snapshot', ...snap })
 }
 
 function onLogString(s) {

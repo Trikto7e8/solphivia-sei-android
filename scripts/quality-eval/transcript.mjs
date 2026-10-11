@@ -7,6 +7,7 @@
 //         appeared within 20s (actionStats.UNANSWERED_MS)
 import fs from 'node:fs'
 import path from 'node:path'
+import { snapshotsFromRawLog } from './snapshot.mjs'
 
 export const SILENCE_MS = 20000
 // Calls the player cannot see (memory and planning tools). Shown to the judge
@@ -27,6 +28,11 @@ export function loadSession(sessDir) {
   const comp = readJsonl(path.join(sessDir, 'companion.events.jsonl'))
   const player = readJsonl(path.join(sessDir, 'player.events.jsonl'))
   const start = player.find((e) => e.kind === 'session_start')?.t ?? comp[0]?.t ?? 0
+  // Older runs captured no snapshot events; rebuild them from the raw log.
+  if (!comp.some((e) => e.kind === 'snapshot')) {
+    comp.push(...snapshotsFromRawLog(path.join(sessDir, 'companion.raw.log'), start))
+    comp.sort((a, b) => a.t - b.t)
+  }
   const end = player.find((e) => e.kind === 'session_end')?.t ?? Infinity
   const companion = meta.companion || 'Sui'
   const playerName = meta.player || 'Alex'

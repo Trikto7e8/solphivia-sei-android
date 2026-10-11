@@ -90,6 +90,8 @@ export async function writeReport(outDir) {
   for (const w of worst) {
     const k = w.sess.meta.scenario
     if ((perSess[k] || 0) >= 3) continue
+    // One entry per moment: skip items within 30s of one already picked.
+    if (top.some((x) => x.sess === w.sess && Math.abs(x.item.t - w.item.t) < 30000)) continue
     perSess[k] = (perSess[k] || 0) + 1
     top.push(w)
     if (top.length >= 10) break

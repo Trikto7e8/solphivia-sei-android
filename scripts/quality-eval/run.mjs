@@ -369,7 +369,7 @@ async function runSession(sc, sessDir) {
   const beatTimers = []
   for (const b of sc.beats) {
     beatTimers.push(setTimeout(() => {
-      if (b.cmd) for (const c of b.cmd) { consoleCmd(c.replaceAll('{player}', PLAYER).replaceAll('{bot}', botName)); rec({ kind: 'server_cmd', cmd: c }) }
+      if (b.cmd) for (const c of b.cmd) { const cmd = c.replaceAll('{player}', PLAYER).replaceAll('{bot}', botName); consoleCmd(cmd); rec({ kind: 'server_cmd', cmd }) }
       if (b.cue) trigger({ type: 'beat', cue: b.cue, move: b.move })
       else if (b.move) doMove(pbot, b.move, botName, rec)
     }, b.at * 1000))

@@ -210,7 +210,15 @@ export function composeSnapshot(bot, opts = {}) {
   // 261012: say so when nothing runs. The absence of an in_flight line was the
   // only signal, and in the scripted-convo eval she told the player "still
   // getting you that cobble" four times with no action running at all.
-  else lines.push('idle: no action is running')
+  // A follow is a background action with no in_flight line, so say that it
+  // is still on rather than call her idle while she trails the player.
+  else {
+    let following = null
+    try { following = getFollowTargetLabel() } catch { following = null }
+    lines.push(following
+      ? `idle: no action is running, but you are still following ${following}`
+      : 'idle: no action is running')
+  }
 
   // Inventory — append `(K/36 slots)` so the LLM can't confabulate "inventory
   // full" when downstream actions return "no X in inventory" (the real cause

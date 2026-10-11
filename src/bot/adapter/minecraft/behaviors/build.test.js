@@ -251,12 +251,14 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
       inventory: { items: () => (stock > 0 ? [{ name: 'dirt', count: stock }] : []) },
       blockAt(p) {
         const name = blocks.get(`${p.x},${p.y},${p.z}`)
-        return name ? { name, position: p } : { name: 'air', position: p }
+        if (!name) return { name: 'air', position: p, boundingBox: 'empty' }
+        return { name, position: p, boundingBox: name === 'water' ? 'empty' : 'block' }
       },
       equip: async () => {},
       look: async () => {},
       setControlState(control, on) {
         if (control !== 'jump' || !on) return
+        if (bot._inWater) return // standing on the bottom of a pool, a jump does not lift the feet clear
         bot.entity.onGround = false
         bot.entity.position = new Vec3(0.5, Math.floor(bot.entity.position.y) + 1.2, 0.5)
       },
@@ -301,6 +303,41 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
     }
     const r = await buildAction({ direction: 'below', count: 4, block: 'dirt' }, bot, { signal: ac.signal })
     expect(r).toBe('aborted after pillaring up 1 of 4')
+  })
+
+  // 261011: quality eval 2026-10-11 (gather_craft). Standing on the bottom of
+  // water, the feet cell (water) counted as already placed and the bot never
+  // left the ground, so the loop spun on resolved promises, starved the event
+  // loop, and the server timed the bot out. It must come back with a result.
+  it('standing in water: does not count the water as a placed block, and returns', async () => {
+    const { bot, blocks } = pillarBot()
+    bot._inWater = true
+    blocks.set('0,64,0', 'water')
+    bot.placeBlock = async () => { throw new Error('no block update') }
+    const ticks = { n: 0 }
+    const iv = setInterval(() => { ticks.n++ }, 10)
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    clearInterval(iv)
+    expect(r).toBe('could not pillar up: scaffold place failed: you are in water, where a jump does not clear the cell under you. Get onto dry ground first')
+    expect(ticks.n).toBeGreaterThan(0) // timers kept running while it tried
+  })
+
+  it('a block that lands but leaves the feet where they were ends the climb instead of looping', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,64,0', 'water')
+    bot.setControlState = (control, on) => {
+      if (control !== 'jump' || !on) return
+      bot.entity.onGround = false
+      bot.entity.position = new Vec3(0.5, 64.8, 0.5)
+    }
+    // The block lands, but the server puts the bot back where it was.
+    bot.placeBlock = async () => {
+      blocks.set('0,64,0', 'dirt')
+      bot.entity.position = new Vec3(0.5, 64, 0.5)
+      bot.entity.onGround = true
+    }
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up: scaffold place failed: the block went down but you did not rise onto it')
   })
 })
 

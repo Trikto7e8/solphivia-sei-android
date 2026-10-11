@@ -769,7 +769,9 @@ describe('sticky greeting hint (260703b)', () => {
 
     // First idle tick opens the FIRST CONTACT loop; the LLM call is in flight.
     const p1 = orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
-    await flush()
+    // (261011: the seed now reads MEMORY.md for the FIRST CONTACT variant, so
+    // the call can take a few more ticks to start.)
+    for (let i = 0; i < 20 && provider.calls.length === 0; i++) await flush()
     expect(provider.calls.length).toBe(1)
 
     // The attack lands before the LLM returns — the FIRST CONTACT loop dies and
@@ -969,7 +971,11 @@ describe('next_time hook on goodbye tools (261008)', () => {
     _setTickIntervalForTests(10_000_000)
     const { adapter } = makeAdapter()
     const provider = makeProvider([{ text: '', toolUses: [] }])
-    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    // 261011: the plan hint rides the returning-player greeting, which needs a
+    // memory entry (a first-ever session has no plan to bring up).
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: find a village for beds\n')
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
     const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
     expect(turn).toContain('Plan for next time')

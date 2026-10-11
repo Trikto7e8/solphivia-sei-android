@@ -34,6 +34,7 @@ import {
   NEXT_TIME_FIELD,
   NEXT_TIME_GOODBYE,
   NEXT_TIME_GREETING,
+  FIRST_CONTACT,
 } from './prompts.js'
 import { normalizeNextStep, nextStepMemoryLine } from './nextStep.js'
 import { buildAnthropicTools } from './schemaBridge.js'
@@ -1365,6 +1366,17 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const ago = Date.now() - _lastFightLineAt
     if (!_lastFightLineAt || ago >= FIGHT_TOLD_WINDOW_MS) return ''
     return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+  }
+  // 261011: whether this companion has any history with the player: a memory
+  // entry from a past session, or the in-app chat it was summoned from.
+  async function knowsPlayer() {
+    const cont = config?._seiContinuity
+    if (cont && (cont.summary || (Array.isArray(cont.recent) && cont.recent.length))) return true
+    if (!config?.memory?.memory_md_path) return false
+    try {
+      const m = await readMemoryForSeed(config.memory.memory_md_path, config.memory.seed_memory_budget_bytes ?? 8192)
+      return /^- \[/m.test(String(m ?? ''))
+    } catch { return false }
   }
   // 261011: a hit that lands while an action runs is delivered mid-action
   // (handleActionTick) instead of tearing the loop down. Further hits inside
@@ -2750,7 +2762,11 @@ function maybeWarnByteCap(loop, warned) {
       eventText = `player just unpaused your game.${inflightLine}\n\n${eventText}`
     }
     if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive) {
-      eventText += `\n\nFIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool (a hello, a tease, a boast — whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; just greet them like you're glad (or smug) to be back, then you may start doing your own thing. If your memories above hold something relevant, work it into that greeting instead of a generic hello — anything the player said last time about themselves, about you, or about what they wanted to do in ${caps.gameName} (say("yo how'd the interview go?") beats say("back in business")). ${NEXT_TIME_GREETING} This is only a hint: if you have no memories or nothing fits, a plain greeting is completely fine — don't force it.`
+      // 261011: a first-ever session has no memories, and the old single
+      // wording ("glad to be back", say("back in business")) made the very
+      // first line claim a shared past: "yo alex, back in the world" to a
+      // player she had never met (quality eval 2026-10-11, 3 of 7 sessions).
+      eventText += `\n\n${FIRST_CONTACT({ gameName: caps.gameName, known: await knowsPlayer() })}`
     }
     // 260618: refresh the progression view before composing the seed — latch
     // dimension milestones, detect whether the committed goal's milestone just

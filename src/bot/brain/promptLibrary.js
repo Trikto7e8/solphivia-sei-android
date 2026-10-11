@@ -630,6 +630,15 @@ export const NEXT_TIME_SPOKEN =
 export const NEXT_TIME_GREETING =
   'If your memory has a "Plan for next time" entry from your last session, you can bring it up if it fits.'
 
+// The first-spawn greeting (orchestrator, reason just_connected_first_spawn).
+// 261011: two variants. `known` (a memory entry or the in-app chat it came
+// from) keeps the returning-friend wording; a first-ever session greets the
+// player as someone new, since "glad to be back" made the first line claim a
+// shared past that did not exist.
+export const FIRST_CONTACT = ({ gameName, known }) => known
+  ? `FIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool (a hello, a tease, a boast — whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; just greet them like you're glad (or smug) to be back, then you may start doing your own thing. If your memories above hold something relevant, work it into that greeting instead of a generic hello — anything the player said last time about themselves, about you, or about what they wanted to do in ${gameName} (say("yo how'd the interview go?") beats say("back in business")). ${NEXT_TIME_GREETING} This is only a hint: if nothing fits, a plain greeting is completely fine — don't force it.`
+  : `FIRST CONTACT: you just spawned into the player's world, and this is the first time you two have played together, so you have no memories of them yet. This greeting is the first thing they will see from you. Before anything else, open with exactly ONE short in-character greeting via the say() tool, the way you would greet someone you are meeting for the first time (a hello, a tease, a boast, whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory. Since you have not played together before, do not talk as if you are coming back. After the greeting you may start doing your own thing.`
+
 // 261011: the same hook when the PLAYER ends the session (Stop, closing the
 // world, hanging up), which is most sessions. There is no goodbye turn then,
 // so main runs one small call after teardown (src/main/playerEndNextStep.ts)

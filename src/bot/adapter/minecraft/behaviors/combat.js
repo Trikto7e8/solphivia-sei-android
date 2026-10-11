@@ -32,6 +32,12 @@ const THREAT_REPEAT_MS = 15000
 const OTHERS_ON_OWNER_RADIUS = 5
 
 const NO_MELEE_DEFEND = new Set(['creeper', 'ghast', 'blaze', 'elder_guardian', 'ravager', 'warden'])
+// The owner-threat watch tells the turn to attackEntity the mob, so it skips
+// the mobs melee cannot safely answer and the enderman, which is neutral until
+// provoked and wanders toward players all the time (in the End there are
+// dozens, and two "closing" at once would wake her every few seconds to start
+// a fight nobody was in).
+const NO_THREAT_WATCH = new Set([...NO_MELEE_DEFEND, 'enderman'])
 
 function resolveAttacker(bot, source) {
   // Trust an identified source first — including players. The previous
@@ -254,6 +260,7 @@ export function startCombat(bot, config) {
     const seen = new Set()
     const closing = []
     for (const { entity: e, distance: dOwner } of hostilesNear(owner, ownerThreatRadius)) {
+      if (NO_THREAT_WATCH.has(e.name)) continue
       let dMe
       try { dMe = e.position.distanceTo(me.position) } catch { continue }
       if (!Number.isFinite(dMe) || dMe > defendRadius + ownerThreatRadius) continue

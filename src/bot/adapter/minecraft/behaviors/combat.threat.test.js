@@ -150,6 +150,18 @@ describe('owner-threat watch', () => {
     expect(seen).toHaveLength(0)
   })
 
+  it('ignores endermen and mobs melee cannot safely answer', () => {
+    vi.useFakeTimers()
+    const bot = makeBot({ ownerHp: 6 })
+    const seen = capture(bot)
+    startCombat(bot, cfg())
+    const a = mob(bot, 'enderman', 21, 14)
+    const b = mob(bot, 'creeper', 22, 15)
+    vi.advanceTimersByTime(500)
+    closeIn([a, b]); closeIn([a, b])
+    expect(seen).toHaveLength(0)
+  })
+
   it('is off with defend_owner false', () => {
     vi.useFakeTimers()
     const bot = makeBot({ ownerHp: 6 })

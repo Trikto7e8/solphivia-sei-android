@@ -10,7 +10,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { DEFEND_ADDENDUM } from './promptLibrary.js'
-import { createConvoMemory } from './convoMemory.js'
+import { createConvoMemory, lastTurns } from './convoMemory.js'
 import { getInFlightLineForSnapshot } from './inflight.js'
 import { fartherNote, attackEntityAction } from '../adapter/minecraft/behaviors/attack.js'
 import { trackEntityDeaths, isDeadEntity, nearbyEntities } from '../adapter/minecraft/observers/entities.js'
@@ -115,7 +115,7 @@ describe('hostileDistances', () => {
 })
 
 describe('conversation transcript window', () => {
-  it('keeps the newest 20 lines of the merged exchange so both sides cover the same time', () => {
+  it('keeps the newest 24 turns, counting a run of her sentences as one turn', () => {
     vi.useFakeTimers()
     vi.setSystemTime(1_000_000)
     const m = createConvoMemory().recentChat
@@ -127,11 +127,20 @@ describe('conversation transcript window', () => {
       vi.advanceTimersByTime(1000)
     }
     const lines = m.formatConversationBlock().split('\n').filter((l) => /\] (you|player)/.test(l))
-    expect(lines).toHaveLength(20)
-    // The oldest player line shown still has her answer after it.
-    const firstPlayer = lines.findIndex((l) => l.includes('player (Alex):'))
-    expect(lines[firstPlayer + 1]).toContain('you:')
+    // 12 player lines and 12 two-sentence answers.
+    expect(lines).toHaveLength(36)
+    expect(lines[0]).toContain('player (Alex): p3')
+    expect(lines[1]).toContain('you: s3a')
     expect(lines.at(-1)).toContain('s14b')
+  })
+
+  it('lastTurns never splits a run of her lines', () => {
+    const P = (t) => ({ self: false, text: t })
+    const S = (t) => ({ self: true, text: t })
+    const merged = [P('a'), S('1'), S('2'), S('3'), P('b'), S('4')]
+    expect(lastTurns(merged, 2).map((l) => l.text)).toEqual(['b', '4'])
+    expect(lastTurns(merged, 3).map((l) => l.text)).toEqual(['1', '2', '3', 'b', '4'])
+    expect(lastTurns(merged, 10)).toHaveLength(6)
   })
 })
 

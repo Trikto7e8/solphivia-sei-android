@@ -1068,6 +1068,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // three staggered messages + quit() in the same batch; the disconnect fired
   // before the +550ms timers, so the player got just "nope" and he left.
   let _lastChatSendDeadline = 0
+  // 261011: the last finished loop said something and started no world action.
+  let _lastLoopTalkOnly = false
 
   // leadMs — "Realistic typing" delay before the FIRST segment hits the socket
   // (0 when the toggle is off, preserving the old instant behavior). The
@@ -3046,6 +3048,10 @@ function maybeWarnByteCap(loop, warned) {
     loop._tornDown = true
     const event = loop._originatingEvent ?? 'unknown'
     logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
+    // 261011: a loop that only TALKED holds the floor for the reply window in
+    // every game (see replyWindowRemainingMs below). A loop that did world
+    // work keeps the fast agentic cadence for resuming the goal.
+    _lastLoopTalkOnly = loop._saidThisLoop === true && loop._worldActed !== true
     // 260703-fix (b): finish any model-ordered batch tools stranded by an
     // abnormal teardown (see drainPendingToolsOnTeardown). No-op in the common
     // case (pending queue already drained → null), so it never double-executes.
@@ -4354,6 +4360,7 @@ function maybeWarnByteCap(loop, warned) {
       if (respText) emitThinkIfFull(respText)
       const sayResults = emitSayCalls(loop, toolUses)
       const saySpokenThisTurn = sayResults.size > 0 || loop._searchLineSpoken === true
+      if (sayResults.size > 0) loop._saidThisLoop = true
       try { sessionActionStats.noteLlmTurn({ said: saySpokenThisTurn }) } catch {}
       // Double-goodbye guard (260706): a quit()/end_call() farewell must not
       // fire when the same response already called say() — otherwise the two
@@ -4493,6 +4500,7 @@ function maybeWarnByteCap(loop, warned) {
       // is {remember, forget, end_loop}; everything else suspends the
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+      if (newSuspendingTools.length > 0) loop._worldActed = true
 
       // 260921: a player line answered with ACTIONS ONLY: text + a world
       // action, no say(). Measured: asked a question mid-chore, the model wrote
@@ -5342,9 +5350,14 @@ function maybeWarnByteCap(loop, warned) {
     recordIncomingChat: (who, text, opts) => convoMemory.recentChat.pushPlayer(who, text, opts),
     // 260921: the idle timer's floor-hold (see REPLY_WINDOW_MS). brain/index.js
     // folds it into idleFallbackMs so the FSM needs no knowledge of speech.
-    // Stardew only (REPLY_WINDOW_GAMES): 0 elsewhere, so Minecraft's agentic
-    // cadence is unchanged.
-    replyWindowRemainingMs: () => !replyWindowApplies(adapter) ? 0 : replyWindowRemainingMs({
+    // Always in Stardew (REPLY_WINDOW_GAMES). 261011 (quality pass 2): in
+    // every game when the last loop only talked, so Minecraft's agentic
+    // cadence still resumes work 5s after a loop that did some. In the
+    // pass-1b eval 49 of the 77 repetitive lines came from loops an idle tick
+    // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
+    // "ok holding still alex"): the 5s cadence is for resuming work, and with
+    // no work to resume an idle turn has nothing new to say.
+    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,
       sendDeadline: _lastChatSendDeadline,

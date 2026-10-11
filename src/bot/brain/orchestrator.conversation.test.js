@@ -150,7 +150,7 @@ describe('replyWindowRemainingMs', () => {
   })
 })
 
-describe('the reply window is Stardew only', () => {
+describe('the reply window: always in Stardew, after a talk-only loop everywhere (261011)', () => {
   it('applies to Stardew and not to Minecraft, DST or an unnamed adapter', () => {
     expect(replyWindowApplies({ gameName: 'Stardew Valley' })).toBe(true)
     expect(replyWindowApplies({ gameName: 'Minecraft' })).toBe(false)
@@ -159,25 +159,34 @@ describe('the reply window is Stardew only', () => {
     expect(replyWindowApplies(null)).toBe(false)
   })
 
-  async function holdAfterSay(gameName) {
+  async function holdAfter(gameName, script) {
     _setTickIntervalForTests(10_000_000)
     const { orch } = makeOrch({
-      adapter: makeAdapter({ gameName }),
-      script: [{ text: '', toolUses: [say('t1', 'want to go fishing after this?')] }],
+      adapter: makeAdapter({ gameName, executeAction: () => Promise.resolve('done') }),
+      script,
     })
     orch.recordIncomingChat('newb', 'hey')
     await orch.handleDispatch('sei:chat_received', chat('hey'))
     return orch.replyWindowRemainingMs()
   }
+  const talkOnly = [{ text: '', toolUses: [say('t1', 'want to go fishing after this?')] }]
+  const talkAndWork = [
+    { text: '', toolUses: [say('t1', 'on it'), { id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
+    { text: '', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
+  ]
 
   it('holds the idle floor after her line in Stardew', async () => {
-    const held = await holdAfterSay('Stardew Valley')
+    const held = await holdAfter('Stardew Valley', talkOnly)
     expect(held).toBeGreaterThan(REPLY_WINDOW_MS - 5000)
     expect(held).toBeLessThanOrEqual(REPLY_WINDOW_MS)
   })
 
-  it('does not hold it in Minecraft, so the agentic cadence resumes the goal as before', async () => {
-    expect(await holdAfterSay('Minecraft')).toBe(0)
+  it('holds it in Minecraft when the loop only talked: nothing to resume, so an idle turn would repeat her', async () => {
+    expect(await holdAfter('Minecraft', talkOnly)).toBeGreaterThan(REPLY_WINDOW_MS - 5000)
+  })
+
+  it('does not hold it in Minecraft after a loop that did world work, so the agentic cadence resumes the goal', async () => {
+    expect(await holdAfter('Minecraft', talkAndWork)).toBe(0)
   })
 })
 

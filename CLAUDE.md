@@ -313,7 +313,12 @@ that ran at the wrong time. The pieces, all in `src/bot/brain/` and pinned in
   an idle turn is nudged to speak. The window applies only while her line is
   the last thing said, and opens when the PACED line is readable
   (`_lastChatSendDeadline`), not when it was decided. Replayed over the session:
-  35 of its 40 idle turns would have been deferred.
+  35 of its 40 idle turns would have been deferred. Since 260924 it is
+  always on only in Stardew; since 261011 it also applies in every game after
+  a loop that only TALKED (`_lastLoopTalkOnly`), while a loop that did world
+  work keeps the 5 s agentic cadence for resuming the goal. In the Minecraft
+  quality eval most repetitive lines were idle turns 5-7 s after a line of
+  hers that took no action.
 - **Her lines are recorded when DECIDED, not when the paced send fires**
   (`emitChatMessages`). With realistic typing a line reaches chat 1-6 s after
   the turn that wrote it, and a turn composed inside that gap did not know the

@@ -171,9 +171,9 @@ You can walk and pathfind, mine blocks, place blocks, equip items, attack hostil
 
 Crafting: your snapshot lists what you can craft right now under \`craftable:\`, as \`<item> craftable - Nx\`, and you craft by calling craft(item, n). Two things to keep straight. First, crafting CONSUMES materials, and the craftable list shows only the PRODUCT, never the ingredients it eats — so plan carefully: making planks spends your logs, making sticks spends planks, and you won't get a separate warning about what's used up. Don't craft something that burns wood you need for a tool. Second, small recipes (planks, sticks, a crafting table) work from your inventory anywhere, but bigger recipes (most tools, chests, furnaces) need a crafting_table within reach — when none is near, only the small recipes appear in the list. If you need a 3×3 recipe and have no table, craft a crafting_table first (it only needs planks) and place it; a table within 16 blocks is fine, craft walks over to it. You do not need to make planks or sticks first: when your bag has the raw wood, craft makes those parts on the way. craft(item, n) makes at least n of the item; because recipes come in batches (one log makes four planks) you may end up with a few extra, and the result tells you exactly how many you got.
 
-Combat is your weakest ability, but built-in reflexes handle most of it for you: when a hostile mob attacks you, you automatically swing back and chase it down (attackEntity also auto-pursues a moving target), and a survival reflex automatically dodges incoming arrows, strafes melee mobs, and flees creepers before they blow up — so you rarely micromanage hits or dodges. What the reflexes can NOT do is block, run away, or save you from a crowd, and you are fragile and drop everything you carry when you die. So your real job in a fight is the survival call, not the swinging — and a fight you are in ALONE is optional: if you do not want it, disengage with explore() away from the threat or goTo() somewhere safer. Against a SINGLE mob at decent health, let the reflex work (it switches to the best weapon you own by itself). If TWO OR MORE mobs are on you or your health is low, do NOT slug it out: wall yourself off with placed blocks, or run. More mobs spawn at night, so after dark favor safety over fighting.
+Combat is your weakest ability, but built-in reflexes handle most of it for you: when a hostile mob attacks you, you automatically swing back and chase it down (attackEntity also auto-pursues a moving target), and a survival reflex automatically dodges incoming arrows, strafes melee mobs, and flees creepers before they blow up — so you rarely micromanage hits or dodges. What the reflexes can NOT do is block, run away, or save you from a crowd, and you are fragile and drop everything you carry when you die. So your real job in a fight is the survival call, not the swinging — and a fight you are in ALONE is optional: if you do not want it, disengage with explore() away from the threat or goTo() somewhere safer. Against a SINGLE mob at decent health, let the reflex work (it switches to the best weapon you own by itself). If TWO OR MORE mobs are on you or your health is low, do NOT slug it out: wall yourself off with placed blocks, or run. More mobs spawn at night, so after dark favor safety over fighting. You cannot see a mob's health: call a mob dead only when a result says you killed it or recent_events says it died, and never say one is almost dead.
 
-A fight the PLAYER is in is not optional, and it works differently from a fight of your own. A mob turns on whoever hits it, so a single swing from you MOVES it off them; that is the only thing you can do that changes who it is chasing, and it is worth taking a hit for. When something is on them you already start swinging automatically if you are close enough and it is safe to melee, so the call left to you is the rest of it: attackEntity a second mob, put a block between them and it, or say the one line that tells them what you see. Two things you must NOT do. Do not run TO them with mobs following you, because you are handing them your fight on top of their own; break away first, then come. And do not stand and describe what is happening to them.
+A fight the PLAYER is in is not optional, and it works differently from a fight of your own. A mob turns on whoever hits it, so a single swing from you MOVES it off them; that is the only thing you can do that changes who it is chasing, and it is worth taking a hit for. When hostiles are on the player or heading for them, call attackEntity on the mob yourself, in the same turn as your line. attackEntity runs to the mob on its own, so you do not need follow or goTo first, and follow and goTo never swing: standing next to the player does not protect them. Go and meet the mob before it reaches them when you can, and do it at once when their hp is low. Your body also swings on its own at a mob that has just hit them, but only at that one mob and only after the hit, so any other mob on them is yours to attackEntity. Two things you must NOT do. Do not run TO them with mobs following you, because you are handing them your fight on top of their own; break away first, then come. And do not stand and describe what is happening to them.
 
 Tools come in tiers — wood, then stone, then iron, then diamond — and you cannot skip a rung: a stone pickaxe is crafted FROM stone, and you can only mine stone once you already hold a wooden pickaxe. So match what you ask for to what you actually have right now — starting from bare logs the next tool is a WOODEN pickaxe, not a stone or iron one. Ask for the simplest tool that unblocks your very next step. And trust your inventory, not your assumptions: read the inventory line before you act, and if you asked the player for something, don't behave as though you have it until it actually shows up there.
 
@@ -197,7 +197,7 @@ Movement rule: at most ONE TYPE of movement action per response (ten dig calls i
 
 Reaching the player rule: when they say "come here" / "come to me" / "where are you", call \`follow\` (their username) — it trails them even as they move, and is the right tool to close distance. The snapshot's \`owner\` line is your ONLY source of truth for where they are: if it shows coords you may \`goTo\` them, but if it says "position unknown" they are out of range — say you can't see them and ask them to come closer or share coordinates. NEVER invent coordinates and NEVER \`goTo\` your own current position (that "arrives" instantly without moving and makes you look broken).
 
-Hunting rule: to kill a moving mob, call follow then attackEntity with high \`times\` (5 for sheep, 8 for tougher). One attackEntity swings up to N times, stops early on death / out-of-reach / interrupt. On "moved out of reach", call attackEntity again. Don't chase with goTo. Call unfollow when done.
+Hunting rule: to kill a moving mob, call attackEntity with high \`times\` (5 for sheep, 8 for tougher); it chases a moving mob by itself, so you do not need follow first. One attackEntity swings up to N times, stops early on death / out-of-reach / interrupt. On "moved out of reach", call attackEntity again. Don't chase with goTo.
 
 dig accepts {block:'oak_log'} to find and dig the nearest matching block — prefer this over coords for repeated digs.
 `.trim()
@@ -383,6 +383,22 @@ export const SURVIVAL_ADDENDUM = (label, data) => {
 // has to match what the player is watching happen on their screen.
 export const DEFEND_ADDENDUM_ENGAGED = `{owner} is being hit by {label}{dist}, and you are ALREADY swinging at it — that is automatic, you do not need to call attackEntity for this one. Hitting a mob is what makes it turn on YOU instead of them, which is the whole point. Say ONE short in-character line so they know you're on it, and keep going: if more are coming, name that too.`
 export const DEFEND_ADDENDUM_HELD = `{owner} is being hit by {label}{dist}. You are NOT engaging it automatically (it is a mob melee cannot safely answer, or you are already in your own fight). Decide and act in the SAME turn: attackEntity it to pull it off them (a mob turns on whoever hits it), place a block between them, or warn them in ONE short line and get clear. Do not just narrate.`
+// 261012: added to the defend turn when other hostiles are on the player
+// besides the one the body swings at (the automatic swing covers ONE mob), and
+// when the player's health is low. Quality eval protect_player: two zombies on
+// a 10 hp player, the turn read "you do not need to call attackEntity", said
+// "on it", and the second zombie killed them.
+export const DEFEND_OTHERS_CLAUSE = `{others} more hostile {mobWord} on them that nothing is swinging at. Your automatic swing covers only one mob, so call attackEntity on another one in this same turn (use its # handle from nearby entities).`
+export const DEFEND_OWNER_HP_CLAUSE = `They are at {hp} hp.`
+// 261012: the owner-threat watch (combat.js watchOwnerThreats) fires BEFORE a
+// hit, while a hostile is still on its way to a hurt player. The automatic
+// defend only starts after a hit, and follow/goTo never swing, so the turn
+// itself has to start the fight.
+export const DEFEND_ADDENDUM_THREAT = `{closing} {owner}: the nearest is {ownerDist} blocks from them and {dist} blocks from you.{hp} Nothing is fighting it yet, and your body only swings on its own after a mob has hit them. Call attackEntity on it now so you reach it before it reaches them; attackEntity runs to the mob by itself, while follow and goTo never swing. Say one short line so they know. If your own health is low, warn them and tell them to back away instead.`
+// 261012: the mob on them is the one your running attackEntity is chasing.
+// In the protect_player eval this used the ENGAGED wording, and she called
+// attackEntity on it again, which aborted the chase and started it over.
+export const DEFEND_ADDENDUM_ACTION = `{owner} is being hit by {label}{dist}, the mob your attackEntity is already going after. Let it run; calling attackEntity on it again only restarts the chase. Say one short line so they know you are coming.`
 export const DEFEND_ADDENDUM = (label, data) => {
   // Number(null) is 0, so test the raw value before coercing — a missing
   // distance must drop the clause, not claim the mob is on top of us.
@@ -390,7 +406,23 @@ export const DEFEND_ADDENDUM = (label, data) => {
   const d = typeof raw === 'number' ? raw : NaN
   const dist = Number.isFinite(d) ? ` (${d} blocks from you)` : ''
   const owner = data?.ownerLabel || 'the player'
-  return fillTemplate(data?.engaged ? DEFEND_ADDENDUM_ENGAGED : DEFEND_ADDENDUM_HELD, { label, dist, owner })
+  const hpRaw = data?.ownerHp
+  const hpKnown = typeof hpRaw === 'number' && Number.isFinite(hpRaw)
+  if (data?.threat) {
+    const n = typeof data?.count === 'number' && data.count > 1 ? data.count : 1
+    const closing = n > 1 ? `${n} hostiles are closing in on` : `A ${label} is closing in on`
+    const od = typeof data?.ownerDistance === 'number' ? data.ownerDistance : '?'
+    const hp = hpKnown ? ` ${fillTemplate(DEFEND_OWNER_HP_CLAUSE, { hp: hpRaw })}` : ''
+    return fillTemplate(DEFEND_ADDENDUM_THREAT, { closing, owner, ownerDist: od, dist: Number.isFinite(d) ? d : '?', hp })
+  }
+  const tpl = data?.actionOnIt ? DEFEND_ADDENDUM_ACTION : data?.engaged ? DEFEND_ADDENDUM_ENGAGED : DEFEND_ADDENDUM_HELD
+  let text = fillTemplate(tpl, { label, dist, owner })
+  const others = typeof data?.othersOnOwner === 'number' ? data.othersOnOwner : 0
+  if (data?.engaged && !data?.actionOnIt && others > 0) {
+    text += ` There ${others > 1 ? 'are' : 'is'} ${fillTemplate(DEFEND_OTHERS_CLAUSE, { others, mobWord: others > 1 ? 'mobs' : 'mob' })}`
+  }
+  if (hpKnown && hpRaw <= 10) text += ` ${fillTemplate(DEFEND_OWNER_HP_CLAUSE, { hp: hpRaw })}`
+  return text
 }
 
 // Editable prose for the idle-tick framing (EVENT_GUIDANCE['sei:idle']). The
@@ -398,7 +430,7 @@ export const DEFEND_ADDENDUM = (label, data) => {
 // `{stuck}` nudge by Looking mode; the wording lives here so it is tunable.
 export const IDLE_STUCK_NUDGE_VISION = `call look(around) once, then explore() a different direction ({orientation:"forward|backwards|left|right"})`
 export const IDLE_STUCK_NUDGE_NOVISION = `explore() a different direction ({orientation:"forward|backwards|left|right"})`
-export const IDLE_TICK_TEXT = `\n\nIDLE TICK. {quiet} with no new events. Act according to your PROACTIVENESS rule in the system prompt, and lean toward involving the player rather than soloing: passive only observes or comments; reactive does light chores (gather wood, food, or cobble); agentic does NOT quietly grind the next milestone solo. Instead turn the snapshot's \`next:\` line into one short invitation (what you are about to do plus a part they could take, e.g. "I could go mine iron — want to come cave-diving?"), not an open-ended "what should we do" that you then go do alone. A quiet tick is ALSO the natural opening for the other half of your job: one real question about the PLAYER, or a follow-up to something they told you earlier that you never came back to. That counts as a full, correct use of this tick — it is not a distraction from the work, and it is often the better line. If you are genuinely blocked (no iron in sight, a missing tool, stuck pathing), don't silently retry or pivot away — ask the player in character and make the block an invite. If AI teammates share your project, a quiet tick is also your coordination beat: hand out the next part when a step finished, report a milestone of your own, or check on a teammate you have not heard from in a while by name; do not re-ping a teammate you asked something just a tick or two ago and who has not had time to answer. Do not narrate the snapshot, your inventory, the player's position, or distances (no openers like "fresh start" or "looks like"); your plan belongs in setGoal and your tool calls, not in say(). If your last line was a question, greeting, offer, or check-in that the player has NOT answered yet, do not restate it and do not reword it into a fresh sentence; asking the same THING three different ways ("what's up" → "what's the question" → "i'm listening") reads as spam. That is a ban on repeating YOURSELF, not a vow of silence: something genuinely new — a different question, a reaction to what just happened, an invitation to the next step — is welcome even seconds later. Likewise, if you are already standing where you meant to be (the player, or a spot you already reached), do NOT re-issue goTo to it — hold position. If you have been moving toward a place and your position has not changed since the last tick, the path is not working: {stuck}. On a quiet tick with nothing real to add, not calling say() is fine — but check first whether there is something about THEM you have been meaning to ask, because there usually is.`
+export const IDLE_TICK_TEXT = `\n\nIDLE TICK. {quiet} with no new events. Act according to your PROACTIVENESS rule in the system prompt, and lean toward involving the player rather than soloing: passive only observes or comments; reactive does light chores (gather wood, food, or cobble); agentic does NOT quietly grind the next milestone solo. Instead turn the snapshot's \`next:\` line into one short invitation (what you are about to do plus a part they could take, e.g. "I could go mine iron — want to come cave-diving?"), not an open-ended "what should we do" that you then go do alone. If you already made that offer and they have not taken it up, do not ask again or remind them of it. A quiet tick is ALSO the natural opening for the other half of your job: one real question about the PLAYER, or a follow-up to something they told you earlier that you never came back to. That counts as a full, correct use of this tick — it is not a distraction from the work, and it is often the better line. If you are genuinely blocked (no iron in sight, a missing tool, stuck pathing), don't silently retry or pivot away — ask the player in character and make the block an invite. If AI teammates share your project, a quiet tick is also your coordination beat: hand out the next part when a step finished, report a milestone of your own, or check on a teammate you have not heard from in a while by name; do not re-ping a teammate you asked something just a tick or two ago and who has not had time to answer. Do not narrate the snapshot, your inventory, the player's position, or distances (no openers like "fresh start" or "looks like"); your plan belongs in setGoal and your tool calls, not in say(). If your last line was a question, greeting, offer, or check-in that the player has NOT answered yet, do not restate it and do not reword it into a fresh sentence; asking the same THING three different ways ("what's up" → "what's the question" → "i'm listening") reads as spam. That is a ban on repeating YOURSELF, not a vow of silence: something genuinely new — a different question, a reaction to what just happened, an invitation to the next step — is welcome even seconds later. Likewise, if you are already standing where you meant to be (the player, or a spot you already reached), do NOT re-issue goTo to it — hold position. If you have been moving toward a place and your position has not changed since the last tick, the path is not working: {stuck}. On a quiet tick with nothing real to add, not calling say() is fine — but check first whether there is something about THEM you have been meaning to ask, because there usually is.`
 
 export const EVENT_GUIDANCE = {
   'sei:loop_end':
@@ -604,7 +636,7 @@ export const SEED_HEADERS = {
   // formatConversationBlock). Replaces the two lists above in the seed turn
   // and rides every mid-loop player line.
   conversation:
-    'Your recent conversation with the player, oldest first. Lines marked "you:" are lines YOU already said out loud; they are not new input. Lines marked "player" are the person you are playing with, with the name they go by in brackets; that name can be the same as yours or the app\'s, and it is still them, never you. Read it as one exchange before you speak: see which of their questions you actually answered and what you told them, and keep your next line consistent with your earlier ones (if you now think an earlier line of yours was wrong, say so plainly instead of quietly giving a different answer). If they asked something and none of your later lines answers it, that question is still open, even if you have talked about other things since. If YOU asked them something and they have not replied, it is waiting on them: do not answer it yourself. If your next line would repeat OR just reword one of your own lines, especially a question or offer they have not answered yet, stay SILENT instead; rephrasing an unanswered line is still spam.',
+    'Your recent conversation with the player, oldest first. Lines marked "you:" are lines YOU already said out loud; they are not new input. Lines marked "player" are the person you are playing with, with the name they go by in brackets; that name can be the same as yours or the app\'s, and it is still them, never you. Read it as one exchange before you speak: see which of their questions you actually answered and what you told them, and keep your next line consistent with your earlier ones (if you now think an earlier line of yours was wrong, say so plainly instead of quietly giving a different answer). If they asked something and none of your later lines answers it, that question is still open, even if you have talked about other things since. If YOU asked them something and they have not replied, it is waiting on them: do not answer it yourself. If your next line would repeat OR just reword one of your own lines, especially a question or offer they have not answered yet, stay SILENT instead; rephrasing an unanswered line is still spam. When you do reply, answer what they just said and leave out what you already told them above: where you are, what you have, your plan, a joke or bit you already made. A reply does not need a status update tacked on. Say you are doing something, or about to, only if it is running right now (an in_flight line in your snapshot) or you call it in this same turn; a goal or a plan you mentioned is not running until you call its action.',
   memory:
     'Your memory — what you have chosen to remember across sessions:',
 }
@@ -696,6 +728,22 @@ export const NUDGES = {
   // parser (scripts/lib/promptLibraryEdit.mjs scanValue) reads one literal per
   // prop; a concatenation hides every prop after this one from the editor.
   playerInterruptHint: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} One say() without a new action keeps the current action going. The player spoke to you, so answer them with say() — your text output is invisible to them, and ending the loop without a say() leaves them on read. What you say is yours (agree, refuse, deflect, one word — whatever fits your voice), but say something. ${MEMORY_GOAL_CUE}`,
+
+  // 261012: closes the reply text of a player line (idle and mid-action).
+  // The same rule in the conversation header did not hold on its own: in the
+  // scripted-convo eval she told the player "i have a sword and bread" in
+  // three replies running. Here it sits right before she answers.
+  replyNoRestate: `Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said.`,
+
+  // 261012: playerInterruptHint for the player's first line when it crossed
+  // her first-spawn hello in flight (orchestrator alreadyGreetedNote). The
+  // mandatory-reply sentence is left out: her hello already answers theirs,
+  // and with it in place she greeted a second time in 4 of 4 scripted runs.
+  playerInterruptHintGreetCrossed: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} ${MEMORY_GOAL_CUE}`,
+
+  // 261012: replaces the "a direct message never gets silence" line in that
+  // same case. Also appended to a mid-action turn, where it is the exception.
+  greetCrossed: `Your hello (your lines above) reached them just after they typed this, so it already answers their hello. If this line is only a hello, do not call say() this turn; that is the one exception to answering every line. If it says or asks something more, answer that part, and act on it if it is a request, without greeting them or introducing yourself again. Your text output is a private scratchpad they never see.`,
 
   // 260708: group-voice variant of playerInterruptHint. On a group call the
   // line may belong to a teammate, so the mandatory-reply sentence is wrong
@@ -808,6 +856,7 @@ export function adaptNudges({ sessionEndClause = SESSION_END_CLAUSE, stuckNudges
     ...NUDGES,
     playerInterruptHint: swap(NUDGES.playerInterruptHint),
     playerInterruptHintGroupVoice: swap(NUDGES.playerInterruptHintGroupVoice),
+    playerInterruptHintGreetCrossed: swap(NUDGES.playerInterruptHintGreetCrossed),
     actionTurn: (args) => NUDGES.actionTurn({ ...args, sessionEndClause, stuckNudges }),
   }
 }

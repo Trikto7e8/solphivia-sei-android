@@ -1,6 +1,6 @@
 // src/behaviors/attack.js — multi-swing attack on an entity (D-22, Pitfall 5)
 import pkg from 'mineflayer-pathfinder'
-import { resolveEntity, isStaleHandle } from '../observers/targeting.js'
+import { resolveEntity, isStaleHandle, nearestNamedEntityBeyondBound, handleForEntity } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
 import { companionMovements } from './pathfind.js'
@@ -63,6 +63,7 @@ function inStaggerWindow(bot) {
  */
 async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
   let goalOwned = false
+  let ourGoal = null
   while (true) {
     if (signal?.aborted) return 'aborted'
     if (Date.now() > deadline) return 'timeout'
@@ -80,9 +81,14 @@ async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
       await sleep(PURSUE_POLL_MS)
       continue
     }
+    // 261012: re-install when something else replaced or cleared the goal
+    // (a pathfinder.stop() from another behavior used to leave the chase
+    // parked until its timeout, since the goal was only ever set once).
+    if (goalOwned && ourGoal && bot.pathfinder?.goal !== ourGoal) goalOwned = false
     if (!goalOwned) {
       try {
-        bot.pathfinder.setGoal(new goals.GoalFollow(live, PURSUE_FOLLOW_RANGE), true)
+        ourGoal = new goals.GoalFollow(live, PURSUE_FOLLOW_RANGE)
+        bot.pathfinder.setGoal(ourGoal, true)
         goalOwned = true
       } catch (_) {}
     }
@@ -123,6 +129,22 @@ export function goneResult(name, hits, died) {
   return hits ? `${hits} hits on ${name}, then ${lost}` : lost
 }
 
+// 261012: say where the nearest one is when a name lookup comes up empty.
+// The name lookup stays bounded at 16 blocks (targeting.js); a #N handle is
+// not, so that is the way to go after a mob that is farther out.
+export function fartherNote(asked, bot) {
+  let far = null
+  try { far = nearestNamedEntityBeyondBound(asked, bot) } catch { far = null }
+  if (!far) return ''
+  const p = far.entity.position
+  const at = `${Math.round(p.x)},${Math.round(p.y)},${Math.round(p.z)}`
+  const tag = handleForEntity(far.entity.id)
+  const how = tag
+    ? `To go after it, call attackEntity with target "${tag}"; it runs there on its own.`
+    : 'To go after it, goTo near it first, then attackEntity.'
+  return `. The nearest ${asked} is ${Math.round(far.distance)} blocks away at ${at}. ${how}`
+}
+
 export async function attackEntityAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
@@ -131,7 +153,8 @@ export async function attackEntityAction(args, bot, config) {
   if (!entity) {
     if (isStaleHandle(args)) return 'stale target'
     const asked = typeof args?.entity === 'string' ? args.entity : (typeof args?.target === 'string' && !args.target.startsWith('#') ? args.target : null)
-    return asked ? `no ${asked} within 16 blocks to attack` : 'target gone'
+    if (!asked) return 'target gone'
+    return `no ${asked} within 16 blocks to attack${fartherNote(asked, bot)}`
   }
 
   // Refuse Players unless PvP mode is ON (bot._seiPvp, toggled by the setPvp

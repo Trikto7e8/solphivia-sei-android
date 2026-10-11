@@ -1051,6 +1051,36 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // 261011: every line also feeds the process-level session digest, which
   // main reads for the player-end "next time" check (sessionDigest.js).
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
+  // 261012: the first-spawn greeting and the player's own first "hey" cross
+  // in flight. Her greeting is decided on the first idle tick but reaches
+  // chat a few seconds later (paced typing), the player types hello in that
+  // gap, and the reply to it greeted them a second time ("heyyy alex", then
+  // "hey alex. ok so..."; 4 of 6 scripted conversations in the 261011
+  // scorecard). The reply to the first player line after a greeting she
+  // actually said is told so; it is said once, on that line only.
+  let _firstContactAt = 0
+  let _greetNoteDone = false
+  // Only a line typed while her hello was still on its way counts as crossed.
+  // Without a bound, a player who stayed silent and said "hey" minutes later
+  // was told her (long delivered) hello already answered it, with the reply
+  // retry switched off, so they got no answer.
+  const GREET_CROSS_WINDOW_MS = 20_000
+  // True (once) when this player line is their first since her first-contact
+  // hello was decided. The turn then takes NUDGES.greetCrossed framing, and
+  // the loop owes no reply (the unanswered-line retry would otherwise push
+  // the second greeting back in).
+  function greetCrossed(loop) {
+    if (!_firstContactAt || _greetNoteDone) return false
+    const { selfLines, playerLines } = convoMemory.recentChat._internal
+    const greet = selfLines.find((l) => l.at >= _firstContactAt)
+    if (!greet) return false
+    _greetNoteDone = true
+    const since = playerLines.filter((l) => l.at >= greet.at && !l.companion)
+    if (since.length !== 1) return false
+    if (since[0].at - greet.at > GREET_CROSS_WINDOW_MS) return false
+    if (loop) loop._noReplyOwed = true
+    return true
+  }
   // 260921: what she found on the web, kept across loops (see lookups.js).
   const lookupLog = createLookupLog()
   // chains is a no-op shim (kept to preserve any stragglers referencing it).
@@ -2145,6 +2175,11 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const unansweredLead = unanswered
       ? 'Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Their line is still waiting:\n'
       : ''
+    // 261012: the player's first line crossed her first-spawn hello.
+    const humanLine = chatText && String(chatText).trim() && !teammate
+    const crossedTail = (humanLine && !unanswered && !voiceCallActive && greetCrossed(loop))
+      ? `\n\n${NUDGES.greetCrossed}`
+      : humanLine ? `\n\n${NUDGES.replyNoRestate}` : ''
     return convoLead + unansweredLead + withGreetingHint(NUDGES.actionTurn({
       action,
       stopTool: stopToolForAction(action),
@@ -2160,7 +2195,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       voice: voiceCallActive,
       peers: companions,
       fromTeammate: teammate === true,
-    }))
+    })) + crossedTail
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -2539,7 +2574,9 @@ function maybeWarnByteCap(loop, warned) {
           // owner defend, which carry no health) keep separate windows: a
           // heads-up must not open a window that swallows the real hits
           // behind it (with no baseline hp the drop bypass could never fire).
-          const cls = isAttackHeadsUp(data) ? 'headsUp' : 'hit'
+          // 261012: the pre-hit owner-threat warning has its own window too,
+          // so the real hit on the player that may follow it still gets in.
+          const cls = data?.threat === true ? 'ownerThreat' : isAttackHeadsUp(data) ? 'headsUp' : 'hit'
           const last = (cl._lastAttackTick ??= {})[cls] ?? { at: 0, hp: null }
           // Inside the window a hit is dropped unless health fell by
           // MID_ACTION_ATTACK_HP_DROP or more since the last delivered one:
@@ -2744,7 +2781,10 @@ function maybeWarnByteCap(loop, warned) {
         // flagged so the unanswered-line retry never pushes a reply onto a
         // deliberate yield. Teammate voice wakes count too.
         loop._groupVoiceLine = isVoiceLine && (companions.length > 0 || fromTeammate)
-        eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice : NUDGES.playerInterruptHint
+        const crossed = !groupVoice && !teammateVoice && !fromTeammate && greetCrossed(loop)
+        eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice
+          : crossed ? NUDGES.playerInterruptHintGreetCrossed
+          : NUDGES.playerInterruptHint
         const opener = (fromTeammate && speakerName)
           ? (isVoiceLine
             ? `your teammate ${speakerName} just said this on the voice call`
@@ -2757,8 +2797,11 @@ function maybeWarnByteCap(loop, warned) {
             ? voiceGroupGuidance(companions).trim() + ' Your text output is a private scratchpad the player can NEVER see; a reply that exists only in your text is silence to them; only say() reaches them.'
             : teammateVoice
             ? teammateVoiceGuidance(speakerName || 'your teammate').trim()
+            : crossed
+            ? NUDGES.greetCrossed
             : 'Reply with the say() tool — a direct message never gets silence, even if your answer is a refusal or a single word. ' +
-              'Your text output is a private scratchpad the player can NEVER see — a reply that exists only in your text is silence to them; only say() reaches them.')
+              'Your text output is a private scratchpad the player can NEVER see — a reply that exists only in your text is silence to them; only say() reaches them. ' +
+              NUDGES.replyNoRestate)
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
@@ -2788,6 +2831,7 @@ function maybeWarnByteCap(loop, warned) {
       eventText = `player just unpaused your game.${inflightLine}\n\n${eventText}`
     }
     if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive) {
+      _firstContactAt = Date.now()
       // 261011: a first-ever session has no memories, and the old single
       // wording ("glad to be back", say("back in business")) made the very
       // first line claim a shared past: "yo alex, back in the world" to a

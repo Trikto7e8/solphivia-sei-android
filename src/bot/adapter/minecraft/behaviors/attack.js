@@ -3,8 +3,11 @@ import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
+import { companionMovements } from './pathfind.js'
+import { followMovements } from './follow.js'
+import { noteCombat } from './autoEat.js'
 
-const { goals, Movements } = pkg
+const { goals } = pkg
 
 export const DEFAULT_TIMEOUT_MS = 12000
 const REACH = 3.5
@@ -13,15 +16,29 @@ const REACH = 3.5
 const PURSUE_FOLLOW_RANGE = 2
 const PURSUE_POLL_MS = 100       // pursuit loop cadence: re-check distance / re-assert goal
 const SWING_DELAY_MS = 600       // matches mob attack cooldown; faster spams hits without damage
+const DEATH_PACKET_WAIT_MS = 250 // after the last swing, before calling the target alive
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// At or below this health a mob fight is two hits from death. 261011
+// (combat_night eval): at 4hp she kept swinging at a skeleton while the
+// player begged her to come back, and died. Critical-HP auto-retreat is off
+// on purpose (survival.js, 260707), so the decision stays with the model;
+// attackEntity just stops trading hits and says why.
+export const CRITICAL_HP = 6
+const CRITICAL_ADVICE = 'Get away first (follow the player, or goTo somewhere away from it), eat if you have food, then fight'
+
 // Anti-stuck movement tuning shared with goTo (pathfind.js): make digging a
 // last resort so pursuit routes around obstacles rather than tunnelling.
-function pursuitMovements(bot) {
-  const m = new Movements(bot)
-  m.digCost = 8
-  m.maxDropDown = 4
+// Sprinting stays ON here, unlike goTo/follow: a chase has to close distance
+// on a mob that is moving away (a skeleton backs off to shoot). With pursuit
+// at a walk, the pass-2 combat_night eval had four "couldn't catch ... it
+// kept its distance" (pass 1b: none), and one 12s skeleton chase took her
+// from 16 to 4 health before she died. The corner wedge that sprint causes
+// costs a 3.5s path reset on a walk; on a chase the goal moves every tick.
+export function pursuitMovements(bot) {
+  const m = companionMovements(bot)
+  m.allowSprinting = true
   return m
 }
 
@@ -66,7 +83,6 @@ async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
     if (!goalOwned) {
       try {
         bot.pathfinder.setGoal(new goals.GoalFollow(live, PURSUE_FOLLOW_RANGE), true)
-        bot.setControlState('sprint', true)
         goalOwned = true
       } catch (_) {}
     }
@@ -94,12 +110,29 @@ export function weakWeaponNote(bot) {
   return `; you're fighting with ${held ?? 'bare hands'}, which is slow: ${fix}`
 }
 
+// 261011 (quality pass 2): "the target left the entity table" is not "it
+// died". A mob that walks out of tracking range or despawns disappears the
+// same way, and the old result called that "killed zombie (3 hits)" (or the
+// bare "target gone", which the model also read as a kill): in the
+// combat_night eval she told the player a zombie or skeleton was dead five
+// times while it was still around. Death is now only what the server says:
+// the entity_status death event (mineflayer 'entityDead') for that entity id.
+export function goneResult(name, hits, died) {
+  if (died) return hits ? `killed ${name} (${hits} hits)` : `${name} died before you hit it`
+  const lost = `lost sight of ${name}: it moved out of range or despawned, NOT confirmed dead, it may still be around`
+  return hits ? `${hits} hits on ${name}, then ${lost}` : lost
+}
+
 export async function attackEntityAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
 
   const entity = resolveEntity(args, bot)
-  if (!entity) return isStaleHandle(args) ? 'stale target' : 'target gone'
+  if (!entity) {
+    if (isStaleHandle(args)) return 'stale target'
+    const asked = typeof args?.entity === 'string' ? args.entity : (typeof args?.target === 'string' && !args.target.startsWith('#') ? args.target : null)
+    return asked ? `no ${asked} within 16 blocks to attack` : 'target gone'
+  }
 
   // Refuse Players unless PvP mode is ON (bot._seiPvp, toggled by the setPvp
   // tool). When OFF this keeps the original refusal + message; when ON the
@@ -123,8 +156,13 @@ export async function attackEntityAction(args, bot, config) {
   }
 
   const name = entity.name ?? entity.displayName ?? 'entity'
+  const mobTarget = !(entity.type === 'player' || entity.username)
+  const startHp = bot.health
+  if (mobTarget && Number.isFinite(startHp) && startHp <= CRITICAL_HP) {
+    return `did not attack ${name}: you are at ${Math.round(startHp)} health, and one or two more hits will kill you. ${CRITICAL_ADVICE}`
+  }
   // 261011: hold the best weapon owned before the first swing (mobs only).
-  if (!(entity.type === 'player' || entity.username)) {
+  if (mobTarget) {
     try { await equipBestWeapon(bot) } catch {}
     if (signal?.aborted) return 'aborted'
   }
@@ -140,6 +178,9 @@ export async function attackEntityAction(args, bot, config) {
   // Cleared on every exit path (finally) and guarded so a newer attack's flag
   // is never clobbered.
   bot._seiOffensiveTarget = entityId
+  let died = false
+  const onDead = (e) => { if (e?.id === entityId) died = true }
+  try { bot.on?.('entityDead', onDead) } catch (_) {}
   // Attacking a player IS a PvP exchange — lock them as the reflex opponent
   // (Task 2) so reflex.js kites this player and only this player. The `at`
   // refreshes on each swing below and decays ~10s after the last blow.
@@ -157,9 +198,13 @@ export async function attackEntityAction(args, bot, config) {
         return hits ? `timeout after ${hits}/${times} hits on ${name}` : `timeout attacking ${name}`
       }
 
+      // A dead mob stays in the entity table for its ~1s death animation;
+      // stop swinging at the corpse once the server has said it died.
+      if (died) return goneResult(name, hits, true)
+
       let live = bot.entities?.[entityId]
       if (!live) {
-        return hits ? `killed ${name} (${hits} hits)` : 'target gone'
+        return goneResult(name, hits, died)
       }
 
       let dist = bot.entity?.position?.distanceTo?.(live.position)
@@ -170,7 +215,7 @@ export async function attackEntityAction(args, bot, config) {
         const deadline = startedAt + timeoutMs
         const res = await pursueUntilInReach(bot, entityId, REACH, deadline, signal)
         if (res === 'aborted') return hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted'
-        if (res === 'gone') return hits ? `killed ${name} (${hits} hits)` : 'target gone'
+        if (res === 'gone') return goneResult(name, hits, died)
         if (res === 'timeout') {
           return hits
             ? `${hits}/${times} hits, then ${name} kept its distance until time ran out`
@@ -178,12 +223,25 @@ export async function attackEntityAction(args, bot, config) {
         }
         // res === 'reached'
         live = bot.entities?.[entityId]
-        if (!live) return hits ? `killed ${name} (${hits} hits)` : 'target gone'
+        if (!live) return goneResult(name, hits, died)
+      }
+
+      // Stop trading hits once this fight has brought her to critical health.
+      const hp = bot.health
+      if (mobTarget && Number.isFinite(hp) && hp <= CRITICAL_HP && hp < startHp) {
+        return `${hits}/${times} hits on ${name}, then stopped: you are down to ${Math.round(hp)} health. ${CRITICAL_ADVICE}`
+      }
+      // Re-equip before every swing: auto-eat or a placed block may have
+      // changed the hand since the first one (no-op when already held).
+      if (mobTarget && !bot.autoEat?.isEating) {
+        try { await equipBestWeapon(bot) } catch {}
+        if (signal?.aborted) return hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted'
       }
 
       try {
         bot.lookAt?.(live.position.offset(0, live.height ? live.height * 0.5 : 0.5, 0), true)
         bot.attack(live)
+        noteCombat(bot)
         bot.swingArm?.()
         hits++
         // Refresh the PvP opponent lock on every swing so the reflex keeps
@@ -204,6 +262,10 @@ export async function attackEntityAction(args, bot, config) {
 
     // A spar against a player is a running exchange, not a completed task: frame
     // the result so the model keeps fighting instead of narrating an ending.
+    // The last swing can be the killing one: give the death packet a moment
+    // so a kill is not reported as "still alive".
+    if (!isPlayerTarget && !died) await sleepOrAbort(DEATH_PACKET_WAIT_MS, signal)
+    if (!isPlayerTarget && (died || !bot.entities?.[entityId])) return goneResult(name, hits, died)
     if (isPlayerTarget) return `attacked ${name} ${hits}× — they're still standing and the spar is still ON; keep it going (attack again, reposition, trash-talk) until they say stop`
     return `attacked ${name} ${hits}× (target still alive)${weakWeaponNote(bot)}`
   } finally {
@@ -223,11 +285,12 @@ export async function attackEntityAction(args, bot, config) {
     // resetting movements). So without this the companion would trail with
     // pursuit movements (permitting larger drops) after every fight until the
     // next goTo() reset them. Reset here so they never leak past the engagement.
-    try { bot.pathfinder?.setMovements?.(new Movements(bot)) } catch (_) {}
+    try { bot.pathfinder?.setMovements?.(followMovements(bot)) } catch (_) {}
     if (!bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat) {
       try { bot.pathfinder?.setGoal?.(null) } catch (_) {}
     }
     if (bot._seiOffensiveTarget === entityId) bot._seiOffensiveTarget = null
+    try { bot.removeListener?.('entityDead', onDead) } catch (_) {}
   }
 }
 

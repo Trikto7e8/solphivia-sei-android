@@ -36,6 +36,7 @@ export async function writeReport(outDir) {
   const counters = { stuck: 0, deaths: 0, player_msgs: 0, unanswered: 0, replied: 0, reply_ms_total: 0, llm_turns: 0, silent_turns: 0 }
   const cost = { companion: 0, player: 0, judge: 0, web: 0 }
   let minutes = 0
+  let judgedMinutes = 0
 
   for (const id of ids) {
     const dir = path.join(sessRoot, id)
@@ -55,6 +56,7 @@ export async function writeReport(outDir) {
     }
     row.judged = !!judged
     minutes += Number(sess.meta.minutes || 0)
+    if (judged) judgedMinutes += Number(sess.meta.minutes || 0)
     const st = sess.lastStats
     if (st) {
       for (const [name, a] of Object.entries(st.actions || {})) {
@@ -103,7 +105,10 @@ export async function writeReport(outDir) {
   L.push('')
   L.push(`Companion: Sui on claude-haiku-5-5 (real bot code, BYOK test key). Judge: ${JUDGE_MODEL}. ${rows.filter((r) => !r.error).length} sessions, ${minutes} min of play.`)
   L.push('')
-  L.push(`**Off-rate: ${pct(totalOff, total)}** (${totalOff} of ${total} judged items: companion lines, actions, and silences).`)
+  // Off items per minute of play: the off-rate is a share of what she DID, so
+  // a quieter, slower companion can lower it without being better company.
+  const offPerMin = judgedMinutes ? totalOff / judgedMinutes : null
+  L.push(`**Off-rate: ${pct(totalOff, total)}** (${totalOff} of ${total} judged items: companion lines, actions, and silences). **Off per minute: ${offPerMin == null ? '-' : offPerMin.toFixed(2)}** (${totalOff} over ${judgedMinutes} judged min; items per minute ${judgedMinutes ? (total / judgedMinutes).toFixed(2) : '-'}).`)
   L.push('')
   L.push('| item type | items | off | off-rate |')
   L.push('|---|---:|---:|---:|')
@@ -111,12 +116,12 @@ export async function writeReport(outDir) {
   L.push('')
   L.push('## By scenario')
   L.push('')
-  L.push('| scenario | items | off | off-rate | top category | cost |')
-  L.push('|---|---:|---:|---:|---|---:|')
+  L.push('| scenario | items | off | off-rate | off/min | top category | cost |')
+  L.push('|---|---:|---:|---:|---:|---|---:|')
   for (const r of rows) {
-    if (r.error) { L.push(`| ${r.id} | - | - | failed: ${r.error.slice(0, 80)} | | |`); continue }
+    if (r.error) { L.push(`| ${r.id} | - | - | failed: ${r.error.slice(0, 80)} | | | |`); continue }
     const topCat = Object.entries(r.byCat).sort((a, b) => b[1] - a[1])[0]
-    L.push(`| ${r.title} | ${r.items} | ${r.off} | ${r.judged ? pct(r.off, r.items) : 'not judged'} | ${topCat ? `${topCat[0]} (${topCat[1]})` : '-'} | ${usd(r.cost)} |`)
+    L.push(`| ${r.title} | ${r.items} | ${r.off} | ${r.judged ? pct(r.off, r.items) : 'not judged'} | ${r.judged && r.minutes ? (r.off / r.minutes).toFixed(2) : '-'} | ${topCat ? `${topCat[0]} (${topCat[1]})` : '-'} | ${usd(r.cost)} |`)
   }
   L.push('')
   L.push('## Off items by category')
@@ -155,12 +160,12 @@ export async function writeReport(outDir) {
   L.push('')
   L.push('Per-session files: `sessions/<id>/transcript.txt` (what the judge read), `labels.json`, `companion.events.jsonl`, `player.events.jsonl`, `companion.raw.log`.')
   fs.writeFileSync(path.join(outDir, 'summary.md'), L.join('\n') + '\n')
-  const summary = { date: path.basename(outDir), off_rate: total ? totalOff / total : null, items: total, off: totalOff, by_type: typeCounts, by_category: catCounts, sessions: rows.map(({ byType, ...r }) => r), actions: actionAgg, counters, cost: { ...cost, total: totalCost } }
+  const summary = { date: path.basename(outDir), off_rate: total ? totalOff / total : null, off_per_min: offPerMin, judged_minutes: judgedMinutes, items: total, off: totalOff, by_type: typeCounts, by_category: catCounts, sessions: rows.map(({ byType, ...r }) => r), actions: actionAgg, counters, cost: { ...cost, total: totalCost } }
   fs.writeFileSync(path.join(outDir, 'summary.json'), JSON.stringify(summary, null, 2))
   return summary
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const s = await writeReport(path.resolve(process.argv[2]))
-  console.log(`off-rate ${s.off_rate == null ? 'n/a' : (100 * s.off_rate).toFixed(1) + '%'}, cost $${s.cost.total.toFixed(2)}`)
+  console.log(`off-rate ${s.off_rate == null ? 'n/a' : (100 * s.off_rate).toFixed(1) + '%'}, off/min ${s.off_per_min == null ? 'n/a' : s.off_per_min.toFixed(2)}, cost $${s.cost.total.toFixed(2)}`)
 }

@@ -2,7 +2,8 @@ import pkg from 'mineflayer-pathfinder'
 import { stopFollow, startFollow } from './follow.js'
 import { createThrottle } from '../../../brain/debounce.js'
 import { HOSTILE_MOBS } from './hostiles.js'
-import { equipBestWeapon } from './weaponSelect.js'
+import { equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
+import { noteCombat } from './autoEat.js'
 
 const { goals } = pkg
 
@@ -222,12 +223,18 @@ export function startCombat(bot, config) {
         } catch (_) {}
       }
 
+      // Keep the weapon in hand for the whole fight, not just the first swing
+      // (same skip rules as the equip in startAttacking above).
+      const playerTarget = Boolean(live.username) || live.type === 'player'
+      if (!playerTarget && !(bot._seiActionActive > 0)) keepWeaponInHand(bot)
+
       try {
         // Zombies face their target — inverting their yaw is cheaper and more reliable
         // than computing ours from bot position (which may still be stale).
         if (Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
         bot.attack(live)
         bot.swingArm()
+        noteCombat(bot)
       } catch (_) {}
     }, 250)
   }
@@ -261,6 +268,9 @@ export function startCombat(bot, config) {
     // hits like an AFK player. No retaliation, and no sei:attacked either —
     // the FSM hold would only bank it and fire a stale panic on resume.
     if (bot._seiPaused) return
+
+    // Any hit taken counts as fighting (auto-eat holds off, see autoEat.js).
+    noteCombat(bot)
 
     const target = resolveAttacker(bot, source)
     if (!target) return

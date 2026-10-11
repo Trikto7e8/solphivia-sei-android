@@ -372,8 +372,8 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
   // `craft`: make N of a product item from inventory materials. `count` is the
   // number of the PRODUCT wanted; batch recipes (1 log → 4 planks) may overshoot
   // to the batch boundary, and the result string reports what was actually made.
-  // 3×3 recipes need a crafting_table in reach — craft() does NOT walk there;
-  // the snapshot's `craftable:` list reflects what's possible from where you are.
+  // 3×3 recipes need a crafting_table: craft() walks to one within 16 blocks
+  // and makes missing planks/sticks from the bag first (261011, craft.js).
   registry.register(
     'craft',
     z.object({

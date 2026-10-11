@@ -36,8 +36,8 @@
 import { Vec3 } from 'vec3'
 import mcDataLib from 'minecraft-data'
 import { resolveTerm } from '../loose-terms.js'
-import { goTo as realGoTo, waitForReflexClear } from './pathfind.js'
-import { digAction as realDigAction } from './dig.js'
+import { goTo as realGoTo, waitForReflexClear, dropWalkOpts } from './pathfind.js'
+import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.js'
 import { inventoryCounts, gained } from './pickup.js'
 
 const NEIGHBOR_OFFSETS = [
@@ -59,7 +59,9 @@ const SWEEP_WALK_MS = 3000
 const SWEEP_SETTLE_MS = 250
 
 function isItemEntity(e) {
-  return !!e && (e.name === 'item' || e.objectType === 'Item' || e.displayName === 'Item')
+  // No objectType: the getter is deprecated in prismarine-entity and prints a
+  // stack trace on every read, including for every mob and player checked.
+  return !!e && (e.name === 'item' || e.name === 'item_stack' || e.displayName === 'Item')
 }
 
 /**
@@ -71,7 +73,7 @@ function isItemEntity(e) {
  * and bounded: closest-first, each drop attempted once, drops well above
  * the bot (canopy) are skipped so the pathfinder never climbs for them.
  */
-async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => setTimeout(r, ms))) {
+async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => setTimeout(r, ms)), blockName) {
   const attempted = new Set()
   for (let i = 0; i < SWEEP_MAX; i++) {
     if (signal?.aborted) return
@@ -87,7 +89,9 @@ async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => se
     }
     if (!best) return
     attempted.add(best.id ?? best)
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, SWEEP_WALK_MS, signal)
+    // Range 1 reaches the pickup box. No digging under a tree; a stone or ore
+    // drop may need a dig to get into its hole (dropWalkOpts).
+    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 1, SWEEP_WALK_MS, signal, dropWalkOpts(blockName))
     if (signal?.aborted) return
     // Give the collect a beat to register before rescanning, so a stack the
     // walk just absorbed doesn't get re-picked as the next target.
@@ -182,10 +186,14 @@ export async function gatherAction(args, bot, config, _deps) {
   function nextAnchor() {
     const origin = bot.entity?.position
     const point = origin && Number.isFinite(origin.x) ? origin : undefined
+    // 261011: count was 8. Blocks a round gave up on (an unreachable top
+    // log) stay solid and stay `visited`, so a few failed trees filled all 8
+    // slots and the next tree over was never seen: "no more oak_log
+    // reachable nearby" with logs in plain sight.
     const hits = bot.findBlocks({
       matching,
       maxDistance: args.maxDistance ?? 32,
-      count: 8,
+      count: 64,
       point,
     })
     for (const h of hits ?? []) {
@@ -262,20 +270,27 @@ export async function gatherAction(args, bot, config, _deps) {
       // Skip the pathfind when the block is already within dig reach — the common
       // case in a contiguous vein, where the previous swing left us adjacent. Only
       // walk when it's genuinely out of reach. 260709: measured from the EYES
-      // (dig reach is eye-anchored), threshold just under dig.js's 4.5 — so the
-      // upper trunk logs of a tree are dug from the ground instead of sending
-      // the pathfinder on a climb to "get closer" to a block 4 up.
-      const here = bot.entity?.position
-      const eyeY = here ? here.y + (Number.isFinite(bot.entity?.eyeHeight) ? bot.entity.eyeHeight : 1.62) : 0
-      const reachD = here ? Math.hypot(np.x - here.x, np.y - eyeY, np.z - here.z) : Infinity
-      if (reachD > 4.2) {
+      // (dig reach is eye-anchored), so the upper trunk logs of a tree are dug
+      // from the ground instead of sending the pathfinder on a climb. 261011:
+      // the same metric dig.js checks (eyes to block center), and the walk
+      // aims for dig reach rather than "feet within 3", which for a high log
+      // meant climbing.
+      if (digReachDistance(bot, np) > DIG_REACH) {
         // Pre-pathfind to dig reach (Pitfall 2 — dig.js does NOT pathfind in).
-        await goTo(bot, np.x, np.y, np.z, 3, perBlockTimeoutMs)
+        await goTo(bot, np.x, np.y, np.z, 3, perBlockTimeoutMs, signal, { reach: DIG_REACH - 0.3 })
       }
 
       if (signal?.aborted) return 'aborted'
 
-      const r = await digAction({ x: np.x, y: np.y, z: np.z }, bot, config)
+      let r = await digAction({ x: np.x, y: np.y, z: np.z }, bot, config)
+      if (typeof r === 'string' && r.startsWith('busy ')) {
+        // Another dig was still finishing (dig.js cancels a walk's leftover
+        // dig, so this is rare); give it a moment and try the block once more
+        // instead of writing off the rest of the tree.
+        await (_deps?.sleep ?? ((ms) => new Promise((res) => setTimeout(res, ms))))(400)
+        if (signal?.aborted) return 'aborted'
+        r = await digAction({ x: np.x, y: np.y, z: np.z }, bot, config)
+      }
       if (r === 'aborted') return 'aborted'
       if (typeof r === 'string' && r.startsWith('dug ')) {
         dug++
@@ -330,10 +345,15 @@ export async function gatherAction(args, bot, config, _deps) {
   const invBefore = inventoryCounts(bot)
   try { config?.onProgress?.({ dug: 0, total: want }) } catch {}
 
+  // 261011: keep going until `want` blocks are actually DUG (or nothing fresh
+  // is left), not until `want` blocks were attempted. A round whose top logs
+  // were out of reach used to count them against the request, so
+  // gather(oak_log, 8) stopped after two trees with 5/8. The `visited` set
+  // still guarantees termination: every round sweeps at least one new block.
   let attempted = 0
   let exhausted = false
   let firstRound = true
-  while (attempted < want) {
+  while (progress.dug < want) {
     let roundAnchor
     if (firstRound) {
       firstRound = false
@@ -353,7 +373,7 @@ export async function gatherAction(args, bot, config, _deps) {
       }
     }
 
-    const positions = sweepComponent(roundAnchor, blockName, want - attempted)
+    const positions = sweepComponent(roundAnchor, blockName, want - progress.dug)
     if (positions.length === 0) {
       // Anchor swept to nothing (already visited / name changed under us).
       visited.add(key(roundAnchor.x, roundAnchor.y, roundAnchor.z))
@@ -368,7 +388,7 @@ export async function gatherAction(args, bot, config, _deps) {
   // Collect what the digs dropped before reporting done (skipped when nothing
   // was dug — no drops of ours to chase, and a failed gather should not stall).
   if (progress.dug > 0) {
-    await sweepDrops(bot, goTo, signal, _deps?.sleep)
+    await sweepDrops(bot, goTo, signal, _deps?.sleep, blockName)
     if (signal?.aborted) return `aborted after ${progress.dug}/${want} ${blockName}`
   }
 

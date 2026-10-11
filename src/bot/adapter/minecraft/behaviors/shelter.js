@@ -40,6 +40,10 @@ export async function shelterAction(args, bot, config) {
     config,
   )
   if (wallsRes === 'aborted') return 'aborted'
+  // 261011: a shelter with no walls is not a shelter. The result used to read
+  // "built shelter 3x3x3 with a doorway (walls: no cobblestone in inventory...)"
+  // and the model told the player they were safe inside.
+  if (!placedSome(wallsRes)) return `no shelter built: walls: ${wallsRes}`
 
   // 2. Solid roof: a single-Y cuboid capping the top.
   const roofRes = await buildAction(
@@ -59,5 +63,18 @@ export async function shelterAction(args, bot, config) {
   )
   if (doorRes === 'aborted') return 'aborted'
 
-  return `built shelter ${size}x${size}x${WALL_HEIGHT} with a doorway (walls: ${wallsRes}; roof: ${roofRes}; doorway: ${doorRes})`
+  const done = buildComplete(wallsRes) && buildComplete(roofRes)
+  const detail = `(walls: ${wallsRes}; roof: ${roofRes}; doorway: ${doorRes})`
+  if (!done) return `shelter UNFINISHED, it has gaps and is not safe yet ${detail}`
+  return `built shelter ${size}x${size}x${WALL_HEIGHT} with a doorway ${detail}`
+}
+
+/** buildAction placed at least one block, or the span was already all there. */
+function placedSome(r) {
+  return /^built [1-9]\d* /.test(r) || buildComplete(r)
+}
+
+/** buildAction finished the whole span (every cell placed or already solid). */
+function buildComplete(r) {
+  return /^built \d+ placed, \d+ skipped \(already solid\), of \d+ cells$/.test(r)
 }

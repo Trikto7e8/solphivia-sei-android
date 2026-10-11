@@ -141,7 +141,7 @@ describe('gatherAction — multi-component (260708)', () => {
       return 'dug oak_log'
     })
     const r = await gatherAction({ name: 'oak_log', count: 8 }, bot, {}, { goTo, digAction })
-    expect(r).toBe('gathered 5/8 oak_log')
+    expect(r).toBe('gathered 5/8 oak_log (no more oak_log reachable nearby)')
     // Trunk: y64, y65 dug; y66, y67 out of range; y68 never attempted.
     const trunkDigs = digAction.mock.calls.filter(([a]) => a.x === 2).map(([a]) => a.y).sort()
     expect(trunkDigs).toEqual([64, 65, 66, 67])
@@ -161,8 +161,64 @@ describe('gatherAction — multi-component (260708)', () => {
     })
     const r = await gatherAction({ name: 'oak_log', count: 3 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction })
     // y65 flaked once but the run reset on the next success; only y65 is lost.
-    expect(r).toBe('gathered 2/3 oak_log')
+    // 261011: the gather then looks for more and finds none, so it says so.
+    expect(r).toBe('gathered 2/3 oak_log (no more oak_log reachable nearby)')
     expect(digAction).toHaveBeenCalledTimes(3)
+  })
+
+  it('keeps going past blocks it could not dig until the requested count is DUG (261011)', async () => {
+    // Three 3-log trees whose top log is out of reach. Asking for 6 used to
+    // stop after two trees (6 attempted, 4 dug); it must reach the third.
+    const { bot, blocks } = makeWorld([
+      [2, 64, 0, 'oak_log'], [2, 65, 0, 'oak_log'], [2, 66, 0, 'oak_log'],
+      [10, 64, 0, 'oak_log'], [10, 65, 0, 'oak_log'], [10, 66, 0, 'oak_log'],
+      [20, 64, 0, 'oak_log'], [20, 65, 0, 'oak_log'], [20, 66, 0, 'oak_log'],
+    ])
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      if (y === 66) return `out of range (5.0m, need ≤4.5) for oak_log @${x},${y},${z}`
+      blocks.delete(`${x},${y},${z}`)
+      return 'dug oak_log'
+    })
+    const r = await gatherAction({ name: 'oak_log', count: 6 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction })
+    expect(r).toBe('gathered 6/6 oak_log')
+  })
+
+  it('finds a fresh tree behind more than 8 logs it already gave up on (261011)', async () => {
+    // Nine unreachable logs close by, one good tree further out. findBlocks
+    // used to ask for only the 8 nearest, all of them already visited, and
+    // reported "no more reachable" with the good tree in range.
+    const near = []
+    for (let i = 0; i < 9; i++) near.push([1 + (i % 3), 70 + Math.floor(i / 3), 1, 'oak_log'])
+    const { bot, blocks } = makeWorld([...near, [30, 64, 0, 'oak_log'], [30, 65, 0, 'oak_log']])
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      if (y >= 70) return 'timeout'
+      blocks.delete(`${x},${y},${z}`)
+      return 'dug oak_log'
+    })
+    const r = await gatherAction({ name: 'oak_log', count: 11 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction })
+    expect(r).toBe('gathered 2/11 oak_log (no more oak_log reachable nearby)')
+    expect(blocks.has('30,64,0')).toBe(false)
+  })
+
+  it('retries a block once when the dig answered busy (261011)', async () => {
+    const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log'], [2, 65, 0, 'oak_log']])
+    let busyOnce = true
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      if (y === 65 && busyOnce) { busyOnce = false; return 'busy digging oak_log @2,65,0' }
+      blocks.delete(`${x},${y},${z}`)
+      return 'dug oak_log'
+    })
+    const r = await gatherAction({ name: 'oak_log', count: 2 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction, sleep: async () => {} })
+    expect(r).toBe('gathered 2/2 oak_log')
+  })
+
+  it('walks toward dig reach of an out-of-reach block, not feet-within-3 (261011)', async () => {
+    const { bot, blocks } = makeWorld([[2, 64, 12, 'oak_log']])
+    const goTo = vi.fn(async () => 'reached')
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug oak_log' })
+    await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: async () => {} })
+    const approach = goTo.mock.calls.find((c) => c[1] === 2 && c[3] === 12)
+    expect(approach?.[7]?.reach).toBeGreaterThan(3.5)
   })
 
   it('returns "no <term> in loaded chunks" when nothing matches', async () => {
@@ -187,9 +243,12 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log']])
     withDrops(bot, [[101, 5, 64, 2], [102, -3, 64, -4]])
     const walked = []
-    const goTo = vi.fn(async (b, x, y, z, range) => {
-      // Record only the sweep walks (range 0); collect the drop on arrival.
-      if (range === 0) {
+    const sweepOpts = []
+    const goTo = vi.fn(async (b, x, y, z, range, ms, sig, opts) => {
+      // Record only the sweep walks (range 1; mining walks use 3) and collect
+      // the drop on arrival. Under a tree they may not dig.
+      if (range === 1) {
+        sweepOpts.push(opts)
         walked.push(`${x},${y},${z}`)
         for (const e of Object.values(bot.entities)) {
           if (Math.floor(e.position.x) === x && Math.floor(e.position.z) === z) e.isValid = false
@@ -201,6 +260,18 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
     expect(r).toBe('gathered 1/1 oak_log')
     expect(walked).toEqual(['-3,64,-4', '5,64,2']) // closest first (5.0m before 5.4m)
+    expect(sweepOpts).toEqual([{ canDig: false }, { canDig: false }]) // no digging under a tree
+  })
+
+  it('lets the sweep dig into the hole a stone drop fell in (261011)', async () => {
+    const { bot, blocks } = makeWorld([[2, 63, 0, 'stone']])
+    withDrops(bot, [[101, 2, 62, 0]])
+    const goTo = vi.fn(async () => 'reached')
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug stone' })
+    await gatherAction({ x: 2, y: 63, z: 0, count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    const sweeps = goTo.mock.calls.filter(c => c[4] === 1)
+    expect(sweeps).toHaveLength(1)
+    expect(sweeps[0][7]).toEqual({})
   })
 
   it('skips canopy drops (more than 2 above the bot) and never climbs', async () => {
@@ -209,18 +280,18 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     const goTo = vi.fn(async () => 'reached')
     const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug oak_log' })
     await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
-    // No range-0 sweep walk was issued for the canopy drop.
-    expect(goTo.mock.calls.filter(c => c[4] === 0)).toHaveLength(0)
+    // No sweep walk was issued for the canopy drop.
+    expect(goTo.mock.calls.filter(c => c[4] === 1)).toHaveLength(0)
   })
 
   it('attempts an uncollectable drop only once (no retry stall)', async () => {
     const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log']])
     withDrops(bot, [[101, 5, 64, 2]]) // never collected: walk times out
-    const goTo = vi.fn(async (b, x, y, z, range) => (range === 0 ? 'timeout' : 'reached'))
+    const goTo = vi.fn(async (b, x, y, z, range) => (range === 1 ? 'timeout' : 'reached'))
     const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug oak_log' })
     const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
     expect(r).toBe('gathered 1/1 oak_log')
-    expect(goTo.mock.calls.filter(c => c[4] === 0)).toHaveLength(1)
+    expect(goTo.mock.calls.filter(c => c[4] === 1)).toHaveLength(1)
   })
 
   it('does not sweep when nothing was dug', async () => {

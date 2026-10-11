@@ -2,6 +2,32 @@ import pkg from 'mineflayer-pathfinder'
 import { sessionActionStats } from '../../../brain/actionStats.js'
 const { pathfinder, Movements, goals } = pkg
 
+/**
+ * The Movements the follow trail uses: the pathfinder defaults (follow keeps
+ * digCost 1 so it can still tunnel after the player), minus sprinting.
+ * 261011: a sprint-jump wedges the bot mid-air on block corners (see
+ * companionMovements in pathfind.js for the measurement), which read as a
+ * follow that stalled 20 blocks behind on a hillside.
+ */
+export function followMovements(bot) {
+  const m = new Movements(bot)
+  m.allowSprinting = false
+  return m
+}
+
+// Catch-up sprint while trailing: a walking bot loses about a block a second
+// to a sprinting player, so the trail sprints while it is far behind and
+// walks again once close. The pathfinder reads allowSprinting live each tick.
+export const FOLLOW_SPRINT_ON_DIST = 10
+export const FOLLOW_SPRINT_OFF_DIST = 6
+
+/** Sprint decision with hysteresis; returns the new allowSprinting value. */
+export function followSprintFor(dist, current) {
+  if (dist >= FOLLOW_SPRINT_ON_DIST) return true
+  if (dist <= FOLLOW_SPRINT_OFF_DIST) return false
+  return !!current
+}
+
 let _bot = null
 let _config = null
 let _interval = null
@@ -86,7 +112,7 @@ export function startFollow(bot, config) {
   _config = { follow_range: range }
 
   if (!bot.hasPlugin(pathfinder)) bot.loadPlugin(pathfinder)
-  bot.pathfinder.setMovements(new Movements(bot))
+  bot.pathfinder.setMovements(followMovements(bot))
 
   // No default target — the LLM decides whether to call follow(player) on the
   // join event. Hardcoding it caused the body to drift toward the player
@@ -133,6 +159,12 @@ export function startFollow(bot, config) {
     // for STUCK_MS. Cleared the instant we move or get within range.
     const pos = me.position
     const dist = pos.distanceTo(ent.position)
+    // Only touch the movements while the trail owns the goal, never a goTo's.
+    const goal = bot.pathfinder.goal
+    const mv = bot.pathfinder.movements
+    if (mv && goal instanceof goals.GoalFollow && goal.entity === ent) {
+      mv.allowSprinting = followSprintFor(dist, mv.allowSprinting)
+    }
     const moved = _lastPos ? pos.distanceTo(_lastPos) : 99
     const t = Date.now()
     if (moved > 0.6 || dist <= _config.follow_range + 2) {

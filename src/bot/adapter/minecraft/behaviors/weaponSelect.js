@@ -63,3 +63,21 @@ export async function equipBestWeapon(bot) {
   clearTimeout(timer)
   return ok ? best.name : null
 }
+
+/**
+ * Put the best weapon back in hand during a fight, without blocking the swing
+ * loop. Single-flight per bot; skipped while eating (an equip would cancel the
+ * bite). 261011: the weapon was equipped once, before the first swing, and
+ * anything that changed the hand after that (auto-eat's food, a block placed
+ * mid-fight) stayed there for the rest of the fight.
+ * @returns {boolean} true when an equip was started
+ */
+export function keepWeaponInHand(bot) {
+  if (!bot || bot._seiWeaponEquipping) return false
+  if (bot.autoEat?.isEating) return false
+  const best = chooseWeapon(bot)
+  if (!best || weaponScore(best.name) <= weaponScore(bot.heldItem?.name)) return false
+  bot._seiWeaponEquipping = true
+  equipBestWeapon(bot).catch(() => {}).finally(() => { bot._seiWeaponEquipping = false })
+  return true
+}

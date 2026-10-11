@@ -1068,6 +1068,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // three staggered messages + quit() in the same batch; the disconnect fired
   // before the +550ms timers, so the player got just "nope" and he left.
   let _lastChatSendDeadline = 0
+  // 261011: the last finished loop said something and started no world action.
+  let _lastLoopTalkOnly = false
 
   // leadMs — "Realistic typing" delay before the FIRST segment hits the socket
   // (0 when the toggle is off, preserving the old instant behavior). The
@@ -3046,6 +3048,10 @@ function maybeWarnByteCap(loop, warned) {
     loop._tornDown = true
     const event = loop._originatingEvent ?? 'unknown'
     logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
+    // 261011: a loop that only TALKED holds the floor for the reply window in
+    // every game (see replyWindowRemainingMs below). A loop that did world
+    // work keeps the fast agentic cadence for resuming the goal.
+    _lastLoopTalkOnly = loop._saidThisLoop === true && loop._worldActed !== true
     // 260703-fix (b): finish any model-ordered batch tools stranded by an
     // abnormal teardown (see drainPendingToolsOnTeardown). No-op in the common
     // case (pending queue already drained → null), so it never double-executes.
@@ -4178,6 +4184,20 @@ function maybeWarnByteCap(loop, warned) {
    * is made with tools=[] forcing a text-only response that we emit as a
    * chat line. The Loop terminates gracefully; no exception is thrown.
    */
+  // The one-retry rule for a player line that got no say() (260921 actions
+  // only, 261011 text only). Returns the nudge text when this iteration
+  // answers the player's own line, nothing was said this loop, the line has
+  // not been retried yet, and a reply is owed (not a teammate's call line,
+  // not a game event). Otherwise null.
+  function unansweredRetryFor(loop) {
+    const e = loop._currentIterationTrigger ?? loop._triggerEvent
+    if (e !== 'player_chat' && e !== 'sei:chat_received') return null
+    if (loop._groupVoiceLine || loop._noReplyOwed || loop._spokeThisLoop || loop._unansweredRetried) return null
+    const line = loop._lastPlayerLine
+    if (!line?.text) return null
+    return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+  }
+
   async function runIterations(loop, byteWarn) {
     const cap = config.memory.iteration_cap
     // 260909: the web budget is per LOOP, not per iteration: a fresh
@@ -4340,6 +4360,7 @@ function maybeWarnByteCap(loop, warned) {
       if (respText) emitThinkIfFull(respText)
       const sayResults = emitSayCalls(loop, toolUses)
       const saySpokenThisTurn = sayResults.size > 0 || loop._searchLineSpoken === true
+      if (sayResults.size > 0) loop._saidThisLoop = true
       try { sessionActionStats.noteLlmTurn({ said: saySpokenThisTurn }) } catch {}
       // Double-goodbye guard (260706): a quit()/end_call() farewell must not
       // fire when the same response already called say() — otherwise the two
@@ -4408,6 +4429,41 @@ function maybeWarnByteCap(loop, warned) {
           replaceAbortController(loop)
           continue
         }
+        // 261011 (quality pass 2): a player line answered with TEXT ONLY.
+        // The text output is private, so the player heard nothing, and
+        // nothing re-delivered the line: with an action running the loop
+        // just waited, and with none it ended. end_loop is the tool for
+        // choosing silence, so a turn that called it is left alone; a turn
+        // that called nothing at all gets one retry with the nudge.
+        const unansweredText = unansweredRetryFor(loop)
+        if (unansweredText) {
+          loop._unansweredRetried = true
+          logger.info?.(`[sei/orch] player line answered with text only, no say() — retrying once (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? 'none'})`)
+          if (iterationKeepsLoopAlive && loop.inFlight) {
+            loop._unansweredNudgeText = unansweredText
+            try {
+              reenqueue('sei:action_tick', { playerMessage: loop._lastPlayerLine.text, who: loop._lastPlayerLine.who, unanswered: true })
+            } catch (err) {
+              logger.warn?.(`[sei/orch] unanswered-line tick reenqueue failed: ${err.message}`)
+            }
+            return
+          }
+          // No action running: answer in this loop. The last message is the
+          // assistant's text turn, so a user turn carries the nudge (the
+          // model rejects a request that ends on an assistant turn). An
+          // EMPTY response (no text at all) left an assistant turn with no
+          // content, which Anthropic rejects with a 400 when it is not the
+          // final message, so it gets a placeholder first.
+          const msgs = loop._internal?.messages
+          const lastMsg = msgs?.[msgs.length - 1]
+          if (lastMsg?.role === 'assistant' && Array.isArray(lastMsg.content) &&
+              !lastMsg.content.some(b => b && (b.type !== 'text' || String(b.text ?? '').trim()))) {
+            lastMsg.content = [{ type: 'text', text: '(no reply)' }]
+          }
+          loop.appendUserTurn([{ type: 'text', name: 'unanswered', text: unansweredText }])
+          loop._currentIterationTrigger = 'sei:chat_received'
+          continue
+        }
         if (iterationKeepsLoopAlive && loop.inFlight) {
           // R1 — text-only on a keep-alive iteration WITH an in_flight
           // long-runner still running: keep the loop alive. The body keeps
@@ -4453,6 +4509,7 @@ function maybeWarnByteCap(loop, warned) {
       // is {remember, forget, end_loop}; everything else suspends the
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+      if (newSuspendingTools.length > 0) loop._worldActed = true
 
       // 260921: a player line answered with ACTIONS ONLY: text + a world
       // action, no say(). Measured: asked a question mid-chore, the model wrote
@@ -4463,11 +4520,11 @@ function maybeWarnByteCap(loop, warned) {
       // it would leak it). Instead the line is delivered ONCE more, flagged as
       // unanswered: right away through the action-tick channel while the new
       // action runs, or on the loop's next call if that comes first.
-      if (_p1Trigger && !loop._groupVoiceLine && !loop._noReplyOwed && !loop._spokeThisLoop &&
-          !hasEndLoop && !loop._unansweredRetried && loop._lastPlayerLine?.text) {
+      const actionsOnlyNudge = hasEndLoop ? null : unansweredRetryFor(loop)
+      if (actionsOnlyNudge) {
         loop._unansweredRetried = true
         const line = loop._lastPlayerLine
-        loop._unansweredNudgeText = `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+        loop._unansweredNudgeText = actionsOnlyNudge
         logger.info?.(`[sei/orch] player line left unspoken (actions only) — re-delivering once (loop=${loop.id})`)
         if (newSuspendingTools.length > 0) {
           try {
@@ -5302,9 +5359,14 @@ function maybeWarnByteCap(loop, warned) {
     recordIncomingChat: (who, text, opts) => convoMemory.recentChat.pushPlayer(who, text, opts),
     // 260921: the idle timer's floor-hold (see REPLY_WINDOW_MS). brain/index.js
     // folds it into idleFallbackMs so the FSM needs no knowledge of speech.
-    // Stardew only (REPLY_WINDOW_GAMES): 0 elsewhere, so Minecraft's agentic
-    // cadence is unchanged.
-    replyWindowRemainingMs: () => !replyWindowApplies(adapter) ? 0 : replyWindowRemainingMs({
+    // Always in Stardew (REPLY_WINDOW_GAMES). 261011 (quality pass 2): in
+    // every game when the last loop only talked, so Minecraft's agentic
+    // cadence still resumes work 5s after a loop that did some. In the
+    // pass-1b eval 49 of the 77 repetitive lines came from loops an idle tick
+    // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
+    // "ok holding still alex"): the 5s cadence is for resuming work, and with
+    // no work to resume an idle turn has nothing new to say.
+    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,
       sendDeadline: _lastChatSendDeadline,

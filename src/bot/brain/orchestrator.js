@@ -1382,6 +1382,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // (handleActionTick) instead of tearing the loop down. Further hits inside
   // this window are swallowed; the body's own retaliation keeps swinging.
   const MID_ACTION_ATTACK_COALESCE_MS = 10_000
+  const MID_ACTION_ATTACK_HP_DROP = 4
   // 260611: single-flight timer for the rate-limit redrive (see
   // maybeScheduleRateLimitRedrive). Holds the setTimeout handle while a
   // delayed re-dispatch of a 429-killed player-visible trigger is pending.
@@ -2519,11 +2520,18 @@ function maybeWarnByteCap(loop, warned) {
         const hasQueuedBatch = Array.isArray(cl._pendingToolUses) && cl._pendingToolUses.length > 0
         if (cl.inFlight && !cl._llmCallInFlight && !cl.isTerminal && !cl._terminated && !cl._attackAbortedCall && !pendingInterrupt && !hasQueuedBatch) {
           const now = Date.now()
-          if (now - (cl._lastAttackTickAt ?? 0) < MID_ACTION_ATTACK_COALESCE_MS) {
+          const hp = Number.isFinite(data?.health) ? data.health : null
+          // Inside the window a hit is dropped unless health fell by
+          // MID_ACTION_ATTACK_HP_DROP or more since the last delivered one:
+          // the model must hear about a fight that is going badly.
+          const lastHp = cl._lastAttackTickHp
+          const hpFell = hp != null && Number.isFinite(lastHp) && lastHp - hp >= MID_ACTION_ATTACK_HP_DROP
+          if (now - (cl._lastAttackTickAt ?? 0) < MID_ACTION_ATTACK_COALESCE_MS && !hpFell) {
             logger.debug?.(`[sei/orch] mid-action attack coalesced (loop=${cl.id}, in_flight=${cl.inFlight.name})`)
             return
           }
           cl._lastAttackTickAt = now
+          cl._lastAttackTickHp = hp
           await handleActionTick(cl, { attack: data ?? {} })
           return
         }

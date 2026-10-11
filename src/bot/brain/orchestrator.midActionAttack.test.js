@@ -132,6 +132,28 @@ describe('261011 mid-action attack delivery', () => {
     expect(orch.currentLoop?.inFlight?.name).toBe('gather')
   })
 
+  it('a hit inside the window still gets through when health fell by 4 or more', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      gatherTurn,
+      { text: '', toolUses: [] },
+      { text: '', toolUses: [] },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:attacked', { ...hit(), health: 18 })
+    await flush()
+    expect(provider.calls.length).toBe(2)
+    await orch.handleDispatch('sei:attacked', { ...hit(), health: 16 })
+    expect(provider.calls.length).toBe(2) // small drop: coalesced
+    await orch.handleDispatch('sei:attacked', { ...hit(), health: 13 })
+    await flush()
+    expect(provider.calls.length).toBe(3) // 18 -> 13: delivered
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
+
   it('the model can answer a mid-action hit by switching actions (R2 replaces the gather)', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([

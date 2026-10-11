@@ -66,6 +66,9 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
         // Forward the live PvP flag (combat.js stamps it) so the prompt addendum
         // can pick "hit back" vs "can't hit back" framing on a player hit.
         pvp: !!payload.pvp,
+        // 261011: the brain's mid-action coalescing lets a falling health
+        // value through inside its window.
+        health: Number.isFinite(bot.health) ? bot.health : undefined,
       })
     } catch (err) {
       console.error?.(`[sei/wires] onAttacked handler threw: ${err && err.message}`)

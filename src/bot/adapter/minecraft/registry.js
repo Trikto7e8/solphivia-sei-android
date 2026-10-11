@@ -348,7 +348,8 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
   // `shelter`: a thin convenience composing build() (hollow walls + a roof
   // layer) and dig() (a doorway) into one enclosed structure. size.max(5) caps
   // the composed cuboids (≤48 wall + 25 roof cells) well within the 256-cell
-  // guarantee. center defaults to the bot's position (base = bot.y + 1).
+  // guarantee. center defaults to the bot's position; the walls start on the
+  // first air layer above the ground there (shelterBaseY).
   const ShelterSchema = z.object({
     center: Vec3Shape.optional(),
     size: z.number().int().min(3).max(5).default(3),

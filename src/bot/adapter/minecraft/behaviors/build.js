@@ -166,16 +166,22 @@ function isSolid(blk) {
   return !!blk && !isAir(blk.name) && blk.boundingBox === 'block'
 }
 
+// 261012: plants and snow a placed block simply replaces, as it does for a
+// player. They used to count as "already solid", so a wall or shelter on
+// grassy ground came out with a gap at every grass tuft and reported done.
+// They are no use as a face to place against either.
+const REPLACEABLE = new Set(['short_grass', 'grass', 'tall_grass', 'fern', 'large_fern', 'dead_bush', 'snow', 'vine', 'glow_lichen'])
+
 export function isOccupied(bot, c) {
   const blk = bot.blockAt(new Vec3(c.x, c.y, c.z))
-  return !!(blk && !isAir(blk.name))
+  return !!(blk && !isAir(blk.name) && !REPLACEABLE.has(blk.name))
 }
 
 export function pickReferenceFace(bot, c) {
   for (const { off, face } of FACE_PRIORITY) {
     const refPos = new Vec3(c.x + off[0], c.y + off[1], c.z + off[2])
     const refBlk = bot.blockAt(refPos)
-    if (refBlk && !isAir(refBlk.name)) {
+    if (refBlk && !isAir(refBlk.name) && !REPLACEABLE.has(refBlk.name)) {
       return {
         refPos: { x: refPos.x, y: refPos.y, z: refPos.z },
         face: { x: face[0], y: face[1], z: face[2] },
@@ -368,7 +374,7 @@ export async function buildAction(args, bot, config, deps = {}) {
   // could — minutes of the session spent to produce a result the block counts
   // predicted up front.
   if (needed === 0 && total > 0) {
-    return `built NOTHING: all ${total} cells of that span are ALREADY solid — you are building into terrain (or at your own feet level). Pick a clear span and set from.y = your y + 1.`
+    return `built NOTHING: all ${total} cells of that span are ALREADY solid, so you are building into terrain. Pick a clear span: a wall starts on the first air layer above the ground, which is your own y when you stand on that ground.`
   }
   const have = invCount()
   if (have < needed) {
@@ -377,15 +383,18 @@ export async function buildAction(args, bot, config, deps = {}) {
 
   let placed = 0, skippedSolid = 0, skippedFail = 0
   const skipped = () => skippedSolid + skippedFail
+  const progress = (c) => config?.onProgress?.({ placed, skipped: skipped(), total, currentY: c.y })
+  const abortedMsg = () => `aborted after ${placed} placed of ${total} cells`
 
-  for (const c of cells) {
-    if (signal?.aborted) return `aborted after ${placed} placed of ${total} cells`
-
-    if (isOccupied(bot, c)) {
-      skippedSolid++
-      config?.onProgress?.({ placed, skipped: skipped(), total, currentY: c.y })
-      continue
-    }
+  // One cell. Returns 'placed' | 'solid' | 'unreachable' | 'noref' | 'failed'
+  // | 'aborted', or { halt } when scaffolding gave up on the whole build.
+  async function tryCell(c) {
+    if (isOccupied(bot, c)) return 'solid'
+    // 261012: nothing to place against yet. Deferred by the caller, not
+    // failed: a roof's inner cells and a wall cell over a dip in the ground
+    // only get a neighbor once the cells around them are down. Checked before
+    // walking so a floating span costs no walks.
+    if (!pickReferenceFace(bot, c)) return 'noref'
 
     // 260709: WALK before scaffolding. scaffoldUp only pillars straight up at
     // the bot's current column — it never closes horizontal distance, so a
@@ -408,32 +417,24 @@ export async function buildAction(args, bot, config, deps = {}) {
     // satisfied from the built part a couple of blocks short of the tip.
     if (horizToCell(bot, c) > FOLLOW_HORIZ) {
       await walk(bot, c.x, Math.floor(bot.entity?.position?.y ?? c.y), c.z, 2, WALK_TIMEOUT_MS, signal)
-      if (signal?.aborted) return `aborted after ${placed} placed of ${total} cells`
+      if (signal?.aborted) return 'aborted'
     }
 
     if (!withinReach(bot, c)) {
       // Scaffold only if the cell is still ABOVE us after the walk.
       if (c.y > (bot.entity?.position?.y ?? c.y)) {
         const r = await scaffoldUp(bot, args.block, c.y, config)
-        if (r === 'aborted') return `aborted after ${placed} placed of ${total} cells`
-        if (r !== 'ok') return `build halted: ${r} (placed ${placed}/${total})`
+        if (r === 'aborted') return 'aborted'
+        if (r !== 'ok') return { halt: `build halted: ${r} (placed ${placed}/${total})` }
       }
-      if (!withinReach(bot, c)) {
-        // Still out of reach after walking (and scaffolding, when the cell is
-        // above) — skip WITHOUT attempting the place. The doomed placeBlock
-        // used to cost its full timeout per far cell.
-        skippedFail++
-        config?.onProgress?.({ placed, skipped: skipped(), total, currentY: c.y })
-        continue
-      }
+      // Still out of reach after walking (and scaffolding, when the cell is
+      // above) — skip WITHOUT attempting the place. The doomed placeBlock
+      // used to cost its full timeout per far cell.
+      if (!withinReach(bot, c)) return 'unreachable'
     }
 
     const ref = pickReferenceFace(bot, c)
-    if (!ref) {
-      skippedFail++
-      config?.onProgress?.({ placed, skipped: skipped(), total, currentY: c.y })
-      continue
-    }
+    if (!ref) return 'noref'
 
     const r = await placeBlockAction(
       {
@@ -444,14 +445,48 @@ export async function buildAction(args, bot, config, deps = {}) {
       bot,
       config,
     )
-    if (r === 'aborted') return `aborted after ${placed} placed of ${total} cells`
-    if (typeof r === 'string' && r.startsWith('placed ')) placed++
-    // Other failure strings (no inventory, cannot place, timeout) — count as
-    // skipped per mineVein discipline: aggregate failure surfaces via K<N.
-    else skippedFail++
-
-    config?.onProgress?.({ placed, skipped: skipped(), total, currentY: c.y })
+    if (r === 'aborted') return 'aborted'
+    // Other failure strings (no inventory, cannot place, timeout) count as
+    // failed per mineVein discipline: aggregate failure surfaces via K<N.
+    return typeof r === 'string' && r.startsWith('placed ') ? 'placed' : 'failed'
   }
+
+  let deferred = []
+  for (const c of cells) {
+    if (signal?.aborted) return abortedMsg()
+    const r = await tryCell(c)
+    if (r === 'aborted') return abortedMsg()
+    if (r?.halt) return r.halt
+    if (r === 'placed') placed++
+    else if (r === 'solid') skippedSolid++
+    else if (r === 'noref') { deferred.push(c); continue }
+    else skippedFail++
+    progress(c)
+  }
+
+  // 261012: retry the cells that had nothing to attach to, now that their
+  // neighbors may be down. Keeps going while a pass places something, so a
+  // solid roof fills in from its edges toward the middle.
+  while (deferred.length) {
+    const next = []
+    const placedBefore = placed
+    for (const c of deferred) {
+      if (signal?.aborted) return abortedMsg()
+      const r = await tryCell(c)
+      if (r === 'aborted') return abortedMsg()
+      if (r?.halt) return r.halt
+      if (r === 'placed') placed++
+      else if (r === 'solid') skippedSolid++
+      else if (r === 'noref') { next.push(c); continue }
+      else skippedFail++
+      progress(c)
+    }
+    deferred = next
+    if (placed === placedBefore) break
+  }
+  const floating = deferred
+  skippedFail += floating.length
+  for (const c of floating) progress(c)
 
   // Ran out of material before finishing (this also catches scaffolding
   // consumption, since invCount() is the live remaining count). Make it an
@@ -467,13 +502,42 @@ export async function buildAction(args, bot, config, deps = {}) {
   // "extending" a bridge that never grew. Make the no-op explicit so it
   // changes coordinates instead of repeating the same call.
   if (placed === 0 && total > 0 && skippedFail === 0) {
-    return `built NOTHING: all ${total} cells were already occupied — you are placing into solid blocks (or at your own feet level). Pick a clear span and set from.y = your y + 1.`
+    return `built NOTHING: all ${total} cells were already occupied, so you are placing into solid blocks. Pick a clear span: a wall starts on the first air layer above the ground.`
   }
   // Skip-reason honesty (260709): the bare "N skipped" read as done — the
   // model rationalized 71 missing wall cells as "uneven terrain" and moved
   // on. Name what is missing and tell it the fix is another build call.
   if (skippedFail > 0) {
+    // 261012: say WHY. A span that starts a layer above the ground has no
+    // block under or beside any cell, and "walk closer and try again" sent
+    // the model back to the same floating span (quality eval build_shelter).
+    if (floating.length > 0) {
+      const head = `built ${placed} placed, ${skippedFail} cells FAILED, ${skippedSolid} were already solid, of ${total}. The build is incomplete: those ${skippedFail} cells are still missing.`
+      // Something that rises out of the ground (more than one layer) gets
+      // the exact layer to start on. A single flat layer may be a walkway
+      // over a gap, where the ground far below is the wrong answer.
+      const tall = args.from.y !== args.to.y
+      const ground = tall ? groundBelow(bot, floating) : null
+      const fix = ground != null
+        ? ` They are floating: the ground under them is at y=${ground}, so start the span at y=${ground + 1}, the air layer right on top of the ground.`
+        : ' They are floating with no block below or beside them. Start the span next to a solid block so the first cell has something to attach to (a walkway starts at the block under your own feet).'
+      const rest = skippedFail - floating.length
+      return `${head} ${floating.length} of them had nothing to place against.${fix}${rest > 0 ? ` The other ${rest} could not be reached or placed; walk near them and call build again on that span.` : ''}`
+    }
     return `built ${placed} placed, ${skippedFail} cells FAILED (could not reach or place them), ${skippedSolid} were already solid, of ${total}. The build is incomplete: those ${skippedFail} cells are still missing. Walk near the unbuilt part and call build again on that span to finish it.`
   }
   return `built ${placed} placed, ${skippedSolid} skipped (already solid), of ${total} cells`
+}
+
+/**
+ * 261012. The highest solid block under the lowest floating cell, scanning at
+ * most 16 down; null when there is nothing under it in that range.
+ */
+function groundBelow(bot, cells) {
+  const low = cells.reduce((a, c) => (c.y < a.y ? c : a), cells[0])
+  for (let y = low.y - 1; y >= low.y - 16; y--) {
+    const b = bot.blockAt(new Vec3(low.x, y, low.z))
+    if (b && !isAir(b.name)) return y
+  }
+  return null
 }

@@ -39,11 +39,17 @@ function nameById(bot, id) {
   try { return mcDataLib(bot.version)?.items?.[id]?.name ?? `item_${id}` } catch { return `item_${id}` }
 }
 
-// What is the bot short on for the cheapest recipe of `item`? Uses recipesAll
+// What is the bot short on for the closest recipe of `item`? Uses recipesAll
 // (inventory-independent) so we can name the gap even when nothing is craftable
-// now — the old "not enough materials" left the model guessing, and it burned
+// now. The old "not enough materials" left the model guessing, and it burned
 // ~5 calls reverse-engineering that a stone pickaxe also needs sticks. Returns
-// a "Nx name + Mx name" string, or '' if it can't tell. (260618)
+// a "N more name + M more name" string, or '' if it can't tell. (260618)
+//
+// 261011: the closest variant is the one with the fewest missing ingredient
+// kinds, then the fewest missing items. Ranking by kinds alone tied every
+// wood variant, so a bot holding 2 oak_planks was told it needed
+// "4x cherry_planks". Each missing ingredient also says how many the bot
+// has and whether it can be crafted from the inventory right now.
 function missingFor(bot, itemId, craftingTable) {
   let all = []
   try { all = bot.recipesAll?.(itemId, null, craftingTable ?? true) ?? [] } catch { all = [] }
@@ -54,14 +60,33 @@ function missingFor(bot, itemId, craftingTable) {
     const consumed = (r?.delta ?? []).filter((d) => d && d.count < 0)
     if (!consumed.length) continue
     const miss = []
+    let total = 0
     for (const c of consumed) {
       const have = inv.get(c.id) ?? 0
       const need = -c.count
-      if (have < need) miss.push(`${need - have}x ${nameById(bot, c.id)}`)
+      if (have < need) { miss.push({ id: c.id, have, short: need - have }); total += need - have }
     }
-    if (best === null || miss.length < best.length) best = miss
+    if (best === null || miss.length < best.miss.length || (miss.length === best.miss.length && total < best.total)) {
+      best = { miss, total }
+    }
   }
-  return best && best.length ? best.join(' + ') : ''
+  if (!best || !best.miss.length) return ''
+  return best.miss.map((m) => {
+    const name = nameById(bot, m.id)
+    const parts = []
+    if (m.have > 0) parts.push(`have ${m.have}`)
+    if (canCraftNow(bot, m.id, craftingTable)) parts.push('you can craft it from what you have')
+    return `${m.short} more ${name}${parts.length ? ` (${parts.join(', ')})` : ''}`
+  }).join(' + ')
+}
+
+function canCraftNow(bot, itemId, craftingTable) {
+  try {
+    const rs = bot.recipesFor?.(itemId, null, 1, craftingTable ?? null)
+    return Array.isArray(rs) && rs.length > 0
+  } catch {
+    return false
+  }
 }
 
 // A recipe variant needs a crafting table when its shape doesn't fit the 2×2
@@ -94,7 +119,7 @@ function explainNoRecipe(bot, itemId, item, hadTable) {
   }
   const miss = missingFor(bot, itemId, hadTable)
   return miss
-    ? `not enough materials to craft ${item} — need ${miss} (craft those first if they're craftable)`
+    ? `not enough materials to craft ${item}: need ${miss}`
     : `not enough materials to craft ${item}`
 }
 
@@ -128,7 +153,7 @@ export async function craftAction(args, bot, config) {
   if (!recipe || maxReps <= 0) {
     const miss = missingFor(bot, itemId, tableBlock)
     return miss
-      ? `not enough materials to craft ${item} — need ${miss} (craft those first if they're craftable)`
+      ? `not enough materials to craft ${item}: need ${miss}`
       : `not enough materials to craft ${item}`
   }
 

@@ -47,6 +47,13 @@ import {
  *   is the authoritative belt-and-suspenders gate (VIS-03).
  * @returns {import('../../brain/types.js').Adapter}
  */
+// Actions that may run while a furnace or chest window stays open.
+const KEEPS_WINDOW_OPEN = new Set([
+  'openContainer', 'depositItem', 'withdrawItem',
+  'openFurnace', 'smeltInput', 'addFuel', 'takeSmelted',
+  'find', 'look', 'readSign',
+])
+
 export function createMinecraftAdapter({ bot, config, visionEnabled = false, actionStats = sessionActionStats }) {
   if (!bot) throw new Error('createMinecraftAdapter: bot required')
   if (!config) throw new Error('createMinecraftAdapter: config required')
@@ -84,6 +91,15 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false, act
       // follow's persistent trailing runs OUTSIDE execute (background tick),
       // so follow keeps its gaze pitch-tracking.
       bot._seiActionActive = (bot._seiActionActive ?? 0) + 1
+      // 261011: an open furnace or chest window makes other inventory actions
+      // misbehave. With the furnace open, craft(oak_planks) resolved as
+      // "crafted 4 oak_planks" without using a log, and the next craft
+      // reported missing planks. Close the window before any action that is
+      // not one of the window verbs or a read that leaves the inventory alone.
+      if (!KEEPS_WINDOW_OPEN.has(name)) {
+        try { await closeContainerSession() } catch {}
+        try { await closeFurnaceSession() } catch {}
+      }
       // 261011: aggregate outcome telemetry (brain/actionStats.js). Counts and
       // a closed failure class only; the result text never leaves this frame.
       const startedAt = Date.now()

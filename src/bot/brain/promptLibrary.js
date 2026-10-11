@@ -625,7 +625,22 @@ export const NEXT_TIME_GOODBYE =
 export const NEXT_TIME_SPOKEN =
   'When your goodbye brings up something to pick up next time, also put it in next_time so it gets saved.'
 export const NEXT_TIME_GREETING =
-  'If your memory has a "Plan for next time" entry from the last time you said goodbye, you can bring it up.'
+  'If your memory has a "Plan for next time" entry from your last session, you can bring it up if it fits.'
+
+// 261011: the same hook when the PLAYER ends the session (Stop, closing the
+// world, hanging up), which is most sessions. There is no goodbye turn then,
+// so main runs one small call after teardown (src/main/playerEndNextStep.ts)
+// with this as the system text and a compact session summary as the user
+// message. The reply is a stored note, never spoken. It is saved with the
+// same "Plan for next time" line, so NEXT_TIME_GREETING covers it.
+export const PLAYER_END_NEXT_STEP_SYSTEM =
+  'You are {name}, an AI companion who plays games and talks with the player. ' +
+  'The player just ended a session with you. You will get a short summary of it: what you were doing, the end of the conversation, your goals, and some of your memories.\n\n' +
+  'Decide if there is one real thing to pick up next time: a goal you did not finish, something the two of you were in the middle of, a plan one of you said out loud, or something coming up for the player that you could ask about. ' +
+  'If there is, reply with only that next step in a few words, written as a note to yourself, like "finish the cabin roof" or "ask how the job interview went". ' +
+  'Write it in the language you and the player talk in.\n\n' +
+  'If nothing was left open, or the session was only small talk, reply with only the word none. ' +
+  'Do not make one up, and do not pick something that is already done.'
 
 // 260703: session-end vs task-stop disambiguation. Haiku was following the
 // per-turn addenda below (which only ever named end_loop/stopTool) over the

@@ -366,6 +366,14 @@ export interface BotSupervisorOptions {
    * validates. Optional — undefined no-ops.
    */
   onActionStats?: (characterId: string, stats: unknown) => void;
+  /**
+   * 261011: the session's recent conversation ({type:'session-digest'} port
+   * message, every ~15s while changing plus once before any terminal
+   * lifecycle), for the player-end "next time" check. Forwarded RAW;
+   * playerEndNextStep.ts validates. Holds chat text: never logged, never
+   * sent to analytics. Optional; undefined no-ops.
+   */
+  onSessionDigest?: (characterId: string, digest: unknown) => void;
   /** Forward to renderer via webContents.send('bot:log:batch', batch). Batched. */
   sendLog: (batch: LogBatch) => void;
   /**
@@ -1430,6 +1438,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // 261011: action-outcome telemetry snapshot. Not a BotStatus event.
       if ((data as { type?: string }).type === 'action-stats') {
         try { opts.onActionStats?.(characterId, (data as { stats?: unknown }).stats); } catch { /* telemetry never breaks the session */ }
+        return;
+      }
+      if ((data as { type?: string }).type === 'session-digest') {
+        try { opts.onSessionDigest?.(characterId, (data as { digest?: unknown }).digest); } catch { /* never breaks the session */ }
         return;
       }
       // Don't Starve Together (game-adapters M2, 260908): the bot's loopback

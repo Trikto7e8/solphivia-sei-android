@@ -57,9 +57,18 @@ function fmtAgo(now, at) {
   return `${h}h ago`
 }
 
-export function createConvoMemory() {
+/**
+ * @param {{ onLine?: (who: 'player'|'you'|'other', text: string) => void }} [opts]
+ *   onLine (261011): every recorded line is also handed here, for the
+ *   session digest main reads after a player-ended session (sessionDigest.js).
+ */
+export function createConvoMemory({ onLine = null } = {}) {
   const playerLines = []
   const selfLines = []
+  const tap = (who, text) => {
+    if (typeof onLine !== 'function') return
+    try { onLine(who, text) } catch {}
+  }
 
   /**
    * @param {string} who
@@ -77,6 +86,7 @@ export function createConvoMemory() {
       companion: opts?.companion === true,
       text: line.slice(0, RECENT_CHAT_LINE_TRUNC),
     }, RECENT_CHAT_CAPACITY)
+    tap(opts?.companion === true ? 'other' : 'player', line)
   }
 
   // Called when the line is DECIDED, not when the paced chat send fires: with
@@ -88,6 +98,7 @@ export function createConvoMemory() {
     const line = String(text).trim()
     if (!line) return
     pushRing(selfLines, { at: Date.now(), who: String(who), text: line.slice(0, RECENT_CHAT_LINE_TRUNC) }, RECENT_CHAT_CAPACITY)
+    tap('you', line)
   }
 
   function formatPlayerBlock() {

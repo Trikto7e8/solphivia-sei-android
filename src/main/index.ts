@@ -19,7 +19,7 @@
 // MUST stay the first import: refuses --remote-debugging-* / --inspect* /
 // --js-flags in packaged stable builds before anything else evaluates.
 import './remoteDebugGuard';
-import { app, BrowserWindow, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, net, session, systemPreferences } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { closeSplashWindow, createMainWindow, createSplashWindow } from './windowChrome';
@@ -38,6 +38,15 @@ import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
 import { consumeGoodbye, gameEndHookProps, callEndHookProps } from './sessionGoodbye';
+import {
+  bindPlayerEndRuntime,
+  clearSessionDigest,
+  isPlayerEndedGame,
+  noteSessionDigest,
+  startPlayerEndNextStep,
+  takeSessionDigest,
+  yieldToNewSession,
+} from './playerEndNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
 import { initNotices } from './notices';
@@ -419,6 +428,7 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // app quit, account switch), so mc_session_actions goes out exactly once;
   // its compact summary also rides on bot_session_ended.
   const actionSummary = started.game === 'minecraft' ? mcSessionReporter.close(id, end.reason) : {};
+  const digest = takeSessionDigest(id);
   // One event name across games (the analytics dashboard sums playtime by
   // event name, keyed on `duration_ms`); `game` is the split.
   capture('bot_session_ended', {
@@ -435,6 +445,48 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // and the ended event above already counts this time.
   if (failed) {
     capture('bot_session_failed', { character_id: id, duration_s: durationS, game: started.game, ...end });
+  }
+  // 261011: the player ended it (Stop, closed the world), so no goodbye turn
+  // set up a next session. One small background check after teardown decides
+  // if there is a plan worth saving (playerEndNextStep.ts). Fire and forget:
+  // it never delays this close, the bot's exit or the next summon.
+  if (isPlayerEndedGame(end.reason)) {
+    const gameName = getGameModule(started.game)?.displayName ?? started.game;
+    void startPlayerEndNextStep({
+      characterId: id,
+      surface: 'game',
+      game: started.game,
+      activity: `playing ${gameName} together`,
+      durationMs,
+      lines: digest?.lines ?? [],
+      playerLines: digest?.playerLines ?? 0,
+      goalsGame: started.game,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * 261011: a voice call the player hung up, outside a game session (an in-game
+ * call is covered by that session's own end). The call's lines are the voice
+ * rows of the chat transcript inside the call window.
+ */
+async function startCallNextStep(id: string, connectedMs: number): Promise<void> {
+  try {
+    const { readRecent } = await import('./chat/chatStore');
+    const since = Date.now() - connectedMs - 30_000;
+    const rows = (await readRecent(id, 80)).filter(
+      (r) => r.voice === true && r.ts >= since && (r.role === 'user' || r.role === 'companion'),
+    );
+    await startPlayerEndNextStep({
+      characterId: id,
+      surface: 'call',
+      activity: 'a voice call',
+      durationMs: connectedMs,
+      lines: rows.slice(-16).map((r) => ({ who: r.role === 'user' ? 'player' : 'you', text: r.text })),
+      playerLines: rows.filter((r) => r.role === 'user').length,
+    });
+  } catch {
+    /* best-effort, never surfaces */
   }
 }
 
@@ -474,6 +526,9 @@ function broadcastStatus(status: BotStatus): void {
   // Track online-ness for chat routing (only route to a spawned bot).
   if (status.kind === 'online') onlineIds.add(id);
   else onlineIds.delete(id);
+  // 261011: a new session starting yields the machine to it: a player-end
+  // check still running on a local model for this character is aborted.
+  if (status.kind === 'connecting' || status.kind === 'online') yieldToNewSession(id);
   // Play-session bookkeeping: stamp first-online, and on the terminal
   // idle/error post a "played for X" row (only if the bot was actually live).
   if (status.kind === 'online') {
@@ -483,6 +538,7 @@ function broadcastStatus(status: BotStatus): void {
     if (!playStartedAt.has(id)) {
       const game: GameId = status.game ?? 'minecraft';
       playStartedAt.set(id, { at: Date.now(), game });
+      clearSessionDigest(id); // 261011: nothing from an earlier session
       if (game === 'minecraft') {
         const lanHost = latestLanState.kind === 'open' ? latestLanState.host : undefined;
         const hostWarning = lanHostWarning(lanHost);
@@ -510,6 +566,9 @@ function broadcastStatus(status: BotStatus): void {
     // 261011: a summon that never went live leaves no session to report; drop
     // any snapshot it posted so it cannot leak into the next session.
     mcSessionReporter.settled(id);
+    // ...and the same for its conversation digest (closePlaySession already
+    // took it when the session was live).
+    takeSessionDigest(id);
     // 260720: the thin summon_failed capture that used to live here (terminal
     // error with no live session → character_id + reason) moved to the
     // supervisor's onSummonFailure wiring (see createBotSupervisor below),
@@ -901,6 +960,14 @@ async function bootstrap(): Promise<void> {
   for (const mod of listGameModules()) mod.watcher.start({ onUpdate: broadcastWorld });
   watchersRunning = true;
 
+  // 261011: the player-end "next time" check's main-only bindings.
+  try {
+    const [{ paths }, { providerTimeoutMs }] = await Promise.all([import('./paths'), import('./llm')]);
+    bindPlayerEndRuntime({ memoryDir: paths.memoryDir, providerTimeoutMs, isOnline: () => net.isOnline() });
+  } catch (err) {
+    logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
+  }
+
   // 4. Bot supervisor
   supervisor = createBotSupervisor({
     getLanPort,
@@ -935,6 +1002,9 @@ async function bootstrap(): Promise<void> {
     // other games → gamedash:snapshot). Validated before the renderer sees it.
     onDashboard: publishGameDashboardSnapshot,
     onActionStats: (characterId, stats) => mcSessionReporter.stats(characterId, stats),
+    // 261011: the session's recent conversation, kept in memory for the
+    // player-end next-step check (never sent to analytics).
+    onSessionDigest: noteSessionDigest,
     sendLog: broadcastLog,
     // Hand the skin server's baseUrl into each bot init payload.
     // Closure-via-getter so a later restart of the skin server (port-drift
@@ -1187,11 +1257,14 @@ async function bootstrap(): Promise<void> {
       // key as bot_session_ended / chess_game_ended so the dashboard can sum
       // all three. See the games rule in CLAUDE.md.
       // 261008: + whether the companion hung up and left a next-time hook.
+      const goodbye = consumeGoodbye(id, 'call');
       capture('voice_call_ended', {
         character_id: id,
         duration_ms: connectedMs,
-        ...callEndHookProps(consumeGoodbye(id, 'call')),
+        ...callEndHookProps(goodbye),
       });
+      // 261011: the player hung up (no companion goodbye), outside a game.
+      if (!goodbye.companionEnded && !onlineIds.has(id)) void startCallNextStep(id, connectedMs);
     },
     // Voice calls (260705): the call went live — companion greets first. An
     // in-game session takes it over the port (say() routes into the call); an
@@ -1199,6 +1272,7 @@ async function bootstrap(): Promise<void> {
     // (and spoken by the renderer's TTS hook).
     greetVoiceCall: (id, peers = []) => {
       noteSurface('voice'); // 261005: app_quit.last_surface
+      yieldToNewSession(id);
       // A solo in-game session greets over the port (say() routes to the call).
       // On a group call we always run the standalone greeting turn so the joiner
       // can name the room — the in-game greet path has no group framing.

@@ -2876,7 +2876,31 @@ CONTACT, voice-call greeting note) is told it may bring it up
 `ended_by_companion`. The goodbye and the end event come from different
 processes, so `src/main/sessionGoodbye.ts` holds a short-lived note between
 them. A player Stop, player hang-up or world close has no companion goodbye
-and reports `false`.
+and reports `false`; a hook set by the goodbye adds `next_step_source:
+'companion'`.
+
+**Player-ended sessions get the same hook (261011).** Most sessions end with
+the player (Stop, closing the world, hanging up), so main runs ONE small
+background call after teardown (`src/main/playerEndNextStep.ts`, system text
+promptLibrary `PLAYER_END_NEXT_STEP_SYSTEM`) on the session's own provider:
+max 150 output tokens, input = the last 16 conversation lines, the game's
+goals (`HEARTBEAT[.game].md`) and the MEMORY.md tail; it answers a few-word
+plan or `none`, saved with the same `Plan for next time:` line. Covered:
+every bot game (closePlaySession on `user_stop` / `world_closed` /
+`disconnected`; the bot posts a `{type:'session-digest'}` port message,
+`src/bot/brain/sessionDigest.js`, fed by convoMemory's `onLine` tap), an
+out-of-game call the player hung up (voice rows of the chat transcript), and
+a backseat the player ended (`endBackseat(..., { playerEnded: true })` from
+the IPC End handler only). Rules: skipped under 2 min or with fewer than two
+player lines and no goal, when offline (remote models), or when
+`cloudOverLimit()` (never raises the wall); time-boxed at 15 s
+(`providerTimeoutMs` floor for local models); single-flight per character
+with a 60 s dedupe; a new session aborts a check running on Ollama; runs as a
+scoped turn so an account switch drops the write. Never awaited by teardown.
+Analytics are shape only: `next_step_checked {source:'player_end', surface,
+game?, saved, outcome}` and `next_step_saved {source:'player_end', surface,
+game?}` as follow-ups (the `_ended` event has already gone out). Live check:
+`npx tsx scripts/player-end-next-step-probe.ts --reps 3`.
 
 **Forge/NeoForge hosts are blocked before summon (260929).** Only on STRONG
 evidence: the status ping's forgeData/modinfo (`forgeModCount != null`) or an

@@ -50,6 +50,7 @@ import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
 import { createWebSession, electronFetchProvider, botWebTools, isWebTool, runServerSearch } from '../web/webTools.js'
 import { sessionActionStats } from './actionStats.js'
+import { sessionDigest } from './sessionDigest.js'
 
 // Post-process say() text before it hits in-game chat. Safety-only:
 // whitespace collapse (chat is single-line) and force lowercase (hardcoded).
@@ -1032,7 +1033,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // user turn so the LLM has cross-loop continuity (short replies like "yes" /
   // "do it" need player context; loopHistory keeps the bot from re-asking
   // questions or rediscovering tasks across cold-composed loops).
-  const convoMemory = createConvoMemory()
+  // 261011: every line also feeds the process-level session digest, which
+  // main reads for the player-end "next time" check (sessionDigest.js).
+  const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
   // 260921: what she found on the web, kept across loops (see lookups.js).
   const lookupLog = createLookupLog()
   // chains is a no-op shim (kept to preserve any stragglers referencing it).

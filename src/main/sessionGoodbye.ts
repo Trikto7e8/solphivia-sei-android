@@ -14,6 +14,11 @@
  *
  * Booleans only: never the hook text, never anything the companion said.
  *
+ * 261011: a hook set here also carries `next_step_source: 'companion'`. A
+ * session the PLAYER ended can get a plan too, from a background check that
+ * runs after this event has already gone out (playerEndNextStep.ts), so that
+ * one is reported as its own `next_step_saved {source: 'player_end'}` event.
+ *
  * The goodbye and the end event come from different processes (bot port,
  * renderer report), so a note waits here until consumed. It expires after
  * NOTE_TTL_MS so a report that never arrives (renderer reload, a quit with no
@@ -57,13 +62,20 @@ export function consumeGoodbye(characterId: string, surface: GoodbyeSurface, now
 }
 
 /** `bot_session_ended` props. */
-export function gameEndHookProps(note: GoodbyeNote): { next_step_hook: boolean } {
-  return { next_step_hook: note.nextStepHook };
+export type NextStepSourceProps = { next_step_source?: 'companion' };
+
+const sourceProps = (note: GoodbyeNote): NextStepSourceProps =>
+  note.nextStepHook ? { next_step_source: 'companion' } : {};
+
+export function gameEndHookProps(note: GoodbyeNote): { next_step_hook: boolean } & NextStepSourceProps {
+  return { next_step_hook: note.nextStepHook, ...sourceProps(note) };
 }
 
 /** `voice_call_ended` props. */
-export function callEndHookProps(note: GoodbyeNote): { next_step_hook: boolean; ended_by_companion: boolean } {
-  return { next_step_hook: note.nextStepHook, ended_by_companion: note.companionEnded };
+export function callEndHookProps(
+  note: GoodbyeNote,
+): { next_step_hook: boolean; ended_by_companion: boolean } & NextStepSourceProps {
+  return { next_step_hook: note.nextStepHook, ended_by_companion: note.companionEnded, ...sourceProps(note) };
 }
 
 /** Tests only. */

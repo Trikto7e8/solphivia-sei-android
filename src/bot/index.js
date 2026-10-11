@@ -34,6 +34,7 @@ import { applyLlmInit } from './llmInit.js'
 import { preparePackLoader } from './packLoader.js'
 import { start as startBrain } from './brain/index.js'
 import { sessionActionStats, llmMetaFromConfig } from './brain/actionStats.js'
+import { sessionDigest } from './brain/sessionDigest.js'
 
 // 260926: the static graph above (config, zod, the brain, the LLM SDKs) is
 // evaluated by now. See bootTiming.js for the phase list.
@@ -341,6 +342,29 @@ function startActionStats(config) {
   _actionStatsTimer.unref?.()
 }
 
+/**
+ * 261011: the session's recent conversation (brain/sessionDigest.js), for
+ * main's player-end "next time" check (src/main/playerEndNextStep.ts). Same
+ * shape as action-stats: posted on a timer while it changes and once more
+ * right before any terminal lifecycle, so main has the last lines when the
+ * session closes even if the brain was already torn down. Every game, since
+ * the brain is shared. Conversation text, so a raw port message with no
+ * stdout mirror (the rolling log must not gain a second copy of the chat).
+ */
+let _digestTimer = null
+function postSessionDigest({ force = false } = {}) {
+  if (!initPort) return
+  try {
+    if (!force && !sessionDigest.isDirty()) return
+    initPort.postMessage({ type: 'session-digest', digest: sessionDigest.snapshot() })
+  } catch {}
+}
+function startSessionDigest() {
+  if (_digestTimer) return
+  _digestTimer = setInterval(() => postSessionDigest(), ACTION_STATS_FLUSH_MS)
+  _digestTimer.unref?.()
+}
+
 function emitLifecycle(payload) {
   // payload conforms to BotLifecycle (src/shared/ipc.ts):
   //   {type:'init-ack'} | {type:'connected'} | {type:'disconnected', reason?}
@@ -348,7 +372,10 @@ function emitLifecycle(payload) {
   // | {type:'summon-ready'} | {type:'summon-stopped'} | {type:'exit', code}
   // 261011: the final telemetry snapshot must reach main BEFORE the status
   // that closes the play session (same port, so ordering holds).
-  if (payload?.type === 'error' || payload?.type === 'summon-stopped') postActionStats({ force: true })
+  if (payload?.type === 'error' || payload?.type === 'summon-stopped') {
+    postActionStats({ force: true })
+    postSessionDigest({ force: true })
+  }
   if (initPort) {
     try { initPort.postMessage(payload) } catch {}
   }
@@ -636,6 +663,7 @@ async function bootstrapWithInit(initData) {
 
   // 261011: per-action outcome telemetry (Minecraft only; see postActionStats).
   if (game === 'minecraft') startActionStats(config)
+  startSessionDigest()
 
   // 260618: stash the initial companion roster on the (mutable) parsed config
   // so chat.js — which runs without an orchestrator handle — can read it to skip

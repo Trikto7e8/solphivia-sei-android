@@ -19,7 +19,7 @@ describe('sessionGoodbye', () => {
 
   it('carries a companion goodbye with a hook to the end event, once', () => {
     noteCompanionGoodbye('sui', 'call', true, 1_000);
-    expect(callEndHookProps(consumeGoodbye('sui', 'call', 2_000))).toEqual({ next_step_hook: true, ended_by_companion: true });
+    expect(callEndHookProps(consumeGoodbye('sui', 'call', 2_000))).toEqual({ next_step_hook: true, ended_by_companion: true, next_step_source: 'companion' });
     // Consumed: a later call of the same character starts clean.
     expect(callEndHookProps(consumeGoodbye('sui', 'call', 3_000))).toEqual({ next_step_hook: false, ended_by_companion: false });
   });
@@ -29,7 +29,7 @@ describe('sessionGoodbye', () => {
     noteCompanionGoodbye('marv', 'call', false, 0);
     expect(consumeGoodbye('sui', 'call', 1)).toEqual({ companionEnded: false, nextStepHook: false });
     expect(consumeGoodbye('marv', 'call', 1)).toEqual({ companionEnded: true, nextStepHook: false });
-    expect(gameEndHookProps(consumeGoodbye('sui', 'game', 1))).toEqual({ next_step_hook: true });
+    expect(gameEndHookProps(consumeGoodbye('sui', 'game', 1))).toEqual({ next_step_hook: true, next_step_source: 'companion' });
   });
 
   it('drops a note whose end event never came', () => {

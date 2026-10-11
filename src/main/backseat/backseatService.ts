@@ -61,6 +61,7 @@ import { surfaceLanguage } from '../../shared/chatLanguage';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
 import * as chatStore from '../chat/chatStore';
 import { classifyUsageLimit, raiseUsageLimitPopup } from '../chat/usageLimit';
+import { startPlayerEndNextStep } from '../playerEndNextStep';
 import type { LogBatch } from '../../shared/ipc';
 import {
   BACKSEAT_CONTRACT,
@@ -423,11 +424,24 @@ export function setBackseatPaused(characterId: string, paused: boolean): void {
  * account switch; absent for an ordinary stop). Tracked by the scope write
  * barrier so an account switch waits for the row before it moves the scope.
  */
-export function endBackseat(characterId: string, reason?: string): Promise<void> {
-  return trackScopedWrite(endBackseatSession(characterId, reason));
+/**
+ * `opts.playerEnded` (261011): the player pressed End. Only that path runs the
+ * player-end "next time" check (playerEndNextStep.ts); a restart, an account
+ * switch or a renderer death is not the player leaving.
+ */
+export function endBackseat(
+  characterId: string,
+  reason?: string,
+  opts: { playerEnded?: boolean } = {},
+): Promise<void> {
+  return trackScopedWrite(endBackseatSession(characterId, reason, opts));
 }
 
-async function endBackseatSession(characterId: string, reason?: string): Promise<void> {
+async function endBackseatSession(
+  characterId: string,
+  reason?: string,
+  opts: { playerEnded?: boolean } = {},
+): Promise<void> {
   const s = sessions.get(characterId);
   if (!s || s.state.phase === 'ended') return;
   s.inflight?.abort();
@@ -472,6 +486,22 @@ async function endBackseatSession(characterId: string, reason?: string): Promise
       /* analytics is never load-bearing */
     }
   })();
+
+  // 261011: the player ended it, so there is no goodbye turn to carry a plan
+  // for next time. One small background check decides if there is one. It
+  // never delays this teardown and swallows its own errors.
+  if (opts.playerEnded) {
+    const playerLines = s.state.lines.filter((l) => l.who === 'player').length;
+    void startPlayerEndNextStep({
+      characterId,
+      surface: 'backseat',
+      ...(s.game ? { game: s.game.def.id } : {}),
+      activity: s.game ? `watching the player play ${s.game.def.name}` : "watching the player's screen",
+      durationMs,
+      lines: s.state.lines.slice(-16).map((l) => ({ who: l.who === 'player' ? 'player' : 'you', text: l.text })),
+      playerLines,
+    }).catch(() => {});
+  }
 
   // Continuity, OUT/short-term: one play row so the session exists in the
   // rolling summary, then the fold. Without this the companion watches an hour

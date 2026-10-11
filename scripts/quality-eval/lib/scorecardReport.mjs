@@ -89,7 +89,7 @@ function scorecardSection(L, sc, rows) {
   }
 }
 
-export function compareSection(L, { labelA, labelB, A, B, cmp }) {
+export function compareSection(L, { labelA, labelB, A, B, cmp, separateRuns = false }) {
   L.push(`## Paired comparison: ${labelA} -> ${labelB}`)
   L.push('')
   L.push('Deltas are B minus A in percentage points with a 95% interval. **real** = the interval excludes 0; anything else is inside the noise. For success rates up is better; for off-rates down is better.')
@@ -99,10 +99,15 @@ export function compareSection(L, { labelA, labelB, A, B, cmp }) {
   L.push('| metric | A | B | delta (pp) | 95% CI | |')
   L.push('|---|---:|---:|---:|---:|---|')
   for (const [mode, d] of Object.entries(cmp.pooled || {})) L.push(`| **mean benchmark success (${mode}, ${d.benches} benchmarks)** | ${pc(d.a)} | ${pc(d.b)} | ${pp(d.delta)} | ${ppci(d.ci)} | ${d.real ? '**real**' : ''} |`)
-  for (const [id, m] of Object.entries(cmp.micro)) for (const [mode, d] of Object.entries(m)) L.push(`| ${title(id)} (${mode}) success | ${pc(d.a)} | ${pc(d.b)} | ${pp(d.delta)} | ${ppci(d.ci)} | ${d.real ? '**real**' : ''} |`)
+  const vol = (id) => MICRO.find((b) => b.id === id)?.volatile
+  for (const [id, m] of Object.entries(cmp.micro)) for (const [mode, d] of Object.entries(m)) L.push(`| ${title(id)} (${mode}) success${vol(id) ? ' (volatile)' : ''} | ${pc(d.a)} | ${pc(d.b)} | ${pp(d.delta)} | ${ppci(d.ci)} | ${d.real ? (vol(id) && separateRuns ? 'real? (volatile, separate runs)' : '**real**') : ''} |`)
   if (cmp.convo) L.push(`| scripted conversation off-rate | ${pc(cmp.convo.a)} | ${pc(cmp.convo.b)} | ${pp(cmp.convo.delta)} | ${ppci(cmp.convo.ci)} | ${cmp.convo.real ? '**real**' : ''} |`)
   if (cmp.freeplay) L.push(`| free-play off-rate | ${pc(cmp.freeplay.a)} | ${pc(cmp.freeplay.b)} | ${pp(cmp.freeplay.delta)} | ${ppci(cmp.freeplay.ci)} | ${cmp.freeplay.real ? '**real**' : ''} |`)
   L.push('')
+  if (separateRuns) {
+    L.push('These are two SEPARATE runs: conditions that drift over hours (API latency, box load) are not controlled and the intervals cover only within-run noise. Confirm a delta that matters with an interleaved `--compare <refA> <refB>`.')
+    L.push('')
+  }
 }
 
 function costSection(L, config, byRef) {
@@ -140,6 +145,6 @@ export function writeScorecardReport(file, { config, byRef, cmp, rows }) {
 
 export function writeCompareReport(file, args) {
   const L = [`# Scorecard comparison`, '']
-  compareSection(L, args)
+  compareSection(L, { separateRuns: true, ...args })
   fs.writeFileSync(file, L.join('\n') + '\n')
 }

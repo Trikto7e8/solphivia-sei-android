@@ -7,13 +7,14 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { startCompanion, companionName, PLAYER } from '../lib/companionProc.mjs'
-import { cmds, itemCount, entityCount } from '../lib/server.mjs'
+import { cmds, query, itemCount, entityCount } from '../lib/server.mjs'
 import { walkTo, distTo, countBlocks } from '../lib/player.mjs'
 import { arenaReset, playersReset } from './arena.mjs'
 import { costOf } from '../report.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const DIRECT_GAP_MS = 800
+const DIRECT_GRACE_MS = 10000
 
 /** Wait until the companion has been quiet (no chat, no LLM turn) for quietMs. */
 export async function waitQuiet(comp, { minMs = 4000, maxMs = 15000, quietMs = 3000 } = {}) {
@@ -58,6 +59,10 @@ export async function runMicroTrial(bench, { mode, rep, pbot, botRepo, outDir, r
   pbot.on('death', onDeath)
   let cancelled = false
   let lastExecEnd = 0
+  let directSettledAt = null
+  const trace = []
+  let heldAtOrder = null
+  let traceTimer = null
   const running = new Set()
   const ctx = {
     mode, bot, playerName: PLAYER, pbot, comp,
@@ -92,6 +97,12 @@ export async function runMicroTrial(bench, { mode, rep, pbot, botRepo, outDir, r
       while (Date.now() - t0 < timeoutMs) {
         last = await fn()
         if (last.success || last.done) return { ...last, timeMs: Date.now() - t0 }
+        // Direct mode: once the action calls have returned, nothing else
+        // will happen; a short grace (drops landing, smelting ticks) and stop
+        // instead of sitting out the full timeout.
+        if (directSettledAt && Date.now() - directSettledAt > DIRECT_GRACE_MS) {
+          return { ...last, success: false, timeMs: Date.now() - t0, detail: last.detail ?? `actions returned without success (value ${last.value})` }
+        }
         await sleep(everyMs)
       }
       return { ...last, success: false, timeMs: timeoutMs, detail: last.detail ?? `timeout after ${timeoutMs / 1000}s (value ${last.value})` }
@@ -105,9 +116,17 @@ export async function runMicroTrial(bench, { mode, rep, pbot, botRepo, outDir, r
     // Commands that must land at order time (enemies, damage), not before
     // the brain-mode settle period.
     if (bench.atOrder) await cmds(bench.atOrder({ bot, playerName: PLAYER }))
+    // What the companion holds at order time (server truth), for diagnosis.
+    const heldOut = await query(`data get entity ${bot} SelectedItem.id`, { expect: /has the following|Found no elements|No entity/ })
+    heldAtOrder = (/"?minecraft:([\w_]+)"?/.exec(heldOut) || [])[1] || 'empty'
     const tOrder = Date.now()
+    // Per-second trace (player hp/food, companion distance) for diagnosing
+    // fights and follows after the fact.
+    traceTimer = setInterval(() => {
+      try { trace.push([Math.round((Date.now() - tOrder) / 1000), Math.round(pbot.health ?? -1), Math.round(pbot.food ?? -1), Number(distTo(pbot, bot).toFixed(1))]) } catch {}
+    }, 1000)
     if (mode === 'brain') pbot.chat(bench.order)
-    else Promise.resolve(bench.direct(ctx)).catch(() => {})
+    else Promise.resolve(bench.direct(ctx)).catch(() => {}).finally(() => { directSettledAt = Date.now() })
     const r = await bench.evaluate(ctx)
     const ev = comp.log.filter((e) => e.t >= tOrder)
     const calls = ev.filter((e) => e.kind === 'action_call' && !['thinking', 'say', 'remember', 'forget', 'setGoal', 'clearGoal', 'end_loop'].includes(e.name))
@@ -120,11 +139,14 @@ export async function runMicroTrial(bench, { mode, rep, pbot, botRepo, outDir, r
       actions: calls.map((c) => c.name),
       chat: ev.filter((e) => e.kind === 'chat_out').map((e) => e.text).slice(0, 12),
       llm: usage, costUsd: costOf('claude-haiku-5-5', usage),
+      heldAtOrder,
+      trace, // [s since order, player hp, player food, companion distance]
     }
   } catch (e) {
     result = { bench: bench.id, mode, rep, ref, success: false, invalid: true, detail: `trial crashed: ${e?.message}` }
   } finally {
     cancelled = true
+    clearInterval(traceTimer)
     for (const id of running) comp.abort(id)
     pbot.off('message', onMsg)
     pbot.off('death', onDeath)

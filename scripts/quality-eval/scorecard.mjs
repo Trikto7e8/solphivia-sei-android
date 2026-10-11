@@ -14,8 +14,8 @@
 // Every number gets a 95% interval; summary.md flags a change as real only
 // when it falls outside the interval.
 //
-//   node scripts/quality-eval/scorecard.mjs                full nightly scorecard
-//   node scripts/quality-eval/scorecard.mjs --quick        quick subset (~35 min)
+//   node scripts/quality-eval/scorecard.mjs                full nightly (~2h, ~$1.60)
+//   node scripts/quality-eval/scorecard.mjs --quick        quick subset (~30 min, ~$0.30)
 //   node scripts/quality-eval/scorecard.mjs --compare <refA> <refB>
 //        run both git refs on identical worlds/scripts/seeds, interleaved
 //        trial by trial, and report deltas with intervals
@@ -166,7 +166,7 @@ async function main() {
           if (rep > (mode === 'brain' ? CFG.brainReps : CFG.directReps)) continue
           for (const R of refs) {
             const r = await runMicroTrial(b, { mode, rep, pbot, botRepo: R.repo, outDir: path.join(OUT, 'micro', b.id), ref: refs.length === 2 ? R.label : 'HEAD' })
-            addRow({ suite: 'micro', refLabel: R.label, ...r })
+            addRow({ suite: 'micro', refLabel: R.label, ...r, trace: undefined })
             log(`micro ${b.id} ${mode} #${rep}${refs.length === 2 ? ` [${R.label}]` : ''}: ${r.invalid ? 'INVALID' : r.success ? 'ok' : 'FAIL'} ${r.detail ?? ''} (${((r.timeMs ?? 0) / 1000).toFixed(0)}s)`)
           }
         }

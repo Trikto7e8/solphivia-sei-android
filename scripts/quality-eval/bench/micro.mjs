@@ -179,6 +179,11 @@ export const MICRO = [
   {
     id: 'protect_player',
     title: 'Protect a low-HP player from 2 zombies',
+    // A knife-edge race (zombies reach the player ~9s after the order, then
+    // kill in ~3s), so it is timing-sensitive: on identical code it went 12/12
+    // in two runs and 1/5 in another. Trust it only from an interleaved
+    // --compare, never from two separate runs.
+    volatile: true,
     world: [],
     // A burst of hunger drains the reset saturation so the player stays low
     // (food under 18 = no natural regen); the damage and zombies land at

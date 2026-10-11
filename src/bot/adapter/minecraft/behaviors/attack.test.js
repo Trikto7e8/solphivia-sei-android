@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { Vec3 } from 'vec3'
-import { weakWeaponNote, attackEntityAction, CRITICAL_HP } from './attack.js'
+import { weakWeaponNote, attackEntityAction, goneResult, CRITICAL_HP } from './attack.js'
 
 function makeBot({ held = null, items = [] } = {}) {
   return {
@@ -86,5 +86,52 @@ describe('attackEntity at critical health (261011)', () => {
     expect(bot.attack).toHaveBeenCalledTimes(2)
     expect(bot.equip).toHaveBeenCalledTimes(1)
     expect(bot.equip.mock.calls[0][0].name).toBe('stone_sword')
+  })
+})
+
+// 261011 quality pass 2: a mob leaving the entity table is not a kill.
+describe('attackEntity reports death only on the death event (261011)', () => {
+  function withEvents(bot) {
+    const handlers = {}
+    bot.on = vi.fn((ev, fn) => { (handlers[ev] ??= []).push(fn) })
+    bot.removeListener = vi.fn((ev, fn) => { handlers[ev] = (handlers[ev] ?? []).filter((h) => h !== fn) })
+    bot.emit = (ev, arg) => (handlers[ev] ?? []).forEach((h) => h(arg))
+    bot.handlers = handlers
+    return bot
+  }
+
+  it('says killed when the server reported the death', async () => {
+    const bot = withEvents(fightBot())
+    bot.attack.mockImplementation(() => { bot.emit('entityDead', { id: 7 }); delete bot.entities[7] })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).toBe('killed zombie (1 hits)')
+    expect(bot.handlers.entityDead).toHaveLength(0) // listener removed
+  })
+
+  it('says lost sight, not killed, when the mob just left the entity table', async () => {
+    const bot = withEvents(fightBot())
+    bot.attack.mockImplementation(() => { delete bot.entities[7] })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).toMatch(/^1 hits on zombie, then lost sight of zombie: .*NOT confirmed dead/)
+    expect(r).not.toMatch(/killed/)
+  })
+
+  it('counts a kill on the last swing', async () => {
+    const bot = withEvents(fightBot())
+    bot.attack.mockImplementation(() => { setTimeout(() => { bot.emit('entityDead', { id: 7 }) }, 50) })
+    const r = await attackEntityAction({ entity_id: 7, times: 1 }, bot, {})
+    expect(r).toBe('killed zombie (1 hits)')
+  })
+
+  it('names the mob when none is in range', async () => {
+    const bot = withEvents(fightBot())
+    bot.entities = {}
+    bot.nearestEntity = () => null
+    expect(await attackEntityAction({ entity: 'zombie' }, bot, {})).toBe('no zombie within 16 blocks to attack')
+  })
+
+  it('goneResult wording', () => {
+    expect(goneResult('skeleton', 0, true)).toBe('skeleton died before you hit it')
+    expect(goneResult('skeleton', 0, false)).toMatch(/^lost sight of skeleton/)
   })
 })

@@ -233,6 +233,26 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
   })
 })
 
+describe('gatherAction — says when the drops never reached the inventory (261011)', () => {
+  const noSleep = async () => {}
+  it('appends a note when blocks broke but the inventory did not change', async () => {
+    const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log']])
+    bot.inventory = { items: () => [{ name: 'oak_log', count: 2 }] }
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug oak_log' })
+    const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo: async () => 'reached', digAction, sleep: noSleep })
+    expect(r).toBe('gathered 1/1 oak_log but nothing new reached your inventory (the drops may still be on the ground; pickup collects them)')
+  })
+
+  it('adds nothing when the drop was collected', async () => {
+    const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log']])
+    const inv = [{ name: 'oak_log', count: 2 }]
+    bot.inventory = { items: () => inv }
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); inv[0].count++; return 'dug oak_log' })
+    const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo: async () => 'reached', digAction, sleep: noSleep })
+    expect(r).toBe('gathered 1/1 oak_log')
+  })
+})
+
 describe('gatherAction — loose term that is also a block ID (261011)', () => {
   const mcData = createRequire(import.meta.url)('minecraft-data')('1.21.1')
   function makeMatchingWorld(blockList) {

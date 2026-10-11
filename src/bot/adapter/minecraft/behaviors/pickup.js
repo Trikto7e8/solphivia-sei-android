@@ -20,7 +20,9 @@ function isItemEntity(e) {
   return !!e && (e.name === 'item' || e.name === 'item_stack' || e.objectType === 'Item' || e.displayName === 'Item')
 }
 
-function inventoryCounts(bot) {
+/** Item name -> count over the whole inventory; null when the bot has no inventory API. */
+export function inventoryCounts(bot) {
+  if (typeof bot?.inventory?.items !== 'function') return null
   const out = new Map()
   let items = []
   try { items = bot?.inventory?.items?.() ?? [] } catch { items = [] }
@@ -31,8 +33,10 @@ function inventoryCounts(bot) {
   return out
 }
 
-function gained(before, after) {
+/** "N name" for every item that went up between two inventoryCounts maps. */
+export function gained(before, after) {
   const parts = []
+  if (!before || !after) return parts
   for (const [name, n] of after) {
     const d = n - (before.get(name) ?? 0)
     if (d > 0) parts.push(`${d} ${name}`)

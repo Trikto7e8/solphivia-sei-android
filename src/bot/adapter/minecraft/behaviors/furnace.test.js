@@ -10,6 +10,7 @@ import {
   addFuelAction,
   takeSmeltedAction,
   closeFurnaceSession,
+  isSmeltResult,
 } from './furnace.js'
 
 const require = createRequire(import.meta.url)
@@ -128,6 +129,22 @@ describe('smeltInputAction', () => {
     const bot = makeBot({ items: [], furnace })
     const res = await smeltInputAction({ item: 'raw_iron', count: 1 }, bot, {})
     expect(res).toBe('no raw_iron to smelt')
+  })
+
+  // 261011: iron ingots loaded as input read "smelting 6 iron_ingot".
+  it('refuses an item that is already a smelting result and loads nothing', async () => {
+    const furnace = makeFurnace()
+    furnace.putInput = vi.fn(async () => {})
+    await openFurnaceAction({ block: 'furnace' }, makeBot({ furnace }), {})
+    const bot = makeBot({ items: [{ name: 'iron_ingot', count: 6 }], furnace })
+    const res = await smeltInputAction({ item: 'iron_ingot', count: 6 }, bot, {})
+    expect(res).toMatch(/^iron_ingot does not smelt into anything; nothing was loaded/)
+    expect(furnace.putInput).not.toHaveBeenCalled()
+  })
+
+  it('isSmeltResult covers results and leaves real inputs alone', () => {
+    for (const n of ['iron_ingot', 'gold_nugget', 'cooked_beef', 'coal', 'glass', 'oak_planks', 'smooth_stone']) expect(isSmeltResult(n)).toBe(true)
+    for (const n of ['raw_iron', 'iron_ore', 'beef', 'sand', 'cobblestone', 'stone', 'oak_log', 'iron_sword', 'clay_ball']) expect(isSmeltResult(n)).toBe(false)
   })
 
   it('loads input and reports the count smelting', async () => {

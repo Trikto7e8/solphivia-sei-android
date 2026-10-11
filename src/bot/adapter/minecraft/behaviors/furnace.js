@@ -160,6 +160,19 @@ export async function openFurnaceAction(args, bot, config) {
   return raceOpen(op, timeoutMs, signal, closeFurnaceSession)
 }
 
+// 261011: items that are already a smelting result (or never cook) and so do
+// nothing in a furnace. Quality eval 2026-10-11-pass1 (building): she loaded
+// her 6 iron ingots as input, the result said "smelting 6 iron_ingot", she
+// burned her coal on it, and the ingots she needed for tools sat in the
+// furnace. Kept to results so an input this list forgets is still allowed.
+const NOT_SMELTABLE = [
+  /_ingot$/, /_nugget$/, /^cooked_/, /_planks$/, /_dye$/, /^smooth_/, /_glazed_terracotta$/, /^cracked_/,
+  /^(coal|charcoal|diamond|emerald|lapis_lazuli|redstone|quartz|netherite_scrap|glass|brick|nether_brick|baked_potato|dried_kelp|stick|sponge|popped_chorus_fruit)$/,
+]
+export function isSmeltResult(name) {
+  return typeof name === 'string' && NOT_SMELTABLE.some((re) => re.test(name))
+}
+
 export async function smeltInputAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
@@ -167,6 +180,9 @@ export async function smeltInputAction(args, bot, config) {
 
   const { item } = args
   const count = args.count ?? 1
+  if (isSmeltResult(item)) {
+    return `${item} does not smelt into anything; nothing was loaded. Inputs are things like raw_iron, raw meat, sand, cobblestone or logs`
+  }
   const furnace = FURNACE_SESSION.furnace
   const invItem = findOnHand(bot, furnace, item)
   if (!invItem) return `no ${item} to smelt`

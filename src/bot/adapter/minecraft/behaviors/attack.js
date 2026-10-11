@@ -5,6 +5,7 @@ import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
 import { companionMovements } from './pathfind.js'
 import { followMovements } from './follow.js'
+import { noteCombat } from './autoEat.js'
 
 const { goals } = pkg
 
@@ -17,6 +18,14 @@ const PURSUE_POLL_MS = 100       // pursuit loop cadence: re-check distance / re
 const SWING_DELAY_MS = 600       // matches mob attack cooldown; faster spams hits without damage
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
+
+// At or below this health a mob fight is two hits from death. 261011
+// (combat_night eval): at 4hp she kept swinging at a skeleton while the
+// player begged her to come back, and died. Critical-HP auto-retreat is off
+// on purpose (survival.js, 260707), so the decision stays with the model;
+// attackEntity just stops trading hits and says why.
+export const CRITICAL_HP = 6
+const CRITICAL_ADVICE = 'Get away first (follow the player, or goTo somewhere away from it), eat if you have food, then fight'
 
 // Anti-stuck movement tuning shared with goTo (pathfind.js): make digging a
 // last resort so pursuit routes around obstacles rather than tunnelling, and
@@ -122,8 +131,13 @@ export async function attackEntityAction(args, bot, config) {
   }
 
   const name = entity.name ?? entity.displayName ?? 'entity'
+  const mobTarget = !(entity.type === 'player' || entity.username)
+  const startHp = bot.health
+  if (mobTarget && Number.isFinite(startHp) && startHp <= CRITICAL_HP) {
+    return `did not attack ${name}: you are at ${Math.round(startHp)} health, and one or two more hits will kill you. ${CRITICAL_ADVICE}`
+  }
   // 261011: hold the best weapon owned before the first swing (mobs only).
-  if (!(entity.type === 'player' || entity.username)) {
+  if (mobTarget) {
     try { await equipBestWeapon(bot) } catch {}
     if (signal?.aborted) return 'aborted'
   }
@@ -180,9 +194,22 @@ export async function attackEntityAction(args, bot, config) {
         if (!live) return hits ? `killed ${name} (${hits} hits)` : 'target gone'
       }
 
+      // Stop trading hits once this fight has brought her to critical health.
+      const hp = bot.health
+      if (mobTarget && Number.isFinite(hp) && hp <= CRITICAL_HP && hp < startHp) {
+        return `${hits}/${times} hits on ${name}, then stopped: you are down to ${Math.round(hp)} health. ${CRITICAL_ADVICE}`
+      }
+      // Re-equip before every swing: auto-eat or a placed block may have
+      // changed the hand since the first one (no-op when already held).
+      if (mobTarget && !bot.autoEat?.isEating) {
+        try { await equipBestWeapon(bot) } catch {}
+        if (signal?.aborted) return hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted'
+      }
+
       try {
         bot.lookAt?.(live.position.offset(0, live.height ? live.height * 0.5 : 0.5, 0), true)
         bot.attack(live)
+        noteCombat(bot)
         bot.swingArm?.()
         hits++
         // Refresh the PvP opponent lock on every swing so the reflex keeps

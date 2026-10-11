@@ -482,6 +482,15 @@ const BRAIN_PERSONALITY_NAMES = new Set(['remember', 'forget', 'setGoal', 'clear
 // (follow, goto, gather, dig, build, …) is a real world action and DOES emit.
 // Kept separate from PERSONALITY_NAMES so follow/unfollow still surface a verb
 // even though they're personality-tagged.
+// 261011: a player line that is only a stop order ("stop", "sui stop", "wait
+// stop!", "ok stop it", "nevermind"). Mirrors the Minecraft chat fast path's
+// STOP_VERBS with one leading word allowed (a name, "wait", "ok") and not a
+// negation ("dont stop"). Used as the end_loop backstop in runIterations.
+const STOP_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not)\b)[\w']+[,\s]+)?(?:stop|halt|cancel|nevermind|never mind)(?:\s+(?:it|that|now|pls|please)){0,2}$/
+export function isBareStopLine(text) {
+  const t = String(text ?? '').toLowerCase().replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
+  return t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t)
+}
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
@@ -1383,6 +1392,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // this window are swallowed; the body's own retaliation keeps swinging.
   const MID_ACTION_ATTACK_COALESCE_MS = 10_000
   const MID_ACTION_ATTACK_HP_DROP = 4
+  // A reflex warning / survival narration ('reflex') or the owner being hit
+  // ('defend'): the bot itself was not hit (fsm.attackedPriority, P1).
+  const isAttackHeadsUp = (d) => d?.attackerKind === 'reflex' || d?.attackerKind === 'defend'
   // 260611: single-flight timer for the rate-limit redrive (see
   // maybeScheduleRateLimitRedrive). Holds the setTimeout handle while a
   // delayed re-dispatch of a 429-killed player-visible trigger is pending.
@@ -2521,17 +2533,21 @@ function maybeWarnByteCap(loop, warned) {
         if (cl.inFlight && !cl._llmCallInFlight && !cl.isTerminal && !cl._terminated && !cl._attackAbortedCall && !pendingInterrupt && !hasQueuedBatch) {
           const now = Date.now()
           const hp = Number.isFinite(data?.health) ? data.health : null
+          // Real hits and heads-ups (reflex warning / survival narration /
+          // owner defend, which carry no health) keep separate windows: a
+          // heads-up must not open a window that swallows the real hits
+          // behind it (with no baseline hp the drop bypass could never fire).
+          const cls = isAttackHeadsUp(data) ? 'headsUp' : 'hit'
+          const last = (cl._lastAttackTick ??= {})[cls] ?? { at: 0, hp: null }
           // Inside the window a hit is dropped unless health fell by
           // MID_ACTION_ATTACK_HP_DROP or more since the last delivered one:
           // the model must hear about a fight that is going badly.
-          const lastHp = cl._lastAttackTickHp
-          const hpFell = hp != null && Number.isFinite(lastHp) && lastHp - hp >= MID_ACTION_ATTACK_HP_DROP
-          if (now - (cl._lastAttackTickAt ?? 0) < MID_ACTION_ATTACK_COALESCE_MS && !hpFell) {
-            logger.debug?.(`[sei/orch] mid-action attack coalesced (loop=${cl.id}, in_flight=${cl.inFlight.name})`)
+          const hpFell = hp != null && Number.isFinite(last.hp) && last.hp - hp >= MID_ACTION_ATTACK_HP_DROP
+          if (now - last.at < MID_ACTION_ATTACK_COALESCE_MS && !hpFell) {
+            logger.debug?.(`[sei/orch] mid-action attack coalesced (loop=${cl.id}, in_flight=${cl.inFlight.name}, ${cls})`)
             return
           }
-          cl._lastAttackTickAt = now
-          cl._lastAttackTickHp = hp
+          cl._lastAttackTick[cls] = { at: now, hp }
           await handleActionTick(cl, { attack: data ?? {} })
           return
         }
@@ -4107,8 +4123,12 @@ function maybeWarnByteCap(loop, warned) {
     // whether to keep the loop alive (text-only → keep, via extended
     // classifier) or terminate (end_loop → R3, end_loop+action → R4,
     // new long-runner alone → R2).
+    // 261011: while this tick's calls answer a real hit, a further hit is
+    // swallowed by handlePreempt instead of tearing the loop down.
+    loop._midActionAttackIsHit = !!attack && !isAttackHeadsUp(attack)
     try {
       await runIterations(loop, byteWarn)
+      loop._midActionAttackIsHit = false
       if (loop._terminated) {
         // Already terminal (R3/R4) — tear down below.
       } else if (loop.inFlight) {
@@ -4122,6 +4142,7 @@ function maybeWarnByteCap(loop, warned) {
         terminateLoop(loop, 'natural-after-action-tick')
       }
     } catch (err) {
+      loop._midActionAttackIsHit = false
       logger.error?.(`[sei/orch] action_tick continuation failed: ${err && err.message}`)
       // A tick that was carrying a player message must not drop it on a rate
       // limit — redrive the MESSAGE (not the loop's stale originating
@@ -4518,7 +4539,12 @@ function maybeWarnByteCap(loop, warned) {
           }
         }
         terminateLoop(loop, 'R3-stop')
-      } else if (hasEndLoop && newSuspendingTools.length === 0 && inFlightIsForeground) {
+      } else if (hasEndLoop && newSuspendingTools.length === 0 && inFlightIsForeground &&
+                 !(_p1Trigger && isBareStopLine(loop._lastPlayerLine?.text))) {
+        // (A bare "stop" from the player answered with end_loop instead of
+        // stop falls through to R3 below and cancels the action as end_loop
+        // did before the split, so a model that misses the stop tool cannot
+        // keep working against the player.)
         // 261011 R1-end — end_loop while a foreground action runs ends the
         // TURN, not the action: the model is done talking and the gather /
         // build / dig carries on, exactly like a text-only keep-alive turn.
@@ -5212,6 +5238,10 @@ function maybeWarnByteCap(loop, warned) {
       // mineflayer's auto-attack interval keeps swinging meanwhile, and the next
       // throttled hit re-wakes a fresh reaction once this one settles.
       if (loop._triggerEvent === 'sei:attacked') return true
+      // 261011: same for a real hit delivered mid-action (handleActionTick)
+      // whose reaction call is still parked: tearing it down would discard
+      // the reaction AND abort the action the delivery path exists to keep.
+      if (loop._midActionAttackIsHit) return true
       // Otherwise (attacked mid-task — gathering/digging/following): unblock now
       // so the queued P0 attack drives the existing teardown/reseed and the new
       // threat preempts the task. 261011: flagged so handleDispatch tears this

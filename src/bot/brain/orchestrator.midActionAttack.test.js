@@ -184,4 +184,46 @@ describe('261011 mid-action attack delivery', () => {
     await orch.handleDispatch('sei:attacked', hit())
     expect(lastUserText(provider.calls[1])).toContain('You already told the player about this fight')
   })
+  it('a reflex / defend heads-up does not open a window that swallows the next real hit', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([gatherTurn, { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:attacked', { attackerLabel: 'Steve', attackerKind: 'defend' })
+    await flush()
+    expect(provider.calls.length).toBe(2)
+    await orch.handleDispatch('sei:attacked', { ...hit(), health: 19 })
+    await flush()
+    expect(provider.calls.length).toBe(3)
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
+
+  it('a second hit while the mid-action reaction call is parked is swallowed, not torn down', async () => {
+    _setTickIntervalForTests(10_000_000)
+    let release
+    const parked = new Promise((r) => { release = r })
+    let claimed = null
+    const provider = makeProvider([
+      gatherTurn,
+      async () => {
+        claimed = orch.handlePreempt('sei:attacked', { ...hit('skeleton'), health: 17 })
+        await parked
+        return { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'two of them now' } }] }
+      },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter, aborted } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    const p = orch.handleDispatch('sei:attacked', { ...hit(), health: 19 })
+    await flush()
+    release()
+    await p
+    await flush()
+    expect(claimed).toBe(true)
+    expect(aborted).toEqual([])
+    expect(adapter.chat).toHaveBeenCalledWith('two of them now')
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
 })

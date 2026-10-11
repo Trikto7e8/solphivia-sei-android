@@ -13,7 +13,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
+import { createOrchestrator, _setTickIntervalForTests, isBareStopLine } from './orchestrator.js'
 
 function makeProvider(script) {
   let i = 0
@@ -191,5 +191,28 @@ describe('261011 end_loop keeps a running action; stop cancels it', () => {
     const names = (provider.calls[0]?.tools ?? []).map((t) => t.name)
     expect(names).toContain('stop')
     expect(names).toContain('end_loop')
+  })
+  it('backstop: a bare "stop" answered with end_loop (no stop tool) still cancels the action', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      gatherTurn,
+      { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'ok ok' } }, { id: 'el1', name: 'end_loop', input: {} }] },
+    ])
+    const { adapter, aborted } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:chat_received', chat('sui stop!'))
+    await flush()
+    expect(aborted).toEqual(['gather'])
+    expect(orch.currentLoop).toBeNull()
+  })
+
+  it('isBareStopLine: stop orders only, not negations or longer requests', () => {
+    for (const t of ['stop', 'STOP!', 'sui stop', 'wait stop', 'ok stop it', 'nevermind', 'never mind', 'cancel', 'stop now pls']) {
+      expect(isBareStopLine(t)).toBe(true)
+    }
+    for (const t of ['dont stop', "don't stop!", 'never stop', 'do not stop', 'stop following me', 'grab logs then stop', '', 'stopwatch']) {
+      expect(isBareStopLine(t)).toBe(false)
+    }
   })
 })

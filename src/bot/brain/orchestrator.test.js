@@ -186,9 +186,9 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
 })
 
 describe('NUDGES.playerInterruptHint — session-end disambiguation (260703)', () => {
-  it('names quit as distinct from ending the loop, with concrete trigger phrases', () => {
+  it('names quit as distinct from stopping a task, with concrete trigger phrases', () => {
     const t = NUDGES.playerInterruptHint
-    expect(t).toContain('end_loop')
+    expect(t).toContain('call stop')
     expect(t).toContain('ENDING THE SESSION')
     expect(t).toContain('call quit')
     expect(t).toContain('farewell')

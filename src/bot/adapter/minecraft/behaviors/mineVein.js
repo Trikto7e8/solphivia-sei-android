@@ -432,7 +432,12 @@ export async function gatherAction(args, bot, config, _deps) {
   let exhausted = false
   let firstRound = true
   for (let cycle = 0; cycle < MAX_CYCLES; cycle++) {
-    while (got() < want && progress.dug < digCap && !progress.noHarvest) {
+    // The first pass digs at most `want` blocks: drops still falling or not
+    // yet walked over would otherwise read as lost and pull extra digs (a
+    // gather of 8 logs came back with 13). Only a sweep that leaves the batch
+    // short opens the extra digs, up to digCap.
+    const cycleCap = cycle === 0 ? Math.min(want, digCap) : digCap
+    while (got() < want && progress.dug < cycleCap && !progress.noHarvest) {
       let roundAnchor
       if (firstRound) {
         firstRound = false
@@ -452,7 +457,7 @@ export async function gatherAction(args, bot, config, _deps) {
         }
       }
 
-      const limit = Math.max(1, Math.min(want - got(), digCap - progress.dug))
+      const limit = Math.max(1, Math.min(want - got(), cycleCap - progress.dug))
       const positions = sweepComponent(roundAnchor, blockName, limit)
       if (positions.length === 0) {
         // Anchor swept to nothing (already visited / name changed under us).

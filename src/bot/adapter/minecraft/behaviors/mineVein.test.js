@@ -466,6 +466,27 @@ describe('gatherAction — counts what reaches the inventory (261012)', () => {
     expect(r).toBe('gathered 0/4 cobblestone (mined from stone) (broke 8 stone, but none reached your inventory)')
   })
 
+  it('digs only the requested count when the drops arrive late, in the sweep', async () => {
+    const { bot, blocks, give } = stoneWorld(12)
+    let nextId = 100
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      blocks.delete(`${x},${y},${z}`)
+      const id = nextId++
+      bot.entities[id] = { id, name: 'item', position: new Vec3(x + 0.5, y, z + 0.5), isValid: true }
+      return 'dug stone'
+    })
+    // Nothing reaches the inventory until the sweep walks over each drop.
+    const goTo = vi.fn(async (b, x, y, z) => {
+      for (const [id, e] of Object.entries(bot.entities)) {
+        if (Math.floor(e.position.x) === x && Math.floor(e.position.z) === z) { delete bot.entities[id]; give('cobblestone') }
+      }
+      return 'reached'
+    })
+    const r = await gatherAction({ name: 'stone', count: 4 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    expect(digAction).toHaveBeenCalledTimes(4)
+    expect(r).toBe('gathered 4/4 cobblestone (mined from stone)')
+  })
+
   it('counts the drop, not the block, for a block that drops several items', async () => {
     const { bot, blocks, give } = stoneWorld(0)
     blocks.set('1,63,0', 'redstone_ore'); blocks.set('2,63,0', 'redstone_ore'); blocks.set('3,63,0', 'redstone_ore')

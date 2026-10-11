@@ -17,7 +17,7 @@ const SETTLE_MS = 300
 const ABOVE_LIMIT = 3
 
 function isItemEntity(e) {
-  return !!e && (e.name === 'item' || e.name === 'item_stack' || e.objectType === 'Item' || e.displayName === 'Item')
+  return !!e && (e.name === 'item' || e.name === 'item_stack' || e.displayName === 'Item')
 }
 
 /** Item name -> count over the whole inventory; null when the bot has no inventory API. */
@@ -82,7 +82,9 @@ export async function pickupAction(args, bot, config, _deps) {
     if (!best) break
     seen++
     attempted.add(best.id)
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal)
+    // No digging on the way to a drop (a walk that starts breaking blocks
+    // outlives its timeout, see stopPathfinderDig in pathfind.js).
+    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal, { canDig: false })
     if (signal?.aborted) break
     await sleep(SETTLE_MS)
   }

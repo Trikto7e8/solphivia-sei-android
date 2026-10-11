@@ -2,6 +2,7 @@
 import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
+import { equipBestWeapon } from './weaponSelect.js'
 
 const { goals, Movements } = pkg
 
@@ -122,6 +123,11 @@ export async function attackEntityAction(args, bot, config) {
   }
 
   const name = entity.name ?? entity.displayName ?? 'entity'
+  // 261011: hold the best weapon owned before the first swing (mobs only).
+  if (!(entity.type === 'player' || entity.username)) {
+    try { await equipBestWeapon(bot) } catch {}
+    if (signal?.aborted) return 'aborted'
+  }
   const times = clampTimes(args.times)
   const timeoutMs = args.timeout_ms ?? config?.attack_timeout_ms ?? DEFAULT_TIMEOUT_MS
   const entityId = entity.id

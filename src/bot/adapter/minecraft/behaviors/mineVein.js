@@ -38,6 +38,7 @@ import mcDataLib from 'minecraft-data'
 import { resolveTerm } from '../loose-terms.js'
 import { goTo as realGoTo, waitForReflexClear } from './pathfind.js'
 import { digAction as realDigAction } from './dig.js'
+import { inventoryCounts, gained } from './pickup.js'
 
 const NEIGHBOR_OFFSETS = [
   [1, 0, 0], [-1, 0, 0],
@@ -45,6 +46,9 @@ const NEIGHBOR_OFFSETS = [
   [0, 0, 1], [0, 0, -1],
 ]
 const BATCH_CAP = 64
+
+// Items that come from mining a different block.
+const MINED_FROM = { cobblestone: 'stone', cobbled_deepslate: 'deepslate' }
 
 // End-of-gather drop sweep bounds (260709). Radius covers the trees just
 // mined; the walk budget per drop is short because a resting item is almost
@@ -131,8 +135,17 @@ export async function gatherAction(args, bot, config, _deps) {
   // Name-mode block matcher, resolved once. `matching` is either an array of
   // numeric block ids or a predicate, both accepted by bot.findBlocks.
   let matching = null
+  let wideMatching = null
+  let dropNote = ''
   if (!coordMode) {
     if (typeof args?.name !== 'string') return 'must specify name or x,y,z'
+    // 261011: cobblestone is the DROP of stone. gather("cobblestone") used to
+    // look for placed cobblestone blocks, which is usually a player's build.
+    const sourceBlock = MINED_FROM[String(args.name).toLowerCase().trim()]
+    if (sourceBlock) {
+      dropNote = ` (${sourceBlock} drops ${String(args.name).toLowerCase().trim()})`
+      args = { ...args, name: sourceBlock }
+    }
     const ids = resolveTerm(args.name)
     let mcData
     try { mcData = mcDataLib(bot.version) } catch { mcData = null }
@@ -144,6 +157,16 @@ export async function gatherAction(args, bot, config, _deps) {
     }
     if (Array.isArray(matching) && matching.length === 0) {
       return `no ${args.name} in loaded chunks`
+    }
+    // 261011: a loose term that is also a real block ID ("stone", "dirt",
+    // "sand") looks for that exact block first and widens to the variants
+    // only when none is in range. gather("stone") used to lock onto the
+    // nearest diorite and report "gathered 1/12 diorite".
+    const exact = String(args.name).toLowerCase().trim()
+    const exactId = mcData?.blocksByName?.[exact]?.id
+    if (ids.length > 1 && typeof exactId === 'number') {
+      wideMatching = matching
+      matching = [exactId]
     }
   }
 
@@ -288,6 +311,10 @@ export async function gatherAction(args, bot, config, _deps) {
     anchor = new Vec3(args.x, args.y, args.z)
   } else {
     anchor = nextAnchor()
+    if (!anchor && wideMatching) {
+      matching = wideMatching
+      anchor = nextAnchor()
+    }
     if (!anchor) return `no ${args.name} in loaded chunks`
   }
   const seedBlk = bot.blockAt(anchor)
@@ -300,6 +327,7 @@ export async function gatherAction(args, bot, config, _deps) {
   // known so the next snapshot's `in_flight:` line shows `dug 0/W` instead of
   // running progress-less for the first dig.
   const progress = { dug: 0 }
+  const invBefore = inventoryCounts(bot)
   try { config?.onProgress?.({ dug: 0, total: want }) } catch {}
 
   let attempted = 0
@@ -350,5 +378,15 @@ export async function gatherAction(args, bot, config, _deps) {
   } else if (coordMode && attempted < want) {
     note = ` (that vein had only ${attempted})`
   }
-  return `gathered ${progress.dug}/${want} ${blockName}${note}`
+  // 261011: the count is blocks broken, not items collected. Quality eval
+  // 2026-10-11-pass1 (building): three coal gathers reported 4/4, 4/4 and
+  // 5/5 while her coal count never moved, and she told the player she had
+  // coal. Say so when nothing new reached the inventory.
+  let pickNote = ''
+  if (progress.dug > 0 && invBefore) {
+    if (gained(invBefore, inventoryCounts(bot)).length === 0) {
+      pickNote = ' but nothing new reached your inventory (the drops may still be on the ground; pickup collects them)'
+    }
+  }
+  return `gathered ${progress.dug}/${want} ${blockName}${note}${dropNote}${pickNote}`
 }

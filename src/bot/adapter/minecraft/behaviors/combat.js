@@ -2,6 +2,7 @@ import pkg from 'mineflayer-pathfinder'
 import { stopFollow, startFollow } from './follow.js'
 import { createThrottle } from '../../../brain/debounce.js'
 import { HOSTILE_MOBS } from './hostiles.js'
+import { equipBestWeapon } from './weaponSelect.js'
 
 const { goals } = pkg
 
@@ -181,6 +182,13 @@ export function startCombat(bot, config) {
     _pursue = pursue
     clearInterval(_attackLoop)
     clearTimeout(_exitTimer)
+    // 261011: swing the best weapon owned, not whatever is in hand. Skipped
+    // while an action runs (it may be holding a tool or block on purpose)
+    // and against players (a spar stays at whatever they agreed to).
+    const isPlayerTarget = Boolean(target?.username) || target?.type === 'player'
+    if (!isPlayerTarget && !(bot._seiActionActive > 0)) {
+      equipBestWeapon(bot).catch(() => {})
+    }
 
     _attackLoop = setInterval(() => {
       // 260725 play/pause: an AFK player does not swing back. Drop the target

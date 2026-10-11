@@ -117,6 +117,8 @@ export function activityLabel(name, args) {
       return 'checking a chest...'
     case 'dropItem':
       return 'dropping items...'
+    case 'pickup':
+      return 'picking up items...'
     case 'readSign':
       return 'reading a sign...'
     case 'activateItem':

@@ -103,6 +103,7 @@ export const ZH_MISC: Record<string, string> = {
   'smelting…': '正在熔炼…',
   'rummaging through chests…': '正在翻箱子…',
   'dropping items…': '正在丢弃物品…',
+  'picking up items…': '正在捡起物品…',
   'reading a sign…': '正在读告示牌…',
   'fiddling with something…': '正在摆弄东西…',
   'adventuring…': '正在冒险…',

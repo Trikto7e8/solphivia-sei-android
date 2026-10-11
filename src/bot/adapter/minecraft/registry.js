@@ -25,6 +25,7 @@ import { attackEntityAction } from './behaviors/attack.js'
 import { consumeItemAction } from './behaviors/consume.js'
 import { visualizeAction } from './behaviors/visualize.js'
 import { dropItemAction } from './behaviors/drop.js'
+import { pickupAction } from './behaviors/pickup.js'
 import { activateItemAction } from './behaviors/activate.js'
 import { activateBlockAction } from './behaviors/activateBlock.js'
 import { readSignAction } from './behaviors/readSign.js'
@@ -143,6 +144,26 @@ function isCoordsAtKnownPlayer(bot, x, y, z) {
  *   (capabilities.vision). A non-VLM provider never gets the tool in the
  *   registry (belt-and-suspenders with the orchestrator tool-list filter).
  */
+// Nearest loaded entity of one type (find on a creature name).
+function findEntity(bot, name, maxDistance) {
+  const here = getHealedPos(bot) ?? bot.entity?.position
+  let best = null
+  let bestD = Infinity
+  for (const e of Object.values(bot.entities ?? {})) {
+    if (!e || e === bot.entity || e.name !== name || !e.position) continue
+    const d = here && typeof e.position.distanceTo === 'function' ? e.position.distanceTo(here) : Infinity
+    if (d <= maxDistance && d < bestD) { bestD = d; best = e }
+  }
+  if (!best) return { found: false, reason: `no ${name} within ${maxDistance}m` }
+  const p = best.position
+  return {
+    found: true,
+    id: name,
+    pos: { x: Math.floor(p.x), y: Math.floor(p.y), z: Math.floor(p.z) },
+    distance: Number(bestD.toFixed(1)),
+  }
+}
+
 export function createDefaultRegistry({ visionEnabled = false } = {}) {
   const registry = createRegistry()
 
@@ -265,6 +286,8 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       if (mcData?.blocksByName) {
         const idNums = ids.map(n => mcData.blocksByName[n]?.id).filter(v => v != null)
         if (idNums.length === 0) {
+          // 261011: a creature name ("sheep") used to answer "no known IDs".
+          if (mcData.entitiesByName?.[ids[0]]) return findEntity(bot, ids[0], args.maxDistance)
           return { found: false, reason: `no known IDs for ${args.name}` }
         }
         matching = idNums
@@ -521,6 +544,17 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       count: z.number().int().min(1).max(64).default(1),
     }),
     dropItemAction
+  )
+
+  // 261011: walk onto dropped items so they get collected (gear after a
+  // death, mob drops, blocks that fell off a gather).
+  registry.register(
+    'pickup',
+    z.object({
+      item: z.string().optional(),
+      maxDistance: z.number().min(1).max(32).optional(),
+    }),
+    pickupAction
   )
 
   registry.register('activateItem', z.object({}), activateItemAction)

@@ -214,17 +214,18 @@ describe('260708 group-voice yield stays private (thought-leak fix)', () => {
     expect(adapter.chat).not.toHaveBeenCalled()
   })
 
-  it('still salvages the scratchpad on a SOLO call (reply is mandatory there)', async () => {
+  it('261011: does not speak the scratchpad on a SOLO call either (the salvage is gone)', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([
       {
-        text: 'yeah, right here by the oak logs.',
+        text: 'the player asked where i am and i already told them, so i stay quiet.',
         toolUses: [{ id: 'el1', name: 'end_loop', input: {} }],
       },
     ])
     const spoken = []
+    const adapter = makeAdapter()
     const orch = createOrchestrator({
-      adapter: makeAdapter(),
+      adapter,
       config: makeConfig(),
       reenqueue: () => {},
       onSeiChatReply: (msg) => spoken.push(msg),
@@ -234,7 +235,8 @@ describe('260708 group-voice yield stays private (thought-leak fix)', () => {
 
     await orch.handleDispatch('sei:chat_received', voiceChat('where are you?'))
 
-    expect(spoken.join(' ').toLowerCase()).toContain('right here by the oak logs')
+    expect(spoken).toEqual([])
+    expect(adapter.chat).not.toHaveBeenCalled()
   })
 
   it('a group-voice seed carries the group hint, not the mandatory-reply hint', async () => {

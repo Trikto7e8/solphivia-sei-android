@@ -63,6 +63,28 @@ export function ownerDistanceBlocks(ownerPos, selfPos) {
   const d = Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2)
   return Number.isFinite(d) ? Math.round(d) : null
 }
+
+// 261011: the owner's health, read from their entity metadata (vanilla syncs a
+// living entity's health to every client tracking it). Quality eval
+// 2026-10-11 (combat_night): the player typed "im at 3 hp, come back" and the
+// companion, whose snapshot never showed the player's health, told them to
+// stay put and kept fighting 17 blocks away. Returns null when the registry or
+// the metadata slot is missing, so the clause is simply left out.
+export const OWNER_LOW_HP = 8
+export function ownerHealth(registry, entity) {
+  const keys = registry?.entitiesByName?.player?.metadataKeys
+  const idx = Array.isArray(keys) ? keys.indexOf('health') : -1
+  if (idx < 0) return null
+  const raw = entity?.metadata?.[idx]
+  const hp = typeof raw === 'number' ? raw : Number.NaN
+  if (!Number.isFinite(hp) || hp < 0 || hp > 1024) return null
+  return Math.round(hp)
+}
+export function ownerHealthClause(hp) {
+  if (hp == null) return ''
+  return `, hp ${hp}/20${hp <= OWNER_LOW_HP ? ' (low)' : ''}`
+}
+
 // Entity visibility radius (blocks). 64 = 4 chunks, the rough distance at
 // which a real Minecraft player can see and identify another player. Bumped
 // from 24 so the player stays visible (with coords) as they walk a few chunks
@@ -305,7 +327,9 @@ export function composeSnapshot(bot, opts = {}) {
       // so the model connects `owner Ouen` with `SSk1tz` in `nearby entities`
       // (otherwise it can read them as two different people).
       const liveName = owner?.username && owner.username !== pinUsername ? ` (in-game ${owner.username})` : ''
-      lines.push(`owner ${pinUsername}${liveName}: @${ox},${oy},${oz}${dist != null ? ` (${dist} blocks away)` : ''}`)
+      let hpClause = ''
+      try { hpClause = ownerHealthClause(ownerHealth(bot.registry, ownerEnt)) } catch { /* leave it out */ }
+      lines.push(`owner ${pinUsername}${liveName}: @${ox},${oy},${oz}${dist != null ? ` (${dist} blocks away)` : ''}${hpClause}`)
       // Who the hostiles are on (260731). Only worth printing when the two of
       // us are close enough for it to be ONE fight — see AGGRO_PAIR_RANGE. Not
       // line-of-sight filtered like `nearby entities`: a zombie hitting the

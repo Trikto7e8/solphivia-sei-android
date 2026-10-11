@@ -159,6 +159,13 @@ function isAir(name) {
   return name === 'air' || name === 'cave_air' || name === 'void_air'
 }
 
+// 261011: a full collision block (stone, dirt, planks). Water, lava, grass and
+// other pass-through blocks are not solid. The scaffold step reads success
+// and its floor through this; isAir alone counted water as a placed block.
+function isSolid(blk) {
+  return !!blk && !isAir(blk.name) && blk.boundingBox === 'block'
+}
+
 export function isOccupied(bot, c) {
   const blk = bot.blockAt(new Vec3(c.x, c.y, c.z))
   return !!(blk && !isAir(blk.name))
@@ -213,7 +220,7 @@ async function jumpPlace(bot, refBlock, col, cellY) {
   let lastFire = 0
   while (Date.now() < deadline) {
     const cur = bot.blockAt(targetCell)
-    if (cur && !isAir(cur.name)) return true
+    if (isSolid(cur)) return true
     const now = Date.now()
     const feetY = bot.entity?.position?.y ?? 0
     // 260730: gate on the refire clock ONLY. The old code also held an
@@ -230,8 +237,7 @@ async function jumpPlace(bot, refBlock, col, cellY) {
     }
     await new Promise(r => setTimeout(r, 20))
   }
-  const cur = bot.blockAt(targetCell)
-  return !!(cur && !isAir(cur.name))
+  return isSolid(bot.blockAt(targetCell))
 }
 
 async function waitForLanding(bot, maxMs) {
@@ -248,8 +254,18 @@ async function waitForLanding(bot, maxMs) {
  * next placement on the face above is in reach).
  */
 export async function scaffoldUp(bot, blockName, targetY, config) {
+  // 261011: every pass must raise the feet. Quality eval 2026-10-11
+  // (gather_craft): standing in water, the feet cell already read as "placed",
+  // the bot was on the floor so the landing wait returned at once, and the
+  // loop spun on resolved promises without yielding. The event loop starved,
+  // keep-alives stopped, and the server dropped the bot for the rest of the
+  // session. Success is now a solid block, each pass yields a tick, and passes
+  // that do not raise the feet count toward the attempt limit.
+  let stalled = 0
   while (Math.floor(bot.entity.position.y) < targetY - 1) {
     if (config?.signal?.aborted) return 'aborted'
+    await new Promise(r => setTimeout(r, 0))
+    const yBefore = Math.floor(bot.entity.position.y)
     const invItem = bot.inventory.items().find(i => i.name === blockName)
     if (!invItem) return `no ${blockName} in inventory`
     try { await bot.equip(invItem, 'hand') }
@@ -265,7 +281,7 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
       const cellY = Math.floor(pos.y)               // cell the feet rest in / vacate on jump
       const col = { x: Math.floor(pos.x), z: Math.floor(pos.z) }
       const refBlock = bot.blockAt(new Vec3(col.x, cellY - 1, col.z))
-      if (!refBlock || isAir(refBlock.name)) return 'scaffold failed: no floor below'
+      if (!isSolid(refBlock)) return 'scaffold failed: no solid floor below'
 
       // Hold the gaze controller (behaviors/gaze.js) off the head for this
       // aim + jump-place step so it doesn't fight the forced look-down.
@@ -283,7 +299,16 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
         bot._seiGazeHold = Math.max(0, (bot._seiGazeHold ?? 1) - 1)
       }
     }
-    if (!placed) return 'scaffold place failed: could not place block under feet'
+    if (!placed) {
+      const feet = bot.blockAt(new Vec3(Math.floor(bot.entity.position.x), Math.floor(bot.entity.position.y), Math.floor(bot.entity.position.z)))
+      if (feet && (feet.name === 'water' || feet.name === 'lava')) {
+        return `scaffold place failed: you are in ${feet.name}, where a jump does not clear the cell under you. Get onto dry ground first`
+      }
+      return 'scaffold place failed: could not place block under feet'
+    }
+    if (Math.floor(bot.entity.position.y) <= yBefore && ++stalled >= SCAFFOLD_ATTEMPTS) {
+      return 'scaffold place failed: the block went down but you did not rise onto it'
+    }
   }
   return 'ok'
 }

@@ -27,6 +27,8 @@ function makeBot({ items = [], table = null, craft } = {}) {
         if (r.requiresTable && !craftingTable) return false
         return maxRepetitions(r, invCount) * (r.result?.count ?? 1) >= (minResultCount ?? 1)
       }),
+    recipesAll: (itemId, meta, craftingTable) =>
+      Recipe.find(itemId, meta).filter((r) => !r.requiresTable || craftingTable),
     craft: craft ?? vi.fn(async () => {}),
   }
 }
@@ -71,6 +73,20 @@ describe('craftAction', () => {
     const bot = makeBot({ items: [] })
     const res = await craftAction({ item: 'oak_planks', count: 1 }, bot, {})
     expect(res).toMatch(/not enough materials/i)
+  })
+
+  it('names the wood the bot already has when it is short on planks', async () => {
+    // 2026-10-11 eval: holding 2 oak_planks + 6 oak_log, a crafting_table was
+    // refused with "need 4x cherry_planks".
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'oak_log', count: 6 }, { name: 'stick', count: 4 }] })
+    const res = await craftAction({ item: 'crafting_table' }, bot, {})
+    expect(res).toBe('not enough materials to craft crafting_table: need 2 more oak_planks (have 2, you can craft it from what you have)')
+  })
+
+  it('names the missing count for one ingredient of a multi-ingredient recipe', async () => {
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'stick', count: 2 }], table: { name: 'crafting_table' } })
+    const res = await craftAction({ item: 'wooden_pickaxe' }, bot, {})
+    expect(res).toBe('not enough materials to craft wooden_pickaxe: need 1 more oak_planks (have 2)')
   })
 
   it('rejects an unknown item name', async () => {

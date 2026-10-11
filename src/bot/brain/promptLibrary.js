@@ -294,6 +294,9 @@ export const ACTION_DESCRIPTIONS = {
   takeSmelted:
     'Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.',
 
+  pickup:
+    'Walk over dropped items near you so they land in your inventory: `{item?:"<id>", maxDistance?:1-32}` (default 16). Without `item` it collects every drop in range, closest first. The result lists what actually reached your inventory. Use it to get your things back after you die or to collect mob drops.',
+
   activateBlock:
     'Open or toggle a world block — door, gate, trapdoor, lever, button: `{block:"oak_door"}` for the nearest, or aim with a target/coords. Must be within reach. Use it to pass through a closed door or gate. Distinct from activating a HELD item.',
 

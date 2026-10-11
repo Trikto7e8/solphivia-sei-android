@@ -730,6 +730,24 @@
         }
       },
       {
+        "name": "pickup",
+        "description": "Walk over dropped items near you so they land in your inventory: `{item?:\"<id>\", maxDistance?:1-32}` (default 16). Without `item` it collects every drop in range, closest first. The result lists what actually reached your inventory. Use it to get your things back after you die or to collect mob drops.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "maxDistance": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 32
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
         "name": "activateItem",
         "description": "",
         "input_schema": {
@@ -1724,6 +1742,24 @@
         }
       },
       {
+        "name": "pickup",
+        "description": "Walk over dropped items near you so they land in your inventory: `{item?:\"<id>\", maxDistance?:1-32}` (default 16). Without `item` it collects every drop in range, closest first. The result lists what actually reached your inventory. Use it to get your things back after you die or to collect mob drops.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "maxDistance": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 32
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
         "name": "activateItem",
         "description": "",
         "input_schema": {
@@ -2681,6 +2717,24 @@
           "required": [
             "item"
           ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "pickup",
+        "description": "Walk over dropped items near you so they land in your inventory: `{item?:\"<id>\", maxDistance?:1-32}` (default 16). Without `item` it collects every drop in range, closest first. The result lists what actually reached your inventory. Use it to get your things back after you die or to collect mob drops.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "maxDistance": {
+              "type": "number",
+              "minimum": 1,
+              "maximum": 32
+            }
+          },
           "additionalProperties": false
         }
       },

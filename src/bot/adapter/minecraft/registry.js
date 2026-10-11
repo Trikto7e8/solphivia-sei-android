@@ -25,6 +25,7 @@ import { attackEntityAction } from './behaviors/attack.js'
 import { consumeItemAction } from './behaviors/consume.js'
 import { visualizeAction } from './behaviors/visualize.js'
 import { dropItemAction } from './behaviors/drop.js'
+import { pickupAction } from './behaviors/pickup.js'
 import { activateItemAction } from './behaviors/activate.js'
 import { activateBlockAction } from './behaviors/activateBlock.js'
 import { readSignAction } from './behaviors/readSign.js'
@@ -543,6 +544,17 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       count: z.number().int().min(1).max(64).default(1),
     }),
     dropItemAction
+  )
+
+  // 261011: walk onto dropped items so they get collected (gear after a
+  // death, mob drops, blocks that fell off a gather).
+  registry.register(
+    'pickup',
+    z.object({
+      item: z.string().optional(),
+      maxDistance: z.number().min(1).max(32).optional(),
+    }),
+    pickupAction
   )
 
   registry.register('activateItem', z.object({}), activateItemAction)

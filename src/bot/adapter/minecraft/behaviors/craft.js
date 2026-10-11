@@ -257,6 +257,15 @@ function holdsCraftingTable(bot) {
   }
 }
 
+// 261011 (quality pass 2): "crafted 1 crafting_table" read as "the table is
+// down": in the eval she told the player a crafted table or furnace was
+// placed three times while it sat in her bag. Say where it is.
+const PLACEABLE_STATIONS = new Set(['crafting_table', 'furnace', 'blast_furnace', 'smoker', 'chest', 'barrel', 'bed', 'white_bed'])
+export function placeNote(item) {
+  if (!PLACEABLE_STATIONS.has(item) && !/_bed$/.test(item)) return ''
+  return `; it is in your inventory, not placed yet (placeBlock ${item} to put it down)`
+}
+
 export async function craftAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
@@ -330,7 +339,7 @@ export async function craftAction(args, bot, config) {
   const op = Promise.resolve(bot.craft(recipe, reps, tableBlock))
     .then(() => {
       const over = produced > want ? ` (recipe makes ${perRep} at a time)` : ''
-      return `crafted ${produced} ${item}${over}${partsNote}`
+      return `crafted ${produced} ${item}${over}${partsNote}${placeNote(item)}`
     })
     .catch((err) => {
       const r = reason(err)

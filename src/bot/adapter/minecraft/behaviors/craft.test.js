@@ -3,7 +3,7 @@
 
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createRequire } from 'module'
-import { craftAction } from './craft.js'
+import { craftAction, placeNote } from './craft.js'
 import { goTo } from './pathfind.js'
 
 vi.mock('./pathfind.js', () => ({ goTo: vi.fn(async () => 'reached') }))
@@ -74,7 +74,7 @@ describe('craftAction', () => {
     const craft = vi.fn(async () => {})
     const bot = makeBot({ items: [{ name: 'oak_planks', count: 8 }], table: { name: 'crafting_table' }, craft })
     const res = await craftAction({ item: 'chest', count: 1 }, bot, {})
-    expect(res).toBe('crafted 1 chest')
+    expect(res).toBe('crafted 1 chest; it is in your inventory, not placed yet (placeBlock chest to put it down)')
     expect(craft).toHaveBeenCalledTimes(1)
   })
 
@@ -97,7 +97,7 @@ describe('craftAction', () => {
     // you have"; now the planks are made on the way.
     const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'oak_log', count: 6 }] })
     const res = await craftAction({ item: 'crafting_table' }, bot, {})
-    expect(res).toBe('crafted 1 crafting_table, made 4 oak_planks for it first')
+    expect(res).toBe('crafted 1 crafting_table, made 4 oak_planks for it first; it is in your inventory, not placed yet (placeBlock crafting_table to put it down)')
     expect(bot.craft).toHaveBeenCalledTimes(2)
   })
 
@@ -151,6 +151,15 @@ describe('craftAction', () => {
     goTo.mockImplementationOnce(async () => { walked = true; return 'reached' })
     const res = await craftAction({ item: 'chest', count: 1 }, bot, {})
     expect(goTo).toHaveBeenCalledWith(bot, 8, 64, 0, 2, expect.any(Number), undefined, { reach: 3.5 })
-    expect(res).toBe('crafted 1 chest')
+    expect(res).toBe('crafted 1 chest; it is in your inventory, not placed yet (placeBlock chest to put it down)')
+  })
+})
+
+describe('placeNote (261011)', () => {
+  it('says a crafted station is still in the bag', () => {
+    expect(placeNote('furnace')).toContain('not placed yet (placeBlock furnace')
+    expect(placeNote('red_bed')).toContain('placeBlock red_bed')
+    expect(placeNote('oak_planks')).toBe('')
+    expect(placeNote('stone_pickaxe')).toBe('')
   })
 })

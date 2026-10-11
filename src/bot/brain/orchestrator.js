@@ -1181,6 +1181,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     // 260703: track per-loop speech so a player-message loop can refuse to
     // end silently (see the end_loop deferral in the dispatch predicates).
     loop._spokeThisLoop = true
+    if ((loop._currentIterationTrigger ?? loop._triggerEvent) === 'sei:attacked') _lastFightLineAt = Date.now()
     // 260703: any line actually reaching the player counts as this session's
     // greeting — stop injecting the sticky GREETING_HINT from here on.
     greetedPlayer = true
@@ -1356,6 +1357,19 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // currentLoop === null and opens a fresh loop with the attack seed
   // addendum.
   let pendingAttack = null
+  // 261011: when the bot last spoke during an attack turn, so the next hit in
+  // the same fight is told it already warned the player (NUDGES.fightAlreadyTold).
+  let _lastFightLineAt = 0
+  const FIGHT_TOLD_WINDOW_MS = 30_000
+  function fightToldSuffix() {
+    const ago = Date.now() - _lastFightLineAt
+    if (!_lastFightLineAt || ago >= FIGHT_TOLD_WINDOW_MS) return ''
+    return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+  }
+  // 261011: a hit that lands while an action runs is delivered mid-action
+  // (handleActionTick) instead of tearing the loop down. Further hits inside
+  // this window are swallowed; the body's own retaliation keeps swinging.
+  const MID_ACTION_ATTACK_COALESCE_MS = 10_000
   // 260611: single-flight timer for the rate-limit redrive (see
   // maybeScheduleRateLimitRedrive). Holds the setTimeout handle while a
   // delayed re-dispatch of a 429-killed player-visible trigger is pending.
@@ -2477,6 +2491,31 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
       if (event === 'sei:attacked') {
+        // 261011: an action is running and no LLM call is parked: deliver the
+        // hit mid-action, like a player line (handleActionTick), and let the
+        // model keep going, switch to fighting or fleeing (R2), or stop. The
+        // body already swings back on its own (combat.js). Quality eval
+        // 2026-10-11: tearing the loop down on every throttled hit aborted
+        // attackEntity 10 times mid-fight, cut the goTo back to a 3 hp
+        // player, and killed builds on each drowning heads-up.
+        // A loop whose LLM call handlePreempt just aborted for this attack
+        // still takes the teardown path below (its turn was cut mid-call), and
+        // so does one with a queued batch behind its action: the teardown
+        // drain runs those tools directly, where an action tick would mark
+        // them "deferred: not started".
+        const cl = currentLoop
+        const hasQueuedBatch = Array.isArray(cl._pendingToolUses) && cl._pendingToolUses.length > 0
+        if (cl.inFlight && !cl._llmCallInFlight && !cl.isTerminal && !cl._terminated && !cl._attackAbortedCall && !pendingInterrupt && !hasQueuedBatch) {
+          const now = Date.now()
+          if (now - (cl._lastAttackTickAt ?? 0) < MID_ACTION_ATTACK_COALESCE_MS) {
+            logger.debug?.(`[sei/orch] mid-action attack coalesced (loop=${cl.id}, in_flight=${cl.inFlight.name})`)
+            return
+          }
+          cl._lastAttackTickAt = now
+          await handleActionTick(cl, { attack: data ?? {} })
+          return
+        }
+        cl._attackAbortedCall = false
         // P0 safety: drop the in-flight loop and re-fire the attack as a
         // fresh dispatch via teardownLoop.
         //
@@ -2626,7 +2665,7 @@ function maybeWarnByteCap(loop, warned) {
     let eventText
     let playerMessageText = null
     if (isSafetyEvent && typeof adapter.eventAddendum === 'function') {
-      eventText = adapter.eventAddendum(event, data).trim()
+      eventText = adapter.eventAddendum(event, data).trim() + fightToldSuffix()
     } else {
       let eventAddendum = (typeof adapter.eventAddendum === 'function')
         ? adapter.eventAddendum(event === 'idle' ? 'sei:idle' : event, data)
@@ -3896,6 +3935,9 @@ function maybeWarnByteCap(loop, warned) {
     // The action is NOT aborted in either case; the model decides to reply,
     // switch (R2), or stop (end_loop/unfollow, R3).
     const playerMessage = (typeof data?.playerMessage === 'string') ? data.playerMessage : null
+    // 261011: a hit delivered mid-action (see the sei:attacked branch of
+    // handleDispatch). The action keeps running unless the model changes it.
+    const attack = (data?.attack && typeof data.attack === 'object') ? data.attack : null
     const who = data?.who ?? null
     // 260910: a line typed in the Sei app that lands mid-action is answered by
     // say() inside THIS loop, whose own trigger was an idle tick, so the reply
@@ -3922,7 +3964,12 @@ function maybeWarnByteCap(loop, warned) {
     // sticky greet hint. The extra args below are dead in that variant —
     // actionTurn shows elapsed and runs the agentic-follow review only when
     // playerLine == null — so only the silent monitor builds its own turn.
-    const tickEventText = playerMessage != null
+    const attackText = attack && typeof adapter.eventAddendum === 'function'
+      ? `${String(adapter.eventAddendum('sei:attacked', attack) ?? '').trim()}${fightToldSuffix()}\n\n${NUDGES.attackMidAction({ action, stopTool: stopToolForAction(action) })}`
+      : null
+    const tickEventText = attackText != null
+      ? attackText
+      : playerMessage != null
       ? interruptTurnText(loop, playerMessage, who, teammate, unanswered)
       : withGreetingHint(NUDGES.actionTurn({
           action,
@@ -3937,7 +3984,7 @@ function maybeWarnByteCap(loop, warned) {
     // the loop alive on a text-only response. A carried player message is
     // chat-triggered; a silent monitor stays action_tick. Both are in
     // iterationKeepsLoopAlive, so R1 keep-alive holds either way.
-    loop._currentIterationTrigger = playerMessage == null ? 'sei:action_tick' : 'sei:chat_received'
+    loop._currentIterationTrigger = attack ? 'sei:attacked' : playerMessage == null ? 'sei:action_tick' : 'sei:chat_received'
 
     // 260517-fix: two modes.
     //
@@ -5143,7 +5190,9 @@ function maybeWarnByteCap(loop, warned) {
       if (loop._triggerEvent === 'sei:attacked') return true
       // Otherwise (attacked mid-task — gathering/digging/following): unblock now
       // so the queued P0 attack drives the existing teardown/reseed and the new
-      // threat preempts the task.
+      // threat preempts the task. 261011: flagged so handleDispatch tears this
+      // loop down instead of taking the mid-action delivery path.
+      loop._attackAbortedCall = true
       try { loop.abortController.abort() } catch {}
       return false
     }

@@ -691,6 +691,19 @@ export const NUDGES = {
   // say(); the reasoning behind it stays in the private text output.
   playerInterruptHintGroupVoice: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} One say() without a new action keeps the current action going. If the line is yours to answer, reply with say(). If it clearly belongs to a teammate, end the turn with end_loop and no say(): that silence is correct, and your reasoning stays in your private text output. Never put your reasoning or your decision to stay quiet into say(); say() is only for words meant for the player's ears. ${MEMORY_GOAL_CUE}`,
 
+  // 261011: a hit (or a reflex / defend / survival heads-up) that lands while
+  // an action runs is delivered without aborting it. This follows the attack
+  // text and says what is still running and how to change course.
+  attackMidAction: ({ action, stopTool }) =>
+    `You're currently: ${action || 'your action'}. It keeps running while you deal with this. To fight or get away instead, call that action (it replaces the current one); to drop what you were doing, call ${stopTool}.`,
+
+  // 261011: appended to an attack turn when the bot already spoke about the
+  // fight moments ago. Quality eval 2026-10-11: every throttled hit forced a
+  // fresh warning, so one fight produced the same "drowned on me, swinging
+  // back, stay put" line a dozen times.
+  fightAlreadyTold: (sec) =>
+    `You already told the player about this fight ${sec}s ago. Skip the warning this time unless something changed that they need to know, like your health dropping low, more of them arriving, or you pulling out. If you do speak, say what is new.`,
+
   capClose:
     'You hit the iteration cap and have to stop. Wrap up gracefully in your own voice by calling say once — under 12 words. Call only say, nothing else.',
 

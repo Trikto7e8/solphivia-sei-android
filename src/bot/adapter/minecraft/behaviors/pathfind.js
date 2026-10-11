@@ -30,8 +30,14 @@ export const STUCK_RESETS_TO_GIVE_UP = 2
  * `canDig: false` is for walks that must never break anything (the walk onto
  * a tree's drop after a dig, see dropWalkOpts).
  *
+ * 261012: `canPlace: false` stops the walk from placing blocks (towering up
+ * or bridging with dirt/cobblestone), and `keepItems` keeps named items out
+ * of the scaffolding set. In the mine_stone eval a walk into the trench a
+ * gather left placed dirt over the cobblestone lying in it, and an
+ * unrestricted walk scaffolds with the very cobblestone being gathered.
+ *
  * @param {object} bot
- * @param {{ canDig?: boolean }} [opts]
+ * @param {{ canDig?: boolean, canPlace?: boolean, keepItems?: string[] }} [opts]
  */
 export function companionMovements(bot, opts = {}) {
   const m = new Movements(bot)
@@ -39,6 +45,15 @@ export function companionMovements(bot, opts = {}) {
   m.digCost = 8
   m.maxDropDown = 4
   if (opts.canDig === false) m.canDig = false
+  // (mineflayer-pathfinder spells the field `scafoldingBlocks`.)
+  if (opts.canPlace === false) {
+    m.scafoldingBlocks = []
+    m.allow1by1towers = false
+  } else if (Array.isArray(opts.keepItems) && opts.keepItems.length && Array.isArray(m.scafoldingBlocks)) {
+    const keep = new Set(opts.keepItems)
+    const items = bot?.registry?.items ?? {}
+    m.scafoldingBlocks = m.scafoldingBlocks.filter((id) => !keep.has(items[id]?.name))
+  }
   return m
 }
 
@@ -73,7 +88,9 @@ export class GoalDigReach extends goals.GoalNear {
  * @param {string|undefined} name block or item name the drop came from
  */
 export function dropWalkOpts(name) {
-  return TREE_BLOCK.test(String(name ?? '')) ? { canDig: false } : {}
+  // 261012: never place blocks on the way to a drop. A placed block in the
+  // drop's hole buries it (mine_stone eval: cobblestone lost under dirt).
+  return TREE_BLOCK.test(String(name ?? '')) ? { canDig: false, canPlace: false } : { canPlace: false }
 }
 const TREE_BLOCK = /(_log|_wood|_stem|_hyphae|leaves|_wart_block)$/
 

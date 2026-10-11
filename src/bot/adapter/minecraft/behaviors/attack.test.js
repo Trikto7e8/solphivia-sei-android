@@ -143,3 +143,31 @@ describe('attackEntity reports death only on the death event (261011)', () => {
     expect(goneResult('skeleton', 0, false)).toMatch(/^lost sight of skeleton/)
   })
 })
+
+// 261012: the chase re-installs its goal when another behavior replaced or
+// cleared it (combat.js's defend exit called pathfinder.stop(), and the chase,
+// which set its goal only once, stood still until its timeout).
+describe('attackEntity pursuit keeps its goal (261012)', () => {
+  it('re-installs the follow goal after something else cleared it', async () => {
+    const bot = fightBot()
+    bot.entities[7].position = new Vec3(10, 64, 0)
+    const set = []
+    bot.pathfinder = {
+      goal: null,
+      setGoal: vi.fn((g) => { bot.pathfinder.goal = g; if (g) set.push(g) }),
+      setMovements: vi.fn(),
+      stop: vi.fn(),
+    }
+    bot.setControlState = vi.fn()
+    // First goal: wiped a moment later, as pathfinder.stop() would. Second
+    // goal: the mob is then "reached".
+    const p = attackEntityAction({ entity_id: 7, times: 1, timeout_ms: 3000 }, bot, {})
+    await new Promise((r) => setTimeout(r, 150))
+    expect(set).toHaveLength(1)
+    bot.pathfinder.goal = null
+    await new Promise((r) => setTimeout(r, 250))
+    expect(set.length).toBeGreaterThanOrEqual(2)
+    bot.entities[7].position = new Vec3(1, 64, 0)
+    expect(await p).toMatch(/attacked zombie 1×|killed|zombie/)
+  })
+})

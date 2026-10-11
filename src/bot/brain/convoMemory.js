@@ -1,7 +1,7 @@
 /**
  * Short-term conversation memory — player-said / self-said ring buffers.
  *
- * Two split sub-buffers, capacity 10 each, 240-char per-line truncation.
+ * Two split sub-buffers, capacity 40 each, 240-char per-line truncation.
  * They are STORED split (the say() gates ask "what did I last say" and "has
  * the player spoken since" separately) and, since 260921, RENDERED as one
  * chronological exchange (formatConversationBlock). The two-list rendering
@@ -21,8 +21,37 @@
 
 import { SEED_HEADERS } from './prompts.js'
 
-const RECENT_CHAT_CAPACITY = 10
+const RECENT_CHAT_CAPACITY = 40
 const RECENT_CHAT_LINE_TRUNC = 240
+// 261012: the merged transcript shows the newest CONVERSATION_TURNS turns of
+// the combined exchange, where a player message is one turn and a run of her
+// lines with nothing from them in between is one turn. Each ring used to
+// hold 10 and both were rendered in full, but her lines are stored per
+// sentence (a turn is 2-4 entries) and the player's per message, so her 10
+// covered the last three or four turns while the player's 10 reached back a
+// minute or more. The transcript then showed a run of older player lines
+// with none of her answers between them (questions that read as unanswered)
+// and dropped the lines she was about to repeat ("still getting you that
+// cobble", said four times in the scripted-convo eval). Counting turns keeps
+// both sides over the same stretch of time, and 24 reaches about twelve
+// player lines back ("what was i scared of earlier?" asked ten lines on).
+const CONVERSATION_TURNS = 24
+
+/** The newest `turns` turns of a merged, oldest-first transcript. */
+export function lastTurns(merged, turns = CONVERSATION_TURNS) {
+  let n = 0
+  let i = merged.length
+  while (i > 0) {
+    const l = merged[i - 1]
+    const startsTurn = !l.self || !(merged[i]?.self)
+    if (startsTurn) {
+      if (n === turns) break
+      n += 1
+    }
+    i -= 1
+  }
+  return merged.slice(i)
+}
 
 function pushRing(arr, item, cap) {
   arr.push(item)
@@ -125,7 +154,7 @@ export function createConvoMemory({ onLine = null } = {}) {
       ...playerLines.map((l, i) => ({ ...l, self: false, i })),
       ...selfLines.map((l, i) => ({ ...l, self: true, i })),
     ].sort((a, b) => (a.at - b.at) || (Number(a.self) - Number(b.self)) || (a.i - b.i))
-    const body = merged
+    const body = lastTurns(merged)
       .map((l) => `[${fmtAgo(now, l.at)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`)
       .join('\n')
     return `${SEED_HEADERS.conversation}\n${body}`

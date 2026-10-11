@@ -6,7 +6,8 @@ import { facingLine } from '../facing.js'
 import { inventory, heldItem } from './inventory.js'
 import { aroundFeet } from './blocks.js'
 import { surveyBlocks } from './veins.js'
-import { nearbyEntities, droppedItemName } from './entities.js'
+import { nearbyEntities, droppedItemName, isDeadEntity, trackEntityDeaths } from './entities.js'
+import { HOSTILE_MOBS } from '../behaviors/hostiles.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getCraftableEntries } from './craftable.js'
 import { getFollowTargetLabel, getFollowStuckInfo } from '../behaviors/follow.js'
@@ -83,6 +84,28 @@ export function ownerHealth(registry, entity) {
 export function ownerHealthClause(hp) {
   if (hp == null) return ''
   return `, hp ${hp}/20${hp <= OWNER_LOW_HP ? ' (low)' : ''}`
+}
+
+// 261012: how far a hostile is from you and from the player, on its
+// `nearby entities` line. Quality eval protect_player: at the order the two
+// zombies were listed with coords only, 21 blocks from a 10 hp player, and
+// the model judged them "nearby" and walked over to stand beside the player
+// instead of meeting them. Hostiles only; other entities keep the bare form.
+export function hostileDistances(e, me, ownerEnt, ownerLabel) {
+  if (!e || e.username || !HOSTILE_MOBS.has(e.name)) return ''
+  const d = (a, b) => {
+    if (!a?.position || !b?.position) return null
+    try {
+      const v = a.position.distanceTo(b.position)
+      return Number.isFinite(v) ? Math.round(v) : null
+    } catch { return null }
+  }
+  const fromMe = d(e, me)
+  const fromOwner = ownerLabel ? d(e, ownerEnt) : null
+  const parts = []
+  if (fromMe != null) parts.push(`${fromMe} from you`)
+  if (fromOwner != null) parts.push(`${fromOwner} from ${ownerLabel}`)
+  return parts.length ? ` (${parts.join(', ')})` : ''
 }
 
 // Entity visibility radius (blocks). 64 = 4 chunks, the rough distance at
@@ -184,6 +207,18 @@ export function composeSnapshot(bot, opts = {}) {
   // only the elapsed trailer changes from `(Xs)` to `started=Xs ago`.
   const inFlightLine = getInFlightLineForSnapshot(inFlight)
   if (inFlightLine) lines.push(inFlightLine)
+  // 261012: say so when nothing runs. The absence of an in_flight line was the
+  // only signal, and in the scripted-convo eval she told the player "still
+  // getting you that cobble" four times with no action running at all.
+  // A follow is a background action with no in_flight line, so say that it
+  // is still on rather than call her idle while she trails the player.
+  else {
+    let following = null
+    try { following = getFollowTargetLabel() } catch { following = null }
+    lines.push(following
+      ? `idle: no action is running, but you are still following ${following}`
+      : 'idle: no action is running')
+  }
 
   // Inventory — append `(K/36 slots)` so the LLM can't confabulate "inventory
   // full" when downstream actions return "no X in inventory" (the real cause
@@ -269,7 +304,7 @@ export function composeSnapshot(bot, opts = {}) {
       const x = Math.round(e.position.x)
       const y = Math.round(e.position.y)
       const z = Math.round(e.position.z)
-      lines.push(`  ${tag} ${label} @${x},${y},${z}`)
+      lines.push(`  ${tag} ${label} @${x},${y},${z}${hostileDistances(e, bot.entity, owner?.player?.entity, pinUsername)}`)
       handles.push([tag, { kind: 'entity', entityId: e.id, expiresAt }])
     }
     if (ents.more > 0) lines.push(`  +${ents.more} more`)
@@ -338,7 +373,7 @@ export function composeSnapshot(bot, opts = {}) {
       if (dist != null && dist <= AGGRO_PAIR_RANGE) {
         try {
           const tally = tallyAggro({
-            mobs: Object.values(bot.entities ?? {}),
+            mobs: Object.values(bot.entities ?? {}).filter((m) => !isDeadEntity(bot, m)),
             selfPos: me.position,
             ownerPos: ownerEnt.position,
           })
@@ -379,6 +414,7 @@ export function composeSnapshot(bot, opts = {}) {
  * @param {{ bot: import('mineflayer').Bot }} deps
  */
 export function createSnapshotComposer({ bot }) {
+  trackEntityDeaths(bot)
   let prevInventory = null
   let prevHp = null
   // Session clock anchor: the composer is created once per bot session (right

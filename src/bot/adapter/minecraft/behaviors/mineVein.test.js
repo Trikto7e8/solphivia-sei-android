@@ -260,7 +260,7 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
     expect(r).toBe('gathered 1/1 oak_log')
     expect(walked).toEqual(['-3,64,-4', '5,64,2']) // closest first (5.0m before 5.4m)
-    expect(sweepOpts).toEqual([{ canDig: false }, { canDig: false }]) // no digging under a tree
+    expect(sweepOpts).toEqual([{ canDig: false, canPlace: false }, { canDig: false, canPlace: false }]) // no digging under a tree, never placing
   })
 
   it('lets the sweep dig into the hole a stone drop fell in (261011)', async () => {
@@ -271,7 +271,7 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
     await gatherAction({ x: 2, y: 63, z: 0, count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
     const sweeps = goTo.mock.calls.filter(c => c[4] === 1)
     expect(sweeps).toHaveLength(1)
-    expect(sweeps[0][7]).toEqual({})
+    expect(sweeps[0][7]).toEqual({ canPlace: false })
   })
 
   it('skips canopy drops (more than 2 above the bot) and never climbs', async () => {
@@ -306,12 +306,12 @@ describe('gatherAction — end-of-gather drop sweep (260709)', () => {
 
 describe('gatherAction — says when the drops never reached the inventory (261011)', () => {
   const noSleep = async () => {}
-  it('appends a note when blocks broke but the inventory did not change', async () => {
+  it('never counts a block whose drop did not reach the inventory (261012)', async () => {
     const { bot, blocks } = makeWorld([[2, 64, 0, 'oak_log']])
     bot.inventory = { items: () => [{ name: 'oak_log', count: 2 }] }
     const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug oak_log' })
     const r = await gatherAction({ name: 'oak_log', count: 1 }, bot, {}, { goTo: async () => 'reached', digAction, sleep: noSleep })
-    expect(r).toBe('gathered 1/1 oak_log but nothing new reached your inventory (the drops may still be on the ground; pickup collects them)')
+    expect(r).toBe('gathered 0/1 oak_log (no more oak_log reachable nearby) (broke 1 oak_log, but none reached your inventory)')
   })
 
   it('adds nothing when the drop was collected', async () => {
@@ -404,5 +404,145 @@ describe('gatherAction — cobblestone comes from stone (261011)', () => {
     const r = await gatherAction({ name: 'cobblestone', count: 1 }, bot, {}, deps)
     expect(r).toBe('gathered 1/1 stone (stone drops cobblestone)')
     expect(blocks.has('1,64,0')).toBe(true)
+  })
+})
+
+// 261012 — quality eval mine_stone: "gathered 10/10 stone" with 7 to 9
+// cobblestone delivered. The count now comes from the inventory, the batch
+// mines on to make up lost drops, and the sweep tries a drop's own cell.
+describe('gatherAction — counts what reaches the inventory (261012)', () => {
+  const mcData = createRequire(import.meta.url)('minecraft-data')('1.21.1')
+  // A row of stone along +x; the bot carries an inventory the dig stub feeds.
+  function stoneWorld(n, { far = false } = {}) {
+    const blocks = new Map()
+    for (let i = 0; i < n; i++) blocks.set(`${i + 1},63,0`, 'stone')
+    const inv = []
+    const bot = {
+      version: '1.21.1',
+      entity: { position: new Vec3(0.5, 64, 0.5), eyeHeight: 1.62 },
+      entities: {},
+      inventory: { items: () => inv },
+      blockAt(p) { const name = blocks.get(`${p.x},${p.y},${p.z}`); return { name: name ?? 'air', position: p } },
+      findBlocks({ matching, count }) {
+        const hits = []
+        for (const [k, name] of blocks) {
+          if (!matching.includes(mcData.blocksByName[name].id)) continue
+          const [x, y, z] = k.split(',').map(Number)
+          hits.push(new Vec3(x, y, z))
+        }
+        hits.sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position))
+        return hits.slice(0, count ?? 1)
+      },
+    }
+    if (far) bot.entity.position = new Vec3(-20.5, 64, 0.5)
+    const give = (name, k = 1) => {
+      const it = inv.find(i => i.name === name)
+      if (it) it.count += k
+      else inv.push({ name, count: k })
+    }
+    return { bot, blocks, inv, give }
+  }
+  const noSleep = async () => {}
+
+  it('mines past a lost drop until the requested count is in the inventory', async () => {
+    const { bot, blocks, give } = stoneWorld(6)
+    let n = 0
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      blocks.delete(`${x},${y},${z}`)
+      if (++n !== 2) give('cobblestone') // the second drop is lost
+      return 'dug stone'
+    })
+    const r = await gatherAction({ name: 'stone', count: 3 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction, sleep: noSleep })
+    expect(r).toBe('gathered 3/3 cobblestone (mined from stone)')
+    expect(digAction).toHaveBeenCalledTimes(4)
+  })
+
+  it('stops after a bounded number of extra digs and reports only what arrived', async () => {
+    const { bot, blocks } = stoneWorld(20)
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug stone' })
+    const r = await gatherAction({ name: 'stone', count: 4 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction, sleep: noSleep })
+    // 4 requested + 4 extra digs at most; nothing ever arrived.
+    expect(digAction).toHaveBeenCalledTimes(8)
+    expect(r).toBe('gathered 0/4 cobblestone (mined from stone) (broke 8 stone, but none reached your inventory)')
+  })
+
+  it('digs only the requested count when the drops arrive late, in the sweep', async () => {
+    const { bot, blocks, give } = stoneWorld(12)
+    let nextId = 100
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      blocks.delete(`${x},${y},${z}`)
+      const id = nextId++
+      bot.entities[id] = { id, name: 'item', position: new Vec3(x + 0.5, y, z + 0.5), isValid: true }
+      return 'dug stone'
+    })
+    // Nothing reaches the inventory until the sweep walks over each drop.
+    const goTo = vi.fn(async (b, x, y, z) => {
+      for (const [id, e] of Object.entries(bot.entities)) {
+        if (Math.floor(e.position.x) === x && Math.floor(e.position.z) === z) { delete bot.entities[id]; give('cobblestone') }
+      }
+      return 'reached'
+    })
+    const r = await gatherAction({ name: 'stone', count: 4 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    expect(digAction).toHaveBeenCalledTimes(4)
+    expect(r).toBe('gathered 4/4 cobblestone (mined from stone)')
+  })
+
+  it('counts the drop, not the block, for a block that drops several items', async () => {
+    const { bot, blocks, give } = stoneWorld(0)
+    blocks.set('1,63,0', 'redstone_ore'); blocks.set('2,63,0', 'redstone_ore'); blocks.set('3,63,0', 'redstone_ore')
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); give('redstone', 4); return 'dug redstone_ore' })
+    const r = await gatherAction({ name: 'redstone_ore', count: 5 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction, sleep: noSleep })
+    expect(digAction).toHaveBeenCalledTimes(2)
+    expect(r).toBe('gathered 8/5 redstone (mined from redstone_ore)')
+  })
+
+  it('stops at the first block that cannot drop anything with the tools on hand', async () => {
+    const { bot, blocks } = stoneWorld(6)
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      blocks.delete(`${x},${y},${z}`)
+      return 'dug stone (no drop — you have no tool that can harvest stone; craft the right pickaxe first)'
+    })
+    const goTo = vi.fn(async () => 'reached')
+    const r = await gatherAction({ name: 'stone', count: 5 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    expect(digAction).toHaveBeenCalledTimes(1)
+    expect(r).toMatch(/^gathered 0\/5 cobblestone \(mined from stone\) \(stopped: stone drops nothing unless you hold the right tool/)
+  })
+
+  it('retries a block once when the dig was cancelled under it', async () => {
+    const { bot, blocks, give } = stoneWorld(1)
+    let first = true
+    const digAction = vi.fn(async ({ x, y, z }) => {
+      if (first) { first = false; return 'dig failed: Digging aborted' }
+      blocks.delete(`${x},${y},${z}`); give('cobblestone'); return 'dug stone'
+    })
+    const r = await gatherAction({ name: 'stone', count: 1 }, bot, {}, { goTo: vi.fn(async () => 'reached'), digAction, sleep: noSleep })
+    expect(digAction).toHaveBeenCalledTimes(2)
+    expect(r).toBe('gathered 1/1 cobblestone (mined from stone)')
+  })
+
+  it('walks to a block without scaffolding with the item being gathered', async () => {
+    const { bot, blocks, give } = stoneWorld(1, { far: true })
+    const goTo = vi.fn(async () => 'reached')
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); give('cobblestone'); return 'dug stone' })
+    await gatherAction({ name: 'stone', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    const approach = goTo.mock.calls.find(c => c[4] === 3)
+    expect(approach[7]).toEqual({ reach: 4.2, keepItems: ['cobblestone'] })
+  })
+
+  it('tries a drop a second time, ending in its own cell, when the first walk did not collect it', async () => {
+    const { bot, blocks, give } = stoneWorld(1)
+    const drop = { id: 7, name: 'item', position: new Vec3(3.4, 63, 0.6), isValid: true }
+    bot.entities = { 7: drop }
+    const walks = []
+    const goTo = vi.fn(async (b, x, y, z, range) => {
+      walks.push([x, y, z, range])
+      // Only standing in the drop's own cell picks it up (it lies in a hole).
+      if (range === 0) { delete bot.entities[7]; give('cobblestone') }
+      return 'reached'
+    })
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug stone' })
+    const r = await gatherAction({ name: 'stone', count: 1 }, bot, {}, { goTo, digAction, sleep: noSleep })
+    expect(walks).toEqual([[3, 63, 0, 1], [3, 63, 0, 0]])
+    expect(r).toBe('gathered 1/1 cobblestone (mined from stone)')
   })
 })

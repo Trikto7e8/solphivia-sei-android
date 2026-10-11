@@ -44,6 +44,16 @@ const MinecraftAdapterSchema = z.object({
   // ours and walking in would only drag more of the world along.
   defend_owner: z.boolean().default(true),
   defend_radius_blocks: z.number().min(0).default(16),
+  // 261012 — the owner-threat watch (combat.js). The defend engagement above
+  // starts only once a mob has HIT the owner; at low health that is too late
+  // (quality eval protect_player: a 10 hp player and two zombies, the
+  // companion walked over to stand beside them and the second zombie killed
+  // them). When a hostile within owner_threat_radius_blocks of the owner is
+  // closing on them, and the owner is at owner_threat_hp or less (or two or
+  // more are closing), sei:owner_attacked fires with threat:true so the model
+  // can meet the mob before it arrives. Nothing is swung automatically.
+  owner_threat_hp: z.number().min(0).default(12),
+  owner_threat_radius_blocks: z.number().min(0).default(12),
   // Reflex evasion micro-controller (Phase 17, D-05). A ~20 Hz physicsTick
   // survival loop (behaviors/reflex.js) that evades incoming damage BEFORE it
   // lands — arrow sidestep, creeper goal-owning flee, melee circle-strafe. It

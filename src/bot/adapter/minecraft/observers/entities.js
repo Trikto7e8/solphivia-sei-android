@@ -41,6 +41,29 @@ export function droppedItemName(entity) {
   return null
 }
 
+// 261012: a mob stays in bot.entities for its ~1s death animation after the
+// server has said it died (entity_status 3, mineflayer 'entityDead'), until
+// the destroy packet removes it. A snapshot taken right after a kill still
+// listed the corpse as a live zombie, and the scripted-conversation eval had
+// her announce "another one coming" and swing at nothing. The ids are kept
+// on the bot so every observer (snapshot, aggro tally, name targeting, the
+// owner-threat watch) agrees on what is still alive.
+export function trackEntityDeaths(bot) {
+  if (!bot || bot._seiDeadEntityIds) return
+  const ids = new Set()
+  bot._seiDeadEntityIds = ids
+  try {
+    bot.on?.('entityDead', (e) => { if (e?.id != null) ids.add(e.id) })
+    bot.on?.('entityGone', (e) => { if (e?.id != null) ids.delete(e.id) })
+  } catch { /* a stub bot without events: nothing is ever marked dead */ }
+}
+
+/** True once the server has reported this entity dead (it may still be listed). */
+export function isDeadEntity(bot, entity) {
+  const ids = bot?._seiDeadEntityIds
+  return !!ids && entity?.id != null && ids.has(entity.id)
+}
+
 /**
  * Find nearby entities, closest-first, excluding self.
  *
@@ -75,6 +98,7 @@ export function nearbyEntities(bot, opts = {}) {
   for (const e of Object.values(bot.entities ?? {})) {
     if (!e || e === me) continue
     if (!e.position) continue
+    if (isDeadEntity(bot, e)) continue
     const d = e.position.distanceTo(me.position)
     if (d > radius) continue
     // Visibility filter (260618): only keep entities the bot can actually SEE —

@@ -117,3 +117,75 @@ describe('261011 FIRST CONTACT wording follows the memory', () => {
     expect(t).not.toContain('first time you two have played together')
   })
 })
+
+// 261012: her first-spawn hello and the player's own "hey" cross in flight;
+// the reply to that first player line is told she already greeted them.
+describe('261012 crossed greeting', () => {
+  const NOTE = 'it already answers their hello'
+  const sayTurn = (text) => ({ text: '', toolUses: [{ id: `s${text.length}`, name: 'say', input: { text } }, { id: 'el', name: 'end_loop', input: {} }] })
+  // Live order (brain/index.js): the line is recorded, then dispatched.
+  const say2 = async (orch, text) => {
+    orch.recordIncomingChat('Steve', text)
+    await orch.handleDispatch('sei:chat_received', chat(text))
+  }
+  const lastTurnText = (provider) => JSON.stringify(provider.calls.at(-1)?.messages ?? provider.calls.at(-1))
+
+  it('the reply to the first player line after her greeting carries the note, once', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('heyyy steve'), sayTurn('lol yeah im here'), sayTurn('sure')])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    await say2(orch, 'hey sui')
+    expect(lastTurnText(provider)).toContain(NOTE)
+    // The mandatory-reply framing is swapped out for this one line.
+    expect(lastTurnText(provider)).not.toContain('a direct message never gets silence')
+    expect(lastTurnText(provider)).not.toContain('but say something')
+    await say2(orch, 'wanna get wood')
+    expect(lastTurnText(provider)).not.toContain(NOTE)
+  })
+
+  it('mid-action: the hello that crossed hers gets the same note', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'heyyy steve' } }, { id: 'g1', name: 'gather', input: { name: 'oak_log' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    await flush()
+    await say2(orch, 'hey sui')
+    await flush()
+    expect(provider.calls.length).toBeGreaterThanOrEqual(2)
+    expect(lastTurnText(provider)).toContain("You're currently: gather")
+    expect(lastTurnText(provider)).toContain(NOTE)
+  })
+
+  it('no note when the player stayed silent and says hello long after her greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('heyyy steve'), sayTurn('oh hey')])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 5 * 60_000)
+      await say2(orch, 'hey sui')
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(lastTurnText(provider)).not.toContain(NOTE)
+    expect(lastTurnText(provider)).toContain('a direct message never gets silence')
+  })
+
+  it('no note when she never said a greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([{ text: '', toolUses: [] }, sayTurn('hey')])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    await say2(orch, 'hey sui')
+    expect(lastTurnText(provider)).not.toContain(NOTE)
+  })
+})

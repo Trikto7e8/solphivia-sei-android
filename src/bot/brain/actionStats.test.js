@@ -35,6 +35,7 @@ describe('classifyResultText (real behavior result strings)', () => {
     ['timeout — unreachable — try build to Y=70', 'timeout'],
     ['out of range (5.1m, need ≤4.5) for oak_log @1,2,3', 'no_path'],
     ['stuck at 3,67,2, 4.1m from 196,68,-1: the path kept failing at the same spot. Try a different spot nearby, or dig or build through', 'no_path'],
+    ['shelter UNFINISHED, it has gaps and is not safe yet (walls: built 10 of ~24 needed)', 'partial'],
     ["couldn't place dirt — no open spot in reach. Step somewhere more open", 'no_path'],
     ['no cobblestone in inventory', 'missing_materials'],
     ['you only have 3 dirt, and that span needs 9', 'missing_materials'],

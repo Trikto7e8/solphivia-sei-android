@@ -6,7 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 
 vi.mock('./build.js', () => ({
-  buildAction: vi.fn(async () => 'built 16 placed, 0 skipped, of 16 cells'),
+  buildAction: vi.fn(async () => 'built 16 placed, 0 skipped (already solid), of 16 cells'),
 }))
 vi.mock('./dig.js', () => ({
   digAction: vi.fn(async () => 'dug 2/2'),
@@ -67,5 +67,26 @@ describe('shelterAction', () => {
     expect(res).toBe('aborted')
     expect(buildAction).not.toHaveBeenCalled()
     expect(digAction).not.toHaveBeenCalled()
+  })
+
+  it('does not claim a shelter when no wall went up (261011)', async () => {
+    buildAction.mockResolvedValueOnce('no cobblestone in inventory')
+    const res = await shelterAction({}, makeBot(), {})
+    expect(res).toBe('no shelter built: walls: no cobblestone in inventory')
+    expect(buildAction).toHaveBeenCalledTimes(1)
+    expect(digAction).not.toHaveBeenCalled()
+  })
+
+  it('says UNFINISHED when the walls or roof ran out (261011)', async () => {
+    buildAction
+      .mockResolvedValueOnce('built 10 of ~24 needed, then ran out of cobblestone. Get more cobblestone (gather it, or ask the player for it) before finishing this build.')
+      .mockResolvedValueOnce('no cobblestone in inventory')
+    const res = await shelterAction({}, makeBot(), {})
+    expect(res).toMatch(/^shelter UNFINISHED, it has gaps and is not safe yet/)
+  })
+
+  it('reports a finished shelter as built', async () => {
+    const res = await shelterAction({}, makeBot(), {})
+    expect(res).toMatch(/^built shelter 3x3x3 with a doorway/)
   })
 })

@@ -65,7 +65,7 @@ export function classifyResultText(text) {
   }
 
   // A build that placed some cells but not all (its reason text names reach).
-  if (/cells failed|^built nothing|^build halted/.test(s)) return 'partial'
+  if (/cells failed|^built nothing|^build halted|^shelter unfinished/.test(s)) return 'partial'
   if (/\btimeout\b|timed out|ran out of time/.test(s)) return 'timeout'
   if (/^stuck\b|cant_reach|can't reach|cannot reach|could ?n[o']t reach|unreachable|out of range|out of reach|too far|no path|nopath|no open spot in reach|no reachable/.test(s)) return 'no_path'
   if (/^no \S.* in inventory|you only have|ran out of|^no \S.* to (smelt|fuel|deposit)|needs a crafting table|no crafting recipe|not enough|holding nothing|no tool that can|^cannot hold/.test(s)) return 'missing_materials'

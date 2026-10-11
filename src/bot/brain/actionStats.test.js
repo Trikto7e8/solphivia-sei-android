@@ -48,6 +48,8 @@ describe('classifyResultText (real behavior result strings)', () => {
     ['2 hits on zombie, then lost sight of zombie: it moved out of range or despawned, NOT confirmed dead, it may still be around', 'target_not_found'],
     ['no zombie within 16 blocks to attack', 'target_not_found'],
     ['zombie died before you hit it', null],
+    ['did not attack skeleton: you are at 4 health, and one or two more hits will kill you. Get away first', 'refused'],
+    ['3/5 hits on zombie, then stopped: you are down to 3 health. Get away first', 'refused'],
     ['no furnace open', 'target_not_found'],
     ['built 5 placed, 4 cells FAILED (could not reach o', 'partial'],
     ['built NOTHING: all 9 cells were already occupied', 'partial'],

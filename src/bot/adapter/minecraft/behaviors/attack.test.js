@@ -116,6 +116,14 @@ describe('attackEntity reports death only on the death event (261011)', () => {
     expect(r).not.toMatch(/killed/)
   })
 
+  it('stops swinging once the death event arrives, while the corpse is still listed', async () => {
+    const bot = withEvents(fightBot())
+    bot.attack.mockImplementation(() => { bot.emit('entityDead', { id: 7 }) }) // entity stays in the table
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(bot.attack).toHaveBeenCalledTimes(1)
+    expect(r).toBe('killed zombie (1 hits)')
+  })
+
   it('counts a kill on the last swing', async () => {
     const bot = withEvents(fightBot())
     bot.attack.mockImplementation(() => { setTimeout(() => { bot.emit('entityDead', { id: 7 }) }, 50) })

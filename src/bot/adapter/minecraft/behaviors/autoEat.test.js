@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { shouldAutoEat, inCombat, noteCombat, STARVING_FOOD, IN_COMBAT_MS } from './autoEat.js'
+import { shouldAutoEat, inCombat, noteCombat, STARVING_FOOD, IN_COMBAT_MS, FIGHT_EAT_HEALTH } from './autoEat.js'
 import { keepWeaponInHand } from './weaponSelect.js'
 
 describe('shouldAutoEat (261011)', () => {
@@ -13,9 +13,12 @@ describe('shouldAutoEat (261011)', () => {
     expect(shouldAutoEat({ food: 18, health: 20 })).toBe(false)
   })
 
-  it('holds off mid-fight unless starving', () => {
-    expect(shouldAutoEat({ food: 10, health: 8 }, { fighting: true })).toBe(false)
-    expect(shouldAutoEat({ food: STARVING_FOOD, health: 8 }, { fighting: true })).toBe(true)
+  it('holds off mid-fight unless starving or badly hurt', () => {
+    expect(shouldAutoEat({ food: 10, health: 12 }, { fighting: true })).toBe(false)
+    expect(shouldAutoEat({ food: STARVING_FOOD, health: 18 }, { fighting: true })).toBe(true)
+    // pass-2 combat_night death: 17/20 food, losing a skeleton fight
+    expect(shouldAutoEat({ food: 17, health: FIGHT_EAT_HEALTH }, { fighting: true })).toBe(true)
+    expect(shouldAutoEat({ food: 20, health: 4 }, { fighting: true })).toBe(false)
   })
 
   it('backs off after a failed attempt and never double-starts', () => {

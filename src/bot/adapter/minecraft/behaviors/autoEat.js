@@ -11,11 +11,17 @@ import { loader as autoEat } from 'mineflayer-auto-eat'
 //    hand spends the whole fight holding food.
 //  - Mid-fight it swaps the weapon out for food at the first missing drumstick.
 // So the trigger is ours: never with a full food bar (the server will not
-// allow it), never while fighting unless starving, and a failed attempt backs
-// off instead of retrying 20 times a second.
+// allow it), never while fighting unless starving or badly hurt
+// (FIGHT_EAT_HEALTH), and a failed attempt backs off instead of retrying 20
+// times a second.
 export const AUTO_EAT_MIN_HUNGER = 17
 export const AUTO_EAT_MIN_HEALTH = 14
 export const STARVING_FOOD = 6
+// Mid-fight, eat anyway at or below this health (when the bar has room).
+// Holding the weapon is worth less than not dying: in the pass-2 combat_night
+// eval she chased a kiting skeleton from 16 to 4 health with 7 bread and a
+// 17/20 food bar, never ate (fighting = no eating), and died.
+export const FIGHT_EAT_HEALTH = 10
 export const IN_COMBAT_MS = 5000
 export const EAT_FAIL_BACKOFF_MS = 10000
 
@@ -43,7 +49,7 @@ export function shouldAutoEat(state, ctx = {}) {
   if (ctx.eating) return false
   if (food >= 20) return false // the server refuses to eat on a full bar
   if (Number.isFinite(ctx.backoffUntil) && (ctx.now ?? Date.now()) < ctx.backoffUntil) return false
-  if (ctx.fighting) return food <= STARVING_FOOD
+  if (ctx.fighting) return food <= STARVING_FOOD || health <= FIGHT_EAT_HEALTH
   return food < AUTO_EAT_MIN_HUNGER || health < AUTO_EAT_MIN_HEALTH
 }
 

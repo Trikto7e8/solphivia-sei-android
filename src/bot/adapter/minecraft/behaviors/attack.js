@@ -29,10 +29,17 @@ export const CRITICAL_HP = 6
 const CRITICAL_ADVICE = 'Get away first (follow the player, or goTo somewhere away from it), eat if you have food, then fight'
 
 // Anti-stuck movement tuning shared with goTo (pathfind.js): make digging a
-// last resort so pursuit routes around obstacles rather than tunnelling, and
-// no sprint-jumps (they wedge the bot on block corners, see companionMovements).
-function pursuitMovements(bot) {
-  return companionMovements(bot)
+// last resort so pursuit routes around obstacles rather than tunnelling.
+// Sprinting stays ON here, unlike goTo/follow: a chase has to close distance
+// on a mob that is moving away (a skeleton backs off to shoot). With pursuit
+// at a walk, the pass-2 combat_night eval had four "couldn't catch ... it
+// kept its distance" (pass 1b: none), and one 12s skeleton chase took her
+// from 16 to 4 health before she died. The corner wedge that sprint causes
+// costs a 3.5s path reset on a walk; on a chase the goal moves every tick.
+export function pursuitMovements(bot) {
+  const m = companionMovements(bot)
+  m.allowSprinting = true
+  return m
 }
 
 function inStaggerWindow(bot) {
@@ -190,6 +197,10 @@ export async function attackEntityAction(args, bot, config) {
       if (Date.now() - startedAt > timeoutMs) {
         return hits ? `timeout after ${hits}/${times} hits on ${name}` : `timeout attacking ${name}`
       }
+
+      // A dead mob stays in the entity table for its ~1s death animation;
+      // stop swinging at the corpse once the server has said it died.
+      if (died) return goneResult(name, hits, true)
 
       let live = bot.entities?.[entityId]
       if (!live) {

@@ -4450,7 +4450,16 @@ function maybeWarnByteCap(loop, warned) {
           }
           // No action running: answer in this loop. The last message is the
           // assistant's text turn, so a user turn carries the nudge (the
-          // model rejects a request that ends on an assistant turn).
+          // model rejects a request that ends on an assistant turn). An
+          // EMPTY response (no text at all) left an assistant turn with no
+          // content, which Anthropic rejects with a 400 when it is not the
+          // final message, so it gets a placeholder first.
+          const msgs = loop._internal?.messages
+          const lastMsg = msgs?.[msgs.length - 1]
+          if (lastMsg?.role === 'assistant' && Array.isArray(lastMsg.content) &&
+              !lastMsg.content.some(b => b && (b.type !== 'text' || String(b.text ?? '').trim()))) {
+            lastMsg.content = [{ type: 'text', text: '(no reply)' }]
+          }
           loop.appendUserTurn([{ type: 'text', name: 'unanswered', text: unansweredText }])
           loop._currentIterationTrigger = 'sei:chat_received'
           continue

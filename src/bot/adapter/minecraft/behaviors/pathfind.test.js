@@ -198,3 +198,13 @@ describe('GoalDigReach (261011)', () => {
     expect(g.isEnd({ x: 6, y: 64, z: 0 })).toBe(false)
   })
 })
+
+describe('pursuitMovements (attack chase)', () => {
+  it('sprints, unlike goTo and follow, with the same dig and drop tuning', async () => {
+    const { pursuitMovements } = await import('./attack.js')
+    const m = pursuitMovements(makeBot())
+    expect(m.allowSprinting).toBe(true)
+    expect(m.digCost).toBe(8)
+    expect(m.maxDropDown).toBe(4)
+  })
+})

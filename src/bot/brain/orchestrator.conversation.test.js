@@ -344,6 +344,23 @@ describe('a player line answered with text only gets one retry (261011)', () => 
     expect(adapter.chat).toHaveBeenCalledTimes(1)
   })
 
+  it('an empty response gets a placeholder so the retry request is valid', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider, adapter } = makeOrch({
+      script: [
+        { text: '', toolUses: [] },
+        { text: '', toolUses: [say('t2', 'yep')] },
+      ],
+    })
+    await orch.handleDispatch('sei:chat_received', chat('you there?'))
+    expect(provider.calls.length).toBe(2)
+    const prior = provider.calls[1].blocks.at(-2)
+    expect(prior.role).toBe('assistant')
+    expect(prior.content.length).toBeGreaterThan(0)
+    expect(prior.content.every((b) => b.type !== 'text' || b.text.trim().length > 0)).toBe(true)
+    expect(adapter.chat).toHaveBeenCalledTimes(1)
+  })
+
   it('retries only once: a second text-only turn ends the loop', async () => {
     _setTickIntervalForTests(10_000_000)
     const { orch, provider, adapter } = makeOrch({

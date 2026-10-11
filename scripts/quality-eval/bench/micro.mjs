@@ -245,5 +245,6 @@ export const MICRO = [
   },
 ]
 
-// The --quick subset: the benchmarks real fixes have moved, plus stop.
-export const QUICK_MICRO = ['gather_logs', 'craft_tools', 'come_here', 'zombies_night', 'stop_gather', 'pickup_items']
+// The --quick subset: fast benchmarks, including the borderline protect fight
+// and stop (the ones fixes have moved); skips the long timeouts (mine, build).
+export const QUICK_MICRO = ['gather_logs', 'craft_tools', 'come_here', 'zombies_night', 'protect_player', 'stop_gather']

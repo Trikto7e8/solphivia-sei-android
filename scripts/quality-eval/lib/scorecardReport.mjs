@@ -15,7 +15,7 @@ const title = (id) => MICRO.find((b) => b.id === id)?.title ?? id
 
 function scorecardSection(L, sc, rows) {
   if (sc.index) {
-    L.push(`**Quality index: ${f1(sc.index.value)}** (95% interval ${f1(sc.index.ci[0])} to ${f1(sc.index.ci[1])}; 0-100, higher is better).`)
+    L.push(`**Quality index: ${f1(sc.index.value)}** (95% interval ${f1(sc.index.ci[0])} to ${f1(sc.index.ci[1])}; 0-100, higher is better; raw weighted mean ${f1(sc.index.raw ?? sc.index.value)}).`)
     L.push('')
     const c = sc.index.components
     L.push(`Made of: brain-mode benchmark success ${pc(c.B)} (weight ${WEIGHTS.B}), direct-mode success ${pc(c.D)} (${WEIGHTS.D}), scripted-conversation ok-rate ${pc(c.C)} (${WEIGHTS.C}), free-play ok-rate ${pc(c.F)} (${WEIGHTS.F}). Missing parts are left out and the weights renormalized, so only compare indexes built from the same parts.`)
@@ -35,7 +35,7 @@ function scorecardSection(L, sc, rows) {
       L.push(`| ${b.title} | ${br ? `${br.k}/${br.n} (${pc(br.rate)})` : '-'} | ${br ? ci(br.ci) : '-'} | ${di ? `${di.k}/${di.n} (${pc(di.rate)})` : '-'} | ${di ? ci(di.ci) : '-'} | ${br?.medianTimeS ?? '-'} / ${di?.medianTimeS ?? '-'} | ${(br?.invalid || 0) + (di?.invalid || 0) || ''} |`)
     }
     const pb = sc.microPooled.brain, pd = sc.microPooled.direct
-    L.push(`| **mean over benchmarks** | **${pc(pb?.rate)}** (${pb?.trials ?? 0} trials) | | **${pc(pd?.rate)}** (${pd?.trials ?? 0} trials) | | | |`)
+    L.push(`| **mean over benchmarks** | **${pc(pb?.rate)}** (${pb?.trials ?? 0} trials) | ${pb?.ci ? ci(pb.ci) : ''} | **${pc(pd?.rate)}** (${pd?.trials ?? 0} trials) | ${pd?.ci ? ci(pd.ci) : ''} | | |`)
     L.push('')
     const fails = rows.filter((r) => r.suite === 'micro' && !r.success && !r.invalid)
     if (fails.length) {
@@ -98,6 +98,7 @@ export function compareSection(L, { labelA, labelB, A, B, cmp }) {
   L.push('')
   L.push('| metric | A | B | delta (pp) | 95% CI | |')
   L.push('|---|---:|---:|---:|---:|---|')
+  for (const [mode, d] of Object.entries(cmp.pooled || {})) L.push(`| **mean benchmark success (${mode}, ${d.benches} benchmarks)** | ${pc(d.a)} | ${pc(d.b)} | ${pp(d.delta)} | ${ppci(d.ci)} | ${d.real ? '**real**' : ''} |`)
   for (const [id, m] of Object.entries(cmp.micro)) for (const [mode, d] of Object.entries(m)) L.push(`| ${title(id)} (${mode}) success | ${pc(d.a)} | ${pc(d.b)} | ${pp(d.delta)} | ${ppci(d.ci)} | ${d.real ? '**real**' : ''} |`)
   if (cmp.convo) L.push(`| scripted conversation off-rate | ${pc(cmp.convo.a)} | ${pc(cmp.convo.b)} | ${pp(cmp.convo.delta)} | ${ppci(cmp.convo.ci)} | ${cmp.convo.real ? '**real**' : ''} |`)
   if (cmp.freeplay) L.push(`| free-play off-rate | ${pc(cmp.freeplay.a)} | ${pc(cmp.freeplay.b)} | ${pp(cmp.freeplay.delta)} | ${ppci(cmp.freeplay.ci)} | ${cmp.freeplay.real ? '**real**' : ''} |`)

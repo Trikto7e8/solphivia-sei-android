@@ -40,6 +40,9 @@ export function computeScorecard(rows, { seed = 7 } = {}) {
     return { benches: cells.length, trials: cells.reduce((a, [, m]) => a + m.n, 0), rate: mean(cells.map(([, m]) => m.k / m.n)), cells: cells.map(([id, m]) => ({ id, k: m.k, n: m.n })) }
   }
   sc.microPooled = { brain: pooled('brain'), direct: pooled('direct') }
+  // Wilson on the pooled trials (benchmarks get equal reps, so the mean of
+  // rates is the pooled proportion); keeps the point inside its interval.
+  for (const m of Object.values(sc.microPooled)) if (m) m.ci = wilson(Math.round(m.rate * m.trials), m.trials)
 
   // ── scripted conversations ──
   const convo = rows.filter((x) => x.suite === 'convo' && x.labels)
@@ -95,8 +98,11 @@ export function computeScorecard(rows, { seed = 7 } = {}) {
 
 // One simulated draw of each component; null when the scorecard lacks it.
 function drawComponents(sc, r) {
-  const B = sc.microPooled.brain ? mean(sc.microPooled.brain.cells.map((c) => propDraw(r, c.k, c.n))) : null
-  const D = sc.microPooled.direct ? mean(sc.microPooled.direct.cells.map((c) => propDraw(r, c.k, c.n))) : null
+  // Pooled over benchmarks (equal reps per benchmark): one Jeffreys draw on
+  // all trials. Per-cell priors on 2-6 trial cells shrank the index too far.
+  const pooledDraw = (m) => (m ? propDraw(r, Math.round(m.rate * m.trials), m.trials) : null)
+  const B = pooledDraw(sc.microPooled.brain)
+  const D = pooledDraw(sc.microPooled.direct)
   const C = sc.convo ? 1 - propDraw(r, sc.convo.effK, sc.convo.effN) : null
   let F = null
   if (sc.freeplay) {
@@ -122,15 +128,19 @@ export function pointComponents(sc) {
   }
 }
 
+// The index point is the MEDIAN of its simulated draws, so it always sits
+// inside its interval. Jeffreys draws pull extremes in a little, so near the
+// ceiling the index reads a point or two under the raw weighted mean (`raw`);
+// compare indexes from equally sized runs.
 function indexOf(sc, seed) {
   const comps = pointComponents(sc)
-  const value = combine(comps)
-  if (value == null) return null
+  const raw = combine(comps)
+  if (raw == null) return null
   const r = rng(seed)
   const draws = []
   for (let i = 0; i < DRAWS; i++) draws.push(combine(drawComponents(sc, r)))
   draws.sort((a, b) => a - b)
-  return { value, ci: [quantile(draws, 0.025), quantile(draws, 0.975)], components: comps, present: Object.keys(comps).filter((k) => comps[k] != null) }
+  return { value: quantile(draws, 0.5), raw, ci: [quantile(draws, 0.025), quantile(draws, 0.975)], components: comps, present: Object.keys(comps).filter((k) => comps[k] != null) }
 }
 
 /** Paired comparison of two scorecards (A = baseline, B = candidate). */
@@ -143,6 +153,19 @@ export function compareScorecards(A, B, { seed = 11 } = {}) {
       const ci = newcombe(a.k, a.n, b.k, b.n)
       ;(out.micro[id] ??= {})[mode] = { a: a.k / a.n, b: b.k / b.n, delta: b.k / b.n - a.k / a.n, ci, real: ci[0] > 0 || ci[1] < 0 }
     }
+  }
+  // Mean success over the benchmarks both sides ran, per mode.
+  out.pooled = {}
+  for (const mode of ['brain', 'direct']) {
+    const a = A.microPooled?.[mode], b = B.microPooled?.[mode]
+    if (!a || !b) continue
+    const ids = a.cells.map((c) => c.id).filter((id) => b.cells.some((c) => c.id === id))
+    if (!ids.length) continue
+    const ca = ids.map((id) => a.cells.find((c) => c.id === id)), cb = ids.map((id) => b.cells.find((c) => c.id === id))
+    const ra = mean(ca.map((c) => c.k / c.n)), rb = mean(cb.map((c) => c.k / c.n))
+    const na = ca.reduce((x, c) => x + c.n, 0), nb = cb.reduce((x, c) => x + c.n, 0)
+    const ci = newcombe(Math.round(ra * na), na, Math.round(rb * nb), nb)
+    out.pooled[mode] = { a: ra, b: rb, delta: rb - ra, ci, real: ci[0] > 0 || ci[1] < 0, benches: ids.length }
   }
   if (A.convo && B.convo) {
     const ci = newcombe(A.convo.effK, A.convo.effN, B.convo.effK, B.convo.effN)
@@ -163,7 +186,7 @@ export function compareScorecards(A, B, { seed = 11 } = {}) {
     for (let i = 0; i < DRAWS; i++) ds.push(combine(drawComponents(B, r)) - combine(drawComponents(A, r)))
     ds.sort((x, y) => x - y)
     const ci = [quantile(ds, 0.025), quantile(ds, 0.975)]
-    out.index = { a: A.index.value, b: B.index.value, delta: B.index.value - A.index.value, ci, real: same && (ci[0] > 0 || ci[1] < 0), comparable: same }
+    out.index = { a: A.index.value, b: B.index.value, delta: quantile(ds, 0.5), ci, real: same && (ci[0] > 0 || ci[1] < 0), comparable: same }
   }
   return out
 }

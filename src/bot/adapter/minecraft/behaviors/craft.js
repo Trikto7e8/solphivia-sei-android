@@ -6,7 +6,9 @@
 //     planks), so we craft ceil(n / batchSize) repetitions (may overshoot to the
 //     batch boundary), capped by available materials, and report the ACTUAL
 //     produced.
-//   - No auto-walk. A 3×3 recipe needs a crafting_table in reach; if none is,
+//   - 261011: walks to a crafting_table within 16 blocks and crafts missing
+//     parts first (see "Crafting the parts first"). Before that: no auto-walk.
+//     A 3×3 recipe needs a crafting_table in reach; if none is,
 //     craft() fails with actionable guidance and the LLM moves itself (find/goTo)
 //     or crafts a crafting_table first.
 //
@@ -14,6 +16,7 @@
 import mcDataLib from 'minecraft-data'
 import { reason } from '../../../brain/errStrings.js'
 import { detectCraftingTable, maxRepetitions } from '../observers/craftable.js'
+import { goTo } from './pathfind.js'
 
 export const CRAFT_TIMEOUT_MS = 8000
 
@@ -61,14 +64,24 @@ function missingFor(bot, itemId, craftingTable) {
     if (!consumed.length) continue
     const miss = []
     let total = 0
+    let makeable = 0
     for (const c of consumed) {
       const have = inv.get(c.id) ?? 0
       const need = -c.count
-      if (have < need) { miss.push({ id: c.id, have, short: need - have }); total += need - have }
+      if (have < need) {
+        miss.push({ id: c.id, have, short: need - have })
+        total += need - have
+        if (canCraftNow(bot, c.id, craftingTable)) makeable++
+      }
     }
-    if (best === null || miss.length < best.miss.length || (miss.length === best.miss.length && total < best.total)) {
-      best = { miss, total }
-    }
+    // Ties (every wood variant short the same planks) go to the variant whose
+    // missing parts can be crafted from the bag: oak_planks for a bag of oak
+    // logs, not the first wood in the recipe list (261011).
+    const better = best === null ||
+      miss.length < best.miss.length ||
+      (miss.length === best.miss.length && makeable > best.makeable) ||
+      (miss.length === best.miss.length && makeable === best.makeable && total < best.total)
+    if (better) best = { miss, total, makeable }
   }
   if (!best || !best.miss.length) return ''
   return best.miss.map((m) => {
@@ -123,6 +136,127 @@ function explainNoRecipe(bot, itemId, item, hadTable) {
     : `not enough materials to craft ${item}`
 }
 
+// ── Crafting the parts first (261011) ───────────────────────────────────────
+// Asked for a wooden_pickaxe with only logs in the bag, craft used to answer
+// "need 3 more oak_planks + 2 more stick (you can craft it from what you
+// have)" and the model then spent two or three more calls (and as many
+// failures) on planks and sticks; in the eval it often asked for the wrong
+// wood. A player saying "make a pickaxe" expects the planks and sticks to
+// happen on the way. So when the item cannot be crafted from the bag as is,
+// craft plans the missing parts from minecraft-data's recipes against a
+// simulated inventory (at most MAX_PART_DEPTH levels: logs -> planks ->
+// sticks) and crafts them first. Only plain parts: it never spends a table
+// it does not have, and the plan is all-or-nothing, so nothing is crafted
+// unless the whole chain fits the bag.
+export const MAX_PART_DEPTH = 2
+const PART_MAX_STEPS = 6
+
+function recipeVariants(bot, itemId) {
+  try { return mcDataLib(bot.version)?.recipes?.[itemId] ?? [] } catch { return [] }
+}
+
+function variantIngredients(v) {
+  const tally = new Map()
+  const add = (x) => {
+    const id = typeof x === 'number' ? x : (x && typeof x.id === 'number' ? x.id : null)
+    if (id == null || id < 0) return
+    tally.set(id, (tally.get(id) ?? 0) + 1)
+  }
+  if (Array.isArray(v?.inShape)) for (const row of v.inShape) for (const x of (row ?? [])) add(x)
+  else if (Array.isArray(v?.ingredients)) for (const x of v.ingredients) add(x)
+  return tally
+}
+
+/**
+ * Plan to have `need` of itemId in the simulated inventory `inv` (mutated on
+ * success). Returns the craft steps in order ([] when the bag already has
+ * them), or null when it cannot be done from the bag within `depth` levels.
+ */
+export function planParts(bot, itemId, need, inv, depth, hasTable) {
+  const have = inv.get(itemId) ?? 0
+  if (have >= need) { inv.set(itemId, have - need); return [] }
+  if (depth <= 0) return null
+  const short = need - have
+  for (const v of recipeVariants(bot, itemId)) {
+    if (variantNeedsTable(v) && !hasTable) continue
+    const perRep = v?.result?.count ?? 1
+    const reps = Math.ceil(short / perRep)
+    const sim = new Map(inv)
+    sim.set(itemId, 0)
+    const steps = []
+    let ok = true
+    for (const [ingId, n] of variantIngredients(v)) {
+      const sub = planParts(bot, ingId, n * reps, sim, depth - 1, hasTable)
+      if (!sub) { ok = false; break }
+      steps.push(...sub)
+    }
+    if (!ok) continue
+    sim.set(itemId, (sim.get(itemId) ?? 0) + reps * perRep - short)
+    for (const k of [...inv.keys()]) if (!sim.has(k)) inv.delete(k)
+    for (const [k, val] of sim) inv.set(k, val)
+    return [...steps, { id: itemId, reps, perRep }]
+  }
+  return null
+}
+
+function craftWithTimeout(bot, recipe, reps, table, timeoutMs, signal) {
+  const op = Promise.resolve().then(() => bot.craft(recipe, reps, table)).then(() => 'ok').catch((err) => reason(err) || 'failed')
+  const tmo = new Promise((r) => setTimeout(() => r('timeout'), timeoutMs))
+  const abrt = new Promise((r) => {
+    if (!signal) return
+    if (signal.aborted) return r('aborted')
+    signal.addEventListener('abort', () => r('aborted'), { once: true })
+  })
+  return Promise.race([op, tmo, abrt])
+}
+
+/** Craft the planned part steps, in order. Returns the made list or an error. */
+async function craftParts(bot, steps, table, timeoutMs, signal) {
+  const made = []
+  for (const st of steps) {
+    if (signal?.aborted) return { error: 'aborted', made }
+    const name = nameById(bot, st.id)
+    let recipes = []
+    try { recipes = bot.recipesFor(st.id, null, 1, table) ?? [] } catch { recipes = [] }
+    const inv = inventoryById(bot)
+    const recipe = recipes.find((r) => maxRepetitions(r, inv) >= st.reps) ?? null
+    if (!recipe) return { error: `could not craft the ${name} it needs`, made }
+    const r = await craftWithTimeout(bot, recipe, st.reps, table, timeoutMs, signal)
+    if (r !== 'ok') return { error: r === 'aborted' ? 'aborted' : `crafting ${name} failed (${r})`, made }
+    made.push(`${st.reps * st.perRep} ${name}`)
+  }
+  return { error: null, made }
+}
+
+// A crafting table the bot can walk to when none is in reach. 261011: the
+// model was told "it needs a crafting table, go to one" with a table eight
+// blocks away, and goTo then timed out. craft walks there itself.
+const TABLE_WALK_RADIUS = 16
+const TABLE_WALK_TIMEOUT_MS = 8000
+
+function nearbyCraftingTable(bot) {
+  try {
+    const tid = mcDataLib(bot.version)?.blocksByName?.crafting_table?.id
+    if (tid == null || typeof bot?.findBlock !== 'function') return null
+    return bot.findBlock({ matching: tid, maxDistance: TABLE_WALK_RADIUS }) ?? null
+  } catch {
+    return null
+  }
+}
+
+function allVariantsNeedTable(bot, itemId) {
+  const vs = recipeVariants(bot, itemId)
+  return vs.length > 0 && vs.every(variantNeedsTable)
+}
+
+function holdsCraftingTable(bot) {
+  try {
+    return (bot.inventory?.items?.() ?? []).some((it) => it?.name === 'crafting_table')
+  } catch {
+    return false
+  }
+}
+
 export async function craftAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
@@ -134,13 +268,45 @@ export async function craftAction(args, bot, config) {
   const itemId = itemIdByName(bot, item)
   if (itemId == null) return `no item named ${item}`
 
-  const tableBlock = detectCraftingTable(bot)
+  let tableBlock = detectCraftingTable(bot)
+  const timeoutMs = args?.timeout_ms ?? config?.craft_timeout_ms ?? CRAFT_TIMEOUT_MS
+
+  // Needs a table and none is in reach: walk to one that is close by.
+  if (!tableBlock && allVariantsNeedTable(bot, itemId)) {
+    const near = nearbyCraftingTable(bot)
+    if (near?.position) {
+      const p = near.position
+      const walk = await goTo(bot, p.x, p.y, p.z, 2, TABLE_WALK_TIMEOUT_MS, signal, { reach: 3.5 })
+      if (walk === 'aborted' || signal?.aborted) return 'aborted'
+      tableBlock = detectCraftingTable(bot)
+      if (!tableBlock) {
+        return `can't craft ${item}: it needs a crafting table, and the walk to the one at ${p.x},${p.y},${p.z} did not get there (${walk})`
+      }
+    } else if (holdsCraftingTable(bot)) {
+      return `can't craft ${item} here: it needs a crafting table, and there is none in reach. You have one in your inventory: place it (placeBlock crafting_table), then craft`
+    }
+  }
 
   let recipes
   try { recipes = bot.recipesFor(itemId, null, 1, tableBlock) } catch { recipes = null }
+  let partsMade = []
   if (!recipes || recipes.length === 0) {
-    return explainNoRecipe(bot, itemId, item, tableBlock != null)
+    // Not craftable from the bag as is: make the parts first if they fit.
+    const steps = planParts(bot, itemId, want, inventoryById(bot), MAX_PART_DEPTH + 1, tableBlock != null)
+    if (!steps || steps.length < 2 || steps.length > PART_MAX_STEPS) {
+      return explainNoRecipe(bot, itemId, item, tableBlock != null)
+    }
+    const res = await craftParts(bot, steps.slice(0, -1), tableBlock, timeoutMs, signal)
+    if (res.error === 'aborted') return 'aborted'
+    const madeNote = res.made.length ? ` (made ${res.made.join(', ')} first)` : ''
+    if (res.error) return `can't craft ${item}: ${res.error}${madeNote}`
+    partsMade = res.made
+    try { recipes = bot.recipesFor(itemId, null, 1, tableBlock) } catch { recipes = null }
+    if (!recipes || recipes.length === 0) {
+      return `${explainNoRecipe(bot, itemId, item, tableBlock != null)}${madeNote}`
+    }
   }
+  const partsNote = partsMade.length ? `, made ${partsMade.join(', ')} for it first` : ''
 
   // Pick the craftable variant that yields the most per inventory.
   const invById = inventoryById(bot)
@@ -161,12 +327,10 @@ export async function craftAction(args, bot, config) {
   const reps = Math.min(Math.ceil(want / perRep), maxReps)
   const produced = reps * perRep
 
-  const timeoutMs = args?.timeout_ms ?? config?.craft_timeout_ms ?? CRAFT_TIMEOUT_MS
-
   const op = Promise.resolve(bot.craft(recipe, reps, tableBlock))
     .then(() => {
       const over = produced > want ? ` (recipe makes ${perRep} at a time)` : ''
-      return `crafted ${produced} ${item}${over}`
+      return `crafted ${produced} ${item}${over}${partsNote}`
     })
     .catch((err) => {
       const r = reason(err)

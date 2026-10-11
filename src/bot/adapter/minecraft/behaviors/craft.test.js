@@ -4,6 +4,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { createRequire } from 'module'
 import { craftAction } from './craft.js'
+import { goTo } from './pathfind.js'
+
+vi.mock('./pathfind.js', () => ({ goTo: vi.fn(async () => 'reached') }))
 import { maxRepetitions, __resetCraftableCache } from '../observers/craftable.js'
 
 const require = createRequire(import.meta.url)
@@ -14,13 +17,19 @@ const id = (name) => mcData.itemsByName[name].id
 const blockId = (name) => mcData.blocksByName[name].id
 
 function makeBot({ items = [], table = null, craft } = {}) {
-  const stacks = items.map((it) => ({ name: it.name, type: id(it.name), count: it.count }))
+  // A live inventory: the default craft applies the recipe's delta, so a
+  // multi-step craft (parts first) sees what the earlier steps made.
   const invCount = new Map()
-  for (const s of stacks) invCount.set(s.type, (invCount.get(s.type) ?? 0) + s.count)
+  for (const it of items) invCount.set(id(it.name), (invCount.get(id(it.name)) ?? 0) + it.count)
+  const stacks = () => [...invCount].filter(([, n]) => n > 0)
+    .map(([type, count]) => ({ name: mcData.items[type].name, type, count }))
+  const applyCraft = vi.fn(async (recipe, reps) => {
+    for (const d of recipe.delta ?? []) invCount.set(d.id, (invCount.get(d.id) ?? 0) + d.count * reps)
+  })
   return {
     version: VERSION,
     entity: { position: { x: 0, y: 64, z: 0 } },
-    inventory: { items: () => stacks },
+    inventory: { items: stacks },
     findBlock: ({ matching }) => (table && matching === blockId('crafting_table') ? table : null),
     recipesFor: (itemId, meta, minResultCount, craftingTable) =>
       Recipe.find(itemId, meta).filter((r) => {
@@ -29,7 +38,7 @@ function makeBot({ items = [], table = null, craft } = {}) {
       }),
     recipesAll: (itemId, meta, craftingTable) =>
       Recipe.find(itemId, meta).filter((r) => !r.requiresTable || craftingTable),
-    craft: craft ?? vi.fn(async () => {}),
+    craft: craft ?? applyCraft,
   }
 }
 
@@ -76,11 +85,43 @@ describe('craftAction', () => {
   })
 
   it('names the wood the bot already has when it is short on planks', async () => {
-    // 2026-10-11 eval: holding 2 oak_planks + 6 oak_log, a crafting_table was
-    // refused with "need 4x cherry_planks".
-    const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'oak_log', count: 6 }, { name: 'stick', count: 4 }] })
+    // 2026-10-11 eval: holding 2 oak_planks, a crafting_table was refused
+    // with "need 4x cherry_planks".
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'stick', count: 4 }] })
     const res = await craftAction({ item: 'crafting_table' }, bot, {})
-    expect(res).toBe('not enough materials to craft crafting_table: need 2 more oak_planks (have 2, you can craft it from what you have)')
+    expect(res).toBe('not enough materials to craft crafting_table: need 2 more oak_planks (have 2)')
+  })
+
+  it('crafts the parts first when the bag has the raw wood (261011)', async () => {
+    // 2 planks + 6 logs used to be refused with "you can craft it from what
+    // you have"; now the planks are made on the way.
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 2 }, { name: 'oak_log', count: 6 }] })
+    const res = await craftAction({ item: 'crafting_table' }, bot, {})
+    expect(res).toBe('crafted 1 crafting_table, made 4 oak_planks for it first')
+    expect(bot.craft).toHaveBeenCalledTimes(2)
+  })
+
+  it('makes planks AND sticks for a pickaxe from logs alone (261011)', async () => {
+    const bot = makeBot({ items: [{ name: 'oak_log', count: 2 }], table: { name: 'crafting_table' } })
+    const res = await craftAction({ item: 'wooden_pickaxe' }, bot, {})
+    expect(res).toMatch(/^crafted 1 wooden_pickaxe, made .*oak_planks.*stick.* for it first$/)
+    const names = bot.inventory.items().map((i) => i.name)
+    expect(names).toContain('wooden_pickaxe')
+    expect(names).not.toContain('cherry_planks')
+  })
+
+  it('crafts nothing when the whole chain does not fit the bag (261011)', async () => {
+    // One log = 4 planks; a pickaxe needs 3 planks + 2 sticks (1 plank more).
+    const bot = makeBot({ items: [{ name: 'oak_log', count: 1 }], table: { name: 'crafting_table' } })
+    const res = await craftAction({ item: 'wooden_pickaxe' }, bot, {})
+    expect(res).toMatch(/^not enough materials to craft wooden_pickaxe: need 3 more oak_planks \(you can craft it from what you have\)/)
+    expect(bot.craft).not.toHaveBeenCalled()
+  })
+
+  it('says to place the table it is carrying when none is in reach (261011)', async () => {
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 8 }, { name: 'crafting_table', count: 1 }] })
+    const res = await craftAction({ item: 'chest', count: 1 }, bot, {})
+    expect(res).toMatch(/You have one in your inventory: place it/)
   })
 
   it('names the missing count for one ingredient of a multi-ingredient recipe', async () => {
@@ -100,5 +141,16 @@ describe('craftAction', () => {
     c.abort()
     const bot = makeBot({ items: [{ name: 'oak_log', count: 1 }] })
     expect(await craftAction({ item: 'oak_planks' }, bot, { signal: c.signal })).toBe('aborted')
+  })
+
+  it('walks to a crafting table close by instead of refusing (261011)', async () => {
+    const bot = makeBot({ items: [{ name: 'oak_planks', count: 8 }] })
+    const far = { name: 'crafting_table', position: { x: 8, y: 64, z: 0 } }
+    let walked = false
+    bot.findBlock = ({ maxDistance }) => (walked || maxDistance >= 16 ? far : null)
+    goTo.mockImplementationOnce(async () => { walked = true; return 'reached' })
+    const res = await craftAction({ item: 'chest', count: 1 }, bot, {})
+    expect(goTo).toHaveBeenCalledWith(bot, 8, 64, 0, 2, expect.any(Number), undefined, { reach: 3.5 })
+    expect(res).toBe('crafted 1 chest')
   })
 })

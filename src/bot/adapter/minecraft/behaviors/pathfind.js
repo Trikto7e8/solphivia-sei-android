@@ -5,6 +5,78 @@ const { Movements, goals } = pkg
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
+// After this many 'stuck' path resets inside one goTo, give up and say where
+// the bot is stuck instead of burning the rest of the wall-clock budget.
+// mineflayer-pathfinder resets a path after 3.5s without reaching the next
+// node and then re-plans the SAME path, so a wedged bot loops until timeout.
+export const STUCK_RESETS_TO_GIVE_UP = 2
+
+/**
+ * The Movements every companion walk uses (goTo, follow, attack pursuit).
+ *
+ * 261011 quality pass 2: sprinting is OFF. The pathfinder's sprint-jump
+ * executor wedges the bot mid-air against block corners: on a one-block step
+ * up next to a second block (a hillside, a hole's rim) the bot froze at
+ * y+0.4 with forward+jump+sprint held, the pathfinder reset the path every
+ * 3.5s and re-planned the same jump, and goTo ran out its 12s as a bare
+ * "timeout" (4 in a row in the combat_night eval, while the player begged
+ * her to make the pickaxe). Measured on the eval world: 25 random walks of
+ * 6-16 blocks on hilly ground, sprint 22/24 reached with 2 wedged, no sprint
+ * 24/24 reached and faster on average (2.9s vs 3.6s), because a sprint jump
+ * overshoots the node and re-plans. The wedge reproduces from
+ * (195.5,67,2.5) to (196,68,-1) on the eval seed.
+ *
+ * digCost stays high so an existing route wins over tunnelling (260617), and
+ * `canDig: false` is for walks that must never break anything (the walk onto
+ * a drop after a dig, see dig.js).
+ *
+ * @param {object} bot
+ * @param {{ canDig?: boolean }} [opts]
+ */
+export function companionMovements(bot, opts = {}) {
+  const m = new Movements(bot)
+  m.allowSprinting = false
+  m.digCost = 8
+  m.maxDropDown = 4
+  if (opts.canDig === false) m.canDig = false
+  return m
+}
+
+/**
+ * Goal: stand anywhere the block at (x,y,z) is within dig reach, measured the
+ * way dig.js measures it (eyes to block center). GoalNear(x,y,z,3) asked for
+ * the FEET to be within 3 of the block, which for a log five up a trunk means
+ * climbing the tree; the 6s walk timed out on the ground right under a log the
+ * bot could already reach.
+ */
+export class GoalDigReach extends goals.GoalNear {
+  constructor(x, y, z, reach) {
+    super(x, y, z, reach)
+    this.reach = reach
+  }
+
+  isEnd(node) {
+    const dx = this.x + 0.5 - (node.x + 0.5)
+    const dy = this.y + 0.5 - (node.y + 1.62)
+    const dz = this.z + 0.5 - (node.z + 0.5)
+    return Math.hypot(dx, dy, dz) <= this.reach
+  }
+}
+
+/**
+ * Cancel a dig the PATHFINDER started (a route that breaks a block) when the
+ * walk that owned it ends. pathfinder.stop() does not cancel an in-progress
+ * bot.dig, so a walk that timed out mid-dig left `bot.targetDigBlock` set and
+ * the next dig action answered "busy digging" (gather then dropped the rest of
+ * the tree). Our own dig actions mark `bot._seiDigActive`, and those are left
+ * alone.
+ */
+export function stopPathfinderDig(bot) {
+  try {
+    if (bot?.targetDigBlock != null && !(bot._seiDigActive > 0)) bot.stopDigging?.()
+  } catch {}
+}
+
 /**
  * Yield to a reflex-owned pathfinder goal (Plan 01 mutex). While
  * `bot._seiReflexActive` is true a creeper flee owns the goal; installing our
@@ -63,14 +135,13 @@ export function composeVerticalHint(bot, x, y, z, result) {
  *   / stop tool) from natural wall-clock timeouts.
  * @returns {Promise<PathfindResult>}
  */
-export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = undefined) {
+export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = undefined, opts = {}) {
   if (!bot) return 'no_bot'
   // 260513-wkd: fast-path — if signal is already aborted at entry, do not
   // even call into pathfinder. Avoids burning a setMovements + goal allocation
   // on a guaranteed-abort dispatch.
   if (signal && signal.aborted) return 'aborted'
 
-  const movements = new Movements(bot)
   // 260617 anti-stuck navigation tuning. The bare defaults trap a pickaxe-less
   // bot: digCost=1 lets the planner route THROUGH stone, which the bot cannot
   // mine bare-handed — every such dig times out and the bot reads as frozen (the
@@ -79,10 +150,13 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   // defaults to 4 (a 4-block drop costs ~1 dmg; 1-3 are free), so a "drop down to
   // get out" route was ALWAYS allowed — pathfinder was never the blocker. Set it
   // explicitly and keep it permissive so dropping to escape beats tunnelling.
-  movements.digCost = 8
-  movements.maxDropDown = 4
-  bot.pathfinder.setMovements(movements)
-  const goal = new goals.GoalNear(x, y, z, range)
+  // 261011: no sprinting (see companionMovements).
+  bot.pathfinder.setMovements(companionMovements(bot, opts))
+  // opts.reach: walk until the block at x,y,z is within dig reach (gather,
+  // dig cuboids) instead of within `range` of the feet.
+  const goal = Number.isFinite(opts.reach)
+    ? new GoalDigReach(x, y, z, opts.reach)
+    : new goals.GoalNear(x, y, z, range)
 
   // Closest-distance hint on cant_reach. The LLM was getting bare
   // 'cant_reach' and either retrying identically or
@@ -103,6 +177,36 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
 
   let timeoutHandle = null
   let abortListener = null
+
+  // Honest "stuck" result: count the pathfinder's own 'stuck' resets (no new
+  // node for 3.5s). Two in one walk means it is re-planning a route the body
+  // cannot execute; stop and say where, so the model picks another approach
+  // instead of re-issuing the same goTo ("timeout" x4 in the eval).
+  let stuckResets = 0
+  let resolveStuck = null
+  const stuckPromise = new Promise((resolve) => { resolveStuck = resolve })
+  const onPathReset = (reason) => {
+    if (reason !== 'stuck' || settled) return
+    stuckResets++
+    if (stuckResets >= STUCK_RESETS_TO_GIVE_UP) {
+      settled = true
+      try { bot.pathfinder.stop() } catch {}
+      resolveStuck(stuckWithPosition())
+    }
+  }
+  try { bot.on?.('path_reset', onPathReset) } catch {}
+
+  function stuckWithPosition() {
+    try {
+      const bp = bot.entity?.position
+      if (!bp || typeof bp.x !== 'number') return 'stuck'
+      const dist = Math.hypot(bp.x - x, bp.y - y, bp.z - z).toFixed(1)
+      const here = `${Math.floor(bp.x)},${Math.floor(bp.y)},${Math.floor(bp.z)}`
+      return `stuck at ${here}, ${dist}m from ${x},${y},${z}: the path kept failing at the same spot. Try a different spot nearby, or dig or build through`
+    } catch {
+      return 'stuck'
+    }
+  }
 
   // Finding 6: once the race below has settled (timeout or abort won), the
   // navigate() loop must exit cleanly instead of continuing to run — a late
@@ -174,14 +278,16 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   // comment originally described, just reached via the retry path instead of
   // the timer.
   const racers = abortPromise
-    ? [navigationPromise, timeoutPromise, abortPromise]
-    : [navigationPromise, timeoutPromise]
+    ? [navigationPromise, timeoutPromise, stuckPromise, abortPromise]
+    : [navigationPromise, timeoutPromise, stuckPromise]
   const result = await Promise.race(racers)
   settled = true
   if (timeoutHandle != null) clearTimeout(timeoutHandle)
+  try { bot.off?.('path_reset', onPathReset) } catch {}
   if (signal && abortListener) {
     try { signal.removeEventListener('abort', abortListener) } catch {}
   }
+  if (result !== 'reached') stopPathfinderDig(bot)
   return composeVerticalHint(bot, x, y, z, result)
 }
 

@@ -3,8 +3,10 @@ import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
+import { companionMovements } from './pathfind.js'
+import { followMovements } from './follow.js'
 
-const { goals, Movements } = pkg
+const { goals } = pkg
 
 export const DEFAULT_TIMEOUT_MS = 12000
 const REACH = 3.5
@@ -17,12 +19,10 @@ const SWING_DELAY_MS = 600       // matches mob attack cooldown; faster spams hi
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
 // Anti-stuck movement tuning shared with goTo (pathfind.js): make digging a
-// last resort so pursuit routes around obstacles rather than tunnelling.
+// last resort so pursuit routes around obstacles rather than tunnelling, and
+// no sprint-jumps (they wedge the bot on block corners, see companionMovements).
 function pursuitMovements(bot) {
-  const m = new Movements(bot)
-  m.digCost = 8
-  m.maxDropDown = 4
-  return m
+  return companionMovements(bot)
 }
 
 function inStaggerWindow(bot) {
@@ -66,7 +66,6 @@ async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
     if (!goalOwned) {
       try {
         bot.pathfinder.setGoal(new goals.GoalFollow(live, PURSUE_FOLLOW_RANGE), true)
-        bot.setControlState('sprint', true)
         goalOwned = true
       } catch (_) {}
     }
@@ -223,7 +222,7 @@ export async function attackEntityAction(args, bot, config) {
     // resetting movements). So without this the companion would trail with
     // pursuit movements (permitting larger drops) after every fight until the
     // next goTo() reset them. Reset here so they never leak past the engagement.
-    try { bot.pathfinder?.setMovements?.(new Movements(bot)) } catch (_) {}
+    try { bot.pathfinder?.setMovements?.(followMovements(bot)) } catch (_) {}
     if (!bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat) {
       try { bot.pathfinder?.setGoal?.(null) } catch (_) {}
     }

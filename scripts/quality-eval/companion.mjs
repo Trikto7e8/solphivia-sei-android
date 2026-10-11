@@ -16,6 +16,14 @@
 //   QE_USERDATA     fresh userData dir for this session (memory lands here)
 //   QE_RAW_LOG      raw bot log file (every console line)
 //   QE_EVENTS       structured JSONL events file
+//   QE_BOT_REPO     repo whose src/bot runs (default: this one). The paired
+//                   comparison points it at a worktree of another ref, so the
+//                   harness stays fixed while the bot code varies.
+//   QE_MODE         'brain' (default): the full app path, Haiku decides.
+//                   'direct': the same runtime and adapter with a stub brain;
+//                   the orchestrator calls actions itself over stdin
+//                   ({"type":"qe-exec",id,name,args} / {"type":"qe-abort",id}),
+//                   so a benchmark can tell skill failures from brain ones.
 //
 // Structured events are also written to stdout as `@@QE <json>` lines so the
 // orchestrator sees them live. SIGTERM / SIGINT sends the bot {type:'stop'},
@@ -25,10 +33,12 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { createRequire } from 'node:module'
 import { parseSnapshot, makeSnapshotGate } from './snapshot.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
-const repo = path.resolve(here, '..', '..')
+const repo = path.resolve(process.env.QE_BOT_REPO || path.resolve(here, '..', '..'))
+const MODE = process.env.QE_MODE === 'direct' ? 'direct' : 'brain'
 
 const keyFile = process.env.QE_KEY_FILE || path.join(os.homedir(), '.sei-dev', 'anthropic-test-key')
 const apiKey = fs.readFileSync(keyFile, 'utf8').trim()
@@ -149,7 +159,8 @@ class FakePort extends EventEmitter {
   postMessage(data) {
     if (!data || typeof data !== 'object') return
     switch (data.type) {
-      case 'action': emit({ kind: 'action_call', name: data.name, args: data.args ?? null }); break
+      // name null = the orchestrator drained back to idle, not a call.
+      case 'action': emit(data.name ? { kind: 'action_call', name: data.name, args: data.args ?? null } : { kind: 'action_idle' }); break
       case 'action-stats': emit({ kind: 'action_stats', stats: data.stats }); break
       case 'boot-timing': case 'dashboard': case 'request-jwt': case 'vision-capability': break
       default: emit({ kind: 'lifecycle', data })
@@ -164,7 +175,9 @@ const parentPort = new EventEmitter()
 process.parentPort = parentPort
 
 let stopping = false
+let directQuit = null
 function requestStop(sig) {
+  if (directQuit) { directQuit(); return }
   if (stopping) { process.exit(0); return }
   stopping = true
   emit({ kind: 'stop_requested', signal: sig })
@@ -185,14 +198,103 @@ process.stdin.on('data', (chunk) => {
     if (!ln) continue
     try {
       const msg = JSON.parse(ln)
-      if (msg.type === 'stop') requestStop('stdin'); else botPort.send(msg)
+      if (msg.type === 'stop') requestStop('stdin')
+      else if (msg.type === 'qe-exec') qeExec(msg)
+      else if (msg.type === 'qe-abort') qeRunning.get(msg.id)?.abort()
+      else if (msg.type === 'qe-probe') qeProbe(msg)
+      else botPort.send(msg)
     } catch {}
   }
 })
 process.stdin.on('error', () => {})
 
-emit({ kind: 'companion_boot', character: character.name, username: character.username, model: 'claude-haiku-5-5', userDataDir })
+// ── mineflayer capture ─────────────────────────────────────────────────
+// The bot's connect.js imports createBot from the CJS mineflayer package; ESM
+// imports of CJS reuse the require cache, so wrapping createBot here (before
+// the bot code loads) hands the eval the live mineflayer instance for probes
+// without touching bot code.
+let mcBot = null
+try {
+  const botRequire = createRequire(path.join(repo, 'package.json'))
+  const mineflayer = botRequire('mineflayer')
+  const orig = mineflayer.createBot
+  mineflayer.createBot = (...a) => { mcBot = orig(...a); return mcBot }
+} catch (e) { emit({ kind: 'qe_warn', text: `mineflayer capture failed: ${e?.message}` }) }
 
+function qeProbe(msg) {
+  const b = mcBot
+  const inv = {}
+  try { for (const it of b?.inventory?.items?.() ?? []) inv[it.name] = (inv[it.name] || 0) + it.count } catch {}
+  const p = b?.entity?.position
+  emit({ kind: 'qe_probe', id: msg.id ?? null, pos: p ? { x: p.x, y: p.y, z: p.z } : null, hp: b?.health ?? null, food: b?.food ?? null, held: b?.heldItem?.name ?? null, inv })
+}
+
+// ── direct mode: actions called by the orchestrator ────────────────────
+let directAdapter = null
+const qeRunning = new Map()
+async function qeExec(msg) {
+  const id = msg.id
+  if (!directAdapter) { emit({ kind: 'qe_result', id, error: 'no adapter (brain mode or not connected)' }); return }
+  const ac = new AbortController()
+  qeRunning.set(id, ac)
+  const t0 = Date.now()
+  emit({ kind: 'action_call', name: msg.name, args: msg.args ?? {} })
+  let result = null, error = null
+  try {
+    result = await directAdapter.executeAction(msg.name, msg.args ?? {}, { signal: ac.signal })
+  } catch (e) { error = String(e?.message || e) }
+  qeRunning.delete(id)
+  const text = error ? `error: ${error}` : (typeof result === 'string' ? result : JSON.stringify(result))
+  emit({ kind: 'action_result', action: msg.name, result: String(text).slice(0, 600) })
+  emit({ kind: 'qe_result', id, result: String(text).slice(0, 600), error, aborted: ac.signal.aborted, ms: Date.now() - t0 })
+}
+
+async function startDirect() {
+  const { ConfigSchema } = await import(pathToFileURL(path.join(repo, 'src', 'bot', 'config.js')).href)
+  const runtime = await import(pathToFileURL(path.join(repo, 'src', 'bot', 'adapter', 'minecraft', 'runtime.js')).href)
+  const username = runtime.botUsernameFor(character)
+  const memDir = path.join(userDataDir, 'memory', character.id)
+  const config = ConfigSchema.parse({
+    chat_mode: 'chat',
+    player_username: player,
+    player_display_name: player,
+    world_label: 'Sei Quality Eval',
+    persona: { name: username, expanded: character.persona.expanded || 'eval', proactiveness: 2 },
+    anthropic: { api_key: apiKey },
+    adapter: { kind: 'minecraft', minecraft: runtime.adapterConfigFrom({ joinTarget: { port, mc_username: player }, botUsername: username, character }) },
+    memory: {
+      player_md_path: `${memDir}/PLAYER.md`, memory_md_path: `${memDir}/MEMORY.md`,
+      heartbeat_md_path: `${memDir}/HEARTBEAT.md`, worlds_json_path: `${memDir}/worlds.json`,
+    },
+    vision: { mode: 'off' },
+  })
+  const logger = { info: (m) => console.log(m), warn: (m) => console.warn(m), error: (m) => console.error(m), debug: () => {} }
+  const stubBrain = { stop: async () => {}, setCompanions: () => {} }
+  const handle = await runtime.createRuntime(config, {
+    logger,
+    createBrain: async (adapter) => { directAdapter = adapter; return stubBrain },
+    onBrainReady: () => {},
+    onBrainLost: () => { directAdapter = null },
+    onConnected: () => emit({ kind: 'lifecycle', data: { type: 'summon-ready' } }),
+    onDisconnected: (info) => emit({ kind: 'lifecycle', data: { type: 'disconnected', reason: info?.reason ?? null } }),
+    onError: (info) => emit({ kind: 'lifecycle', data: { type: 'error', error: info?.error, message: info?.message } }),
+    onDashboard: null,
+    emitVisionCapability: () => {},
+  })
+  // A stop on stdin tears the body down (no brain to drain).
+  directStop = async () => { try { await handle?.stop?.() } catch {} }
+}
+let directStop = null
+
+emit({ kind: 'companion_boot', character: character.name, username: character.username, model: MODE === 'direct' ? 'none (direct actions)' : 'claude-haiku-5-5', mode: MODE, userDataDir })
+
+if (MODE === 'direct') {
+  process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
+  const quit = async () => { emit({ kind: 'stop_requested', signal: 'direct' }); for (const ac of qeRunning.values()) ac.abort(); await directStop?.(); rawLog?.end(); eventsOut?.end(); setTimeout(() => process.exit(0), 200) }
+  process.on('SIGTERM', quit); process.on('SIGINT', quit)
+  directQuit = quit
+  await startDirect()
+} else {
 await import(pathToFileURL(path.join(repo, 'src', 'bot', 'index.js')).href)
 
 // Same field set the supervisor ships (src/main/botSupervisor.ts, type:'init'),
@@ -219,3 +321,4 @@ parentPort.emit('message', {
   },
   ports: [botPort],
 })
+}

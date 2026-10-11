@@ -1738,7 +1738,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   ipcMain.handle(IpcChannel.backseat.end, async (_event, idArg: unknown) => {
     const id = IdSchema.parse(idArg);
     const backseat = await import('./backseat/backseatService');
-    await backseat.endBackseat(id);
+    await backseat.endBackseat(id, undefined, { playerEnded: true });
   });
 
   // ── Minecraft dashboard (260721) ──────────────────────────────────────────

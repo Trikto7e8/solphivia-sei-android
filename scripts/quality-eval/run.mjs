@@ -53,6 +53,10 @@ const apiKey = fs.readFileSync(KEY_FILE, 'utf8').trim()
 const anthropic = new Anthropic({ apiKey, maxRetries: 3, timeout: 60000 })
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+// The player's coin flips (skip a reply, which way to walk). The scorecard
+// seeds this per session so paired runs face the same flips; the plain CLI
+// keeps Math.random.
+let rand = Math.random
 const log = (...a) => console.log(`[qe ${new Date().toISOString().slice(11, 19)}]`, ...a)
 
 function server(cmd, ...args) {
@@ -94,8 +98,8 @@ async function doMove(bot, move, botName, rec) {
     switch (move) {
       case 'stay': bot.pathfinder.setGoal(null); break
       case 'walk_away': case 'wander': {
-        const d = move === 'walk_away' ? 18 + Math.random() * 8 : 6 + Math.random() * 4
-        const a = Math.random() * Math.PI * 2
+        const d = move === 'walk_away' ? 18 + rand() * 8 : 6 + rand() * 4
+        const a = rand() * Math.PI * 2
         bot.pathfinder.setGoal(new goals.GoalNearXZ(Math.round(me.x + Math.cos(a) * d), Math.round(me.z + Math.sin(a) * d), 2))
         break
       }
@@ -167,8 +171,11 @@ function playerSystem(sc, botName) {
 }
 
 // ── one session ─────────────────────────────────────────────────────────
-async function runSession(sc, sessDir) {
-  const minutes = Number(minutesOverride ?? sc.minutes)
+// opts (all optional): minutes, rng (a () => [0,1) function), botRepo (whose
+// src/bot runs as the companion; default this repo).
+export async function runSession(sc, sessDir, opts = {}) {
+  const minutes = Number(opts.minutes ?? minutesOverride ?? sc.minutes)
+  rand = opts.rng ?? Math.random
   fs.mkdirSync(sessDir, { recursive: true })
   const playerEventsPath = path.join(sessDir, 'player.events.jsonl')
   const compEventsPath = path.join(sessDir, 'companion.events.jsonl')
@@ -226,8 +233,9 @@ async function runSession(sc, sessDir) {
     QE_RAW_LOG: path.join(sessDir, 'companion.raw.log'),
     QE_EVENTS: compEventsPath,
     QE_KEY_FILE: KEY_FILE,
+    QE_BOT_REPO: opts.botRepo ?? repo,
   }
-  const comp = spawn(electronBin, [path.join(here, 'companion.mjs')], { cwd: repo, env, stdio: ['pipe', 'pipe', 'pipe'] })
+  const comp = spawn(electronBin, [path.join(here, 'companion.mjs')], { cwd: opts.botRepo ?? repo, env, stdio: ['pipe', 'pipe', 'pipe'] })
   let ready = false, compExited = false
   const compStderr = fs.createWriteStream(path.join(sessDir, 'companion.stderr.log'))
   comp.stderr.pipe(compStderr)
@@ -305,7 +313,7 @@ async function runSession(sc, sessDir) {
     // Real players do not answer every line. Skip some reactions outright and
     // never react twice within 7s; beats and idle prompts always go through.
     if (tr.type === 'companion_spoke') {
-      if (Date.now() - lastPlayerSayAt < 7000 || Math.random() < 0.25) {
+      if (Date.now() - lastPlayerSayAt < 7000 || rand() < 0.25) {
         rec({ kind: 'player_quiet', trigger: tr.type, cue: null, skipped: true })
         return
       }
@@ -424,4 +432,7 @@ async function main() {
   log(`report: ${path.join(OUT, 'summary.md')}`)
 }
 
-main().catch((e) => { console.error(e); process.exit(1) })
+// Run as a CLI only; the scorecard imports runSession.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((e) => { console.error(e); process.exit(1) })
+}

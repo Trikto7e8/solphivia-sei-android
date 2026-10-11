@@ -35,7 +35,8 @@
     "predist:mac": "bash scripts/build-mac-audio-tap.sh && bash scripts/build-mac-input.sh && node scripts/fetch-live2d-core.mjs",
     "predist:win": "node scripts/fetch-live2d-core.mjs",
     "predist:linux": "node scripts/fetch-live2d-core.mjs",
-    "fetch:live2d": "node scripts/fetch-live2d-core.mjs"
+    "fetch:live2d": "node scripts/fetch-live2d-core.mjs",
+    "quality:scorecard": "node scripts/quality-eval/scorecard.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

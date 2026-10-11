@@ -39,6 +39,7 @@ import { resolveTerm } from '../loose-terms.js'
 import { goTo as realGoTo, waitForReflexClear, dropWalkOpts } from './pathfind.js'
 import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.js'
 import { inventoryCounts, gained } from './pickup.js'
+import { droppedItemName } from '../observers/entities.js'
 
 const NEIGHBOR_OFFSETS = [
   [1, 0, 0], [-1, 0, 0],
@@ -55,8 +56,15 @@ const MINED_FROM = { cobblestone: 'stone', cobbled_deepslate: 'deepslate' }
 // always on open ground a few blocks away.
 const SWEEP_RADIUS = 12
 const SWEEP_MAX = 8
-const SWEEP_WALK_MS = 3000
+const SWEEP_WALK_MS = 4000
 const SWEEP_SETTLE_MS = 250
+const SWEEP_BUDGET_MS = 30000
+// 261012: when drops are lost (buried, knocked out of reach), the batch keeps
+// mining to make up the count, up to this many extra digs.
+const extraDigs = (want) => Math.max(4, Math.ceil(want / 2))
+// Mine-then-sweep cycles: a sweep that leaves the batch short sends it back
+// to mining, at most this many times in all.
+const MAX_CYCLES = 3
 
 function isItemEntity(e) {
   // No objectType: the getter is deprecated in prismarine-entity and prints a
@@ -70,13 +78,22 @@ function isItemEntity(e) {
  * bounce off the trunk, land somewhere else, or spawn later from decaying
  * leaves (saplings, sticks, apples) were left behind — the live symptom was
  * a "finished" gather leaving a trail of items on the ground. Best-effort
- * and bounded: closest-first, each drop attempted once, drops well above
- * the bot (canopy) are skipped so the pathfinder never climbs for them.
+ * and bounded: closest-first, drops well above the bot (canopy) are skipped
+ * so the pathfinder never climbs for them.
+ *
+ * 261012: each drop gets a second try with the walk ending IN the drop's own
+ * cell. The first walk stops within one block, which can leave the bot a
+ * layer above a drop lying in a hole it dug (the pickup box reaches only half
+ * a block below the feet), so mine_stone gathers left cobblestone behind.
+ * Whether a drop was collected is read from the world (the entity is gone),
+ * not from the walk's result.
  */
 async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => setTimeout(r, ms)), blockName) {
   const attempted = new Set()
+  const deadline = Date.now() + SWEEP_BUDGET_MS
+  const gone = (e) => e.isValid === false || (bot.entities && e.id != null && bot.entities[e.id] !== e)
   for (let i = 0; i < SWEEP_MAX; i++) {
-    if (signal?.aborted) return
+    if (signal?.aborted || Date.now() > deadline) return
     const here = bot.entity?.position
     if (!here) return
     let best = null, bestD = Infinity
@@ -89,14 +106,34 @@ async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => se
     }
     if (!best) return
     attempted.add(best.id ?? best)
-    // Range 1 reaches the pickup box. No digging under a tree; a stone or ore
-    // drop may need a dig to get into its hole (dropWalkOpts).
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 1, SWEEP_WALK_MS, signal, dropWalkOpts(blockName))
-    if (signal?.aborted) return
-    // Give the collect a beat to register before rescanning, so a stack the
-    // walk just absorbed doesn't get re-picked as the next target.
-    await sleep(SWEEP_SETTLE_MS)
+    // No digging under a tree; a stone or ore drop may need a dig to get into
+    // its hole. Never placing (dropWalkOpts).
+    for (const range of [1, 0]) {
+      if (signal?.aborted || Date.now() > deadline) return
+      const p = best.position
+      await goTo(bot, Math.floor(p.x), Math.floor(p.y + 0.1), Math.floor(p.z), range, SWEEP_WALK_MS, signal, dropWalkOpts(blockName))
+      if (signal?.aborted) return
+      // Give the collect a beat to register before rescanning, so a stack the
+      // walk just absorbed doesn't get re-picked as the next target.
+      await sleep(SWEEP_SETTLE_MS)
+      if (gone(best)) break
+    }
   }
+}
+
+/** Item names a block drops (minecraft-data), [] when unknown or none. */
+export function dropItemsFor(bot, blockName) {
+  let mcData
+  try { mcData = mcDataLib(bot.version) } catch { return [] }
+  const drops = mcData?.blocksByName?.[blockName]?.drops
+  if (!Array.isArray(drops)) return []
+  const names = new Set()
+  for (const d of drops) {
+    const id = typeof d === 'number' ? d : (d?.drop?.id ?? d?.drop)
+    const n = typeof id === 'number' ? mcData.items?.[id]?.name : null
+    if (n) names.add(n)
+  }
+  return [...names]
 }
 
 /**
@@ -173,6 +210,10 @@ export async function gatherAction(args, bot, config, _deps) {
       matching = [exactId]
     }
   }
+
+  // Set once the anchor block is known (below); mineComponent reads them.
+  let dropItems = []
+  let got = () => 0
 
   // Shared across re-anchor rounds: every position ever swept by a flood-fill
   // (dug or failed) stays in `visited`, so a component whose digs all failed
@@ -265,6 +306,8 @@ export async function gatherAction(args, bot, config, _deps) {
         if (d < bestD) { bestD = d; nextEntry = entry }
       }
       if (!nextEntry) return dug
+      // Enough already reached the inventory (a block can drop several).
+      if (got() >= want) return dug
 
       const np = nextEntry.p
       // Skip the pathfind when the block is already within dig reach — the common
@@ -277,16 +320,19 @@ export async function gatherAction(args, bot, config, _deps) {
       // meant climbing.
       if (digReachDistance(bot, np) > DIG_REACH) {
         // Pre-pathfind to dig reach (Pitfall 2 — dig.js does NOT pathfind in).
-        await goTo(bot, np.x, np.y, np.z, 3, perBlockTimeoutMs, signal, { reach: DIG_REACH - 0.3 })
+        // 261012: never scaffold with what we are gathering.
+        await goTo(bot, np.x, np.y, np.z, 3, perBlockTimeoutMs, signal, { reach: DIG_REACH - 0.3, ...(dropItems.length ? { keepItems: dropItems } : {}) })
       }
 
       if (signal?.aborted) return 'aborted'
 
       let r = await digAction({ x: np.x, y: np.y, z: np.z }, bot, config)
-      if (typeof r === 'string' && r.startsWith('busy ')) {
+      if (typeof r === 'string' && (r.startsWith('busy ') || /^dig failed: digging aborted/i.test(r))) {
         // Another dig was still finishing (dig.js cancels a walk's leftover
         // dig, so this is rare); give it a moment and try the block once more
-        // instead of writing off the rest of the tree.
+        // instead of writing off the rest of the tree. 261012: the same for a
+        // dig the ending walk's pathfinder cancelled under us ("Digging
+        // aborted", twice per mine_stone trial).
         await (_deps?.sleep ?? ((ms) => new Promise((res) => setTimeout(res, ms))))(400)
         if (signal?.aborted) return 'aborted'
         r = await digAction({ x: np.x, y: np.y, z: np.z }, bot, config)
@@ -296,6 +342,13 @@ export async function gatherAction(args, bot, config, _deps) {
         dug++
         progress.dug++
         outOfRangeRun = 0
+        // 261012: the block broke but cannot drop anything with the tools we
+        // own. Breaking more of it gets nothing either; stop and say so.
+        if (r.includes('(no drop')) {
+          progress.noHarvest = true
+          nextEntry.done = true
+          return dug
+        }
       } else if (typeof r === 'string' && r.startsWith('out of range')) {
         outOfRangeRun++
         if (outOfRangeRun >= 2) {
@@ -304,7 +357,7 @@ export async function gatherAction(args, bot, config, _deps) {
           // slow dig ('timeout') or a stale block is not a reachability signal.
           for (const entry of positions) entry.done = true
           nextEntry.done = true
-          try { config?.onProgress?.({ dug: progress.dug, total: want }) } catch {}
+          try { config?.onProgress?.({ dug: got(), total: want }) } catch {}
           return dug
         }
       } else {
@@ -316,7 +369,7 @@ export async function gatherAction(args, bot, config, _deps) {
       // 260513-wkd: push progress tick after each entry is marked done so the
       // snapshot's `in_flight: gather(...) — K/W` line tracks the batch in real
       // time. Same onProgress channel as cuboid build/dig.
-      try { config?.onProgress?.({ dug: progress.dug, total: want }) } catch {}
+      try { config?.onProgress?.({ dug: got(), total: want }) } catch {}
     }
   }
 
@@ -338,12 +391,37 @@ export async function gatherAction(args, bot, config, _deps) {
   }
   const blockName = seedBlk.name
 
+  // 261012: count what reaches the INVENTORY, not blocks broken. The
+  // mine_stone eval reported "gathered 10/10 stone" with 7 to 9 cobblestone
+  // delivered: drops left in the trench, buried by the walk's dirt, or never
+  // reached. `got()` is the inventory gain in the items this block drops
+  // (stone -> cobblestone, iron_ore -> raw_iron, oak_log -> oak_log); the
+  // batch keeps mining until that reaches the request. Blocks whose drops are
+  // unknown or empty (or a bot without an inventory) fall back to counting
+  // digs.
+  const progress = { dug: 0, noHarvest: false }
+  const invBefore = inventoryCounts(bot)
+  dropItems = invBefore ? dropItemsFor(bot, blockName) : []
+  const countItems = dropItems.length > 0
+  got = () => {
+    if (!countItems) return progress.dug
+    const now = inventoryCounts(bot)
+    let n = 0
+    for (const name of dropItems) n += Math.max(0, (now?.get(name) ?? 0) - (invBefore.get(name) ?? 0))
+    return n
+  }
   // 260513-wkd: emit an initial 0/W progress tick the moment the batch is
   // known so the next snapshot's `in_flight:` line shows `dug 0/W` instead of
   // running progress-less for the first dig.
-  const progress = { dug: 0 }
-  const invBefore = inventoryCounts(bot)
   try { config?.onProgress?.({ dug: 0, total: want }) } catch {}
+
+  // What the result calls the haul: the dropped item when it differs from the
+  // block ("cobblestone (mined from stone)").
+  const label = countItems && dropItems.length === 1 && dropItems[0] !== blockName
+    ? `${dropItems[0]} (mined from ${blockName})`
+    : blockName
+  const digCap = countItems ? want + extraDigs(want) : want
+  const abortedMsg = () => `aborted after ${got()}/${want} ${label}`
 
   // 261011: keep going until `want` blocks are actually DUG (or nothing fresh
   // is left), not until `want` blocks were attempted. A round whose top logs
@@ -353,60 +431,86 @@ export async function gatherAction(args, bot, config, _deps) {
   let attempted = 0
   let exhausted = false
   let firstRound = true
-  while (progress.dug < want) {
-    let roundAnchor
-    if (firstRound) {
-      firstRound = false
-      roundAnchor = anchor
-    } else if (coordMode) {
-      // Explicit x,y,z means "this vein here" — never wander to another one.
-      break
-    } else {
-      roundAnchor = nextAnchor()
-      if (!roundAnchor) { exhausted = true; break }
-      const blk = bot.blockAt(roundAnchor)
-      if (!blk || blk.name !== blockName) {
-        // Different matching block (e.g. loose term spans oak_log + birch_log):
-        // mark and skip; keep the batch to one block type per call.
+  for (let cycle = 0; cycle < MAX_CYCLES; cycle++) {
+    while (got() < want && progress.dug < digCap && !progress.noHarvest) {
+      let roundAnchor
+      if (firstRound) {
+        firstRound = false
+        roundAnchor = anchor
+      } else if (coordMode) {
+        // Explicit x,y,z means "this vein here" — never wander to another one.
+        break
+      } else {
+        roundAnchor = nextAnchor()
+        if (!roundAnchor) { exhausted = true; break }
+        const blk = bot.blockAt(roundAnchor)
+        if (!blk || blk.name !== blockName) {
+          // Different matching block (e.g. loose term spans oak_log + birch_log):
+          // mark and skip; keep the batch to one block type per call.
+          visited.add(key(roundAnchor.x, roundAnchor.y, roundAnchor.z))
+          continue
+        }
+      }
+
+      const limit = Math.max(1, Math.min(want - got(), digCap - progress.dug))
+      const positions = sweepComponent(roundAnchor, blockName, limit)
+      if (positions.length === 0) {
+        // Anchor swept to nothing (already visited / name changed under us).
         visited.add(key(roundAnchor.x, roundAnchor.y, roundAnchor.z))
         continue
       }
+      attempted += positions.length
+
+      const r = await mineComponent(positions, blockName, progress)
+      if (r === 'aborted') return abortedMsg()
     }
 
-    const positions = sweepComponent(roundAnchor, blockName, want - progress.dug)
-    if (positions.length === 0) {
-      // Anchor swept to nothing (already visited / name changed under us).
-      visited.add(key(roundAnchor.x, roundAnchor.y, roundAnchor.z))
-      continue
+    // Collect what the digs dropped before reporting done (skipped when
+    // nothing was dug — no drops of ours to chase, and a failed gather should
+    // not stall).
+    if (progress.dug > 0 && !progress.noHarvest) {
+      await sweepDrops(bot, goTo, signal, _deps?.sleep, blockName)
+      if (signal?.aborted) return abortedMsg()
     }
-    attempted += positions.length
-
-    const r = await mineComponent(positions, blockName, progress)
-    if (r === 'aborted') return `aborted after ${progress.dug}/${want} ${blockName}`
+    // Still short after the sweep: lost drops. Mine more if there is more to
+    // mine and dig budget left; otherwise report what actually arrived.
+    if (got() >= want || exhausted || coordMode || progress.noHarvest || progress.dug >= digCap) break
   }
 
-  // Collect what the digs dropped before reporting done (skipped when nothing
-  // was dug — no drops of ours to chase, and a failed gather should not stall).
-  if (progress.dug > 0) {
-    await sweepDrops(bot, goTo, signal, _deps?.sleep, blockName)
-    if (signal?.aborted) return `aborted after ${progress.dug}/${want} ${blockName}`
-  }
-
+  const have = got()
   let note = ''
-  if (exhausted && progress.dug < want) {
+  if (progress.noHarvest) {
+    note = ` (stopped: ${blockName} drops nothing unless you hold the right tool, and you have none that can harvest it. Craft the right pickaxe first)`
+  } else if (exhausted && have < want) {
     note = ` (no more ${blockName} reachable nearby)`
-  } else if (coordMode && attempted < want) {
+  } else if (coordMode && attempted < want && have < want) {
     note = ` (that vein had only ${attempted})`
+  }
+  // 261012: say where the rest went when blocks broke but fewer drops
+  // arrived. Never report a count that did not reach the inventory.
+  let lostNote = ''
+  if (countItems && progress.dug > have && have < want && !progress.noHarvest) {
+    // Drops of ours still lying nearby (an item whose name has not decoded
+    // may be one of them, so it counts).
+    let left = 0
+    for (const e of Object.values(bot.entities ?? {})) {
+      if (!isItemEntity(e) || e.isValid === false || !e.position || !bot.entity?.position) continue
+      if (e.position.distanceTo(bot.entity.position) > SWEEP_RADIUS) continue
+      const it = droppedItemName(e)
+      if (!it) left++
+      else if (dropItems.includes(it.name)) left += it.count
+    }
+    lostNote = ` (broke ${progress.dug} ${blockName}, but ${have ? `only ${have}` : 'none'} reached your inventory${left ? `; about ${left} ${left === 1 ? 'is' : 'are'} still on the ground nearby, pickup collects them` : ''})`
   }
   // 261011: the count is blocks broken, not items collected. Quality eval
   // 2026-10-11-pass1 (building): three coal gathers reported 4/4, 4/4 and
   // 5/5 while her coal count never moved, and she told the player she had
-  // coal. Say so when nothing new reached the inventory.
+  // coal. Say so when nothing new reached the inventory (dig-count mode).
   let pickNote = ''
-  if (progress.dug > 0 && invBefore) {
+  if (!countItems && progress.dug > 0 && invBefore) {
     if (gained(invBefore, inventoryCounts(bot)).length === 0) {
       pickNote = ' but nothing new reached your inventory (the drops may still be on the ground; pickup collects them)'
     }
   }
-  return `gathered ${progress.dug}/${want} ${blockName}${note}${dropNote}${pickNote}`
+  return `gathered ${have}/${want} ${label}${note}${lostNote}${countItems ? '' : dropNote}${pickNote}`
 }

@@ -114,6 +114,22 @@ describe('companionMovements (261011)', () => {
     expect(companionMovements(bot, { canDig: false }).canDig).toBe(false)
   })
 
+  // 261012: a drop walk must not bury the drop under a placed block, and a
+  // gather walk must not scaffold with the item it is gathering.
+  it('can forbid placing, or keep named items out of the scaffolding', () => {
+    const bot = makeBot()
+    const base = companionMovements(bot)
+    expect(base.scafoldingBlocks.length).toBeGreaterThan(0)
+    const noPlace = companionMovements(bot, { canPlace: false })
+    expect(noPlace.scafoldingBlocks).toEqual([])
+    expect(noPlace.allow1by1towers).toBe(false)
+    const cobbleId = bot.registry.itemsByName.cobblestone.id
+    expect(base.scafoldingBlocks).toContain(cobbleId)
+    const keep = companionMovements(bot, { keepItems: ['cobblestone'] })
+    expect(keep.scafoldingBlocks).not.toContain(cobbleId)
+    expect(keep.scafoldingBlocks.length).toBe(base.scafoldingBlocks.length - 1)
+  })
+
   it('goTo installs the no-sprint movements', async () => {
     const bot = makeBot()
     let installed = null
@@ -128,10 +144,10 @@ describe('companionMovements (261011)', () => {
 describe('dropWalkOpts (261011)', () => {
   it('forbids digging only on the way to a tree drop', () => {
     for (const n of ['oak_log', 'birch_wood', 'crimson_stem', 'warped_hyphae', 'oak_leaves']) {
-      expect(dropWalkOpts(n)).toEqual({ canDig: false })
+      expect(dropWalkOpts(n)).toEqual({ canDig: false, canPlace: false })
     }
     for (const n of ['stone', 'cobblestone', 'iron_ore', 'raw_iron', 'dirt', undefined]) {
-      expect(dropWalkOpts(n)).toEqual({})
+      expect(dropWalkOpts(n)).toEqual({ canPlace: false })
     }
   })
 })

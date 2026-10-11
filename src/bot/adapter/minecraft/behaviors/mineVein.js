@@ -36,7 +36,7 @@
 import { Vec3 } from 'vec3'
 import mcDataLib from 'minecraft-data'
 import { resolveTerm } from '../loose-terms.js'
-import { goTo as realGoTo, waitForReflexClear } from './pathfind.js'
+import { goTo as realGoTo, waitForReflexClear, dropWalkOpts } from './pathfind.js'
 import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.js'
 import { inventoryCounts, gained } from './pickup.js'
 
@@ -73,7 +73,7 @@ function isItemEntity(e) {
  * and bounded: closest-first, each drop attempted once, drops well above
  * the bot (canopy) are skipped so the pathfinder never climbs for them.
  */
-async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => setTimeout(r, ms))) {
+async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => setTimeout(r, ms)), blockName) {
   const attempted = new Set()
   for (let i = 0; i < SWEEP_MAX; i++) {
     if (signal?.aborted) return
@@ -89,8 +89,9 @@ async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => se
     }
     if (!best) return
     attempted.add(best.id ?? best)
-    // Range 1 reaches the pickup box; no digging on the way to a drop.
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 1, SWEEP_WALK_MS, signal, { canDig: false })
+    // Range 1 reaches the pickup box. No digging under a tree; a stone or ore
+    // drop may need a dig to get into its hole (dropWalkOpts).
+    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 1, SWEEP_WALK_MS, signal, dropWalkOpts(blockName))
     if (signal?.aborted) return
     // Give the collect a beat to register before rescanning, so a stack the
     // walk just absorbed doesn't get re-picked as the next target.
@@ -387,7 +388,7 @@ export async function gatherAction(args, bot, config, _deps) {
   // Collect what the digs dropped before reporting done (skipped when nothing
   // was dug — no drops of ours to chase, and a failed gather should not stall).
   if (progress.dug > 0) {
-    await sweepDrops(bot, goTo, signal, _deps?.sleep)
+    await sweepDrops(bot, goTo, signal, _deps?.sleep, blockName)
     if (signal?.aborted) return `aborted after ${progress.dug}/${want} ${blockName}`
   }
 

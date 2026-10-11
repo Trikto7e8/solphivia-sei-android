@@ -1,7 +1,7 @@
 // src/behaviors/dig.js — single-flight dig with timeout + abort (D-22, Pitfall 2)
 import { Vec3 } from 'vec3'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
-import { goTo, stopPathfinderDig } from './pathfind.js'
+import { goTo, stopPathfinderDig, dropWalkOpts } from './pathfind.js'
 import { equipBestTool, harvestNote } from './toolSelect.js'
 import { firstLine, truncate } from '../../../brain/errStrings.js'
 
@@ -205,10 +205,10 @@ export async function digAction(args, bot, config) {
           ly--
         }
         // Range 1 is close enough for auto-pickup (the pickup box reaches a
-        // block past the body), and the walk may not break anything: entering
-        // a dug trunk's cell needs the log above it broken, which is how this
-        // walk used to start digging the tree on its own (261011).
-        const r = await goTo(bot, dropPos.x, ly, dropPos.z, 1, PICKUP_TIMEOUT_MS, undefined, { canDig: false })
+        // block past the body). Under a tree the walk may not break anything
+        // (it would start chopping the trunk); a stone or ore drop sits in the
+        // hole it left and the walk may dig its way in (dropWalkOpts).
+        const r = await goTo(bot, dropPos.x, ly, dropPos.z, 1, PICKUP_TIMEOUT_MS, undefined, dropWalkOpts(blockName))
         if (r !== 'reached') pickupNote = ' (pickup walk did not reach)'
       } catch {}
       return `dug ${blockName}${pickupNote}${harvest ? '' : harvestNote(blockName)}`

@@ -99,4 +99,12 @@ describe('pickupAction', () => {
     expect(walked).toHaveLength(1)
     expect(res).toBe('aborted')
   })
+
+  it('may dig its way to a stone drop in a hole, but never toward wood (261011)', async () => {
+    const { bot, walked } = makeBot([dropEntity(1, 'cobblestone', 1, 62, 0), dropEntity(2, 'oak_log', 4, 64, 0)])
+    const opts = []
+    const goTo = async (_b, x, y, z, _r, _ms, _sig, o) => { walked.push([x, y, z]); opts.push(o); return 'reached' }
+    await pickupAction({}, bot, {}, deps(goTo))
+    expect(opts).toEqual([{}, { canDig: false }])
+  })
 })

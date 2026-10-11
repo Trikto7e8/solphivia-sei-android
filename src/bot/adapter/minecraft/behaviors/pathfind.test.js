@@ -93,7 +93,7 @@ describe('goTo — orphaned navigate() retry loop after timeout (Finding 6)', ()
 
 // 261011 quality pass 2: the walk body, stuck bail, dig reach goal.
 import { EventEmitter } from 'events'
-import { companionMovements, GoalDigReach, stopPathfinderDig, STUCK_RESETS_TO_GIVE_UP } from './pathfind.js'
+import { companionMovements, GoalDigReach, stopPathfinderDig, STUCK_RESETS_TO_GIVE_UP, dropWalkOpts } from './pathfind.js'
 
 function makeEmitterBot() {
   const bot = Object.assign(new EventEmitter(), makeBot())
@@ -122,6 +122,17 @@ describe('companionMovements (261011)', () => {
     expect(await goTo(bot, 1, 0, 1, 1, 1000, undefined, { canDig: false })).toBe('reached')
     expect(installed.allowSprinting).toBe(false)
     expect(installed.canDig).toBe(false)
+  })
+})
+
+describe('dropWalkOpts (261011)', () => {
+  it('forbids digging only on the way to a tree drop', () => {
+    for (const n of ['oak_log', 'birch_wood', 'crimson_stem', 'warped_hyphae', 'oak_leaves']) {
+      expect(dropWalkOpts(n)).toEqual({ canDig: false })
+    }
+    for (const n of ['stone', 'cobblestone', 'iron_ore', 'raw_iron', 'dirt', undefined]) {
+      expect(dropWalkOpts(n)).toEqual({})
+    }
   })
 })
 

@@ -8,7 +8,7 @@
 // her, closest first, so mineflayer's auto-collect takes it, and reports what
 // actually reached the inventory.
 
-import { goTo as realGoTo } from './pathfind.js'
+import { goTo as realGoTo, dropWalkOpts } from './pathfind.js'
 import { droppedItemName } from '../observers/entities.js'
 
 const MAX_ITEMS = 10
@@ -82,9 +82,11 @@ export async function pickupAction(args, bot, config, _deps) {
     if (!best) break
     seen++
     attempted.add(best.id)
-    // No digging on the way to a drop (a walk that starts breaking blocks
-    // outlives its timeout, see stopPathfinderDig in pathfind.js).
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal, { canDig: false })
+    // Digging is allowed unless the drop is wood (dropWalkOpts): a mined
+    // block's drop usually sits in the hole it left. goTo cancels a dig the
+    // pathfinder leaves running when the walk ends.
+    const it = droppedItemName(best)
+    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal, dropWalkOpts(it?.name))
     if (signal?.aborted) break
     await sleep(SETTLE_MS)
   }

@@ -28,7 +28,7 @@ export const STUCK_RESETS_TO_GIVE_UP = 2
  *
  * digCost stays high so an existing route wins over tunnelling (260617), and
  * `canDig: false` is for walks that must never break anything (the walk onto
- * a drop after a dig, see dig.js).
+ * a tree's drop after a dig, see dropWalkOpts).
  *
  * @param {object} bot
  * @param {{ canDig?: boolean }} [opts]
@@ -62,6 +62,20 @@ export class GoalDigReach extends goals.GoalNear {
     return Math.hypot(dx, dy, dz) <= this.reach
   }
 }
+
+/**
+ * Walk options for a walk onto a dropped item. Only a TREE forbids digging:
+ * entering a dug trunk's cell means breaking the log above it, which is how a
+ * drop walk used to start chopping the tree on its own. Everything else may
+ * dig, because a block mined from the surface drops into the hole it leaves,
+ * and with digging off the walk could not get in (261011 pass 2 eval: pickup
+ * success fell from 92% to 25%, "pickup walk did not reach" doubled).
+ * @param {string|undefined} name block or item name the drop came from
+ */
+export function dropWalkOpts(name) {
+  return TREE_BLOCK.test(String(name ?? '')) ? { canDig: false } : {}
+}
+const TREE_BLOCK = /(_log|_wood|_stem|_hyphae|leaves|_wart_block)$/
 
 /**
  * Cancel a dig the PATHFINDER started (a route that breaks a block) when the

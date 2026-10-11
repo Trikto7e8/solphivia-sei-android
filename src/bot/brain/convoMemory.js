@@ -1,7 +1,7 @@
 /**
  * Short-term conversation memory — player-said / self-said ring buffers.
  *
- * Two split sub-buffers, capacity 10 each, 240-char per-line truncation.
+ * Two split sub-buffers, capacity 20 each, 240-char per-line truncation.
  * They are STORED split (the say() gates ask "what did I last say" and "has
  * the player spoken since" separately) and, since 260921, RENDERED as one
  * chronological exchange (formatConversationBlock). The two-list rendering
@@ -21,8 +21,18 @@
 
 import { SEED_HEADERS } from './prompts.js'
 
-const RECENT_CHAT_CAPACITY = 10
+const RECENT_CHAT_CAPACITY = 20
 const RECENT_CHAT_LINE_TRUNC = 240
+// 261012: the merged transcript shows the newest CONVERSATION_LINES of the
+// combined exchange. Each ring used to hold 10 and both were rendered in
+// full, but her lines are stored per sentence (a turn is 2-4 entries) and the
+// player's per message, so her 10 covered the last three or four turns while
+// the player's 10 reached back a minute or more. The transcript then showed a
+// run of older player lines with none of her answers between them (questions
+// that read as unanswered) and dropped the lines she was about to repeat
+// ("still getting you that cobble", said four times in the scripted-convo
+// eval). A shared window keeps both sides over the same stretch of time.
+const CONVERSATION_LINES = 20
 
 function pushRing(arr, item, cap) {
   arr.push(item)
@@ -125,6 +135,7 @@ export function createConvoMemory({ onLine = null } = {}) {
       ...playerLines.map((l, i) => ({ ...l, self: false, i })),
       ...selfLines.map((l, i) => ({ ...l, self: true, i })),
     ].sort((a, b) => (a.at - b.at) || (Number(a.self) - Number(b.self)) || (a.i - b.i))
+      .slice(-CONVERSATION_LINES)
     const body = merged
       .map((l) => `[${fmtAgo(now, l.at)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`)
       .join('\n')

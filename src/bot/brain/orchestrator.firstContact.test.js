@@ -162,6 +162,23 @@ describe('261012 crossed greeting', () => {
     expect(lastTurnText(provider)).toContain(NOTE)
   })
 
+  it('no note when the player stayed silent and says hello long after her greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('heyyy steve'), sayTurn('oh hey')])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    vi.useFakeTimers({ toFake: ['Date'] })
+    try {
+      vi.setSystemTime(Date.now() + 5 * 60_000)
+      await say2(orch, 'hey sui')
+    } finally {
+      vi.useRealTimers()
+    }
+    expect(lastTurnText(provider)).not.toContain(NOTE)
+    expect(lastTurnText(provider)).toContain('a direct message never gets silence')
+  })
+
   it('no note when she never said a greeting', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([{ text: '', toolUses: [] }, sayTurn('hey')])

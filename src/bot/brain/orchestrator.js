@@ -1060,6 +1060,11 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // actually said is told so; it is said once, on that line only.
   let _firstContactAt = 0
   let _greetNoteDone = false
+  // Only a line typed while her hello was still on its way counts as crossed.
+  // Without a bound, a player who stayed silent and said "hey" minutes later
+  // was told her (long delivered) hello already answered it, with the reply
+  // retry switched off, so they got no answer.
+  const GREET_CROSS_WINDOW_MS = 20_000
   // True (once) when this player line is their first since her first-contact
   // hello was decided. The turn then takes NUDGES.greetCrossed framing, and
   // the loop owes no reply (the unanswered-line retry would otherwise push
@@ -1072,6 +1077,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     _greetNoteDone = true
     const since = playerLines.filter((l) => l.at >= greet.at && !l.companion)
     if (since.length !== 1) return false
+    if (since[0].at - greet.at > GREET_CROSS_WINDOW_MS) return false
     if (loop) loop._noReplyOwed = true
     return true
   }

@@ -101,7 +101,7 @@ describe('261011 FIRST CONTACT wording follows the memory', () => {
     const t = firstTurnText(provider)
     expect(t).toContain('FIRST CONTACT')
     expect(t).toContain('first time you two have played together')
-    expect(t).not.toContain('glad (or smug) to be back')
+    expect(t).not.toContain('greet a friend coming back')
   })
 
   it('with a past memory entry the returning-friend wording is kept', async () => {
@@ -113,7 +113,7 @@ describe('261011 FIRST CONTACT wording follows the memory', () => {
     const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
     const t = firstTurnText(provider)
-    expect(t).toContain('glad (or smug) to be back')
+    expect(t).toContain('greet a friend coming back')
     expect(t).not.toContain('first time you two have played together')
   })
 })

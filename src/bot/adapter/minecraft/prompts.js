@@ -40,9 +40,9 @@ import { eventAddendum as baseEventAddendum } from '../../brain/promptLibrary.js
 // barrel wrapper below instead. If/when things settle, this can move into
 // EVENT_GUIDANCE with the other events.
 export const DEATH_ADDENDUM_WITH_POS =
-  '\n\nYou DIED and respawned at the world spawn.{cause} Everything you were carrying dropped where you died (~{x},{y},{z}) — it despawns in about 5 minutes. Your health and hunger are full again. React in character in ONE short say() line, and decide whether to go recover your items (goTo those coords, then pickup) or let them go.'
+  '\n\nYou DIED and respawned at the world spawn.{cause} Everything you were carrying dropped where you died (~{x},{y},{z}) — it despawns in about 5 minutes. Your health and hunger are full again. React in character in ONE short say() line: how you feel about dying, in your own voice, not a report of what happened or of your plan. Then decide whether to go recover your items (goTo those coords, then pickup) or let them go.'
 export const DEATH_ADDENDUM_NO_POS =
-  '\n\nYou DIED and respawned at the world spawn.{cause} Everything you were carrying dropped where you died — it despawns in about 5 minutes. Your health and hunger are full again. React in character in ONE short say() line, and decide whether to go recover your items (go back to where you died, then pickup) or let them go.'
+  '\n\nYou DIED and respawned at the world spawn.{cause} Everything you were carrying dropped where you died — it despawns in about 5 minutes. Your health and hunger are full again. React in character in ONE short say() line: how you feel about dying, in your own voice, not a report of what happened or of your plan. Then decide whether to go recover your items (go back to where you died, then pickup) or let them go.'
 
 // 260708: name the cause of death when the brain knows the last real hit
 // (src/bot/brain/index.js attaches `lastAttack` when a hit landed within 30s

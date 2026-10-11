@@ -105,6 +105,6 @@ describe('pickupAction', () => {
     const opts = []
     const goTo = async (_b, x, y, z, _r, _ms, _sig, o) => { walked.push([x, y, z]); opts.push(o); return 'reached' }
     await pickupAction({}, bot, {}, deps(goTo))
-    expect(opts).toEqual([{}, { canDig: false }])
+    expect(opts).toEqual([{ canPlace: false }, { canDig: false, canPlace: false }])
   })
 })

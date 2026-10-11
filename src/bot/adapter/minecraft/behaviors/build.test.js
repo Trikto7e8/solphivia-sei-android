@@ -466,3 +466,73 @@ describe('buildAction — the builder FOLLOWS its own work (260803)', () => {
     expect(r).toContain('4 placed')
   })
 })
+
+// 261012 — quality eval build_shelter. Walls one layer above the ground
+// float: no cell has a block under or beside it. The old result said "could
+// not reach or place them, walk near and call build again", which sent the
+// model back to the same floating span. A solid roof built from the middle
+// out also failed its inner cells, which have no neighbor until the edge
+// cells are down.
+describe('buildAction — cells with nothing to place against (261012)', () => {
+  it('says the span is floating and names the layer to start on, without walking or placing', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    const walkMock = vi.fn(async () => 'reached')
+    // Ground is y=67 and the bot stands at 68; this wall starts at 69.
+    const r = await buildAction(
+      { from: { x: -40, y: 69, z: -34 }, to: { x: -36, y: 71, z: -30 }, block: 'oak_planks', hollow: true },
+      bot, {}, { goTo: walkMock },
+    )
+    expect(r).toMatch(/^built 0 placed, 48 cells FAILED/)
+    expect(r).toContain('48 of them had nothing to place against')
+    expect(r).toContain('the ground under them is at y=67, so start the span at y=68')
+    expect(placeBlockAction).not.toHaveBeenCalled()
+    expect(walkMock).not.toHaveBeenCalled()
+  })
+
+  it('a flat floating span gets no ground hint (it may be a walkway over a gap)', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    const r = await buildAction(
+      { from: { x: -40, y: 75, z: -34 }, to: { x: -38, y: 75, z: -34 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toContain('3 of them had nothing to place against')
+    expect(r).not.toContain('ground under them')
+    expect(r).toContain('a walkway starts at the block under your own feet')
+  })
+
+  it('fills a solid roof from its edges inward instead of failing the middle', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    // 5x5 walls, 3 high, already standing; the bot is inside at the center.
+    for (const c of enumerateBuildCells({ x: -38, y: 68, z: -32 }, { x: -34, y: 70, z: -28 }, true)) {
+      blocks.set(`${c.x},${c.y},${c.z}`, 'oak_planks')
+    }
+    bot.entity.position = new Vec3(-35.5, 68, -29.5)
+    const r = await buildAction(
+      { from: { x: -38, y: 71, z: -32 }, to: { x: -34, y: 71, z: -28 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toBe('built 25 placed, 0 skipped (already solid), of 25 cells')
+    for (let x = -38; x <= -34; x++) for (let z = -32; z <= -28; z++) expect(blocks.get(`${x},71,${z}`)).toBe('oak_planks')
+  })
+})
+
+describe('buildAction — grass and snow are built over, not counted as solid (261012)', () => {
+  it('places into grass tufts and never uses one as the face to place against', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    blocks.set('-38,68,-32', 'short_grass')
+    blocks.set('-37,68,-32', 'tall_grass')
+    blocks.set('-36,68,-32', 'snow')
+    const r = await buildAction(
+      { from: { x: -38, y: 68, z: -32 }, to: { x: -36, y: 68, z: -32 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toBe('built 3 placed, 0 skipped (already solid), of 3 cells')
+    for (const x of [-38, -37, -36]) expect(blocks.get(`${x},68,-32`)).toBe('oak_planks')
+    // Every place went against the sand below, not a plant beside it.
+    for (const call of placeBlockAction.mock.calls) expect(call[0].against.y).toBe(67)
+  })
+})

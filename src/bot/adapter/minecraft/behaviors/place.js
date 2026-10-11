@@ -112,5 +112,5 @@ export async function placeBlockAction(args, bot, config) {
     const r = await tryPlace(bot, auto.refBlk, auto.face, itemName, timeoutMs, signal)
     if (placed(r)) return r
   }
-  return `couldn't place ${itemName} — no open spot in reach. Step somewhere more open, or use build({from:{x,y:<your y + 1>,z}, to:{x,y,z}, block:"${itemName}"}).`
+  return `couldn't place ${itemName} — no open spot in reach. Step somewhere more open, or use build({from:{x,y:<your y>,z}, to:{x,y,z}, block:"${itemName}"}) on a spot beside you.`
 }

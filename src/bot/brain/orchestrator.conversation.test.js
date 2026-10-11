@@ -316,6 +316,77 @@ describe('a player line answered with actions only is delivered once more', () =
   })
 })
 
+describe('a player line answered with text only gets one retry (261011)', () => {
+  const unansweredText = (call) => call.blocks.at(-1).content
+    .filter((b) => b.type === 'text' && b.name === 'unanswered').map((b) => b.text).join('\n')
+
+  it('re-calls once with the nudge when nothing is running, and the reply is spoken', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider, adapter } = makeOrch({
+      script: [
+        { text: 'yeah they all spawn near the same village', toolUses: [] },
+        { text: '', toolUses: [say('t2', 'yeah, same village every time')] },
+      ],
+    })
+    await orch.handleDispatch('sei:chat_received', chat('do all worlds spawn in the same place?'))
+    expect(provider.calls.length).toBe(2)
+    expect(unansweredText(provider.calls[1])).toContain('"do all worlds spawn in the same place?"')
+    expect(provider.calls[1].blocks.at(-1).role).toBe('user')
+    expect(adapter.chat).toHaveBeenCalledTimes(1)
+  })
+
+  it('retries only once: a second text-only turn ends the loop', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider, adapter } = makeOrch({
+      script: [
+        { text: 'thinking about it', toolUses: [] },
+        { text: 'still thinking', toolUses: [] },
+        { text: '', toolUses: [say('t3', 'should not be reached')] },
+      ],
+    })
+    await orch.handleDispatch('sei:chat_received', chat('hey'))
+    expect(provider.calls.length).toBe(2)
+    expect(adapter.chat).not.toHaveBeenCalled()
+  })
+
+  it('leaves an end_loop alone: that is her explicit choice of silence', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider, adapter } = makeOrch({
+      script: [
+        { text: 'nothing to add', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
+        { text: '', toolUses: [say('t2', 'should not be reached')] },
+      ],
+    })
+    await orch.handleDispatch('sei:chat_received', chat('coming, saving you a spot'))
+    expect(provider.calls.length).toBe(1)
+    expect(adapter.chat).not.toHaveBeenCalled()
+  })
+
+  it('with an action running, re-delivers the line through the action tick', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const reenqueued = []
+    let finish
+    const adapter = makeAdapter({ executeAction: () => new Promise((resolve) => { finish = resolve }) })
+    const { orch, provider } = makeOrch({
+      adapter,
+      reenqueue: (event, data) => reenqueued.push({ event, data }),
+      script: [
+        { text: '', toolUses: [say('t1', 'on it'), { id: 'g1', name: 'gather', input: { kind: 'debris' } }] },
+        { text: 'sure, a few more', toolUses: [] },
+        { text: '', toolUses: [say('t3', 'a few more, almost done')] },
+      ],
+    })
+    await orch.handleDispatch('sei:chat_received', chat('clear some debris'))
+    await orch.handleDispatch('sei:chat_received', chat('how many left?'))
+    const tick = reenqueued.find((r) => r.event === 'sei:action_tick' && r.data?.unanswered === true)
+    expect(tick?.data.playerMessage).toBe('how many left?')
+    await orch.handleDispatch('sei:action_tick', tick.data)
+    expect(provider.calls.at(-1).blocks.at(-1).content.map((b) => b.text ?? '').join('\n')).toContain('Your last turn did NOT call say()')
+    expect(adapter.chat).toHaveBeenCalledTimes(2) // "on it", then the answer
+    finish?.('done')
+  })
+})
+
 describe('"mid-action" only when something is running', () => {
   it('a line that lands between actions is not told to keep going', async () => {
     _setTickIntervalForTests(10_000_000)

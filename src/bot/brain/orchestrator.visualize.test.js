@@ -240,8 +240,9 @@ describe('15-06 explicit visualize — frame delivery + vision-path routing', ()
       // Loop A call 2 (post-visualize continuation): transport dies — the
       // 404→502 chain shape. The frame was attached but NEVER delivered.
       () => { const e = new Error('502 origin_bad_gateway'); e.status = 502; throw e },
-      // Loop B call 3: plain reply.
-      { text: 'noted', toolUses: [] },
+      // Loop B call 3: plain reply (a spoken one: a text-only answer to a
+      // player line would get the 261011 unanswered retry).
+      { text: '', toolUses: [{ id: 'sy1', name: 'say', input: { text: 'noted' } }] },
     ])
     const { runTurn } = makeOrch({ adapter, config: makeConfig({ cloud: true }), provider })
 

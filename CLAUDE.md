@@ -336,6 +336,10 @@ that ran at the wrong time. The pieces, all in `src/bot/brain/` and pinned in
   as unanswered (`_unansweredRetried`, through the action-tick channel or the
   loop's next call, whichever comes first). The scratchpad is NOT salvaged on
   these turns: beside a world action it is usually reasoning about the chore.
+  261011: a TEXT-ONLY answer (no tool at all) gets the same single retry
+  (`unansweredRetryFor`): re-called at once with the nudge when nothing is
+  running, through the action tick when something is. `end_loop` alone is
+  her explicit choice of silence and is never retried.
 - **What a web lookup FOUND outlives its loop** (`lookups.js`, seed block
   `lookups`). She searched in three separate turns inside 50 s (four billed
   searches); no turn could see what the previous one found, so each re-derived

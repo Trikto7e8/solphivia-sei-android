@@ -4178,6 +4178,20 @@ function maybeWarnByteCap(loop, warned) {
    * is made with tools=[] forcing a text-only response that we emit as a
    * chat line. The Loop terminates gracefully; no exception is thrown.
    */
+  // The one-retry rule for a player line that got no say() (260921 actions
+  // only, 261011 text only). Returns the nudge text when this iteration
+  // answers the player's own line, nothing was said this loop, the line has
+  // not been retried yet, and a reply is owed (not a teammate's call line,
+  // not a game event). Otherwise null.
+  function unansweredRetryFor(loop) {
+    const e = loop._currentIterationTrigger ?? loop._triggerEvent
+    if (e !== 'player_chat' && e !== 'sei:chat_received') return null
+    if (loop._groupVoiceLine || loop._noReplyOwed || loop._spokeThisLoop || loop._unansweredRetried) return null
+    const line = loop._lastPlayerLine
+    if (!line?.text) return null
+    return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+  }
+
   async function runIterations(loop, byteWarn) {
     const cap = config.memory.iteration_cap
     // 260909: the web budget is per LOOP, not per iteration: a fresh
@@ -4408,6 +4422,32 @@ function maybeWarnByteCap(loop, warned) {
           replaceAbortController(loop)
           continue
         }
+        // 261011 (quality pass 2): a player line answered with TEXT ONLY.
+        // The text output is private, so the player heard nothing, and
+        // nothing re-delivered the line: with an action running the loop
+        // just waited, and with none it ended. end_loop is the tool for
+        // choosing silence, so a turn that called it is left alone; a turn
+        // that called nothing at all gets one retry with the nudge.
+        const unansweredText = unansweredRetryFor(loop)
+        if (unansweredText) {
+          loop._unansweredRetried = true
+          logger.info?.(`[sei/orch] player line answered with text only, no say() — retrying once (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? 'none'})`)
+          if (iterationKeepsLoopAlive && loop.inFlight) {
+            loop._unansweredNudgeText = unansweredText
+            try {
+              reenqueue('sei:action_tick', { playerMessage: loop._lastPlayerLine.text, who: loop._lastPlayerLine.who, unanswered: true })
+            } catch (err) {
+              logger.warn?.(`[sei/orch] unanswered-line tick reenqueue failed: ${err.message}`)
+            }
+            return
+          }
+          // No action running: answer in this loop. The last message is the
+          // assistant's text turn, so a user turn carries the nudge (the
+          // model rejects a request that ends on an assistant turn).
+          loop.appendUserTurn([{ type: 'text', name: 'unanswered', text: unansweredText }])
+          loop._currentIterationTrigger = 'sei:chat_received'
+          continue
+        }
         if (iterationKeepsLoopAlive && loop.inFlight) {
           // R1 — text-only on a keep-alive iteration WITH an in_flight
           // long-runner still running: keep the loop alive. The body keeps
@@ -4463,11 +4503,11 @@ function maybeWarnByteCap(loop, warned) {
       // it would leak it). Instead the line is delivered ONCE more, flagged as
       // unanswered: right away through the action-tick channel while the new
       // action runs, or on the loop's next call if that comes first.
-      if (_p1Trigger && !loop._groupVoiceLine && !loop._noReplyOwed && !loop._spokeThisLoop &&
-          !hasEndLoop && !loop._unansweredRetried && loop._lastPlayerLine?.text) {
+      const actionsOnlyNudge = hasEndLoop ? null : unansweredRetryFor(loop)
+      if (actionsOnlyNudge) {
         loop._unansweredRetried = true
         const line = loop._lastPlayerLine
-        loop._unansweredNudgeText = `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+        loop._unansweredNudgeText = actionsOnlyNudge
         logger.info?.(`[sei/orch] player line left unspoken (actions only) — re-delivering once (loop=${loop.id})`)
         if (newSuspendingTools.length > 0) {
           try {

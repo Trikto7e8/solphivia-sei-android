@@ -1,6 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import { logHaikuQuery, logHaikuResponse, logHaikuError } from './log.js'
 import { applyAnthropicModelDefaults } from './llm/anthropicModelDefaults.js'
+import { applyPromptBudget, describeBudgetReport } from './llm/promptBudget.js'
 
 /**
  * Per-call URL path for the proxy's explicit-vision route (15-02, VIS-07/D-09).
@@ -205,8 +206,17 @@ export function createAnthropicClient(config) {
     // dropping their own marker there loses only the fallback for a
     // mid-session system-prefix change (mode switch), which aborts the loop
     // anyway.
-    const _messages = stampThreadCacheControl(messages)
-    const _tools = _messages === messages ? stampLastToolCacheControl(tools) : tools
+    // 261013: prompt-size guard (llm/promptBudget.js). Logs a request over
+    // Haiku 5.5's 100k long-prompt price tier (sent untouched), and only past
+    // 90% of the model's hard context limit drops the oldest whole turns so
+    // the call does not 400. messages[0] is the seed turn and is pinned. Runs
+    // BEFORE the thread stamp so the marker lands on a turn that is sent.
+    const sizeReq = { model: modelOverride ?? model, system: systemBlocks, tools, messages }
+    const budget = applyPromptBudget(sizeReq, { pinFirst: 1 })
+    if (budget) console.warn(describeBudgetReport(budget, 'bot'))
+    const sent = sizeReq.messages
+    const _messages = stampThreadCacheControl(sent)
+    const _tools = _messages === sent ? stampLastToolCacheControl(tools) : tools
     // Extended thinking: when enabled, the model emits private `thinking`
     // blocks BEFORE any text/tool_use. They are never relayed to chat but
     // MUST be preserved in conversation history when the same assistant turn

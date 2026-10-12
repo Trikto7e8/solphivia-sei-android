@@ -78,19 +78,31 @@ export function groupTurns(selfLines, gapMs = TURN_GAP_MS) {
  * Terms the player also used in their recent lines are left out: a shared
  * topic ("the villager", "wood") is the conversation, not a habit.
  *
+ * People's names are left out too, along with any phrase that contains one:
+ * the player's name (nobody types their own name, so it was the most named
+ * term in the persona eval) and teammates' names, which is how a line in a
+ * multi-companion session says who it is for. `names` takes the known ones;
+ * every speaker in playerLines (`who`) is added automatically.
+ *
  * @param {Array<{at:number,text:string}>} selfLines   oldest first
- * @param {Array<{text:string}>} [playerLines]         oldest first
+ * @param {Array<{text:string,who?:string}>} [playerLines]  oldest first
+ * @param {{names?: Array<string|null|undefined>}} [opts]
  * @returns {Array<{term:string, count:number, of:number}>} at most `max`, most repeated first
  */
-export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minTurns = 3, max = 2, playerWindow = 8 } = {}) {
+export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minTurns = 3, max = 2, playerWindow = 8, names = [] } = {}) {
   const turns = groupTurns(selfLines).slice(-window)
   if (turns.length < minTurns) return []
   const heard = new Set()
   for (const l of (playerLines ?? []).slice(-playerWindow)) for (const t of termsOf(l?.text)) heard.add(t)
+  const nameWords = new Set()
+  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who)]) {
+    for (const w of tokensOf(n)) if (w.length > 1) nameWords.add(w)
+  }
+  const isNamed = (term) => term.split(' ').some((w) => nameWords.has(w))
   const counts = new Map()
   for (const turn of turns) for (const t of termsOf(turn.text)) counts.set(t, (counts.get(t) ?? 0) + 1)
   const hits = [...counts]
-    .filter(([t, c]) => c >= minTurns && !heard.has(t))
+    .filter(([t, c]) => c >= minTurns && !heard.has(t) && !isNamed(t))
     .map(([term, count]) => ({ term, count, of: turns.length }))
     // Most repeated first; among ties the phrase before the words inside it.
     .sort((a, b) => b.count - a.count || b.term.split(' ').length - a.term.split(' ').length)

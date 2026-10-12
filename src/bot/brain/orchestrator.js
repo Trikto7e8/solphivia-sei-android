@@ -1065,7 +1065,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   function ownRepeatsText() {
     try {
       const { selfLines, playerLines } = convoMemory.recentChat._internal
-      return ownRepeatsNote(selfLines, playerLines)
+      // Names are how she addresses someone, never a habit to drop.
+      const names = [config?.player_display_name, config?.player_username, ...companions]
+      return ownRepeatsNote(selfLines, playerLines, { names })
     } catch { return null }
   }
   const ownRepeatsTail = () => { const t = ownRepeatsText(); return t ? `\n\n${t}` : '' }

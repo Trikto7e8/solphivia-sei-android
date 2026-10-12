@@ -46,6 +46,22 @@ describe('repeatedOwnTerms', () => {
     expect(repeatedOwnTerms(lines).map((h) => h.term)).toEqual(['wood'])
   })
 
+  it('never names the player or a teammate, alone or inside a phrase', () => {
+    const lines = session([
+      'sorry alex nya, lyra has the wood',
+      'thank you alex nya. lyra, come help',
+      'ok alex nya, lyra is on it',
+    ])
+    // Given names (player display name, teammate roster).
+    expect(repeatedOwnTerms(lines, [], { names: ['Alex', 'Lyra'] }).map((h) => h.term)).toEqual(['nya'])
+    // A speaker in the recent chat counts as a name even when not passed in,
+    // and a username's parts count ("Alex_2" -> alex).
+    expect(repeatedOwnTerms(lines, [{ who: 'Alex_2', text: 'hi' }, { who: 'Lyra', text: 'on my way' }])
+      .map((h) => h.term)).toEqual(['nya'])
+    // Without names, the player's name is what gets named (the eval failure).
+    expect(repeatedOwnTerms(lines).some((h) => h.term.split(' ').includes('alex'))).toBe(true)
+  })
+
   it('needs at least three turns and ignores grammar words', () => {
     expect(repeatedOwnTerms(session(['nya', 'nya']))).toEqual([])
     expect(repeatedOwnTerms(session(['it is you', 'you and it', 'is it you']))).toEqual([])
@@ -63,6 +79,11 @@ describe('ownRepeatsNote', () => {
     expect(note).toContain('"the universe"')
     expect(note).toContain('3 of your last 3')
     expect(note).not.toMatch(/[—–]/)
+  })
+
+  it('passes names through', () => {
+    const lines = session(['hey alex', 'alex look', 'nice one alex'])
+    expect(ownRepeatsNote(lines, [], { names: ['Alex'] })).toBeNull()
   })
 
   it('is null when nothing repeats', () => {

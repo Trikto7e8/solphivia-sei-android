@@ -1,12 +1,19 @@
 import { describe, it, expect } from 'vitest';
 import {
   ATTRIBUTION_ASKED_KEY,
+  ATTRIBUTION_DETAIL_OPTIONS,
   ATTRIBUTION_OPTIONS,
+  attributionDetailEvent,
   attributionEvent,
   markAttributionAsked,
   shouldAskAttribution,
 } from './attributionPref';
-import { ATTRIBUTION_SOURCES } from '@shared/attribution';
+import {
+  ATTRIBUTION_DETAILS,
+  ATTRIBUTION_SOURCES,
+  hasAttributionDetail,
+  isAttributionDetail,
+} from '@shared/attribution';
 import { ZH } from './i18n/zh';
 
 function memStorage(): Storage {
@@ -69,6 +76,64 @@ describe('attributionPref: options and payload', () => {
     expect(attributionEvent(null)).toEqual({
       event: 'onboarding_attribution',
       props: { source: 'skipped' },
+    });
+  });
+});
+
+describe('attributionPref: follow-up detail (261012)', () => {
+  it('only AI and Google search get a follow-up', () => {
+    expect(ATTRIBUTION_SOURCES.filter(hasAttributionDetail)).toEqual(['google_search', 'ai_assistant']);
+    expect(hasAttributionDetail(null)).toBe(false);
+    expect(hasAttributionDetail('toString')).toBe(false);
+  });
+  it('offers exactly the shared detail enum per source, in order', () => {
+    expect(ATTRIBUTION_DETAIL_OPTIONS.ai_assistant.map((o) => o.value)).toEqual([
+      ...ATTRIBUTION_DETAILS.ai_assistant,
+    ]);
+    expect(ATTRIBUTION_DETAIL_OPTIONS.google_search.map((o) => o.value)).toEqual([
+      ...ATTRIBUTION_DETAILS.google_search,
+    ]);
+    expect(ATTRIBUTION_DETAIL_OPTIONS.ai_assistant.map((o) => o.label)).toEqual([
+      'ChatGPT',
+      'Google (AI Overview or Gemini)',
+      'Copilot',
+      'Perplexity',
+      'Claude',
+      'Other',
+    ]);
+    expect(ATTRIBUTION_DETAIL_OPTIONS.google_search.map((o) => o.label)).toEqual([
+      'I searched for Sei by name',
+      'I searched for something like AI gaming companion',
+      'Not sure',
+    ]);
+  });
+  it('detail values are unique across sources, so a flat breakdown is unambiguous', () => {
+    const all = Object.values(ATTRIBUTION_DETAILS).flat();
+    expect(new Set(all).size).toBe(all.length);
+  });
+  it('a detail is only valid for the source that offers it', () => {
+    expect(isAttributionDetail('ai_assistant', 'claude')).toBe(true);
+    expect(isAttributionDetail('google_search', 'searched_name')).toBe(true);
+    expect(isAttributionDetail('google_search', 'claude')).toBe(false);
+    expect(isAttributionDetail('reddit', 'other_ai')).toBe(false);
+    expect(isAttributionDetail('ai_assistant', 'skipped')).toBe(false);
+  });
+  it('labels and lines have zh entries and no em dashes', () => {
+    const labels = Object.values(ATTRIBUTION_DETAIL_OPTIONS).flat().map((o) => o.label);
+    for (const k of [...labels, 'Ooh, another AI! Which one?', 'Nice! What did you search for?']) {
+      expect(ZH[k], `missing zh entry for "${k}"`).toBeTypeOf('string');
+      expect(k).not.toContain('—');
+      expect(ZH[k]).not.toContain('—');
+    }
+  });
+  it('an answer sends source + heard_from_detail; a skip sends "skipped"', () => {
+    expect(attributionDetailEvent('ai_assistant', 'perplexity')).toEqual({
+      event: 'onboarding_attribution_detail',
+      props: { source: 'ai_assistant', heard_from_detail: 'perplexity' },
+    });
+    expect(attributionDetailEvent('google_search', null)).toEqual({
+      event: 'onboarding_attribution_detail',
+      props: { source: 'google_search', heard_from_detail: 'skipped' },
     });
   });
 });

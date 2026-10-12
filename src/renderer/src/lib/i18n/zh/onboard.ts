@@ -31,6 +31,17 @@ export const ZH_ONBOARD: Record<string, string> = {
   'Reddit': 'Reddit',
   'ChatGPT or another AI': 'ChatGPT 或其他 AI',
   'A friend': '朋友推荐',
+  // 261012: the optional follow-up for "AI" and "Google search".
+  'Ooh, another AI! Which one?': '哦哦，是别的 AI 呀！哪一个？',
+  'Nice! What did you search for?': '好耶！你当时搜的是什么呀？',
+  'ChatGPT': 'ChatGPT',
+  'Google (AI Overview or Gemini)': 'Google（AI 概览或 Gemini）',
+  'Copilot': 'Copilot',
+  'Perplexity': 'Perplexity',
+  'Claude': 'Claude',
+  'I searched for Sei by name': '我直接搜了 Sei 这个名字',
+  'I searched for something like AI gaming companion': '我搜了类似“AI 游戏伙伴”的词',
+  'Not sure': '不太记得了',
   'So, {name}, my job here is to help you meet other AI friends from my world.':
     '那个呢，{name}，我的任务就是带你认识我们世界里的其他 AI 朋友！',
   'Aww, really? I was going to find a companion just for you. You wanna skip it?':

@@ -95,12 +95,19 @@ import {
   type Dynamic,
 } from './suiQuestions';
 import {
+  ATTRIBUTION_DETAIL_OPTIONS,
   ATTRIBUTION_OPTIONS,
+  attributionDetailEvent,
   attributionEvent,
   markAttributionAsked,
   shouldAskAttribution,
 } from '../lib/attributionPref';
-import type { AttributionSource } from '@shared/attribution';
+import {
+  hasAttributionDetail,
+  type AttributionDetail,
+  type AttributionDetailSource,
+  type AttributionSource,
+} from '@shared/attribution';
 import styles from './onboard.module.css';
 
 /* ── Script ──────────────────────────────────────────────────────────────── */
@@ -113,6 +120,8 @@ type LineId =
   | 'nameQ'
   | 'iSee'
   | 'heardQ'
+  | 'heardAi'
+  | 'heardGoogle'
   | 'job'
   | 'skipConfirm'
   | 'fiveQs'
@@ -145,6 +154,9 @@ const SCRIPT: Record<LineId, string> = {
   iSee: 'I see I see... {name}!',
   // 261001: one-tap attribution, asked once per machine (lib/attributionPref).
   heardQ: 'Quick one before we start. Where did you hear about Sei?',
+  // 261012: the optional one-tap follow-up for "AI" and "Google search".
+  heardAi: 'Ooh, another AI! Which one?',
+  heardGoogle: 'Nice! What did you search for?',
   job: 'So, {name}, my job here is to help you meet other AI friends from my world.',
   skipConfirm: 'Aww, really? I was going to find a companion just for you. You wanna skip it?',
   fiveQs:
@@ -159,6 +171,16 @@ const SCRIPT: Record<LineId, string> = {
   skippedThird:
     "I SKIPPED THE THIRD QUESTION! You still need to sign in! Ok, I'll go set things up for you while you do that.",
   ready: 'Welcome back! Everything is in place. You ready?',
+};
+
+/** The attribution follow-up line for each answer that has one (261012). */
+const DETAIL_LINE: Record<AttributionDetailSource, 'heardAi' | 'heardGoogle'> = {
+  ai_assistant: 'heardAi',
+  google_search: 'heardGoogle',
+};
+const DETAIL_SOURCE: Record<'heardAi' | 'heardGoogle', AttributionDetailSource> = {
+  heardAi: 'ai_assistant',
+  heardGoogle: 'google_search',
 };
 
 /** Text-only lines (no controls, advance on click/Enter) that get the idle
@@ -948,7 +970,7 @@ export function OnboardApp({
   const showDialogue = phase.k === 'line';
   const clickAdvances =
     line !== null &&
-    !['newQ', 'nameQ', 'heardQ', 'job', 'skipConfirm', 'qDyn', 'qAge', 'qArt', 'qGender', 'ahh'].includes(line);
+    !['newQ', 'nameQ', 'heardQ', 'heardAi', 'heardGoogle', 'job', 'skipConfirm', 'qDyn', 'qAge', 'qArt', 'qGender', 'ahh'].includes(line);
 
   return (
     <div className={styles.root}>
@@ -1147,12 +1169,14 @@ function LineControls(props: LineControlsProps): React.ReactElement | null {
         </div>
       );
     case 'heardQ': {
-      // Never blocks: every option and Skip lead straight on to 'job'.
+      // Never blocks: Skip and every option lead straight on to 'job', except
+      // "AI" and "Google search", which get ONE optional follow-up tap first
+      // (261012). The answer is sent now, so a quit on the follow-up keeps it.
       const answer = (source: AttributionSource | null): void => {
         const ev = attributionEvent(source);
         sei.track(ev.event, ev.props);
         if (source === null) markStep('skip');
-        goLine('job');
+        goLine(hasAttributionDetail(source) ? DETAIL_LINE[source] : 'job');
       };
       return (
         <div className={styles.choices}>
@@ -1162,6 +1186,30 @@ function LineControls(props: LineControlsProps): React.ReactElement | null {
             </button>
           ))}
           <button className={styles.quietLink} onClick={() => answer(null)}>
+            {tt('Skip')}
+          </button>
+        </div>
+      );
+    }
+    case 'heardAi':
+    case 'heardGoogle': {
+      // The follow-up (261012): one tap or Skip, then on to 'job'. It shares
+      // the 'attribution' step, so a skip here is not marked: the main
+      // question WAS answered, and the detail event records the skip itself.
+      const source = DETAIL_SOURCE[line];
+      const answerDetail = (detail: AttributionDetail | null): void => {
+        const ev = attributionDetailEvent(source, detail);
+        sei.track(ev.event, ev.props);
+        goLine('job');
+      };
+      return (
+        <div className={styles.choices}>
+          {ATTRIBUTION_DETAIL_OPTIONS[source].map((o) => (
+            <button key={o.value} className={styles.pill} onClick={() => answerDetail(o.value)}>
+              {tt(o.label)}
+            </button>
+          ))}
+          <button className={styles.quietLink} onClick={() => answerDetail(null)}>
             {tt('Skip')}
           </button>
         </div>

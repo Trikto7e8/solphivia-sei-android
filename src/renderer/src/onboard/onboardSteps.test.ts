@@ -38,6 +38,10 @@ describe('step names', () => {
   it('stepFor maps phases and panel sub-screens; transitions are null', () => {
     expect(stepFor({ k: 'intro' }, SUB)).toBe('intro');
     expect(stepFor({ k: 'line', id: 'qDyn' }, SUB)).toBe('q_dynamics');
+    // 261012: the attribution follow-up is part of the attribution step.
+    expect(stepFor({ k: 'line', id: 'heardAi' }, SUB)).toBe('attribution');
+    expect(stepFor({ k: 'line', id: 'heardGoogle' }, SUB)).toBe('attribution');
+    expect(stepIndex('job')).toBe(stepIndex('attribution') + 1);
     expect(stepFor({ k: 'auth' }, { ...SUB, auth: 'code' })).toBe('auth_code');
     expect(stepFor({ k: 'auth' }, { ...SUB, auth: 'code', needsTos: true })).toBe('auth_tos');
     expect(stepFor({ k: 'local-setup' }, { ...SUB, local: 'stt' })).toBe('local_stt');

@@ -217,7 +217,7 @@ export function recipeNote(node, items = {}) {
 // said "i need a stone pickaxe first" and went for wood; the tool-tier facts
 // sat in the cached prompt, far from the inventory she was reading.
 const PICKAXE_REACH = [
-  'none, so stone and ore drop nothing when dug. A wooden pickaxe is the first one',
+  'none, so stone and ore drop nothing when dug',
   'mines stone (it drops cobblestone) and coal ore. Iron, copper and lapis ore need a stone pickaxe',
   'mines stone, coal, iron, copper and lapis ore. Diamond, gold, redstone and emerald ore need an iron pickaxe',
   'mines every ore. Obsidian needs a diamond pickaxe',
@@ -233,6 +233,19 @@ export function pickaxeLine(items = {}) {
   }
   if (!best) return `pickaxe: ${PICKAXE_REACH[0]}.`
   return `pickaxe: ${best} ${PICKAXE_REACH[Math.min(tier, 4)]}.`
+}
+
+// 261012 (pass 4a): what she left cooking. The snapshot does not open the
+// furnace, and the eval saw her take 1 of 3 ingots, then walk off to her own
+// goal (the inventory line lagged and no line said anything was still in the
+// furnace). Built from the last furnace action's view, with its age.
+export function furnaceLine(rec, now = Date.now()) {
+  if (!rec || !(rec.input || rec.output) || !Array.isArray(rec.pos)) return null
+  const ageS = Math.max(0, Math.round((now - (rec.t ?? now)) / 1000))
+  if (ageS > 600) return null
+  const held = [rec.input && `${rec.input} cooking`, rec.output && `${rec.output} done and not taken`].filter(Boolean).join(', ')
+  const cook = rec.input ? ' (each item takes about 10s to cook)' : ''
+  return `furnace @${rec.pos.join(',')}: ${held} when you checked ${ageS}s ago${cook}; takeSmelted at the furnace collects what is done`
 }
 
 // ── live bot reader (impure; the only part that touches mineflayer) ───────────

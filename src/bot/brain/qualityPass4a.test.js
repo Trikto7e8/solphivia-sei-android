@@ -155,7 +155,7 @@ describe('reflex melee strafe during a committed attack', () => {
 })
 
 // ── Issue 2 + 3: tool tiers, recipe counts, progress and inventory wording ──
-import { SPINE, recipeNote, pickaxeLine } from '../adapter/minecraft/observers/progression.js'
+import { SPINE, recipeNote, pickaxeLine, furnaceLine } from '../adapter/minecraft/observers/progression.js'
 import { getInFlightLineForSnapshot } from './inflight.js'
 import { CAPABILITY_PARAGRAPH } from './promptLibrary.js'
 
@@ -214,6 +214,21 @@ describe('pickaxe line under the inventory', () => {
   })
 
   it('says when she has none', () => {
-    expect(pickaxeLine({ oak_log: 3 })).toMatch(/^pickaxe: none, so stone and ore drop nothing/)
+    expect(pickaxeLine({ oak_log: 3 })).toBe('pickaxe: none, so stone and ore drop nothing when dug.')
   })
 })
+
+describe('furnace line for what is still cooking', () => {
+  it('shows what was left in the furnace and how long ago', () => {
+    const line = furnaceLine({ pos: [179, 71, 2], input: '2 raw_iron', t: 1000 }, 21000)
+    expect(line).toBe('furnace @179,71,2: 2 raw_iron cooking when you checked 20s ago (each item takes about 10s to cook); takeSmelted at the furnace collects what is done')
+    expect(furnaceLine({ pos: [1, 2, 3], input: null, output: '3 iron_ingot', t: 0 }, 5000))
+      .toBe('furnace @1,2,3: 3 iron_ingot done and not taken when you checked 5s ago; takeSmelted at the furnace collects what is done')
+  })
+
+  it('shows nothing when the furnace was emptied or the record is old', () => {
+    expect(furnaceLine(null)).toBeNull()
+    expect(furnaceLine({ pos: [1, 2, 3], input: '1 raw_iron', t: 0 }, 601000)).toBeNull()
+  })
+})
+

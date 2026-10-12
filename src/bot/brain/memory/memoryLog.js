@@ -284,15 +284,31 @@ export async function readMemoryForSeed(filePath, budgetBytes) {
   const body = lines.slice(headerEnd)
   const entryIdx = []
   for (let i = 0; i < body.length; i++) if (/^- \[/.test(body[i])) entryIdx.push(i)
-  if (entryIdx.length === 0) return full
+  const trunc = '- [...older memory truncated]'
+  const truncBytes = Buffer.byteLength(trunc + '\n', 'utf8')
+  if (entryIdx.length === 0) {
+    // 261013: a file over budget with no entry lines used to come back WHOLE,
+    // the one path around the budget, straight into the pinned seed turn the
+    // context safety net never trims. Every app writer (remember(), the
+    // heartbeat log, the compactor, which keeps only `- [` lines) writes
+    // entries, so only a hand-edited file lands here; it now gets the same
+    // budget as every other file, newest lines kept.
+    const kept = []
+    let room = budgetBytes - truncBytes
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const b = Buffer.byteLength(lines[i] + '\n', 'utf8')
+      if (b > room) break
+      kept.unshift(lines[i])
+      room -= b
+    }
+    return humanizeMemoryStamps([trunc, ...kept].join('\n'))
+  }
 
   // World markers are tiny and carry essential context — always keep them.
   const markerBytes = body
     .filter((l) => /^## World /.test(l))
     .reduce((s, l) => s + Buffer.byteLength(l + '\n', 'utf8'), 0)
   const headerBytes = Buffer.byteLength(header + '\n', 'utf8')
-  const trunc = '- [...older memory truncated]'
-  const truncBytes = Buffer.byteLength(trunc + '\n', 'utf8')
   let remaining = budgetBytes - headerBytes - markerBytes - truncBytes
   const keep = new Set()
   // Walk newest → oldest entries, keeping until the byte budget is exhausted.

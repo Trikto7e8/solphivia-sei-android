@@ -130,6 +130,37 @@ describe('attackEntity after a kill (owner defense)', () => {
     expect(r).toContain('killed zombie (3 hits)')
     expect(r).toContain('You also hit another hostile once on the way')
   })
+
+  it('never goes on to an enderman or a creeper near the owner after a kill', async () => {
+    const bot = fightable(world([
+      { id: 21, name: 'zombie', x: 2 }, { id: 22, name: 'enderman', x: 3, z: 1 }, { id: 23, name: 'creeper', x: 5 },
+    ], { ownerX: 4 }))
+    bot.attack.mockImplementation((e) => { if (e.id === 21) { bot.emit('entityDead', { id: 21 }); delete bot.entities[21] } })
+    const r = await attackEntityAction({ target: 'zombie', times: 8 }, bot, {})
+    expect(r).toBe('killed zombie (1 hits)')
+    expect(bot.attack.mock.calls.map(([e]) => e.id)).toEqual([21])
+  })
+
+  it('never tags an enderman next to her during the fight', async () => {
+    const bot = fightable(world([{ id: 21, name: 'zombie', x: 2 }, { id: 22, name: 'enderman', x: 1, z: 2 }], { ownerX: 6 }))
+    const hits = []
+    bot.attack.mockImplementation((e) => {
+      hits.push(e.id)
+      if (e.id === 21 && hits.length === 3) { bot.emit('entityDead', { id: 21 }); delete bot.entities[21] }
+    })
+    const r = await attackEntityAction({ target: 'zombie', times: 3 }, bot, {})
+    expect(hits).toEqual([21, 21, 21])
+    expect(r).not.toContain('You also hit')
+  })
+
+  it('an abort after the first kill does not start on the next hostile', async () => {
+    const bot = fightable(world([{ id: 21, name: 'zombie', x: 2 }, { id: 22, name: 'zombie', x: 3, z: 1 }], { ownerX: 4 }))
+    const ac = new AbortController()
+    bot.attack.mockImplementation((e) => { bot.emit('entityDead', { id: e.id }); delete bot.entities[e.id]; ac.abort() })
+    const r = await attackEntityAction({ target: 'zombie', times: 8 }, bot, { signal: ac.signal })
+    expect(bot.attack).toHaveBeenCalledTimes(1)
+    expect(r).not.toContain('Then went for the next')
+  })
 })
 
 describe('reflex melee strafe during a committed attack', () => {

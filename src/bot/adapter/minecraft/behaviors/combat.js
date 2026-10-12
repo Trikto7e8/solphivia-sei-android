@@ -2,7 +2,7 @@ import pkg from 'mineflayer-pathfinder'
 import { stopFollow, startFollow } from './follow.js'
 import { pursuitMovements } from './attack.js'
 import { createThrottle } from '../../../brain/debounce.js'
-import { HOSTILE_MOBS, NO_MELEE_DEFEND } from './hostiles.js'
+import { HOSTILE_MOBS, NO_MELEE_DEFEND, NO_AUTO_ENGAGE } from './hostiles.js'
 import { equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
 import { noteCombat } from './autoEat.js'
 import { ownerHealth } from '../observers/snapshot.js'
@@ -34,7 +34,7 @@ const OTHERS_ON_OWNER_RADIUS = 5
 // provoked and wanders toward players all the time (in the End there are
 // dozens, and two "closing" at once would wake her every few seconds to start
 // a fight nobody was in).
-const NO_THREAT_WATCH = new Set([...NO_MELEE_DEFEND, 'enderman'])
+const NO_THREAT_WATCH = NO_AUTO_ENGAGE
 
 function resolveAttacker(bot, source) {
   // Trust an identified source first — including players. The previous

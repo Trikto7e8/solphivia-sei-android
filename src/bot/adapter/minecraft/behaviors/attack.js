@@ -1,7 +1,7 @@
 // src/behaviors/attack.js — multi-swing attack on an entity (D-22, Pitfall 5)
 import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle, nearestNamedEntityBeyondBound, handleForEntity, pickHostileForOwner, ownerEntityOf } from '../observers/targeting.js'
-import { HOSTILE_MOBS, NO_MELEE_DEFEND } from './hostiles.js'
+import { HOSTILE_MOBS, NO_AUTO_ENGAGE } from './hostiles.js'
 import { isDeadEntity } from '../observers/entities.js'
 import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
@@ -216,7 +216,7 @@ export async function attackEntityAction(args, bot, config) {
     let left = times - result.hits
     while (result.died && left > 0 && HOSTILE_MOBS.has(name) && !signal?.aborted) {
       if (Number.isFinite(bot.health) && bot.health <= CRITICAL_HP) break
-      const next = pickHostileForOwner(bot, (e) => !NO_MELEE_DEFEND.has(e.name), {
+      const next = pickHostileForOwner(bot, (e) => !NO_AUTO_ENGAGE.has(e.name), {
         ownerRadius: CHAIN_OWNER_RADIUS, excludeIds: deadIds,
       }) ?? nearestTagged(bot, ctx)
       if (!next || next.id === currentId) break
@@ -280,7 +280,7 @@ async function tagOther(currentId, ctx) {
   if (!me) return false
   const exclude = new Set([...deadIds, ...tagged, currentId])
   const other = pickHostileForOwner(bot, (e) => {
-    if (NO_MELEE_DEFEND.has(e.name)) return false
+    if (NO_AUTO_ENGAGE.has(e.name)) return false
     try { return e.position.distanceTo(me) <= TAG_RADIUS } catch { return false }
   }, { excludeIds: exclude })
   if (!other) return false
@@ -303,7 +303,8 @@ async function tagOther(currentId, ctx) {
   } catch {
     return false
   } finally {
-    bot._seiOffensiveTarget = currentId
+    // Only restore our own flag: a newer attack may have claimed it meanwhile.
+    if (bot._seiOffensiveTarget === other.id) bot._seiOffensiveTarget = currentId
   }
 }
 

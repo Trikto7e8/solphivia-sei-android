@@ -1,7 +1,8 @@
 import pkg from 'mineflayer-pathfinder'
 import { stopFollow, startFollow } from './follow.js'
+import { pursuitMovements } from './attack.js'
 import { createThrottle } from '../../../brain/debounce.js'
-import { HOSTILE_MOBS } from './hostiles.js'
+import { HOSTILE_MOBS, NO_MELEE_DEFEND } from './hostiles.js'
 import { equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
 import { noteCombat } from './autoEat.js'
 import { ownerHealth } from '../observers/snapshot.js'
@@ -15,12 +16,9 @@ const REACH = 3.5
 // REACH so pathfinder parks the bot inside swing range on a moving target.
 const DEFEND_FOLLOW_RANGE = 2
 
-/**
- * Mobs the bot must NEVER auto-engage in melee to defend the player: closing
- * on a creeper is how you set it off, and the survival reflex is already
- * running the other way (reflex.js creeper-flee). The event still fires, so the
- * model can warn the player or place a block; it just does not walk into it.
- */
+// NO_MELEE_DEFEND (hostiles.js): mobs the bot never auto-engages in melee to
+// defend the player. The event still fires, so the model can warn the player
+// or place a block; it just does not walk into it.
 // 261012: owner-threat watch cadence and thresholds (see watchOwnerThreats).
 const THREAT_TICK_MS = 500
 // A mob counts as closing when it got this much nearer the owner in one tick
@@ -31,7 +29,6 @@ const THREAT_REPEAT_MS = 15000
 // "On the player" for the defend turn's count of mobs nothing is swinging at.
 const OTHERS_ON_OWNER_RADIUS = 5
 
-const NO_MELEE_DEFEND = new Set(['creeper', 'ghast', 'blaze', 'elder_guardian', 'ravager', 'warden'])
 // The owner-threat watch tells the turn to attackEntity the mob, so it skips
 // the mobs melee cannot safely answer and the enderman, which is neutral until
 // provoked and wanders toward players all the time (in the End there are
@@ -71,6 +68,8 @@ export function startCombat(bot, config) {
   // target, and which entity id owns bot._seiOffensiveTarget because of it.
   let _pursue = false
   let _pursueTargetId = null
+  // Whether this engagement swapped in the sprinting pursuit movements.
+  let _pursueMovesSet = false
 
   // ── Per-bot runtime flags (NOT persisted; reset each session) ──────────────
   // Goal / control ownership rules these flags participate in:
@@ -125,6 +124,9 @@ export function startCombat(bot, config) {
       .filter((s) => typeof s === 'string' && s.length > 0)
       .map((s) => s.toLowerCase())
   }
+  // 261012 (pass 4a): attackEntity's by-name lookup (targeting.js
+  // pickHostileForOwner) needs the owner too, to go for the mob nearest them.
+  bot._seiOwnerNames = ownerNames()
 
   /** Is this hurt entity the owner's player entity? */
   function isOwner(entity) {
@@ -353,7 +355,19 @@ export function startCombat(bot, config) {
           !bot._seiCriticalRetreat && !inStagger()) {
         try {
           const d = pos.distanceTo(live.position)
-          if (d > REACH) bot.pathfinder?.setGoal?.(new goals.GoalFollow(live, DEFEND_FOLLOW_RANGE), true)
+          // 261012 (pass 4a): install the follow goal once and keep it. It is
+          // dynamic, so the pathfinder already tracks the moving mob; setting
+          // a fresh goal every 250ms reset the path and cleared the controls
+          // four times a second, so the run toward the player stuttered.
+          const g = bot.pathfinder?.goal
+          const ours = g instanceof goals.GoalFollow && g.entity?.id === live.id
+          if (d > REACH && !ours) {
+            if (!_pursueMovesSet) {
+              try { bot.pathfinder?.setMovements?.(pursuitMovements(bot)) } catch (_) {}
+              _pursueMovesSet = true
+            }
+            bot.pathfinder?.setGoal?.(new goals.GoalFollow(live, DEFEND_FOLLOW_RANGE), true)
+          }
         } catch (_) {}
       }
 
@@ -387,6 +401,7 @@ export function startCombat(bot, config) {
     if (_pursue && bot._seiOffensiveTarget === _pursueTargetId) bot._seiOffensiveTarget = null
     _pursue = false
     _pursueTargetId = null
+    _pursueMovesSet = false // startFollow below puts the follow movements back
     try { bot.pathfinder?.stop() } catch (_) {}
     startFollow(bot, config)
   }

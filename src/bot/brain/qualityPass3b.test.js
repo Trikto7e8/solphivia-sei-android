@@ -147,12 +147,12 @@ describe('conversation transcript window', () => {
 describe('in_flight dug label', () => {
   it('marks a dug count as blocks broken', () => {
     const line = getInFlightLineForSnapshot({ name: 'gather', args: { block: 'oak_log', count: 6 }, startedAt: 0, progress: { dug: 5, total: 6 } }, 2000)
-    expect(line).toContain('5/6 dug (count what you hold from your inventory line)')
+    expect(line).toContain('broke 5 of the 6 blocks asked for so far (what you hold is on your inventory line)')
   })
 
-  it('leaves placed counts alone', () => {
+  it('says placed counts as placed', () => {
     const line = getInFlightLineForSnapshot({ name: 'buildCuboid', args: {}, startedAt: 0, progress: { placed: 3, total: 9, currentY: 65 } }, 2000)
-    expect(line).toContain('3/9, y=65')
+    expect(line).toContain('placed 3 of 9 so far, y=65')
   })
 })
 

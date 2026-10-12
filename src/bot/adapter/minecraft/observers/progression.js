@@ -180,6 +180,38 @@ export function nextMilestone(state = {}, goal) {
   return { node, action: node?.next_action ?? node?.label ?? null }
 }
 
+// 261012 (pass 4a): the recipe for the next milestone and what she holds of
+// each part, for the `next:` line. In the eval she told the player she had
+// "enough for a stone pickaxe" while holding 2 cobblestone: nothing in her
+// state said how many it takes. `planks` counts any *_planks. Sticks and
+// planks are noted as makeable from logs, since craft() makes those parts on
+// the way. Returns '' when the node has no recipe.
+export function recipeNote(node, items = {}) {
+  const recipe = node?.recipe
+  if (!recipe || typeof recipe !== 'object') return ''
+  const count = (name) => {
+    let n = 0
+    for (const [k, v] of Object.entries(items ?? {})) {
+      if (name === 'planks' ? k.endsWith('_planks') : k === name) n += Number(v) || 0
+    }
+    return n
+  }
+  // Item ids as the inventory line spells them; only stick reads oddly bare.
+  const plural = (name, n) => (name === 'stick' && n !== 1 ? 'sticks' : name)
+  const parts = Object.entries(recipe).map(([name, n]) => `${n} ${plural(name, n)}`)
+  const station = node.station ? ` at a ${node.station.replace(/_/g, ' ')}` : ''
+  const held = Object.keys(recipe).map((name) => { const n = count(name); return `${n} ${plural(name, n)}` })
+  let note = `Recipe: ${parts.join(' + ')}${station}. You have ${held.join(', ')}`
+  const short = (name) => name in recipe && count(name) < recipe[name]
+  if (short('stick') || short('planks')) {
+    let logs = 0
+    for (const [k, v] of Object.entries(items ?? {})) if (k.endsWith('_log') || k.endsWith('_stem')) logs += Number(v) || 0
+    if (!('planks' in recipe)) note += `, ${count('planks')} planks`
+    note += `, ${logs} ${logs === 1 ? 'log' : 'logs'} (craft makes planks from logs and sticks from planks on the way: 1 log is 4 planks, 2 planks are 4 sticks)`
+  }
+  return `${note}.`
+}
+
 // ── live bot reader (impure; the only part that touches mineflayer) ───────────
 function bestPickaxeTier(bot) {
   let tier = 0

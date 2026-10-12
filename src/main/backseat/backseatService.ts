@@ -1444,12 +1444,14 @@ async function beginControl(
 ): Promise<void> {
   const { startControl, stopAct, ACT_CANCELLED } = await import('../computerUse/actSession');
   const character = await getCharacter(s.characterId);
+  const playerName = (await loadConfig()).preferred_name ?? '';
   if (!sessionLive(s)) return;
   slog(s, `control starting (${how.origin}): "${goal.slice(0, 200)}"`);
   const r = await startControl({
     characterId: s.characterId,
     characterName: character?.name ?? s.state.aiName,
     persona: character?.persona?.expanded,
+    playerName,
     sourceId: s.sourceId,
     sourceName: s.state.sourceName,
     goal,

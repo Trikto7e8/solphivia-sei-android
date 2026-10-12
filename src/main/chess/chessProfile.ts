@@ -11,6 +11,7 @@ import { z } from 'zod';
 import { getCharacter, patchCharacter } from '../characterStore';
 import { CHAT_TIMEOUT_MS } from '../chat/sdk';
 import { buildLlmProvider } from '../llm';
+import { fillPersonaPlaceholders } from '../../bot/brain/personaPlaceholders.js';
 
 export const ChessProfileSchema = z.object({
   elo: z.number().int().min(400).max(2000),
@@ -67,7 +68,10 @@ export async function getOrCreateChessProfile(characterId: string): Promise<Ches
   let profile = FALLBACK;
   try {
     const llm = await buildLlmProvider();
-    const persona = character.persona.expanded || character.persona.source;
+    // 261013: card {{user}}/{{char}} placeholders (a classification prompt, so no player name).
+    const persona = fillPersonaPlaceholders(character.persona.expanded || character.persona.source, {
+      charName: character.name,
+    });
     // The one forced tool_choice in main. The layer maps it per provider
     // (OpenAI function form, Gemini mode ANY) and falls back to parsing
     // tool-shaped JSON out of the text for providers without support.

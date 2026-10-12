@@ -144,3 +144,19 @@ describe('voiceSpeech', () => {
     expect(t).not.toContain(VOICE_CALL_SAY_FIRST);
   });
 });
+
+describe('buildSystemBlocks persona placeholders (T111)', () => {
+  it('fills {{user}} with the preferred name and {{char}} with the character name', () => {
+    const persona = { source: '', expanded: '{{char}} met {{user}} in Reovano. {{USER}} is family.' };
+    const text = blocks({ persona })[1].text;
+    expect(text).toContain('You are Sui.\nSui met Ouen in Reovano. Ouen is family.');
+    expect(text).not.toMatch(/\{\{/);
+    // Stable across turns: same inputs, byte-identical cached persona block.
+    expect(blocks({ persona })[1].text).toBe(text);
+  });
+
+  it('says "the player" when no preferred name is set', () => {
+    const text = blocks({ persona: { source: '', expanded: 'You trust {{user}}.' }, preferredName: '' })[1].text;
+    expect(text).toContain('You trust the player.');
+  });
+});

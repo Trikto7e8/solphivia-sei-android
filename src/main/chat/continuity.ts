@@ -42,6 +42,7 @@ import { CHAT_MODEL } from './sdk';
 import { buildLlmProvider } from '../llm';
 import { buildFoldSystem, buildFoldTranscript, extractSummaryTag, formatChatTimestamp } from './foldPrompt';
 import { maybeCompactChatMemory } from './memoryCompaction';
+import { resolvePersonaText } from './personaText';
 
 // Re-export for the existing consumers (chatService and friends import it from
 // here). The definition moved to foldPrompt.ts (260810) so the offline fold
@@ -267,7 +268,10 @@ export async function foldIfDue(characterId: string, personaExpanded?: string): 
     // The reads above can straddle an account switch too: a transcript read
     // in one scope must never be folded against another scope's bridge.
     if (getActiveScope() !== scope) return;
-    await foldIntoSummary(characterId, bridge, evicted, epoch, personaExpanded, scope);
+    // 261013: card {{user}}/{{char}} placeholders, filled (no lookup when absent).
+    const persona = await resolvePersonaText(characterId, personaExpanded);
+    if (getActiveScope() !== scope) return;
+    await foldIntoSummary(characterId, bridge, evicted, epoch, persona, scope);
   } finally {
     foldInFlight.delete(characterId);
   }

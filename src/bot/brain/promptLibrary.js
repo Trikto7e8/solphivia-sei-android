@@ -886,11 +886,79 @@ export function adaptNudges({ sessionEndClause = SESSION_END_CLAUSE, stuckNudges
 // above.
 export const BASELINE_INSTRUCTIONS = `${UNIVERSAL_BASELINE}\n\n${MINECRAFT_BASELINE}`
 
+/**
+ * 261013 (T111): SillyTavern-style character-card placeholders.
+ *
+ * Imported persona cards are often written against `{{user}}` and `{{char}}`
+ * ("{{user}} found you alone in Reovano..."). Nothing used to substitute them,
+ * so the model read the literal braces. This is the one shared helper every
+ * surface runs persona text through before it goes into a prompt: the game
+ * brain (renderPersona / renderCore / memory compactor) and the main-process
+ * surfaces (chat, voice, Draw!, chess, Backseat via buildSystemBlocks, the
+ * Backseat act prompt, the summary fold, chat memory compaction).
+ *
+ * Pure and deterministic: the same text and names always give the same output,
+ * so a persona block stays byte-stable across turns and the prompt cache is
+ * unaffected. Callers substitute BEFORE the text goes into a cached block, from
+ * session-stable inputs (the character name and the profile's display name).
+ *
+ *   {{user}} -> the player's display name, else "the player"
+ *   {{char}} -> the character's name, else "this character"
+ *
+ * Matching is case-insensitive and tolerates inner spaces (`{{ User }}`). A
+ * fallback phrase that lands at the start of a sentence or line is capitalized
+ * ("The player"); a real name is inserted as written.
+ */
+
+const PLACEHOLDER_RE = /\{\{\s*(user|char)\s*\}\}/gi
+
+/** Cheap check so callers can skip extra lookups for cards without placeholders. */
+export function hasPersonaPlaceholders(text) {
+  if (typeof text !== 'string' || !text.includes('{{')) return false
+  PLACEHOLDER_RE.lastIndex = 0
+  const hit = PLACEHOLDER_RE.test(text)
+  PLACEHOLDER_RE.lastIndex = 0
+  return hit
+}
+
+function clean(name) {
+  return typeof name === 'string' ? name.trim() : ''
+}
+
+// Start of the text, a new line, or right after sentence-ending punctuation
+// (optionally followed by a closing quote/bracket) and whitespace.
+function atSentenceStart(text, offset) {
+  const before = text.slice(0, offset)
+  return /(^|\n)[ \t]*["'“‘(*_-]*$/.test(before) || /[.!?…]["'”’)]*\s+["'“‘(]*$/.test(before)
+}
+
+/**
+ * @param {string} text persona / card text
+ * @param {{ charName?: string | null, userName?: string | null }} [names]
+ * @returns {string}
+ */
+export function fillPersonaPlaceholders(text, names = {}) {
+  if (typeof text !== 'string' || !text.includes('{{')) return text
+  const userName = clean(names?.userName)
+  const charName = clean(names?.charName)
+  return text.replace(PLACEHOLDER_RE, (_m, which, offset, whole) => {
+    const isUser = which.toLowerCase() === 'user'
+    const real = isUser ? userName : charName
+    if (real) return real
+    const fallback = isUser ? 'the player' : 'this character'
+    return atSentenceStart(whole, offset) ? fallback[0].toUpperCase() + fallback.slice(1) : fallback
+  })
+}
+
 // 260516-0yw: renderPersona consumes the LLM-generated `expanded` long prompt
 // produced at character-save time (the four-section IDENTITY/VOICE/EXTERNAL/
 // INTERNAL base personality). Bot/index.js writes `persona: { name, expanded }`.
-export function renderPersona(persona) {
-  return `You are ${persona.name}.\n${persona.expanded}`
+// 261013 (T111): card placeholders ({{user}} / {{char}}) are filled here, from
+// session-stable names, so the cached persona block stays byte-stable.
+// `userName` is the player's display name ('' -> "the player").
+export function renderPersona(persona, { userName } = {}) {
+  const expanded = fillPersonaPlaceholders(persona.expanded, { charName: persona.name, userName })
+  return `You are ${persona.name}.\n${expanded}`
 }
 
 // 260705: texting punctuation directive — static per character (from
@@ -1037,10 +1105,14 @@ function fallbackCore(name, expanded) {
   return lines.length ? `${lead} ${lines.join(' ')}` : lead
 }
 
-export function renderCore(persona) {
+export function renderCore(persona, { userName } = {}) {
   const p = persona && typeof persona === 'object' ? persona : {}
   const name = (typeof p.name === 'string' && p.name.trim()) ? p.name.trim() : 'this character'
-  const expanded = typeof p.expanded === 'string' ? p.expanded : ''
+  // 261013 (T111): same placeholder fill as renderPersona, so the tail core and
+  // the cached persona block name the player the same way.
+  const expanded = typeof p.expanded === 'string'
+    ? fillPersonaPlaceholders(p.expanded, { charName: p.name, userName })
+    : ''
   const core = sliceCoreSection(expanded) || fallbackCore(name, expanded)
   const behavior = sliceBehaviorSections(expanded)
   const body = behavior ? `${core}\n\n${behavior}` : core

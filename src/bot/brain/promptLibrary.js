@@ -841,7 +841,7 @@ export const NUDGES = {
     // 261012: the running action is her own idea, and the player's line may
     // be an order. Their order comes first.
     const ownLead = (ownAction && playerLine != null && !groupVoice && !agenticFollowReview)
-      ? ` Your current action is your own idea; the player did not ask for it. What they ask for comes first: if their line asks you to do something, start it now in this same turn (it replaces your action), using what you already have, instead of finishing yours first.`
+      ? ` Your current action is your own idea; the player did not ask for it. What they ask for comes first: if their line asks you to do something, call the action for it now in this same turn, using what you already have, instead of finishing yours first. You do not need to call stop first: the new action replaces yours. Calling only stop and saying you will do it next leaves them waiting.`
       : ''
     // 261012: a check-in on her own action while a player request waits.
     // Replaces the "call no other action" check-in, which kept her on her own

@@ -38,6 +38,7 @@
 // a stub bot.
 
 import { readFileSync } from 'node:fs'
+import { liveInventoryItems } from './liveInventory.js'
 
 // Pickaxe material → tool tier. A milestone gated on `pickaxe: N` is satisfied
 // when the bot's BEST pickaxe is tier ≥ N. Gold mines like wood, so it is tier 1.
@@ -253,7 +254,7 @@ export function furnaceLine(rec, now = Date.now()) {
 // ── live bot reader (impure; the only part that touches mineflayer) ───────────
 function bestPickaxeTier(bot) {
   let tier = 0
-  const items = typeof bot?.inventory?.items === 'function' ? bot.inventory.items() : []
+  const items = liveInventoryItems(bot)
   for (const it of items) {
     const name = it?.name
     if (typeof name !== 'string' || !name.endsWith('_pickaxe')) continue
@@ -265,7 +266,7 @@ function bestPickaxeTier(bot) {
 
 function itemsByName(bot) {
   const out = {}
-  const items = typeof bot?.inventory?.items === 'function' ? bot.inventory.items() : []
+  const items = liveInventoryItems(bot)
   for (const it of items) {
     if (!it || typeof it.name !== 'string') continue
     out[it.name] = (out[it.name] ?? 0) + (it.count ?? 0)

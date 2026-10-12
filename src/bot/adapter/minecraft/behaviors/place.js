@@ -2,6 +2,7 @@
 import { Vec3 } from 'vec3'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
+import { liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
 
 export const DEFAULT_TIMEOUT_MS = 4000
 
@@ -54,11 +55,40 @@ function autoPlacementNearBot(bot) {
   return null
 }
 
+// 261012 (quality pass 5): placeBlock resolving is not proof the block is
+// there. The eval had "placed crafting_table on barrier" with the table still
+// in her bag, and she walked off to use a table that did not exist. After the
+// server has had its say, the target cell must hold a block and the item must
+// have left the bag (or the block must be the item itself).
+const EMPTY_AFTER_PLACE = new Set([...AIR, 'water', 'lava'])
+const PLACE_SETTLE = { quietMs: 250, minMs: 300, maxMs: 1200 }
+
+async function verifyPlaced(bot, dest, itemName, before, oldName, refLoc, signal) {
+  if (!dest || !hasLiveInventory(bot) || typeof bot.blockAt !== 'function') return `placed ${itemName} on ${refLoc}`
+  if (await waitInventoryQuiet(bot, { ...PLACE_SETTLE, signal }) === 'aborted') return 'aborted'
+  let blk = null
+  try { blk = bot.blockAt(dest) } catch { blk = null }
+  const after = liveCount(bot, itemName)
+  const empty = !blk || EMPTY_AFTER_PLACE.has(blk.name)
+  // 261013: a block named unlike its item (torch -> wall_torch, oak_sign ->
+  // oak_wall_sign) that replaced what was there is placed, even when the
+  // count did not drop (creative, or a slot update still on its way).
+  if (empty || (blk.name !== itemName && after >= before && blk.name === oldName)) {
+    const there = empty ? 'the spot is still empty' : `the spot holds ${blk.name}`
+    return `placing ${itemName} on ${refLoc} did not go through: ${there} and the ${itemName} is still in your inventory`
+  }
+  return `placed ${itemName} on ${refLoc}`
+}
+
 function tryPlace(bot, refBlock, faceVector, itemName, timeoutMs, signal) {
   const rp = refBlock.position
   const refLoc = rp ? `${refBlock.name ?? 'block'} @${rp.x},${rp.y},${rp.z}` : (refBlock.name ?? 'block')
+  const dest = rp && faceVector ? new Vec3(rp.x + faceVector.x, rp.y + faceVector.y, rp.z + faceVector.z) : null
+  const before = liveCount(bot, itemName)
+  let oldName = null
+  try { oldName = dest && typeof bot.blockAt === 'function' ? (bot.blockAt(dest)?.name ?? null) : null } catch { oldName = null }
   const op = bot.placeBlock(refBlock, faceVector)
-    .then(() => `placed ${itemName} on ${refLoc}`)
+    .then(() => verifyPlaced(bot, dest, itemName, before, oldName, refLoc, signal))
     .catch((err) => {
       const r = reason(err)
       return r ? `cannot place ${itemName} on ${refLoc}: ${r}` : `cannot place ${itemName} on ${refLoc}`
@@ -78,7 +108,12 @@ export async function placeBlockAction(args, bot, config) {
   if (signal?.aborted) return 'aborted'
 
   const itemName = args.block
-  const invItem = bot.inventory.items().find((i) => i.name === itemName)
+  let invItem = bot.inventory.items().find((i) => i.name === itemName)
+  if (!invItem && hasLiveInventory(bot)) {
+    // 261012: an item crafted or picked up a moment ago may still be landing.
+    if (await waitInventoryQuiet(bot, { quietMs: 250, maxMs: 1000, signal }) === 'aborted') return 'aborted'
+    invItem = bot.inventory.items().find((i) => i.name === itemName)
+  }
   if (!invItem) return `no ${itemName} in inventory`
 
   try {

@@ -493,6 +493,13 @@ export function isBareStopLine(text) {
   const t = String(text ?? '').toLowerCase().replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
   return t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t)
 }
+// 261012 (pass 5): the player's line asks her to stop or wait (not "don't
+// stop"). Gates the idle hold, so her OWN stop() while switching to a new
+// order ("can you smelt this" answered with stop + say "on it") is no hold.
+const ASKS_STOP_RE = /(?<!\b(?:dont|don't|do not|never|not|cant|can't|wont|won't)\s+)\b(?:stop|halt|cancel|nevermind|never mind|enough|pause|freeze|hold on|hold up|wait|quit it)\b/
+export function asksToStop(text) {
+  return ASKS_STOP_RE.test(String(text ?? '').toLowerCase())
+}
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
@@ -1013,6 +1020,15 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // and re-surface the frontier: [{ text, ids, id, label, procedure }].
   const progressionFlags = { entered_nether: false, entered_end: false, killed_dragon: false }
   let linkedGoals = []
+  // 261012 (quality pass 5): when the player last told her to stop. Every
+  // stop_gather failure in the eval was the same: the gather stopped at once,
+  // then the next idle tick (5s later at the agentic cadence) read her own
+  // goal in the heartbeat and started gathering again. While this hold is on,
+  // idle ticks are skipped, so her own initiative waits for the player. It
+  // ends when the player gives her something new to do, or after the window.
+  let playerStopAt = 0
+  const PLAYER_STOP_HOLD_MS = config?.memory?.player_stop_hold_ms ?? 120_000
+  const playerStopHeld = () => playerStopAt > 0 && Date.now() - playerStopAt < PLAYER_STOP_HOLD_MS
   // 17-04 (D-08): node ids whose known-good `procedure` has already been written
   // to per-world memory this session — dedupes the procedural write-back so a
   // milestone records its procedure at most once.
@@ -2155,6 +2171,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const priorTask = extractPriorTask(loop)
     const priorName = priorTask ? priorTask.split(' ')[0] : null
     const action = (loop.inFlight || (priorName && caps.backgroundActions[priorName])) ? priorTask : null
+    // 261012 (pass 5): a player line landing on an action she started on her
+    // own. In the eval the greeting turn's gather ran on while the player's
+    // order waited ("on it, once i get a few more logs"), and craft_tools,
+    // smelt_iron and build_shelter failed on it.
+    const ownAction = !teammate && !!loop.inFlight?.selfStarted && !!(chatText && String(chatText).trim())
+    if (chatText && String(chatText).trim() && !teammate) loop._playerDirected = true
+    // The line stays on her own action's entry, so the silent check-ins
+    // remind her of it (eval craft_tools: she had the logs for the ordered
+    // table at the 30s check-in, was told "do NOT call another action", and
+    // wandered after more logs for two minutes). A new action replaces the
+    // entry and drops it.
+    if (ownAction && !unanswered) loop.inFlight.waitingAsk = { text: String(chatText).trim(), who: speakerForTurn(who, teammate) }
     // 260703: a fresh player line resets the per-loop "have I spoken since
     // the player's latest message" flag — the unanswered-line retry keys off
     // it, and a say() from BEFORE this interrupt doesn't count as answering
@@ -2214,6 +2242,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       voice: voiceCallActive,
       peers: companions,
       fromTeammate: teammate === true,
+      ownAction,
     })) + crossedTail + (humanLine ? ownRepeatsTail() : '')
   }
 
@@ -2427,6 +2456,11 @@ function maybeWarnByteCap(loop, warned) {
     // drop it.
     if (isIdle && currentLoop !== null) {
       logger.debug?.(`[sei/orch] idle gated — currentLoop active (loop=${currentLoop.id}, iterations=${currentLoop.iterationCount})`)
+      return
+    }
+    // 261012 (pass 5): the player told her to stop; her own initiative waits.
+    if (isIdle && playerStopHeld()) {
+      logger.debug?.(`[sei/orch] idle gated — player stop hold (${Math.round((Date.now() - playerStopAt) / 1000)}s ago)`)
       return
     }
 
@@ -2713,6 +2747,9 @@ function maybeWarnByteCap(loop, warned) {
     // player-chat context entirely.
     loop._triggerData = data ?? null
     loop._playerSpoke = !!data?.playerSpoke || event === 'player_chat'
+    // 261012 (pass 5): did the player ask for what this loop is doing? Set
+    // again when a player line is folded in (interruptTurnText).
+    loop._playerDirected = loop._playerSpoke
     // 260514-ngj: per-iteration trigger flag. At loop creation it equals
     // _triggerEvent; handleActionComplete updates it to reflect the SOURCE
     // of each subsequent iteration (PLAYER INTERRUPT mid-loop preempt resets
@@ -3648,6 +3685,8 @@ function maybeWarnByteCap(loop, warned) {
       handle: runner.handle,
       startedAt: runner.startedAt,
       tool_use_id: use.id,
+      // 261012 (pass 5): her own idea (greeting, idle, goal), not the player's.
+      selfStarted: !loop._playerDirected,
       _tickHandle: null,  // 260516-0yw: filled below
     }
     loop.inFlight = inflightEntry
@@ -4092,6 +4131,10 @@ function maybeWarnByteCap(loop, warned) {
     const attackText = attack && typeof adapter.eventAddendum === 'function'
       ? `${String(adapter.eventAddendum('sei:attacked', attack) ?? '').trim()}${fightToldSuffix()}\n\n${NUDGES.attackMidAction({ action, stopTool: stopToolForAction(action) })}`
       : null
+    // 261013: the silent check-in that carries a waiting player order invites
+    // an action that replaces hers, so the silent-tick drop must let it through.
+    const tickWaitingAsk = (attackText == null && playerMessage == null && loop.inFlight?.selfStarted && loop.inFlight?.waitingAsk) || null
+    loop._tickCarriesAsk = !!tickWaitingAsk
     const tickEventText = attackText != null
       ? attackText
       : playerMessage != null
@@ -4103,6 +4146,7 @@ function maybeWarnByteCap(loop, warned) {
           elapsedSec,
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
+          waitingAsk: tickWaitingAsk,
         }))
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps
@@ -4589,6 +4633,21 @@ function maybeWarnByteCap(loop, warned) {
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
       if (newSuspendingTools.length > 0) loop._worldActed = true
+      // 261012 (pass 5): a stop from the player starts the idle hold (see
+      // playerStopAt); a player line answered with new work ends it. A bare
+      // "stop" line counts even when the model answered it with end_loop,
+      // since the chat fast path and the end_loop backstop cancel the action.
+      // "stop, come here" (stop + goTo) is new work, not a hold. Her stop()
+      // counts only when the player's line asked for one (asksToStop): a
+      // stop she calls to drop her own action for a new order is not a hold.
+      if (_p1Trigger && loop._lastPlayerLine) {
+        // 261013: a goal set from the player's line is new work too. The
+        // idle tick is what starts it, so a hold left on would sit on it.
+        const newWork = newSuspendingTools.some(u => u.name !== 'unfollow') || toolUses.some(u => u.name === 'setGoal')
+        const line = loop._lastPlayerLine.text
+        if (newWork) playerStopAt = 0
+        else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
+      }
 
       // 260921: a player line answered with ACTIONS ONLY: text + a world
       // action, no say(). Measured: asked a question mid-chore, the model wrote
@@ -4625,7 +4684,7 @@ function maybeWarnByteCap(loop, warned) {
       // Inline-metadata tools (remember/forget) in the same batch still execute.
       const isSilentActionTick =
         (loop._currentIterationTrigger ?? loop._triggerEvent) === 'sei:action_tick'
-      if (isSilentActionTick && !hasStop && newSuspendingTools.length > 0 && loop.inFlight) {
+      if (isSilentActionTick && !hasStop && !loop._tickCarriesAsk && newSuspendingTools.length > 0 && loop.inFlight) {
         logger.debug?.(`[sei/orch] silent action_tick: dropping new action(s)=${newSuspendingTools.map(u => u.name).join(',')} — in_flight=${loop.inFlight.name} keeps running (loop=${loop.id})`)
         const results = new Array(toolUses.length)
         for (let i = 0; i < toolUses.length; i++) {
@@ -5487,6 +5546,9 @@ function maybeWarnByteCap(loop, warned) {
       } else {
         const note = pausedInflightNote
         pausedInflightNote = null
+        // 261013: pressing play is the player saying go, so a stop hold from
+        // before the pause must not swallow the resume tick.
+        playerStopAt = 0
         try { reenqueue('sei:idle', { reason: 'game_unpaused', ...(note ? { pausedInflight: note } : {}) }) } catch {}
       }
     },

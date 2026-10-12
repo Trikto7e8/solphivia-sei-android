@@ -20,6 +20,7 @@
 // recipesFor / findBlock (unit-test bots do).
 
 import mcDataLib from 'minecraft-data'
+import { liveInventoryItems } from './liveInventory.js'
 
 // Crafting-table interaction reach. Matches the reach gate the craft() behavior
 // enforces, so the "you can craft 3×3 recipes" the snapshot advertises is
@@ -90,7 +91,7 @@ function ingredientIds(variant) {
 // ── inventory helpers ────────────────────────────────────────────────────────
 function inventoryById(bot) {
   const out = new Map()
-  const items = typeof bot?.inventory?.items === 'function' ? bot.inventory.items() : []
+  const items = liveInventoryItems(bot)
   for (const it of items) {
     if (!it || typeof it.type !== 'number') continue
     out.set(it.type, (out.get(it.type) ?? 0) + (it.count ?? 0))

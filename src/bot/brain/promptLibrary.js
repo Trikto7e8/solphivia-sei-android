@@ -306,7 +306,7 @@ export const ACTION_DESCRIPTIONS = {
     'Read a sign\'s text: `{block:"oak_sign"}` for the nearest, or aim with a target/coords. Must be within reach. Read-only — changes nothing.',
 
   shelter:
-    'Build a simple enclosed shelter in one call — hollow walls, a roof, and a doorway you can walk through. `{size?:3-5, material?:"cobblestone", center?:{x,y,z}}`. Fast night/mob protection; comes out blocky. Defaults to your current position.',
+    'Build a simple enclosed shelter in one call — hollow walls, a roof, and a doorway you can walk through. `{size?:3-5, material?:"cobblestone", center?:{x,y,z}}`. Fast night/mob protection; comes out blocky. Defaults to your current position, so when the player wants it where they are ("here", "next to me"), pass their position from the snapshot as center.',
 
   // Only present when the active provider supports vision (D-10). Keep it short.
   look:
@@ -777,7 +777,7 @@ export const NUDGES = {
   //   playerLine — the player's words (interrupt) or null (silent monitor)
   //   who       — speaker username, for the interrupt variant
   //   elapsedSec — seconds the action has run, shown only on the silent monitor
-  actionTurn: ({ action, stopTool, playerLine = null, who = null, elapsedSec = null, visionOff = false, proactiveness = 1, voice = false, peers = [], fromTeammate = false, sessionEndClause = SESSION_END_CLAUSE, stuckNudges = null }) => {
+  actionTurn: ({ action, stopTool, playerLine = null, who = null, elapsedSec = null, visionOff = false, proactiveness = 1, voice = false, peers = [], fromTeammate = false, sessionEndClause = SESSION_END_CLAUSE, stuckNudges = null, ownAction = false, waitingAsk = null }) => {
     // Game-adapters M0 (260908): the session-end clause and the stuck hint
     // are adapter-declared (contract v2 sessionEndClause() / stuckNudges());
     // the defaults are the Minecraft text so every existing caller renders
@@ -840,7 +840,19 @@ export const NUDGES = {
       : (playerLine != null)
       ? ` To stop, call ${stopTool}. To do something else, call that action. Either way, also call say() this turn, since the player spoke to you.${MEMORY_GOAL_TAIL}`
       : ` To cancel this action, call ${stopTool}. Otherwise let it run — do not call another action this tick.`
-    return `${head}${body}${tail}`
+    // 261012: the running action is her own idea, and the player's line may
+    // be an order. Their order comes first.
+    const ownLead = (ownAction && playerLine != null && !groupVoice && !agenticFollowReview)
+      ? ` Your current action is your own idea; the player did not ask for it. What they ask for comes first: if their line asks you to do something, call the action for it now in this same turn, using what you already have, instead of finishing yours first. You do not need to call stop first: the new action replaces yours. Calling only stop and saying you will do it next leaves them waiting.`
+      : ''
+    // 261012: a check-in on her own action while a player request waits.
+    // Replaces the "call no other action" check-in, which kept her on her own
+    // gather after she already had what the request needed.
+    if (waitingAsk?.text && playerLine == null && !agenticFollowReview) {
+      const asker = waitingAsk.who || 'the player'
+      return `${head} ${asker} asked you: "${waitingAsk.text}", and it is still waiting. Your current action is your own idea, so their request comes first. Check the snapshot: if you now have what it needs, call the action for it this turn (it replaces this one). If you still need more for it, let this action run and call nothing. Either way call no say() this tick. If the snapshot shows this action is STUCK or making no progress: ${stuckHint}.`
+    }
+    return `${head}${body}${ownLead}${tail}`
   },
 }
 

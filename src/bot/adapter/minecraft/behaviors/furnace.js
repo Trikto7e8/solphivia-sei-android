@@ -9,6 +9,7 @@
 import mcDataLib from 'minecraft-data'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
+import { liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
 
 export const OPEN_TIMEOUT_MS = 6000
 export const TRANSFER_TIMEOUT_MS = 4000
@@ -64,6 +65,17 @@ function noteFurnace(bot, furnace) {
       ? { pos: [pos.x, pos.y, pos.z], input: input ? slotText(input) : null, output: output ? slotText(output) : null, t: Date.now() }
       : null
   } catch {}
+}
+
+// 261012 (quality pass 5): furnace clicks are unconfirmed predictions too.
+// The eval had "added 1 coal fuel" with the fuel slot empty a moment later and
+// the coal gone from neither place it should be. After each slot op, let the
+// server's answer land and check that the item actually moved.
+const SLOT_SETTLE = { quietMs: 200, minMs: 250, maxMs: 1000 }
+async function settled(bot, signal) {
+  if (!hasLiveInventory(bot)) return false
+  await waitInventoryQuiet(bot, { ...SLOT_SETTLE, signal })
+  return !signal?.aborted
 }
 
 function slotText(item) {
@@ -228,8 +240,17 @@ export async function smeltInputAction(args, bot, config) {
   const actualCount = Math.min(count, invItem.count, room)
   const timeoutMs = args.timeout_ms ?? config?.smeltInput_timeout_ms ?? TRANSFER_TIMEOUT_MS
 
+  const beforeIn = liveCount(bot, item)
   const op = furnace.putInput(itemId, null, actualCount)
-    .then(() => {
+    .then(async () => {
+      if (await settled(bot, signal)) {
+        let inp = null
+        try { inp = furnace.inputItem() } catch {}
+        if ((!inp || inp.name !== item) && liveCount(bot, item) >= beforeIn) {
+          noteFurnace(bot, furnace)
+          return `loading ${item} did not go through: the input slot shows ${slotText(inp)} and the ${item} is still in your inventory`
+        }
+      }
       const note = isBurning(furnace) ? '' : (() => { let f = null; try { f = furnace.fuelItem() } catch {} return f ? '' : '; it needs fuel to start' })()
       noteFurnace(bot, furnace)
       return `${cleared}smelting ${actualCount} ${item}${note}`
@@ -275,8 +296,16 @@ export async function addFuelAction(args, bot, config) {
   const actualCount = Math.min(count, invItem.count, room)
   const timeoutMs = args.timeout_ms ?? config?.addFuel_timeout_ms ?? TRANSFER_TIMEOUT_MS
 
+  const beforeFuel = liveCount(bot, item)
   const op = furnace.putFuel(itemId, null, actualCount)
-    .then(() => `added ${actualCount} ${item} fuel`)
+    .then(async () => {
+      if (await settled(bot, signal) && liveCount(bot, item) >= beforeFuel) {
+        let f = null
+        try { f = furnace.fuelItem() } catch {}
+        return `adding ${item} fuel did not go through: the fuel slot shows ${slotText(f)} and the ${item} is still in your inventory`
+      }
+      return `added ${actualCount} ${item} fuel`
+    })
     .catch((err) => {
       const r = reason(err)
       return r ? `add ${item} fuel failed: ${r}` : `add ${item} fuel failed`
@@ -328,11 +357,21 @@ export async function takeSmeltedAction(args, bot, config) {
   const fallbackCount = out.count ?? 0
   const timeoutMs = args?.timeout_ms ?? config?.takeSmelted_timeout_ms ?? TRANSFER_TIMEOUT_MS
 
+  const beforeOut = liveCount(bot, fallbackName)
   const op = Promise.resolve()
     .then(() => furnace.takeOutput())
-    .then((taken) => {
-      const n = taken?.count ?? fallbackCount
+    .then(async (taken) => {
+      let n = taken?.count ?? fallbackCount
       const name = taken?.name ?? fallbackName
+      if (await settled(bot, signal)) {
+        const gained = liveCount(bot, name) - beforeOut
+        if (gained <= 0) {
+          let st = ''
+          try { st = furnaceStatus(furnace) } catch {}
+          return `taking the ${name} did not go through; it is still in the furnace${st ? `: ${st}` : ''}`
+        }
+        n = gained
+      }
       let left = null
       try { left = furnace.inputItem() } catch {}
       noteFurnace(bot, furnace)

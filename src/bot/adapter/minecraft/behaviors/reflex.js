@@ -479,7 +479,18 @@ export function startReflex(bot, config) {
 
     if (threat.kind === 'creeper') return enterFlee(threat.entity)
     if (threat.kind === 'arrow') return doArrowDodge(threat)
-    if (threat.kind === 'melee') return doMeleeStrafe(threat)
+    if (threat.kind === 'melee') {
+      // 261012 (pass 4a): while an attack is committed to a target
+      // (attackEntity or the owner defense), do not strafe around a
+      // different melee mob. In the protect_player eval the second zombie
+      // walked next to the first, and the strafe (look at it, step sideways
+      // and back) can fight the chase toward the player's attacker.
+      if (bot._seiOffensiveTarget != null && threat.entity?.id !== bot._seiOffensiveTarget) {
+        releaseStrafe()
+        return
+      }
+      return doMeleeStrafe(threat)
+    }
   }
 
   function dispose() {

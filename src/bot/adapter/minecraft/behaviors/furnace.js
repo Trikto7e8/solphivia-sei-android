@@ -51,6 +51,21 @@ function findOnHand(bot, furnace, name) {
   try { return bot.inventory.items().find((i) => i.name === name) ?? null } catch { return null }
 }
 
+// 261012 (pass 4a): remember what was left cooking so the snapshot can show
+// it after the window closes (see furnaceLine in observers/progression.js).
+function noteFurnace(bot, furnace) {
+  try {
+    const pos = FURNACE_SESSION.blockPos
+    if (!bot || !pos) return
+    let input = null, output = null
+    try { input = furnace.inputItem() } catch {}
+    try { output = furnace.outputItem() } catch {}
+    bot._seiFurnaceCooking = (input || output)
+      ? { pos: [pos.x, pos.y, pos.z], input: input ? slotText(input) : null, output: output ? slotText(output) : null, t: Date.now() }
+      : null
+  } catch {}
+}
+
 function slotText(item) {
   return item ? `${item.count ?? 1} ${item.name}` : 'empty'
 }
@@ -148,6 +163,7 @@ export async function openFurnaceAction(args, bot, config) {
     .then((furnace) => {
       FURNACE_SESSION.furnace = furnace
       FURNACE_SESSION.blockPos = target.position
+      noteFurnace(bot, furnace)
       let status = ''
       try { status = furnaceStatus(furnace) } catch {}
       return status ? `opened ${targetName}: ${status}` : `opened ${targetName}`
@@ -215,6 +231,7 @@ export async function smeltInputAction(args, bot, config) {
   const op = furnace.putInput(itemId, null, actualCount)
     .then(() => {
       const note = isBurning(furnace) ? '' : (() => { let f = null; try { f = furnace.fuelItem() } catch {} return f ? '' : '; it needs fuel to start' })()
+      noteFurnace(bot, furnace)
       return `${cleared}smelting ${actualCount} ${item}${note}`
     })
     .catch((err) => {
@@ -318,6 +335,7 @@ export async function takeSmeltedAction(args, bot, config) {
       const name = taken?.name ?? fallbackName
       let left = null
       try { left = furnace.inputItem() } catch {}
+      noteFurnace(bot, furnace)
       return left ? `took ${n} ${name} (${slotText(left)} still cooking)` : `took ${n} ${name}`
     })
     .catch((err) => {

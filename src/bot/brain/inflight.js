@@ -97,10 +97,11 @@ export function getInFlightLineForSnapshot(entry, now = Date.now()) {
       // 261012: a dug count is blocks broken, not items held. Drops can still
       // be on the ground, and in the scripted-convo eval she told the player
       // "6 logs done" off a 5/6 here while her inventory held 4.
-      const dugNote = (typeof p.placed !== 'number' && typeof p.dug === 'number')
-        ? ' dug (count what you hold from your inventory line)'
-        : ''
-      suffix = ` — ${completed}/${p.total}${dugNote}${yPart}`
+      // 261012 (pass 4a): "1/6 dug" was read as "the 6th log" in a later
+      // line, so the progress is spelled out.
+      suffix = (typeof p.placed !== 'number' && typeof p.dug === 'number')
+        ? ` — broke ${completed} of the ${p.total} blocks asked for so far (what you hold is on your inventory line)${yPart}`
+        : ` — placed ${completed} of ${p.total} so far${yPart}`
     }
   }
   return `in_flight: ${entry.name}(${argblurb}) started=${elapsed}s ago${suffix}`

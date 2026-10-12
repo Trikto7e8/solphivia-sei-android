@@ -273,3 +273,29 @@ describe('closeFurnaceSession', () => {
     expect(await takeSmeltedAction({}, makeBot(), {})).toBe('no furnace open')
   })
 })
+
+// 261012 (pass 4a): the snapshot shows what was left cooking after the window
+// closes (observers/progression.js furnaceLine reads bot._seiFurnaceCooking).
+describe('what is left cooking', () => {
+  it('records the input after loading and after a partial take, and clears it when emptied', async () => {
+    const furnace = makeFurnace()
+    const bot = makeBot({ items: [{ name: 'raw_iron', count: 3 }], furnace })
+    await openFurnaceAction({ block: 'furnace' }, bot, {})
+    expect(bot._seiFurnaceCooking).toBeNull()
+
+    furnace.putInput = vi.fn(async () => { furnace.slots.input = { name: 'raw_iron', count: 3 } })
+    await smeltInputAction({ item: 'raw_iron', count: 3 }, bot, {})
+    expect(bot._seiFurnaceCooking).toMatchObject({ pos: [10, 64, 10], input: '3 raw_iron' })
+
+    furnace.slots.output = { name: 'iron_ingot', count: 1 }
+    furnace.slots.input = { name: 'raw_iron', count: 2 }
+    furnace.takeOutput = vi.fn(async () => { const o = furnace.slots.output; furnace.slots.output = null; return o })
+    expect(await takeSmeltedAction({}, bot, {})).toBe('took 1 iron_ingot (2 raw_iron still cooking)')
+    expect(bot._seiFurnaceCooking).toMatchObject({ input: '2 raw_iron', output: null })
+
+    furnace.slots.output = { name: 'iron_ingot', count: 2 }
+    furnace.slots.input = null
+    expect(await takeSmeltedAction({}, bot, {})).toBe('took 2 iron_ingot')
+    expect(bot._seiFurnaceCooking).toBeNull()
+  })
+})

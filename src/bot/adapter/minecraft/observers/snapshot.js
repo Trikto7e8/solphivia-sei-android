@@ -11,7 +11,7 @@ import { HOSTILE_MOBS } from '../behaviors/hostiles.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getCraftableEntries } from './craftable.js'
 import { getFollowTargetLabel, getFollowStuckInfo } from '../behaviors/follow.js'
-import { nextMilestone, readProgressionState } from './progression.js'
+import { nextMilestone, readProgressionState, recipeNote, pickaxeLine, furnaceLine } from './progression.js'
 // 260513-wkd: centralised in_flight line rendering. Helper preserves the
 // em-dash + y=<currentY> channels byte-stable; only the elapsed
 // trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
@@ -230,7 +230,11 @@ export function composeSnapshot(bot, opts = {}) {
     ? invEntries.map(([k, n]) => `${k}×${n}`).join(' ')
     : 'empty'
   const slotsUsed = (typeof bot.inventory?.items === 'function') ? bot.inventory.items().length : 0
-  lines.push(`inventory (${slotsUsed}/36 slots): ${invStr}`)
+  // 261012 (pass 4a): "N of 36 slots used", not "N/36": a fraction next to
+  // item counts read as a count of items.
+  lines.push(`inventory (${slotsUsed} of 36 slots used): ${invStr}`)
+  try { lines.push(pickaxeLine(inv)) } catch { /* best-effort */ }
+  try { const f = furnaceLine(bot._seiFurnaceCooking); if (f) lines.push(f) } catch { /* best-effort */ }
 
   // Craftable — what the bot can make RIGHT NOW from its materials. Gated by a
   // crafting table in reach: without one only 2×2 (inventory-grid) recipes show;
@@ -333,8 +337,12 @@ export function composeSnapshot(bot, opts = {}) {
   // This is ADDITIVE; the heartbeat frontier path (orchestrator renderHeartbeat)
   // is complementary and untouched.
   try {
-    const nm = nextMilestone(readProgressionState(bot))
-    if (nm?.node) lines.push(`next: ${nm.node.label} — ${nm.action}`)
+    const pstate = readProgressionState(bot)
+    const nm = nextMilestone(pstate)
+    if (nm?.node) {
+      const recipe = recipeNote(nm.node, pstate.items)
+      lines.push(`next: ${nm.node.label} — ${nm.action}${recipe ? `. ${recipe}` : ''}`)
+    }
   } catch { /* progression advisory is best-effort; never break a snapshot tick */ }
 
   // Owner whereabouts (260607). The pinned owner can be BEYOND the entity

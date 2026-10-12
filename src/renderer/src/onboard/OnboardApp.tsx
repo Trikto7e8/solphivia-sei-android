@@ -38,7 +38,14 @@ import { sei } from '../lib/ipcClient';
 import { t, useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
 import { CodeInput } from '../components/CodeInput';
-import { OnboardScene, type SuiPose } from './OnboardScene';
+import { OnboardScene, type SceneInstant, type SuiPose } from './OnboardScene';
+import {
+  documentVisibility,
+  prefersReducedMotion,
+  summarizeAdvance,
+  whenVisible,
+  type AdvanceSource,
+} from './sceneGate';
 import {
   OnboardStepTracker,
   stepFor,
@@ -253,6 +260,9 @@ export function OnboardApp({
   const [phase, setPhase] = useState<Phase>(
     startAtSignIn ? { k: 'auth', mode: 'returning' } : { k: 'intro' },
   );
+  // For callbacks that must not re-create per phase (the scene latches them).
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   // No window chrome while the scene runs: hide the mac traffic lights on
   // mount, restore on unmount (no-op on Windows/Linux).
@@ -302,41 +312,147 @@ export function OnboardApp({
   }, []);
 
   // ── Scene choreography ─────────────────────────────────────────────────
+  // Each stage (ground in, Sui in, Sui out, ground out) is a gate in
+  // OnboardScene that ALWAYS completes: transitionend, a watchdog, or at once
+  // under `sceneInstant` (261012). The intro used to wait on transitionend
+  // alone and 19% of fresh v0.6.8 first launches never left the empty sky.
+  const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
+  useEffect(() => {
+    let mq: MediaQueryList | undefined;
+    try {
+      mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    } catch {
+      return undefined;
+    }
+    if (!mq) return undefined;
+    const onChange = (): void => setReducedMotion(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  /** A click or a key during the intro skips the walk-in (261012). */
+  const [introSkipped, setIntroSkipped] = useState(false);
+  const sceneInstant: SceneInstant =
+    phase.k === 'intro' && introSkipped ? 'skip' : reducedMotion ? 'reduced_motion' : null;
+
   useEffect(() => {
     // startAtSignIn mounts on the empty sky (the state the normal flow is in
     // once Sui has walked off) — no ground, no walk-in.
     if (startAtSignIn) return undefined;
-    // Mount: let the sky paint, then slide the ground in.
-    const t = setTimeout(() => setGroundIn(true), 350);
-    return () => clearTimeout(t);
+    // Mount: let the sky paint, then slide the ground in. A window that is
+    // not shown yet waits until it is (bounded), so the slide is seen.
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const cancel = whenVisible(() => {
+      t = setTimeout(() => setGroundIn(true), 350);
+    });
+    return () => {
+      cancel();
+      if (t !== undefined) clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- constant prop
   }, []);
 
-  const onGroundIn = useCallback(() => {
-    setSui('entering');
+  // ── Scene analytics (261012) ───────────────────────────────────────────
+  // How the intro advanced rides the intro step's closing onboarding_step
+  // (`intro_advanced_by`: transition | watchdog | skip | reduced_motion), so
+  // the watchdog rate is one property filter. A watchdog on any later stage
+  // (the walk-off, the send-off walk-in) is noted on the step it closes as
+  // `scene_watchdog`.
+  const hiddenAtStartRef = useRef(documentVisibility.isHidden());
+  const introRunRef = useRef<Array<{ stage: string; by: AdvanceSource }>>([]);
+  const sceneWatchdogsRef = useRef<{ step: string | null; stages: string[] }>({
+    step: null,
+    stages: [],
+  });
+  const noteSceneAdvance = useCallback(
+    (stage: 'ground_in' | 'sui_entered' | 'sui_left' | 'ground_out', by: AdvanceSource) => {
+      const tracker = stepTrackerRef.current;
+      if (!tracker) return;
+      if (phaseRef.current.k === 'intro' && (stage === 'ground_in' || stage === 'sui_entered')) {
+        const run = introRunRef.current;
+        run.push({ stage, by });
+        if (stage !== 'sui_entered') return;
+        const watchdogged = run.filter((r) => r.by === 'watchdog').map((r) => r.stage);
+        tracker.annotate({
+          intro_advanced_by: summarizeAdvance(run.map((r) => r.by)),
+          intro_watchdog_stage: watchdogged.length > 0 ? watchdogged.join(',') : null,
+          intro_hidden_at_start: hiddenAtStartRef.current,
+        });
+        introRunRef.current = [];
+        return;
+      }
+      if (by !== 'watchdog') return;
+      const w = sceneWatchdogsRef.current;
+      if (w.step !== tracker.currentStep) sceneWatchdogsRef.current = { step: tracker.currentStep, stages: [] };
+      sceneWatchdogsRef.current.stages.push(stage);
+      tracker.annotate({ scene_watchdog: sceneWatchdogsRef.current.stages.join(',') });
+    },
+    [],
+  );
+
+  const onGroundIn = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('ground_in', by);
+      setSui('entering');
+    },
+    [noteSceneAdvance],
+  );
+  const onSuiEntered = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('sui_entered', by);
+      setSui('idle');
+      // A beat of her just standing there before she speaks — walking in and
+      // talking in the same instant read as rushed (260729). A skip asked
+      // for speed, so it gets a shorter one.
+      window.setTimeout(
+        () => {
+          setPhase((p) => {
+            if (p.k === 'intro') return { k: 'line', id: 'hey' };
+            if (p.k === 'return') return { k: 'line', id: 'ready' };
+            if (p.k === 'no-account') return { k: 'line', id: p.line };
+            return p;
+          });
+        },
+        by === 'skip' ? 300 : 1000,
+      );
+    },
+    [noteSceneAdvance],
+  );
+  const onSuiLeft = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('sui_left', by);
+      setSui('hidden');
+      setGroundIn(false);
+    },
+    [noteSceneAdvance],
+  );
+  const onGroundOut = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('ground_out', by);
+      setPhase((p) =>
+        p.k === 'walkoff' ? { k: 'auth', mode: p.to === 'auth-returning' ? 'returning' : 'new' } : p,
+      );
+    },
+    [noteSceneAdvance],
+  );
+
+  /** Skip the walk-in: the ground and Sui jump into place (the scene's gates
+   * complete at once under sceneInstant 'skip'). Intro only. */
+  const skipIntro = useCallback(() => {
+    if (phaseRef.current.k !== 'intro') return;
+    setIntroSkipped(true);
+    setGroundIn(true);
   }, []);
-  const onSuiEntered = useCallback(() => {
-    setSui('idle');
-    // A beat of her just standing there before she speaks — walking in and
-    // talking in the same instant read as rushed (260729).
-    window.setTimeout(() => {
-      setPhase((p) => {
-        if (p.k === 'intro') return { k: 'line', id: 'hey' };
-        if (p.k === 'return') return { k: 'line', id: 'ready' };
-        if (p.k === 'no-account') return { k: 'line', id: p.line };
-        return p;
-      });
-    }, 1000);
-  }, []);
-  const onSuiLeft = useCallback(() => {
-    setSui('hidden');
-    setGroundIn(false);
-  }, []);
-  const onGroundOut = useCallback(() => {
-    setPhase((p) =>
-      p.k === 'walkoff' ? { k: 'auth', mode: p.to === 'auth-returning' ? 'returning' : 'new' } : p,
-    );
-  }, []);
+  useEffect(() => {
+    if (phase.k !== 'intro') return undefined;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.repeat || ['Tab', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('input, select, textarea, button, a, [role="button"]')) return;
+      skipIntro();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase.k, skipIntro]);
 
   // ── Line advance logic ─────────────────────────────────────────────────
   const goLine = useCallback((id: LineId) => setPhase({ k: 'line', id }), []);
@@ -351,6 +467,8 @@ export function OnboardApp({
    * App-level onStartFresh remount instead.) */
   const startFresh = useCallback(() => {
     answersRef.current.returning = false;
+    setIntroSkipped(false);
+    introRunRef.current = [];
     setPhase({ k: 'intro' });
     setGroundIn(true);
   }, []);
@@ -977,7 +1095,15 @@ export function OnboardApp({
       <CornerControls prefs={voicePrefs} onPrefs={setVoicePrefs} />
       <div
         className={styles.card}
-        onClick={clickAdvances ? advance : line && !tw.done ? tw.skip : undefined}
+        onClick={
+          phase.k === 'intro'
+            ? skipIntro
+            : clickAdvances
+              ? advance
+              : line && !tw.done
+                ? tw.skip
+                : undefined
+        }
       >
         <div className={styles.dragStrip} />
         <OnboardScene
@@ -985,6 +1111,7 @@ export function OnboardApp({
           sui={sui}
           // Footsteps follow the voice volume/mute, well under her lines.
           sfxVolume={effVolume * 0.35}
+          instant={sceneInstant}
           onGroundIn={onGroundIn}
           onGroundOut={onGroundOut}
           onSuiEntered={onSuiEntered}

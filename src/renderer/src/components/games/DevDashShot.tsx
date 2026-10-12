@@ -16,6 +16,8 @@
  *     http://localhost:5173/?dashshot=mcprofile&part=lan|unsupported|forge|setup|done  the Sei profile / Start Minecraft surfaces (DevMcProfileShot)
  *     http://localhost:5173/?dashshot=chatfirst    the guided first moment (260926) in the real ChatScreen
  *     http://localhost:5173/?dashshot=perms&part=mic|screen|...  the OS permission cards (DevPermsShot, 260929)
+ *     http://localhost:5173/?dashshot=onboard  the first-run Sui scene from the top (261012); every
+ *                                              sei.track call is kept on window.__seiDevTrack
  *     http://localhost:5173/?dashshot=chatlaunch&game=minecraft|dontstarve|stardew  a launch panel inside the real ChatScreen
  *                                                  (&ready=1 set up, &pack=missing the pack card, &fs=1 in-app fullscreen)
  *     http://localhost:5173/?dashshot=chatchess    a finished chess game (the result card) inside the real ChatScreen
@@ -46,6 +48,7 @@ import { DevCreditWallShot } from '../DevCreditWallShot';
 import { DevRobloxShot } from '../backseat/DevRobloxShot';
 import { DevMcProfileShot } from '../mcdash/DevMcProfileShot';
 import { DevPermsShot } from '../permissions/DevPermsShot';
+import { OnboardApp } from '../../onboard/OnboardApp';
 import { useFirstMomentStore } from '../../lib/stores/useFirstMomentStore';
 import { useChessStore } from '../../lib/stores/useChessStore';
 import { useVoiceStore } from '../../lib/stores/useVoiceStore';
@@ -222,6 +225,9 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   if (which === 'mcprofile') return <DevMcProfileShot />;
   // ?dashshot=perms&part=mic|mic-win|mic-restricted|mic-restart|screen|screen-waiting|screen-restart (260929).
   if (which === 'perms') return <DevPermsShot />;
+  // ?dashshot=onboard (261012): the first-run scene, for the intro's stage
+  // gates (watchdog, skip, reduced motion). onComplete goes nowhere.
+  if (which === 'onboard') return <OnboardApp onComplete={() => undefined} />;
   // ?dashshot=chat (Stardew) | chatdst: the dashboard hosted inside the real
   // ChatScreen (260917), for the game/chat split, the drag handle and the
   // composer. The fixture summon is online, so the dashboard slot opens.

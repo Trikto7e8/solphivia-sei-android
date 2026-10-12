@@ -155,7 +155,7 @@ describe('reflex melee strafe during a committed attack', () => {
 })
 
 // ── Issue 2 + 3: tool tiers, recipe counts, progress and inventory wording ──
-import { SPINE, recipeNote } from '../adapter/minecraft/observers/progression.js'
+import { SPINE, recipeNote, pickaxeLine } from '../adapter/minecraft/observers/progression.js'
 import { getInFlightLineForSnapshot } from './inflight.js'
 import { CAPABILITY_PARAGRAPH } from './promptLibrary.js'
 
@@ -204,5 +204,16 @@ describe('in_flight progress wording', () => {
   it('spells out a place count', () => {
     const line = getInFlightLineForSnapshot({ name: 'build', args: {}, startedAt: 0, progress: { placed: 3, total: 10 } }, 1000)
     expect(line).toContain('placed 3 of 10 so far')
+  })
+})
+
+describe('pickaxe line under the inventory', () => {
+  it('says what the best pickaxe she holds mines', () => {
+    expect(pickaxeLine({ wooden_pickaxe: 1, dirt: 2 })).toBe('pickaxe: wooden_pickaxe mines stone (it drops cobblestone) and coal ore. Iron, copper and lapis ore need a stone pickaxe.')
+    expect(pickaxeLine({ wooden_pickaxe: 1, iron_pickaxe: 1 })).toMatch(/^pickaxe: iron_pickaxe mines every ore\./)
+  })
+
+  it('says when she has none', () => {
+    expect(pickaxeLine({ oak_log: 3 })).toMatch(/^pickaxe: none, so stone and ore drop nothing/)
   })
 })

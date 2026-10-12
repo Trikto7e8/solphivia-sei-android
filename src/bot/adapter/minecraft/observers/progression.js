@@ -212,6 +212,29 @@ export function recipeNote(node, items = {}) {
   return `${note}.`
 }
 
+// 261012 (pass 4a): what her best pickaxe can mine, for the snapshot line
+// under the inventory. Asked for 10 stone while holding a wooden pickaxe she
+// said "i need a stone pickaxe first" and went for wood; the tool-tier facts
+// sat in the cached prompt, far from the inventory she was reading.
+const PICKAXE_REACH = [
+  'none, so stone and ore drop nothing when dug. A wooden pickaxe is the first one',
+  'mines stone (it drops cobblestone) and coal ore. Iron, copper and lapis ore need a stone pickaxe',
+  'mines stone, coal, iron, copper and lapis ore. Diamond, gold, redstone and emerald ore need an iron pickaxe',
+  'mines every ore. Obsidian needs a diamond pickaxe',
+  'mines every ore and obsidian',
+]
+export function pickaxeLine(items = {}) {
+  let best = null
+  let tier = 0
+  for (const name of Object.keys(items ?? {})) {
+    if (!name.endsWith('_pickaxe') || !(Number(items[name]) > 0)) continue
+    const t = PICKAXE_TIER[name.slice(0, -'_pickaxe'.length)] ?? 0
+    if (t > tier) { tier = t; best = name }
+  }
+  if (!best) return `pickaxe: ${PICKAXE_REACH[0]}.`
+  return `pickaxe: ${best} ${PICKAXE_REACH[Math.min(tier, 4)]}.`
+}
+
 // ── live bot reader (impure; the only part that touches mineflayer) ───────────
 function bestPickaxeTier(bot) {
   let tier = 0

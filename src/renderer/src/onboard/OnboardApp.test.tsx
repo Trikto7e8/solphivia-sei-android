@@ -170,6 +170,29 @@ describe('OnboardApp: attribution question (261001)', () => {
   });
 });
 
+describe('OnboardApp: attribution follow-up (261012)', () => {
+  it('AI and Google search go to their follow-up line; everything else straight to job', () => {
+    const ctl = src.slice(src.indexOf("case 'heardQ': {"), src.indexOf("case 'heardAi':"));
+    expect(ctl).toContain("goLine(hasAttributionDetail(source) ? DETAIL_LINE[source] : 'job')");
+    expect(src).toContain("ai_assistant: 'heardAi',");
+    expect(src).toContain("google_search: 'heardGoogle',");
+    expect(src).toContain("heardAi: 'Ooh, another AI! Which one?'");
+    expect(src).toContain("heardGoogle: 'Nice! What did you search for?'");
+  });
+  it('is one tap or Skip, both on to job, and a background click does not skip it', () => {
+    const ctl = src.slice(src.indexOf("case 'heardAi':\n    case 'heardGoogle': {"), src.indexOf("case 'job':\n      return ("));
+    expect(ctl).toContain('ATTRIBUTION_DETAIL_OPTIONS[source].map');
+    expect(ctl).toContain('attributionDetailEvent(source, detail)');
+    expect(ctl).toContain('sei.track(ev.event, ev.props)');
+    expect(ctl).toContain("goLine('job')");
+    expect(ctl).toContain('onClick={() => answerDetail(null)}');
+    expect(ctl).toContain("tt('Skip')");
+    // The main question was answered, so the shared step is not marked skipped.
+    expect(ctl).not.toContain('markStep(');
+    expect(src).toMatch(/!\['newQ', 'nameQ', 'heardQ', 'heardAi', 'heardGoogle',/);
+  });
+});
+
 describe('OnboardApp 261005: onboarding_completed fires on every completion', () => {
   it('is sent from one helper, once, and never for the boot sign-in variant', () => {
     const helper = src.slice(src.indexOf('const trackCompleted = useCallback'), src.indexOf('/** Fade + hand off to App.'));

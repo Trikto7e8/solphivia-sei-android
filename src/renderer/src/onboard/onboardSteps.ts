@@ -70,6 +70,10 @@ export const LINE_STEPS: Record<string, OnboardStep> = {
   nameQ: 'name',
   iSee: 'name_ack',
   heardQ: 'attribution',
+  // The optional follow-up (261012) is part of the same step: a new step name
+  // would shift every later `index` that funnels already sort on.
+  heardAi: 'attribution',
+  heardGoogle: 'attribution',
   job: 'job',
   skipConfirm: 'skip_confirm',
   fiveQs: 'five_qs',

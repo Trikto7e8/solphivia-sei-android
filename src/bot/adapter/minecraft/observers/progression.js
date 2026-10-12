@@ -115,6 +115,7 @@ function rawDone(node, state) {
  *   currentMilestone: object|null,  // first frontier node (the nearest rung)
  *   furthest: object|null,       // deepest done node (rough "where you are")
  *   complete: boolean,           // dragon done
+ *   spine: Array<object>,        // every node, spine order
  * }}
  */
 export function computeProgression(state = {}) {
@@ -142,6 +143,7 @@ export function computeProgression(state = {}) {
     currentMilestone: frontier[0] ?? null,
     furthest,
     complete: done.has('dragon'),
+    spine: SPINE,               // the whole node list (goal linking, goalLink.js)
   }
 }
 

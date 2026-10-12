@@ -52,6 +52,7 @@ import { resolveAdapterCaps } from './adapterDefaults.js'
 import { createWebSession, electronFetchProvider, botWebTools, isWebTool, runServerSearch } from '../web/webTools.js'
 import { sessionActionStats } from './actionStats.js'
 import { sessionDigest } from './sessionDigest.js'
+import { linkGoalToSpine, linkFinished } from './goalLink.js'
 
 // Post-process say() text before it hits in-game chat. Safety-only:
 // whitespace collapse (chat is single-line) and force lowercase (hardcoded).
@@ -997,12 +998,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // latches the graph can't re-derive from live inventory — entered_nether /
   // entered_end (latched in refreshProgressionForSeed from the current dimension)
   // and killed_dragon (set true to mark the final milestone; the entityDead →
-  // ender_dragon hookup is the one remaining integration point). `activeFrontierGoal`
-  // links the committed goal back to the spine node it came from, so JS can detect
-  // when that milestone completes, clear the goal, and re-surface the frontier —
-  // { id, text, label } or null.
+  // ender_dragon hookup is the one remaining integration point). `linkedGoals`
+  // links each committed goal to the spine nodes its finish condition names
+  // (goalLink.js), so JS can detect when ALL of them are done, clear that goal,
+  // and re-surface the frontier: [{ text, ids, id, label, procedure }].
   const progressionFlags = { entered_nether: false, entered_end: false, killed_dragon: false }
-  let activeFrontierGoal = null
+  let linkedGoals = []
   // 17-04 (D-08): node ids whose known-good `procedure` has already been written
   // to per-world memory this session — dedupes the procedural write-back so a
   // milestone records its procedure at most once.
@@ -2018,20 +2019,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   // ─── Progression frontier + JS completion detection ──────────────────
-  // Link a free-text goal to a spine node by matching its `key` against the
-  // goal text; the longest match wins ("diamond pickaxe" beats bare "diamond").
-  // Scoped to the nodes just offered (the current frontier), so a stray word
-  // can't mis-link to a far-off milestone.
-  function matchFrontierNode(text, frontier) {
-    const t = String(text ?? '').toLowerCase()
-    if (!t) return null
-    let best = null
-    for (const n of frontier ?? []) {
-      const k = String(n?.key ?? '').toLowerCase()
-      if (k && t.includes(k) && (!best || k.length > best.key.length)) best = n
-    }
-    return best
-  }
+  // A goal is linked to the spine by goalLink.linkGoalToSpine when it is set
+  // (the nodes its finish condition names, all of which must be done).
 
   // Called once per fresh-loop seed, BEFORE composeSeedBlocks. Latches the
   // dimension milestones (one-way), computes the reachable frontier from live
@@ -2050,20 +2039,23 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     let prog
     try { prog = adapter.getProgression(progressionFlags) } catch { return { frontierText: '', justCompletedNote: '' } }
     let justCompletedNote = ''
-    if (activeFrontierGoal && prog?.done?.has?.(activeFrontierGoal.id)) {
-      const label = activeFrontierGoal.label
-      try { await heartbeatLog?.remove(activeFrontierGoal.text) } catch { /* best-effort */ }
+    const finished = linkedGoals.filter((g) => linkFinished(g, prog))
+    for (const g of finished) {
+      let removed = 0
+      try { removed = (await heartbeatLog?.remove(g.text)) ?? 0 } catch { /* best-effort */ }
+      // The goal may already be gone (cleared or replaced by the model).
+      if (!removed) continue
       // Neutral note: renderHeartbeat's per-level frontier framing decides
       // whether to PROMPT a new pick (agentic) or just stay aware (passive/reactive).
-      justCompletedNote = `\n\nPROGRESS: you just finished "${label}" — that goal is done and has been cleared from your heartbeat.`
+      justCompletedNote += `\n\nPROGRESS: you just finished "${g.label}", which was the finish condition of your goal "${g.text}". That goal is done and has been cleared from your heartbeat.`
       // D-08 procedural memory write-back: record the completed milestone's
       // known-good procedure once to per-world memory (append + compaction
       // trigger, deduped by node id). Best-effort — never breaks the seed path.
-      await appendProcedureOnce(activeFrontierGoal, {
+      await appendProcedureOnce(g, {
         memoryLog, written: writtenProcedures, memoryCompactor, logger,
       })
-      activeFrontierGoal = null
     }
+    if (finished.length) linkedGoals = linkedGoals.filter((g) => !finished.includes(g))
     const frontierText = (prog?.frontier ?? []).map(n => n.label).join(' · ')
     return { frontierText, justCompletedNote }
   }
@@ -3446,25 +3438,31 @@ function maybeWarnByteCap(loop, warned) {
         }
         const added = await heartbeatLog.append(text, new Date())
         lastActionResult = 'goal set'
-        // 260618: link this goal to the progression spine if it came from the
-        // frontier, so JS can detect its completion later. Setting a NEW
-        // progression goal clears the prior one (one progression goal at a time).
+        // Link this goal to the spine nodes its finish condition names, so JS
+        // can clear it once they are ALL done (goalLink.js). 261012: no longer
+        // limited to the frontier and no longer one-node: the old link named
+        // the goal's first rung and deleted the whole goal when that rung was
+        // done. Setting a new linked goal no longer deletes the previous one
+        // either; replacing a goal is the model's call (clearGoal).
         if (added === 1 && typeof adapter.getProgression === 'function') {
           try {
             const prog = adapter.getProgression(progressionFlags)
-            const node = matchFrontierNode(text, prog?.frontier)
-            if (node) {
-              if (activeFrontierGoal && activeFrontierGoal.id !== node.id) {
-                try { await heartbeatLog.remove(activeFrontierGoal.text) } catch { /* best-effort */ }
-              }
+            const link = linkGoalToSpine(text, prog)
+            if (link) {
               // Capture the node's `procedure` here (we hold the spine node) so
               // the procedural write-back (D-08) has it when the milestone later
               // completes without re-importing the spine into the brain.
-              activeFrontierGoal = { id: node.id, text, label: node.label, procedure: node.procedure }
+              const n = link.primary
+              // Store the text as the heartbeat line holds it (appendGoal folds
+              // newlines), so the later remove() substring still matches.
+              const lineText = text.replace(/\s*\n+\s*/g, ' ').trim()
+              linkedGoals.push({ text: lineText, ids: link.ids, id: n.id, label: n.label, procedure: n.procedure })
             }
           } catch { /* linking is best-effort; a free-text goal just stays unlinked */ }
         }
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: 'goal set', is_error: false }, terminate: false }
+        // appendGoal dedups exact text; say so instead of claiming a new line.
+        const content = added === 1 ? 'goal set' : 'goal already in your heartbeat, not added again'
+        return { result: { type: 'tool_result', tool_use_id: use.id, content, is_error: false }, terminate: false }
       } catch (err) {
         lastActionResult = 'setGoal error'
         logger.warn(`[sei/orch] setGoal failed: ${err.message}`)
@@ -3483,10 +3481,11 @@ function maybeWarnByteCap(loop, warned) {
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'clearGoal: empty', is_error: true }, terminate: false }
         }
         const removed = await heartbeatLog.remove(text)
-        // Drop the progression link if the model cleared the goal it was tracking.
-        if (removed > 0 && activeFrontierGoal &&
-            activeFrontierGoal.text.toLowerCase().includes(text.toLowerCase())) {
-          activeFrontierGoal = null
+        // Drop the progression links of the goals the model cleared (the same
+        // substring rule removeGoal uses).
+        if (removed > 0) {
+          const q = text.toLowerCase()
+          linkedGoals = linkedGoals.filter((g) => !g.text.toLowerCase().includes(q))
         }
         const content = removed > 0 ? `goal cleared (${removed})` : 'goal cleared 0 (no match)'
         lastActionResult = content

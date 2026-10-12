@@ -1062,12 +1062,17 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
   // 261012: the note naming a word her recent lines keep repeating, or null.
   // Never throws: a bad line in the ring must not cost the turn.
+  // The words it must never name: names are how she addresses someone, and
+  // a word from the snapshot or the goals is an item or the job at hand
+  // ("stone", "pickaxe"), which a status line needs. The last snapshot and
+  // goals are cached as they are read, so the sync interrupt path has them.
+  const _repeatsContext = { snapshot: '', goals: '', frontier: '' }
   function ownRepeatsText() {
     try {
       const { selfLines, playerLines } = convoMemory.recentChat._internal
-      // Names are how she addresses someone, never a habit to drop.
       const names = [config?.player_display_name, config?.player_username, ...companions]
-      return ownRepeatsNote(selfLines, playerLines, { names })
+      const { snapshot, goals, frontier } = _repeatsContext
+      return ownRepeatsNote(selfLines, playerLines, { names, context: [snapshot, goals, frontier] })
     } catch { return null }
   }
   const ownRepeatsTail = () => { const t = ownRepeatsText(); return t ? `\n\n${t}` : '' }
@@ -2015,7 +2020,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (gamePaused) return pausedNotice()
     try {
       const w = worldRegistry?.current?.() ?? null
-      return snapshotComposer.next({
+      const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
         // Player-priority pin: keep the player in `nearby entities` even when
@@ -2031,6 +2036,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // observer fn and a `world` opt would shadow it.
         worldTag: w ? `#${w.num}${w.label ? ` ${w.label}` : ''}` : null,
       })
+      if (typeof text === 'string') _repeatsContext.snapshot = text
+      return text
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
@@ -2886,6 +2893,14 @@ function maybeWarnByteCap(loop, warned) {
       ])
     } else if (sessionState && playerStore) {
       let seedBlocks
+      // 261012: the goals and frontier, for the own_repeats note's word filter.
+      _repeatsContext.frontier = progFrontierText || ''
+      if (config?.memory?.heartbeat_md_path) {
+        try {
+          _repeatsContext.goals = await readHeartbeatForSeed(
+            config.memory.heartbeat_md_path, config.memory.seed_heartbeat_budget_bytes ?? 2048)
+        } catch { /* keep the last read */ }
+      }
       try {
         seedBlocks = await composeSeedBlocks({
           sessionState, playerStore, config, adapter,

@@ -23,14 +23,16 @@
 // while two turns are at least one model call (seconds) apart.
 const TURN_GAP_MS = 250
 
-// Function words and fillers that every voice repeats. Kept to grammar words
-// on purpose: "lol" or "ok" opening every line is a habit worth naming too.
+// Function words, fillers and count words that every voice repeats. Kept to
+// grammar on purpose: "lol" or "ok" opening every line is a habit worth naming too.
 const STOP = new Set((
   'a an the and or but so to of in on at for with by from up down out off over into onto about as than then ' +
   'is are was were be been being am do does did done have has had having will would can could should shall may might must ' +
   "i i'm im i'll i've i'd me my mine you you're youre you'll you've your yours we we're us our it it's its " +
   "they they're them their he him his she her this that these those there here what who how why when where which " +
   "not no yes just too very really all some any more most much one two " +
+  // Counts are information ("zero wood"), never a habit to drop.
+  "zero none three four five six seven eight nine ten twenty few lot lots many enough another half " +
   "let let's get got go going gonna if like oh um uh"
 ).split(/\s+/))
 
@@ -56,6 +58,20 @@ function termsOf(text) {
   })
   return out
 }
+
+// A word and its singular forms, so a plural matches ("logs" -> log,
+// "torches" -> torch, "berries" -> berry). Over-stripping is harmless here:
+// both sides go through the same keys, and a false match only drops a note.
+function wordKeys(w) {
+  const out = [w]
+  for (const [re, rep] of [[/ies$/, 'y'], [/es$/, ''], [/s$/, '']]) {
+    if (re.test(w) && !/ss$/.test(w)) { const k = w.replace(re, rep); if (k.length >= 3) out.push(k) }
+  }
+  return out
+}
+// Every spelling of a term with its words' keys, so "more logs" meets "more log".
+const termKeys = (term) => term.split(' ').reduce(
+  (acc, w) => acc.flatMap((a) => wordKeys(w).map((k) => (a ? `${a} ${k}` : k))), [''])
 
 /** Group self lines ({at, text}, oldest first) into turns. */
 export function groupTurns(selfLines, gapMs = TURN_GAP_MS) {
@@ -84,25 +100,31 @@ export function groupTurns(selfLines, gapMs = TURN_GAP_MS) {
  * multi-companion session says who it is for. `names` takes the known ones;
  * every speaker in playerLines (`who`) is added automatically.
  *
+ * So is any term with a word from `context` (the snapshot, the goals): an
+ * item, block or task word. In the 261012 MC compare "stone", "pickaxe" and
+ * "trees" were named more often than her actual tic, and a status line
+ * without the item name loses what the player needs. Plurals match
+ * ("logs" meets oak_log, "torches" meets torch), and `_` is a space.
+ *
  * @param {Array<{at:number,text:string}>} selfLines   oldest first
  * @param {Array<{text:string,who?:string}>} [playerLines]  oldest first
- * @param {{names?: Array<string|null|undefined>}} [opts]
+ * @param {{names?: Array<string|null|undefined>, context?: Array<string|null|undefined>}} [opts]
  * @returns {Array<{term:string, count:number, of:number}>} at most `max`, most repeated first
  */
-export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minTurns = 3, max = 2, playerWindow = 8, names = [] } = {}) {
+export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minTurns = 3, max = 2, playerWindow = 8, names = [], context = [] } = {}) {
   const turns = groupTurns(selfLines).slice(-window)
   if (turns.length < minTurns) return []
   const heard = new Set()
-  for (const l of (playerLines ?? []).slice(-playerWindow)) for (const t of termsOf(l?.text)) heard.add(t)
-  const nameWords = new Set()
-  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who)]) {
-    for (const w of tokensOf(n)) if (w.length > 1) nameWords.add(w)
+  for (const l of (playerLines ?? []).slice(-playerWindow)) for (const t of termsOf(l?.text)) for (const k of termKeys(t)) heard.add(k)
+  const known = new Set()
+  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who), ...(context ?? [])]) {
+    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) known.add(k)
   }
-  const isNamed = (term) => term.split(' ').some((w) => nameWords.has(w))
+  const isNamed = (term) => term.split(' ').filter(isContent).some((w) => wordKeys(w).some((k) => known.has(k)))
   const counts = new Map()
   for (const turn of turns) for (const t of termsOf(turn.text)) counts.set(t, (counts.get(t) ?? 0) + 1)
   const hits = [...counts]
-    .filter(([t, c]) => c >= minTurns && !heard.has(t) && !isNamed(t))
+    .filter(([t, c]) => c >= minTurns && !termKeys(t).some((k) => heard.has(k)) && !isNamed(t))
     .map(([term, count]) => ({ term, count, of: turns.length }))
     // Most repeated first; among ties the phrase before the words inside it.
     .sort((a, b) => b.count - a.count || b.term.split(' ').length - a.term.split(' ').length)

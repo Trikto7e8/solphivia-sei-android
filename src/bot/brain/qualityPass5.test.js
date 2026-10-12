@@ -222,6 +222,37 @@ describe('261012 own action yields to a player order', () => {
     expect(lastUserText(provider.calls[1])).toContain(OWN)
   })
 
+  it('a deferred order rides the next check-in on her own action', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const sayOnly = { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'on it, after these logs' } }] }
+    const quiet = { text: '', toolUses: [] }
+    const provider = makeProvider([gatherTurn, sayOnly, quiet, quiet])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', {})
+    await orch.handleDispatch('sei:chat_received', chat('make a crafting table'))
+    await flush()
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:action_tick', { elapsedSec: 30 })
+    expect(provider.calls.length).toBe(before + 1)
+    const text = lastUserText(provider.calls[before])
+    expect(text).toContain('asked you: "make a crafting table", and it is still waiting')
+    expect(text).not.toContain('CHECK-IN on your OWN routine action')
+  })
+
+  it('a check-in on a gather the player asked for keeps the plain framing', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([gatherTurn, { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:action_tick', { elapsedSec: 30 })
+    const text = lastUserText(provider.calls[1])
+    expect(text).toContain('CHECK-IN on your OWN routine action')
+    expect(text).not.toContain('still waiting')
+  })
+
   it('a gather the player asked for gets the usual keep-going framing', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([gatherTurn, { text: '', toolUses: [{ id: 'el1', name: 'end_loop', input: {} }] }])

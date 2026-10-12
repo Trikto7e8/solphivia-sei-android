@@ -775,7 +775,7 @@ export const NUDGES = {
   //   playerLine — the player's words (interrupt) or null (silent monitor)
   //   who       — speaker username, for the interrupt variant
   //   elapsedSec — seconds the action has run, shown only on the silent monitor
-  actionTurn: ({ action, stopTool, playerLine = null, who = null, elapsedSec = null, visionOff = false, proactiveness = 1, voice = false, peers = [], fromTeammate = false, sessionEndClause = SESSION_END_CLAUSE, stuckNudges = null, ownAction = false }) => {
+  actionTurn: ({ action, stopTool, playerLine = null, who = null, elapsedSec = null, visionOff = false, proactiveness = 1, voice = false, peers = [], fromTeammate = false, sessionEndClause = SESSION_END_CLAUSE, stuckNudges = null, ownAction = false, waitingAsk = null }) => {
     // Game-adapters M0 (260908): the session-end clause and the stuck hint
     // are adapter-declared (contract v2 sessionEndClause() / stuckNudges());
     // the defaults are the Minecraft text so every existing caller renders
@@ -843,6 +843,13 @@ export const NUDGES = {
     const ownLead = (ownAction && playerLine != null && !groupVoice && !agenticFollowReview)
       ? ` Your current action is your own idea; the player did not ask for it. What they ask for comes first: if their line asks you to do something, start it now in this same turn (it replaces your action), using what you already have, instead of finishing yours first.`
       : ''
+    // 261012: a check-in on her own action while a player request waits.
+    // Replaces the "call no other action" check-in, which kept her on her own
+    // gather after she already had what the request needed.
+    if (waitingAsk?.text && playerLine == null && !agenticFollowReview) {
+      const asker = waitingAsk.who || 'the player'
+      return `${head} ${asker} asked you: "${waitingAsk.text}", and it is still waiting. Your current action is your own idea, so their request comes first. Check the snapshot: if you now have what it needs, call the action for it this turn (it replaces this one). If you still need more for it, let this action run and call nothing. Either way call no say() this tick. If the snapshot shows this action is STUCK or making no progress: ${stuckHint}.`
+    }
     return `${head}${body}${ownLead}${tail}`
   },
 }

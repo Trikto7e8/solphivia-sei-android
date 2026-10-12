@@ -2150,6 +2150,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     // smelt_iron and build_shelter failed on it.
     const ownAction = !teammate && !!loop.inFlight?.selfStarted && !!(chatText && String(chatText).trim())
     if (chatText && String(chatText).trim() && !teammate) loop._playerDirected = true
+    // The line stays on her own action's entry, so the silent check-ins
+    // remind her of it (eval craft_tools: she had the logs for the ordered
+    // table at the 30s check-in, was told "do NOT call another action", and
+    // wandered after more logs for two minutes). A new action replaces the
+    // entry and drops it.
+    if (ownAction && !unanswered) loop.inFlight.waitingAsk = { text: String(chatText).trim(), who: speakerForTurn(who, teammate) }
     // 260703: a fresh player line resets the per-loop "have I spoken since
     // the player's latest message" flag — the unanswered-line retry keys off
     // it, and a say() from BEFORE this interrupt doesn't count as answering
@@ -4100,6 +4106,7 @@ function maybeWarnByteCap(loop, warned) {
           elapsedSec,
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
+          waitingAsk: (loop.inFlight?.selfStarted && loop.inFlight?.waitingAsk) || null,
         }))
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps

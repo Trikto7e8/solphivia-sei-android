@@ -19,7 +19,7 @@
 //   direct     async (ctx) => void: the action calls for direct mode
 //   evaluate   async (ctx) => {success, value, detail}: runs from the moment
 //              the order is given; owns its own timing (pollUntil etc.)
-import { S, P, Y, tree, tp, zombie, item } from './arena.mjs'
+import { S, P, Y, arenaBox, tree, tp, zombie, item } from './arena.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -84,7 +84,8 @@ export const MICRO = [
     evaluate: (ctx) => ctx.pollUntil(async () => {
       const pick = await countBoth(ctx, 'wooden_pickaxe')
       const tableItem = await countBoth(ctx, 'crafting_table')
-      const tableBlock = ctx.countBlocks({ x0: S.x - 10, x1: S.x + 10, y0: Y - 1, y1: Y + 3, z0: S.z - 10, z1: S.z + 10 }, (n) => n === 'crafting_table')
+      // Anywhere in the arena: the bot may walk before it places (arenaBox).
+      const tableBlock = ctx.countBlocks(arenaBox(Y - 1, Y + 6), (n) => n === 'crafting_table')
       return { success: pick >= 1 && tableItem + tableBlock >= 1, value: (pick >= 1 ? 1 : 0) + (tableItem + tableBlock >= 1 ? 1 : 0), detail: `pickaxe ${pick}, table item ${tableItem}, table placed ${tableBlock}` }
     }, 150000),
   },
@@ -116,9 +117,10 @@ export const MICRO = [
     start: (c) => [tp(c.bot, S), tp(c.playerName, P, S), `give ${c.bot} oak_planks 64`, `give ${c.bot} cobblestone 64`],
     order: 'build us a small shelter right here, like 5x5',
     direct: (ctx) => ctx.exec('shelter', { size: 5, material: 'oak_planks' }, { timeoutMs: 240000 }),
-    // Success = at least two full wall rings of a 5x5 (32 blocks) placed.
+    // Success = at least two full wall rings of a 5x5 (32 blocks) placed,
+    // anywhere in the arena (its world has no planks or cobble of its own).
     evaluate: (ctx) => ctx.pollUntil(async () => {
-      const n = ctx.countBlocks({ x0: S.x - 12, x1: S.x + 12, y0: Y, y1: Y + 6, z0: S.z - 12, z1: S.z + 12 }, (b) => b === 'oak_planks' || b === 'cobblestone')
+      const n = ctx.countBlocks(arenaBox(Y, Y + 6), (b) => b === 'oak_planks' || b === 'cobblestone')
       return { success: n >= 32, value: n }
     }, 240000, { settleAfterSuccessMs: 0 }),
   },

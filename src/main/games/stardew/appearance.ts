@@ -48,6 +48,7 @@ import {
   type StardewAppearance,
 } from '../../../shared/stardewAppearance';
 import type { Character, UserConfig } from '../../../shared/characterSchema';
+import { fillPersonaPlaceholders } from '../../../bot/brain/personaPlaceholders.js';
 import type { GameProfileRead, GameProfileWrite } from '../../cloud/gameProfileClient';
 
 export type AppearanceSource = 'auto' | 'user' | 'default';
@@ -194,7 +195,9 @@ export function gatherAppearanceText(character: AppearanceCharacter): string {
   }
   const description = str(character.description);
   if (description) lines.push(`Description: ${description.slice(0, 600)}`);
-  const persona = str(character.persona?.source) || str(character.persona?.expanded);
+  const persona = fillPersonaPlaceholders(str(character.persona?.source) || str(character.persona?.expanded), {
+    charName: character.name,
+  });
   if (persona) lines.push(`Persona: ${persona.slice(0, 1500)}`);
   return lines.join('\n').slice(0, TEXT_MAX);
 }

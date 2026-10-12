@@ -66,6 +66,7 @@ import {
 } from '../shared/characterSchema';
 import { PORTRAIT_MAX_BYTES, PORTRAIT_MAX_DIM } from './portraitImageUtil';
 import { parsePngIhdr } from './skinImageUtil';
+import { fillPersonaPlaceholders } from '../bot/brain/personaPlaceholders.js';
 
 const PROXY_BASE_URL = process.env.SEI_PROXY_URL ?? 'https://api.sei.gg';
 
@@ -1291,7 +1292,9 @@ export function buildRegenPortraitPrompt(
   const description = clip(character.description);
   // The expanded persona is the LLM-facing prompt (long, rule-heavy); the
   // user's own source blurb describes the character far better per token.
-  const persona = clip(character.persona?.source) || clip(character.persona?.expanded);
+  const persona = fillPersonaPlaceholders(clip(character.persona?.source) || clip(character.persona?.expanded), {
+    charName: character.name,
+  });
   const parts = [description, persona].filter((x) => x.length > 0);
   if (parts.length === 0 && !character.name.trim()) return null;
   const subject = `A character portrait of ${character.name.trim() || 'a companion'}${

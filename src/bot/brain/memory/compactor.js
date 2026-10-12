@@ -23,6 +23,7 @@ import { atomicWrite } from '../storage/atomicWrite.js'
 import { withFileLock } from '../storage/fileLock.js'
 // Compaction instruction lives in the single editable prompt document.
 import { COMPACTION_SYSTEM } from '../promptLibrary.js'
+import { fillPersonaPlaceholders } from '../personaPlaceholders.js'
 
 const HEADER =
   '# Memory\n' +
@@ -114,8 +115,13 @@ export function createMemoryCompactor({ anthropic, memoryLog, config, logger = c
   // The being's persona, appended to the compaction system prompt so the
   // compacted entries keep the character's own voice (they are read back as
   // "your own past notes" on both surfaces).
+  // 261013: card {{user}}/{{char}} placeholders filled the same way as the
+  // persona block, so compacted notes never copy the literal braces.
   const personaExpanded = (typeof config?.persona?.expanded === 'string' && config.persona.expanded.trim())
-    ? config.persona.expanded.trim()
+    ? fillPersonaPlaceholders(config.persona.expanded.trim(), {
+        charName: config.persona.name,
+        userName: config.player_display_name,
+      })
     : null
   // 260810: the noise guard rides on both surfaces (see MEMORY_NOISE_GUARD).
   const baseSystem = `${COMPACTION_SYSTEM}\n\n${MEMORY_NOISE_GUARD}`

@@ -847,7 +847,7 @@ export async function composeSeedBlocks({
   // at maximum recency, the same anti-drift move as speak_reminder below.
   // renderCore tolerates an old-format persona with no # CORE (name-derived
   // fallback, never throws), so this block is always present.
-  blocks.push({ type: 'text', name: 'core', text: renderCore(config?.persona) })
+  blocks.push({ type: 'text', name: 'core', text: renderCore(config?.persona, { userName: config?.player_display_name }) })
   // 261012: a signature word in every line reads as a parody over a session,
   // and only naming the actual word moved it (ownRepeats.js). Right after the
   // core, which is what tells her to hold her voice.
@@ -1751,7 +1751,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // (surfaceBaseline(), Minecraft default MINECRAFT_BASELINE). The
         // composition is what BASELINE_INSTRUCTIONS used to be, byte for byte.
         `${UNIVERSAL_BASELINE}\n\n${caps.surfaceBaseline()}`,
-        renderPersona(config.persona),
+        // 261013: fills card {{user}}/{{char}} placeholders (session-stable).
+        renderPersona(config.persona, { userName: config.player_display_name }),
         adapter.capabilityParagraph(),
         adapter.worldPrimer(),
         adapter.actionRules(),

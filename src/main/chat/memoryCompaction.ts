@@ -186,6 +186,11 @@ export async function maybeCompactChatMemory(characterId: string): Promise<boole
       const { getCharacter } = await import('../characterStore');
       const character = await getCharacter(characterId);
       personaExpanded = character?.persona?.expanded ?? '';
+      // 261013: card {{user}}/{{char}} placeholders (no lookup when absent).
+      if (personaExpanded) {
+        const { resolvePersonaText } = await import('./personaText');
+        personaExpanded = await resolvePersonaText(characterId, personaExpanded);
+      }
     } catch {
       /* persona stays empty */
     }

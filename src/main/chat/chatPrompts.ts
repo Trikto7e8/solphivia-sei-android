@@ -311,7 +311,11 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
   // expanded prompt omits proactiveness (it is parsed out at expansion), so we
   // append the chat-flavored proactiveness directive here off the same dial.
   const personaParts = [
-    renderPersona({ name: args.name, expanded: args.persona.expanded || args.persona.source }),
+    // 261013: renderPersona also fills card {{user}}/{{char}} placeholders.
+    renderPersona(
+      { name: args.name, expanded: args.persona.expanded || args.persona.source },
+      { userName: args.preferredName },
+    ),
   ];
   if (args.preferredName) personaParts.push(`The player's name is ${args.preferredName}.`);
   personaParts.push(renderChatProactivenessDirective(args.proactiveness));

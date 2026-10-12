@@ -18,6 +18,7 @@ import {
   renderDstRosterBrief,
 } from '../../../shared/dstSurvivors';
 import type { DstSurvivorPick } from '../../../shared/dstIpc';
+import { fillPersonaPlaceholders } from '../../../bot/brain/personaPlaceholders.js';
 import type { UserConfig } from '../../../shared/characterSchema';
 
 export interface SurvivorPickDeps {
@@ -112,7 +113,9 @@ export async function getOrPickSurvivor(characterId: string, deps: SurvivorPickD
   const character = await deps.getCharacter(characterId).catch(() => null);
   if (character) {
     try {
-      const persona = character.persona.expanded || character.persona.source || '';
+      const persona = fillPersonaPlaceholders(character.persona.expanded || character.persona.source || '', {
+        charName: character.name,
+      });
       const out = await deps.pick({ name: character.name, persona, roster: renderDstRosterBrief() });
       const prefab = typeof out?.prefab === 'string' ? out.prefab.trim().toLowerCase() : '';
       if (isDstSurvivorPrefab(prefab)) {

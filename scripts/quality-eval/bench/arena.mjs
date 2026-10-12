@@ -11,6 +11,18 @@ export const Y = A.floor + 1
 export const S = { x: 176, y: Y, z: 0 }
 export const P = { x: 172, y: Y, z: 0 }
 
+/**
+ * A countBlocks box over the WHOLE arena (plus the barrier ring, so a block
+ * set on top of the wall still counts) between two heights. Use it for "did
+ * the companion place X" checks instead of a radius around S: the bot walks
+ * during its opening gather and legitimately places things well away from its
+ * start (261013: a crafting table at z=15 failed a ±10 box). Only safe for a
+ * block the bench world does not already contain.
+ */
+export function arenaBox(y0, y1) {
+  return { x0: A.x0 - 1, x1: A.x1 + 1, y0, y1, z0: A.z0 - 1, z1: A.z1 + 1 }
+}
+
 export const WORLD_RULES = [
   'gamerule advance_time false',
   'gamerule advance_weather false',

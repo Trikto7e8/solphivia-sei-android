@@ -4095,6 +4095,10 @@ function maybeWarnByteCap(loop, warned) {
     const attackText = attack && typeof adapter.eventAddendum === 'function'
       ? `${String(adapter.eventAddendum('sei:attacked', attack) ?? '').trim()}${fightToldSuffix()}\n\n${NUDGES.attackMidAction({ action, stopTool: stopToolForAction(action) })}`
       : null
+    // 261013: the silent check-in that carries a waiting player order invites
+    // an action that replaces hers, so the silent-tick drop must let it through.
+    const tickWaitingAsk = (attackText == null && playerMessage == null && loop.inFlight?.selfStarted && loop.inFlight?.waitingAsk) || null
+    loop._tickCarriesAsk = !!tickWaitingAsk
     const tickEventText = attackText != null
       ? attackText
       : playerMessage != null
@@ -4106,7 +4110,7 @@ function maybeWarnByteCap(loop, warned) {
           elapsedSec,
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
-          waitingAsk: (loop.inFlight?.selfStarted && loop.inFlight?.waitingAsk) || null,
+          waitingAsk: tickWaitingAsk,
         }))
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps
@@ -4601,7 +4605,9 @@ function maybeWarnByteCap(loop, warned) {
       // counts only when the player's line asked for one (asksToStop): a
       // stop she calls to drop her own action for a new order is not a hold.
       if (_p1Trigger && loop._lastPlayerLine) {
-        const newWork = newSuspendingTools.some(u => u.name !== 'unfollow')
+        // 261013: a goal set from the player's line is new work too. The
+        // idle tick is what starts it, so a hold left on would sit on it.
+        const newWork = newSuspendingTools.some(u => u.name !== 'unfollow') || toolUses.some(u => u.name === 'setGoal')
         const line = loop._lastPlayerLine.text
         if (newWork) playerStopAt = 0
         else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
@@ -4642,7 +4648,7 @@ function maybeWarnByteCap(loop, warned) {
       // Inline-metadata tools (remember/forget) in the same batch still execute.
       const isSilentActionTick =
         (loop._currentIterationTrigger ?? loop._triggerEvent) === 'sei:action_tick'
-      if (isSilentActionTick && !hasStop && newSuspendingTools.length > 0 && loop.inFlight) {
+      if (isSilentActionTick && !hasStop && !loop._tickCarriesAsk && newSuspendingTools.length > 0 && loop.inFlight) {
         logger.debug?.(`[sei/orch] silent action_tick: dropping new action(s)=${newSuspendingTools.map(u => u.name).join(',')} — in_flight=${loop.inFlight.name} keeps running (loop=${loop.id})`)
         const results = new Array(toolUses.length)
         for (let i = 0; i < toolUses.length; i++) {
@@ -5504,6 +5510,9 @@ function maybeWarnByteCap(loop, warned) {
       } else {
         const note = pausedInflightNote
         pausedInflightNote = null
+        // 261013: pressing play is the player saying go, so a stop hold from
+        // before the pause must not swallow the resume tick.
+        playerStopAt = 0
         try { reenqueue('sei:idle', { reason: 'game_unpaused', ...(note ? { pausedInflight: note } : {}) }) } catch {}
       }
     },

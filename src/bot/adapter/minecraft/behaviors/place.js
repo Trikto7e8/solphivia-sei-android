@@ -63,14 +63,17 @@ function autoPlacementNearBot(bot) {
 const EMPTY_AFTER_PLACE = new Set([...AIR, 'water', 'lava'])
 const PLACE_SETTLE = { quietMs: 250, minMs: 300, maxMs: 1200 }
 
-async function verifyPlaced(bot, dest, itemName, before, refLoc, signal) {
+async function verifyPlaced(bot, dest, itemName, before, oldName, refLoc, signal) {
   if (!dest || !hasLiveInventory(bot) || typeof bot.blockAt !== 'function') return `placed ${itemName} on ${refLoc}`
   if (await waitInventoryQuiet(bot, { ...PLACE_SETTLE, signal }) === 'aborted') return 'aborted'
   let blk = null
   try { blk = bot.blockAt(dest) } catch { blk = null }
   const after = liveCount(bot, itemName)
   const empty = !blk || EMPTY_AFTER_PLACE.has(blk.name)
-  if (empty || (blk.name !== itemName && after >= before)) {
+  // 261013: a block named unlike its item (torch -> wall_torch, oak_sign ->
+  // oak_wall_sign) that replaced what was there is placed, even when the
+  // count did not drop (creative, or a slot update still on its way).
+  if (empty || (blk.name !== itemName && after >= before && blk.name === oldName)) {
     const there = empty ? 'the spot is still empty' : `the spot holds ${blk.name}`
     return `placing ${itemName} on ${refLoc} did not go through: ${there} and the ${itemName} is still in your inventory`
   }
@@ -82,8 +85,10 @@ function tryPlace(bot, refBlock, faceVector, itemName, timeoutMs, signal) {
   const refLoc = rp ? `${refBlock.name ?? 'block'} @${rp.x},${rp.y},${rp.z}` : (refBlock.name ?? 'block')
   const dest = rp && faceVector ? new Vec3(rp.x + faceVector.x, rp.y + faceVector.y, rp.z + faceVector.z) : null
   const before = liveCount(bot, itemName)
+  let oldName = null
+  try { oldName = dest && typeof bot.blockAt === 'function' ? (bot.blockAt(dest)?.name ?? null) : null } catch { oldName = null }
   const op = bot.placeBlock(refBlock, faceVector)
-    .then(() => verifyPlaced(bot, dest, itemName, before, refLoc, signal))
+    .then(() => verifyPlaced(bot, dest, itemName, before, oldName, refLoc, signal))
     .catch((err) => {
       const r = reason(err)
       return r ? `cannot place ${itemName} on ${refLoc}: ${r}` : `cannot place ${itemName} on ${refLoc}`

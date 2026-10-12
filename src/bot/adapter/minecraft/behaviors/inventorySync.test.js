@@ -114,8 +114,8 @@ describe('craft waits for the server', () => {
 })
 
 describe('placeBlock checks the cell', () => {
-  function placeBot({ sticks }) {
-    const inv = liveInv({ crafting_table: 1 })
+  function placeBot({ sticks, item = 'crafting_table', placed = item, consumes = true, oldCell = null }) {
+    const inv = liveInv({ [item]: 1 })
     const cells = new Map()
     const key = (p) => `${p.x},${p.y},${p.z}`
     const ground = { name: 'barrier', position: { x: 5, y: 70, z: 0 } }
@@ -127,11 +127,12 @@ describe('placeBlock checks the cell', () => {
       blockAt: (p) => cells.get(key(p)) ?? (p.y <= 70 ? { name: 'stone', position: p } : { name: 'air', position: p }),
       placeBlock: vi.fn(async (ref, face) => {
         const dest = { x: ref.position.x + face.x, y: ref.position.y + face.y, z: ref.position.z + face.z }
-        cells.set(key(dest), { name: 'crafting_table', position: dest })
-        inv.add('crafting_table', -1)
-        if (!sticks) setTimeout(() => { cells.delete(key(dest)); inv.add('crafting_table', 1) }, 60)
+        cells.set(key(dest), { name: placed, position: dest })
+        if (consumes) inv.add(item, -1)
+        if (!sticks) setTimeout(() => { if (oldCell) cells.set(key(dest), { name: oldCell, position: dest }); else cells.delete(key(dest)); if (consumes) inv.add(item, 1) }, 60)
       }),
     }
+    if (oldCell) cells.set(key({ x: 5, y: 71, z: 0 }), { name: oldCell, position: { x: 5, y: 71, z: 0 } })
     return { bot, ground }
   }
 
@@ -146,6 +147,18 @@ describe('placeBlock checks the cell', () => {
     // resolveBlock reads blockAt for a position handle
     const res = await placeBlockAction({ block: 'crafting_table', against: { ...ground.position }, faceVector: { x: 0, y: 1, z: 0 } }, bot, {})
     expect(res).toMatch(/did not go through: the spot is still empty and the crafting_table is still in your inventory/)
+  })
+
+  it('a block named unlike its item that stuck is placed even when the count did not drop', async () => {
+    const { bot, ground } = placeBot({ sticks: true, item: 'torch', placed: 'wall_torch', consumes: false })
+    const res = await placeBlockAction({ block: 'torch', against: { ...ground.position }, faceVector: { x: 0, y: 1, z: 0 } }, bot, {})
+    expect(res).toMatch(/^placed torch on/)
+  })
+
+  it('a placement into grass the server undoes is reported as not done', async () => {
+    const { bot, ground } = placeBot({ sticks: false, oldCell: 'short_grass' })
+    const res = await placeBlockAction({ block: 'crafting_table', against: { ...ground.position }, faceVector: { x: 0, y: 1, z: 0 } }, bot, {})
+    expect(res).toMatch(/did not go through: the spot holds short_grass/)
   })
 })
 

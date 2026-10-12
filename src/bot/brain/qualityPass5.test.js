@@ -265,3 +265,68 @@ describe('261012 own action yields to a player order', () => {
     expect(text).not.toContain(OWN)
   })
 })
+
+describe('261013 the waiting-order check-in can switch actions', () => {
+  it('an action called on a check-in that carries the order replaces her own', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const sayOnly = { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'on it, after these logs' } }] }
+    const goTurn = { text: '', toolUses: [{ id: 'go1', name: 'goTo', input: { player: 'Steve' } }] }
+    const quiet = { text: '', toolUses: [] }
+    const provider = makeProvider([gatherTurn, sayOnly, goTurn, quiet])
+    const { adapter, executed, aborted } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', {})
+    await orch.handleDispatch('sei:chat_received', chat('come here'))
+    await flush()
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+    await orch.handleDispatch('sei:action_tick', { elapsedSec: 30 })
+    await flush()
+    expect(executed).toContain('goTo')
+    expect(aborted).toContain('gather')
+  })
+})
+
+describe('261013 unpausing ends the stop hold', () => {
+  it('the resume tick after play runs even inside the hold window', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      gatherTurn,
+      { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'ok stopping' } }, { id: 'st1', name: 'stop', input: {} }] },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:chat_received', chat('stop'))
+    await flush()
+    orch.setGamePaused(true)
+    orch.setGamePaused(false)
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:idle', { reason: 'game_unpaused' })
+    await flush()
+    expect(provider.calls.length).toBe(before + 1)
+  })
+})
+
+describe('261013 a goal the player gives ends the stop hold', () => {
+  it('setGoal from a player line after a stop lets the next idle tick run', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      gatherTurn,
+      { text: '', toolUses: [{ id: 'st1', name: 'stop', input: {} }] },
+      { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'ok, house next' } }, { id: 'g1', name: 'setGoal', input: { goal: 'build a house' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:chat_received', chat('stop'))
+    await flush()
+    await orch.handleDispatch('sei:chat_received', chat('ok lets build a house instead'))
+    await flush()
+    expect(orch.currentLoop).toBeNull()
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:idle', {})
+    expect(provider.calls.length).toBe(before + 1)
+  })
+})

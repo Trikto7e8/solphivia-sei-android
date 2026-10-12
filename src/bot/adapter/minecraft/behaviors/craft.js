@@ -17,6 +17,7 @@ import mcDataLib from 'minecraft-data'
 import { reason } from '../../../brain/errStrings.js'
 import { detectCraftingTable, maxRepetitions } from '../observers/craftable.js'
 import { goTo } from './pathfind.js'
+import { liveInventoryItems, liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
 
 export const CRAFT_TIMEOUT_MS = 8000
 
@@ -30,7 +31,7 @@ function itemIdByName(bot, name) {
 
 function inventoryById(bot) {
   const out = new Map()
-  const items = typeof bot?.inventory?.items === 'function' ? bot.inventory.items() : []
+  const items = liveInventoryItems(bot)
   for (const it of items) {
     if (!it || typeof it.type !== 'number') continue
     out.set(it.type, (out.get(it.type) ?? 0) + (it.count ?? 0))
@@ -210,6 +211,17 @@ function craftWithTimeout(bot, recipe, reps, table, timeoutMs, signal) {
   return Promise.race([op, tmo, abrt])
 }
 
+// 261012 (quality pass 5): window clicks are not confirmed on 1.17+, so
+// bot.craft resolves on the client's own prediction and the server can undo
+// the craft 50-500 ms later (materials back in the bag, no product). The eval
+// had "crafted 1 crafting_table" and then "no crafting_table in inventory"
+// 1.3 s later, several times in a row. So: wait for slot updates to stop
+// before crafting (a gather's pickups still landing make the server reject
+// the clicks), wait again after, and count what actually arrived.
+const SETTLE_BEFORE = { quietMs: 200, maxMs: 1000 }
+const SETTLE_AFTER = { quietMs: 300, minMs: 400, maxMs: 2000 }
+const withSignal = (o, signal) => ({ ...o, signal })
+
 /** Craft the planned part steps, in order. Returns the made list or an error. */
 async function craftParts(bot, steps, table, timeoutMs, signal) {
   const made = []
@@ -223,6 +235,8 @@ async function craftParts(bot, steps, table, timeoutMs, signal) {
     if (!recipe) return { error: `could not craft the ${name} it needs`, made }
     const r = await craftWithTimeout(bot, recipe, st.reps, table, timeoutMs, signal)
     if (r !== 'ok') return { error: r === 'aborted' ? 'aborted' : `crafting ${name} failed (${r})`, made }
+    // 261012: let the server's answer land before the next step reads the bag.
+    if (await waitInventoryQuiet(bot, withSignal(SETTLE_AFTER, signal)) === 'aborted') return { error: 'aborted', made }
     made.push(`${st.reps * st.perRep} ${name}`)
   }
   return { error: null, made }
@@ -251,7 +265,7 @@ function allVariantsNeedTable(bot, itemId) {
 
 function holdsCraftingTable(bot) {
   try {
-    return (bot.inventory?.items?.() ?? []).some((it) => it?.name === 'crafting_table')
+    return liveInventoryItems(bot).some((it) => it?.name === 'crafting_table')
   } catch {
     return false
   }
@@ -335,22 +349,45 @@ export async function craftAction(args, bot, config) {
   const perRep = recipe.result?.count ?? 1
   const reps = Math.min(Math.ceil(want / perRep), maxReps)
   const produced = reps * perRep
+  const over = produced > want ? ` (recipe makes ${perRep} at a time)` : ''
 
-  const op = Promise.resolve(bot.craft(recipe, reps, tableBlock))
-    .then(() => {
-      const over = produced > want ? ` (recipe makes ${perRep} at a time)` : ''
-      return `crafted ${produced} ${item}${over}${partsNote}${placeNote(item)}`
-    })
-    .catch((err) => {
-      const r = reason(err)
-      return r ? `cannot craft ${item}: ${r}` : `cannot craft ${item}`
-    })
+  // Without a live inventory (test fakes) there is nothing to wait on or
+  // count, so report the craft as mineflayer did.
+  const live = hasLiveInventory(bot)
+  if (live && await waitInventoryQuiet(bot, withSignal(SETTLE_BEFORE, signal)) === 'aborted') return 'aborted'
+  const before = liveCount(bot, itemId)
 
-  const tmo = new Promise((r) => setTimeout(() => r(`timeout crafting ${item}`), timeoutMs))
-  const abrt = new Promise((r) => {
-    if (!signal) return
-    signal.addEventListener('abort', () => r('aborted'), { once: true })
-  })
+  const first = await craftWithTimeout(bot, recipe, reps, tableBlock, timeoutMs, signal)
+  if (first === 'aborted') return 'aborted'
+  if (first === 'timeout') return `timeout crafting ${item}`
+  if (first !== 'ok') return first === 'failed' ? `cannot craft ${item}` : `cannot craft ${item}: ${first}`
+  if (!live) return `crafted ${produced} ${item}${over}${partsNote}${placeNote(item)}`
 
-  return Promise.race([op, tmo, abrt])
+  if (await waitInventoryQuiet(bot, withSignal(SETTLE_AFTER, signal)) === 'aborted') return 'aborted'
+  let got = liveCount(bot, itemId) - before
+  let retried = false
+  if (got < produced) {
+    // The server undid some or all of it. Try once more for what is missing,
+    // from what the bag holds now.
+    let again = []
+    try { again = bot.recipesFor(itemId, null, 1, tableBlock) ?? [] } catch { again = [] }
+    const inv = inventoryById(bot)
+    const r2 = again.find((r) => maxRepetitions(r, inv) > 0) ?? null
+    const reps2 = r2 ? Math.min(Math.ceil((produced - got) / (r2.result?.count ?? 1)), maxRepetitions(r2, inv)) : 0
+    if (reps2 > 0) {
+      retried = true
+      const second = await craftWithTimeout(bot, r2, reps2, tableBlock, timeoutMs, signal)
+      if (second === 'aborted') return 'aborted'
+      if (await waitInventoryQuiet(bot, withSignal(SETTLE_AFTER, signal)) === 'aborted') return 'aborted'
+      got = liveCount(bot, itemId) - before
+    }
+  }
+  const have = liveCount(bot, itemId)
+  if (got <= 0) {
+    return `the craft of ${item} did not go through: the server put the materials back${retried ? ' twice' : ''}, and you have ${have} ${item}. Check your inventory and try craft again`
+  }
+  if (got < produced) {
+    return `crafted ${got} ${item}, not ${produced}: the server undid the rest (you have ${have} ${item})${partsNote}${placeNote(item)}`
+  }
+  return `crafted ${got} ${item}${over}${partsNote}${placeNote(item)}`
 }

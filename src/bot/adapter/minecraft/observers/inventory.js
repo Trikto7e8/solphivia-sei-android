@@ -1,4 +1,5 @@
 // src/observers/inventory.js — pure functions of bot state
+import { liveInventoryItems } from './liveInventory.js'
 /**
  * @param {import('mineflayer').Bot} bot
  * @returns {{ name:string, durability:{current:number,max:number}|null } | null}
@@ -20,7 +21,8 @@ export function heldItem(bot) {
  */
 export function inventory(bot) {
   const out = {}
-  const items = typeof bot.inventory?.items === 'function' ? bot.inventory.items() : []
+  // 261012: the open window's slots when one is open (see liveInventory.js).
+  const items = liveInventoryItems(bot)
   for (const it of items) {
     if (!it || !it.name) continue
     out[it.name] = (out[it.name] ?? 0) + (it.count ?? 0)

@@ -17,6 +17,7 @@ import { nextMilestone, readProgressionState, recipeNote, pickaxeLine, furnaceLi
 // trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
 import { getInFlightLineForSnapshot } from '../../../brain/inflight.js'
 import { tallyAggro, aggroLine, AGGRO_PAIR_RANGE } from './aggro.js'
+import { liveInventoryItems } from './liveInventory.js'
 
 const MAX_ENTITIES = 6
 
@@ -229,7 +230,7 @@ export function composeSnapshot(bot, opts = {}) {
   const invStr = invEntries.length
     ? invEntries.map(([k, n]) => `${k}×${n}`).join(' ')
     : 'empty'
-  const slotsUsed = (typeof bot.inventory?.items === 'function') ? bot.inventory.items().length : 0
+  const slotsUsed = liveInventoryItems(bot).length
   // 261012 (pass 4a): "N of 36 slots used", not "N/36": a fraction next to
   // item counts read as a count of items.
   lines.push(`inventory (${slotsUsed} of 36 slots used): ${invStr}`)

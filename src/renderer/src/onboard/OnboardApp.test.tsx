@@ -243,3 +243,34 @@ describe('OnboardApp 261007: returning-panel local mode on an unset-up computer'
     expect(hints).toContain("'noProfile'");
   });
 });
+
+describe('OnboardApp: the scene never waits on transitionend alone (261012)', () => {
+  const scene = readFileSync(resolve(__dirname, 'OnboardScene.tsx'), 'utf-8');
+
+  it('transitionend handlers only feed the stage gates', () => {
+    const handlers = scene.slice(scene.indexOf('const onGroundEnd'), scene.indexOf('const suiClass'));
+    expect(handlers).toContain('groundGate.current?.transitionEnded()');
+    expect(handlers).toContain('suiGate.current?.transitionEnded()');
+    expect(handlers).not.toMatch(/cbs\.current\.on(GroundIn|GroundOut|SuiEntered|SuiLeft)/);
+  });
+
+  it('every stage callback is fired from a gate (transition, watchdog, skip or reduced motion)', () => {
+    for (const cb of ['onGroundIn', 'onGroundOut', 'onSuiEntered', 'onSuiLeft']) {
+      const uses = scene.split(`cbs.current.${cb}?.(by)`).length - 1;
+      expect(uses, cb).toBe(1);
+    }
+    expect(scene.match(/armTransitionGate\(/g)).toHaveLength(2);
+  });
+
+  it('the intro starts when the window can show it, can be skipped, and honours reduced motion', () => {
+    expect(src).toContain('const cancel = whenVisible(() => {');
+    expect(src).toContain("phase.k === 'intro'\n            ? skipIntro");
+    expect(src).toContain('instant={sceneInstant}');
+    expect(src).toContain('(prefers-reduced-motion: reduce)');
+  });
+
+  it('how the intro advanced rides the intro step event, not a new event', () => {
+    expect(src).toContain('intro_advanced_by: summarizeAdvance(');
+    expect(src).not.toMatch(/sei\.track\('onboarding_intro/);
+  });
+});

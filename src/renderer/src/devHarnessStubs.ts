@@ -61,6 +61,9 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // denied and the Screen Recording probe never succeeds, so the cards hold
   // still; `platform` follows the part (mic-win is Windows).
   const permsMode = (params.get('dashshot') ?? '') === 'perms';
+  // ?dashshot=onboard (261012): OnboardApp from the intro. Analytics calls are
+  // kept on window.__seiDevTrack so a driver can read onboarding_step.
+  const onboardMode = (params.get('dashshot') ?? '') === 'onboard';
   const now = Date.now();
   const chatRows = Array.from({ length: 24 }, (_, i) => ({
     id: `row-${i}`,
@@ -212,8 +215,16 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
           track: () => undefined,
         }
       : {}),
+    ...(onboardMode
+      ? {
+          track: (event: string, props: unknown) => {
+            const dev = window as unknown as { __seiDevTrack?: Array<{ event: string; props: unknown; at: number }> };
+            (dev.__seiDevTrack ??= []).push({ event, props, at: Date.now() });
+          },
+        }
+      : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

@@ -27,9 +27,17 @@
  *
  * Every frame <img> stays mounted and is toggled with opacity, so pose swaps
  * never wait on decode. The ground transition fires onGroundIn/onGroundOut.
+ *
+ * Every one of those four callbacks ALWAYS fires, exactly once per change
+ * (261012): each stage is a TransitionGate (sceneGate.ts) that completes on
+ * transitionend, on a watchdog a little past the CSS duration, or at once
+ * when `instant` is set (a skip, or reduced motion). It used to wait on
+ * transitionend alone, and a dropped transition left first launches stuck
+ * on an empty sky.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import styles from './onboard.module.css';
+import { armTransitionGate, type AdvanceSource, type TransitionGate } from './sceneGate';
 
 export type SuiPose = 'hidden' | 'entering' | 'idle' | 'talking' | 'shock' | 'leaving';
 
@@ -59,6 +67,14 @@ const WALK_FRAME_MS = 260;
 // three talk frames, which read as a barely-moving mouth (260729).
 const TALK_FRAME_MS = 130;
 const GRASS_FRAME_MS = 420;
+// The CSS transition durations of .ground and .sui (onboard.module.css). The
+// watchdogs are sized from these; sceneGate.test.ts checks they match.
+export const GROUND_TRANSITION_MS = 2400;
+export const SUI_WALK_TRANSITION_MS = 2600;
+
+/** Why the scene should skip its slides: the player skipped the intro, or the
+ * OS asks for reduced motion. null = animate normally. */
+export type SceneInstant = Exclude<AdvanceSource, 'transition' | 'watchdog'> | null;
 
 export interface OnboardSceneProps {
   groundIn: boolean;
@@ -66,10 +82,12 @@ export interface OnboardSceneProps {
   /** Footstep volume, 0..1 (0/undefined = silent). The parent scales its
    * voice volume down so the steps stay quiet under Sui's lines. */
   sfxVolume?: number;
-  onGroundIn?: () => void;
-  onGroundOut?: () => void;
-  onSuiEntered?: () => void;
-  onSuiLeft?: () => void;
+  /** Set: no slides; every stage completes at once with this source. */
+  instant?: SceneInstant;
+  onGroundIn?: (by: AdvanceSource) => void;
+  onGroundOut?: (by: AdvanceSource) => void;
+  onSuiEntered?: (by: AdvanceSource) => void;
+  onSuiLeft?: (by: AdvanceSource) => void;
 }
 
 export function OnboardScene(props: OnboardSceneProps): React.ReactElement {
@@ -140,18 +158,63 @@ export function OnboardScene(props: OnboardSceneProps): React.ReactElement {
   const cbs = useRef(props);
   cbs.current = props;
 
+  // ── Stage gates (261012) ──────────────────────────────────────────────
+  // One gate per CHANGE of groundIn (mount is not a change: nothing slides),
+  // and one per entering/leaving pose. A newer change cancels the older gate,
+  // so a superseded stage never fires its callback.
+  const groundGate = useRef<TransitionGate | null>(null);
+  const prevGroundIn = useRef(groundIn);
+  useEffect(() => {
+    if (prevGroundIn.current === groundIn) return undefined;
+    prevGroundIn.current = groundIn;
+    const into = groundIn;
+    const gate = armTransitionGate({
+      expectedMs: GROUND_TRANSITION_MS,
+      instant: cbs.current.instant,
+      onAdvance: (by) => (into ? cbs.current.onGroundIn?.(by) : cbs.current.onGroundOut?.(by)),
+    });
+    groundGate.current = gate;
+    return () => {
+      gate.cancel();
+      if (groundGate.current === gate) groundGate.current = null;
+    };
+  }, [groundIn]);
+
+  const suiGate = useRef<TransitionGate | null>(null);
+  useEffect(() => {
+    if (sui !== 'entering' && sui !== 'leaving') return undefined;
+    const pose = sui;
+    const gate = armTransitionGate({
+      expectedMs: SUI_WALK_TRANSITION_MS,
+      instant: cbs.current.instant,
+      onAdvance: (by) =>
+        pose === 'entering' ? cbs.current.onSuiEntered?.(by) : cbs.current.onSuiLeft?.(by),
+    });
+    suiGate.current = gate;
+    return () => {
+      gate.cancel();
+      if (suiGate.current === gate) suiGate.current = null;
+    };
+  }, [sui]);
+
+  // A skip (or reduced motion switching on) mid-stage completes it now.
+  const instant = props.instant ?? null;
+  useEffect(() => {
+    if (!instant) return;
+    groundGate.current?.skip(instant);
+    suiGate.current?.skip(instant);
+  }, [instant]);
+
   // Sui lives INSIDE the ground element (behind the grass tufts), so her
   // slide's transitionend bubbles up to the ground's handler — each handler
   // must only react to its own element's transition.
   const onGroundEnd = (e: React.TransitionEvent): void => {
     if (e.target !== e.currentTarget || e.propertyName !== 'transform') return;
-    if (groundIn) cbs.current.onGroundIn?.();
-    else cbs.current.onGroundOut?.();
+    groundGate.current?.transitionEnded();
   };
   const onSuiEnd = (e: React.TransitionEvent): void => {
     if (e.target !== e.currentTarget || e.propertyName !== 'transform') return;
-    if (sui === 'entering') cbs.current.onSuiEntered?.();
-    if (sui === 'leaving') cbs.current.onSuiLeft?.();
+    suiGate.current?.transitionEnded();
   };
 
   const suiClass =
@@ -188,7 +251,7 @@ export function OnboardScene(props: OnboardSceneProps): React.ReactElement {
   );
 
   return (
-    <div className={styles.scene} aria-hidden="true">
+    <div className={instant ? `${styles.scene} ${styles.sceneInstant}` : styles.scene} aria-hidden="true">
       <div className={styles.stage}>
         <img className={styles.sky} src={LAYERS.sky} alt="" draggable={false} />
         <div

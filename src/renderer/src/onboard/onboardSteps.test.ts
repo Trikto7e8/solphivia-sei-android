@@ -124,6 +124,45 @@ describe('OnboardStepTracker', () => {
     });
   });
 
+  it('annotations ride the open step\'s closing event only, then reset (261012)', () => {
+    const h = harness();
+    h.tracker.enter('intro');
+    h.tracker.annotate({ intro_advanced_by: 'watchdog' });
+    h.tracker.annotate({ intro_watchdog_stage: 'ground_in' });
+    h.tick(4000);
+    h.tracker.enter('hey');
+    h.tick(10);
+    h.tracker.enter('run_place');
+    const [introView, introDone, heyView, heyDone] = h.events.map((e) => e.props);
+    expect(introView).not.toHaveProperty('intro_advanced_by');
+    expect(introDone).toMatchObject({
+      step: 'intro',
+      action: 'complete',
+      ms_in_step: 4000,
+      intro_advanced_by: 'watchdog',
+      intro_watchdog_stage: 'ground_in',
+    });
+    expect(heyView).not.toHaveProperty('intro_advanced_by');
+    expect(heyDone).not.toHaveProperty('intro_advanced_by');
+  });
+
+  it('annotations also reach finish and abandon', () => {
+    const fin = harness();
+    fin.tracker.enter('ready');
+    fin.tracker.annotate({ scene_watchdog: 'sui_entered' });
+    fin.tracker.finish();
+    expect(fin.events[1].props).toMatchObject({ step: 'ready', scene_watchdog: 'sui_entered' });
+
+    const ab = harness();
+    ab.tracker.enter('job');
+    ab.tracker.annotate({ scene_watchdog: 'sui_left' });
+    ab.tracker.abandon('left_view');
+    expect(ab.events.find((e) => e.event === 'onboarding_abandoned')?.props).toMatchObject({
+      step: 'job',
+      scene_watchdog: 'sui_left',
+    });
+  });
+
   it('a throwing track never escapes', () => {
     const tracker = new OnboardStepTracker(
       () => {

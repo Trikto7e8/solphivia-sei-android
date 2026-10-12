@@ -195,6 +195,15 @@
   inset: 0;
 }
 
+/* No slides (261012): the player skipped the intro, or the OS asks for
+   reduced motion. The ground and Sui jump to their end state; the scene's
+   gates complete at once (sceneGate.ts), so nothing waits on a transition
+   that is not going to run. */
+.sceneInstant .ground,
+.sceneInstant .sui {
+  transition: none;
+}
+
 .stage {
   position: absolute;
   left: 50%;

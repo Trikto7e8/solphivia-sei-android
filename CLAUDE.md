@@ -3009,6 +3009,22 @@ file appears, and keep `noteLaunch()` ahead of anything that writes userData.
   path, skipped_creation}` per OnboardApp screen (`onboard/onboardSteps.ts`;
   not the boot sign-in variant). A new screen or button that skips needs a
   step name in `ONBOARD_STEPS` and, for a skip, `markStep('skip')`.
+  The intro step's closing event carries `intro_advanced_by`
+  (`transition | watchdog | skip | reduced_motion`), `intro_watchdog_stage`
+  and `intro_hidden_at_start`; a watchdog on a later scene stage (walk-off,
+  send-off walk-in) adds `scene_watchdog` to the step it closes
+  (`tracker.annotate`, 261012).
+- **The onboarding scene never waits on `transitionend` alone (261012).**
+  8 of 42 fresh v0.6.8 first launches never left the intro: its four stages
+  (ground in, Sui in, Sui out, ground out) advanced only on CSS
+  `transitionend`, with no timer and no button. Each stage is now a gate
+  (`onboard/sceneGate.ts`, armed in `OnboardScene`) that completes exactly
+  once on transitionend, a watchdog at `max(css + 1.5 s, 3 s)`, a click or
+  key during the intro (skip), or at once under `prefers-reduced-motion`. A
+  hidden window holds the first slide and the watchdog until it is shown,
+  bounded by `HIDDEN_CEILING_MS`. The CSS durations are mirrored as
+  constants in `OnboardScene.tsx` (a test checks). Verify in a tab with
+  `?dashshot=onboard` (track calls land on `window.__seiDevTrack`).
   `onboarding_abandoned` comes from the renderer on unmount (`left_view`) and
   from main at quit / last-window-close (`src/main/onboardingFunnel.ts`, fed
   by the analytics:track handler).

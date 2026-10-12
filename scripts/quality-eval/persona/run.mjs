@@ -18,8 +18,8 @@
 //
 // The Anthropic key is read from ~/.sei-dev/anthropic-test-key (or
 // ANTHROPIC_API_KEY) and never printed. Output: <out>/samples.jsonl, one row
-// per (character, situation, rep), plus <out>/requests/<char>.json holding one
-// full captured request per character for diagnosis.
+// per (character, situation, rep), plus <out>/requests/<char>-<situation>.json holding
+// one full captured request per character and situation for diagnosis.
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -128,8 +128,8 @@ async function runOne({ ch, sit, rep, primeLine }) {
         says, actions, scratchpad: String(resp.text ?? '').trim(), stopReason: resp.stopReason,
         usage: resp.usage, ms: Date.now() - t0,
       }
-      if (!captured.has(ch.key)) {
-        captured.add(ch.key)
+      if (!captured.has(`${ch.key}-${sit.id}`)) {
+        captured.add(`${ch.key}-${sit.id}`)
         fs.writeFileSync(path.join(OUT, 'requests', `${ch.key}-${sit.id}.json`), JSON.stringify({
           systemBlocks: req.systemBlocks, messages: req.messages, tools: (req.tools ?? []).map((t) => t.name),
         }, null, 1))

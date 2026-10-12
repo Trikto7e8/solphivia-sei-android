@@ -127,7 +127,7 @@ export function computeProgression(st = {}) {
   const frontier = SPINE.filter((n) => !done.has(n.id) && n.needs.every((p) => done.has(p)) && unlocked(n, st))
   let furthest = null
   for (const n of SPINE) if (done.has(n.id)) furthest = n
-  return { done, raw, frontier, currentMilestone: frontier[0] ?? null, furthest, complete: done.has('winter') }
+  return { done, raw, frontier, currentMilestone: frontier[0] ?? null, furthest, complete: done.has('winter'), spine: SPINE }
 }
 
 /**

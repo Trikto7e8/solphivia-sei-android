@@ -81,7 +81,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met or you abandon it.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1093,7 +1093,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met or you abandon it.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2104,7 +2104,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met or you abandon it.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
         "input_schema": {
           "type": "object",
           "properties": {

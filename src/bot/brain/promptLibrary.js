@@ -500,7 +500,7 @@ export const PERSONALITY_TOOL_DESCRIPTIONS = {
     'Record a committed multi-step goal or standing order, with its finish condition, so it survives across loops; not for one-shot requests, and not for feelings (use remember).',
 
   clearGoal:
-    'Remove a goal (by distinctive substring) once its finish condition is met or you abandon it.',
+    'Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.',
 }
 
 // 260731: the CURIOSITY mandate, appended to every gameplay proactiveness
@@ -705,14 +705,14 @@ export const SESSION_END_CLAUSE = `That's for pausing a TASK. If instead they're
 // alone). One const so the interrupt hints and the mid-action variants never
 // drift apart. Deliberately no literal trigger phrases beyond the existing
 // preference examples; the model recognizes the situation, not a keyword.
-export const MEMORY_GOAL_CUE = `When they state a preference, correction, or fact about themselves or about how they want YOU to behave ("you should…", "i like…", "call me…", "next time…"), or they ask you to keep something in mind, record it with remember() in the same turn; that is exactly what memory is for. When they set a shared objective or commit you to a plan with more than one step, record it with setGoal in the same turn so it survives beyond this loop. Nothing you say out loud is stored anywhere: a promise spoken in chat to remember something or to get it done is gone next loop, and you WILL forget it unless you also make the remember() or setGoal call in this same turn, alongside your say().`
+export const MEMORY_GOAL_CUE = `When they state a preference, correction, or fact about themselves or about how they want YOU to behave ("you should…", "i like…", "call me…", "next time…"), or they ask you to keep something in mind, record it with remember() in the same turn; that is exactly what memory is for. When they set a shared objective, give you a job that takes more than one step, or commit you to a plan, record it with setGoal in the same turn so it survives beyond this loop, even if you already have a goal of your own; write their steps and when it counts as done. When they change or call off a plan that is in your heartbeat, clearGoal the old goal in the same turn and setGoal the new plan if there is one. Nothing you say out loud is stored anywhere: a promise spoken in chat to remember something or to get it done is gone next loop, and you WILL forget it unless you also make the remember() or setGoal call in this same turn, alongside your say().`
 
 // Compact tail form of the cue above. The player-message variants of
 // actionTurn end with a short "what to call now" instruction, and that final
 // sentence is what the model weighs most; the full cue alone, buried
 // mid-paragraph, measured 0-1 out of 4 compliance in the live replay probe
 // (260708). Both ride together: the cue explains, the tail reminds last.
-export const MEMORY_GOAL_TAIL = ` Last check before you end the turn, about THEIR line: if it committed you to a plan, call setGoal with the plan in this same turn; if it told you something they expect you to still know later, call remember() with it in this same turn. Promising it out loud stores nothing; only those calls persist, and they ride alongside your say() and your running action without stopping either. If their line did neither, record nothing this turn.`
+export const MEMORY_GOAL_TAIL = ` Last check before you end the turn, about THEIR line: if it committed you to a plan or gave you a job with more than one step, call setGoal with it in this same turn; if it changed or called off a goal in your heartbeat, or said that goal is already done, call clearGoal on it in this same turn; if it told you something they expect you to still know later, call remember() with it in this same turn. Promising it out loud stores nothing; only those calls persist, and they ride alongside your say() and your running action without stopping either. If their line did neither, record nothing this turn.`
 
 // The mid-action check-in's "path is not working" instruction (NUDGES.actionTurn),
 // with and without a look tool. Distinct from IDLE_STUCK_NUDGE_* (the idle
@@ -1066,8 +1066,8 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '') {
   let goals
   if (goalsText && goalsText.trim()) {
     const head = lvl === 0
-      ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment:'
-      : 'Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal):'
+      ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment. Once a task is finished, or the player says it is done or no longer wanted, call clearGoal on it:'
+      : 'Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:'
     goals = `${head}\n${goalsText.trim()}`
   } else if (lvl === 2) {
     goals = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'

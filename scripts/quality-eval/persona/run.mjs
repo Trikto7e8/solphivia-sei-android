@@ -15,6 +15,16 @@
 //   ELECTRON_RUN_AS_NODE=1 npx electron scripts/quality-eval/persona/run.mjs \
 //     --chars ~/suisei/eval/characters --out <dir> [--reps 3] [--only sui,marv]
 //     [--situations greeting,tease] [--concurrency 5]
+//     [--history <samples.jsonl> [--history-n 3]]
+//
+// --history replays a longer session before each situation: after the
+// greeting, N earlier exchanges of the same character and rep (the player's
+// line, if any, and what the character answered) are taken from another run's
+// samples.jsonl and put in the transcript as lines already said. Use the SAME
+// history file for both arms of a comparison, so the session behind every
+// item is identical and only the prompt under test differs. This is what a
+// tic in every line looks like after a few minutes, which a single primed
+// greeting cannot show.
 //
 // The Anthropic key is read from ~/.sei-dev/anthropic-test-key (or
 // ANTHROPIC_API_KEY) and never printed. Output: <out>/samples.jsonl, one row
@@ -43,6 +53,8 @@ const CONC = Number(arg('concurrency', 5))
 const ONLY = arg('only')?.split(',')
 const SITS = arg('situations')?.split(',')
 const MODEL = arg('model', 'claude-haiku-5-5')
+const HISTORY = arg('history')
+const HISTORY_N = Number(arg('history-n', 3))
 if (!OUT) { console.error('--out required'); process.exit(2) }
 fs.mkdirSync(path.join(OUT, 'requests'), { recursive: true })
 
@@ -71,7 +83,7 @@ const textOf = (content) => (content ?? []).filter((b) => b.type === 'text').map
  * greeting line through a stubbed first dispatch so the session reads as a
  * few minutes in. Returns the sample row.
  */
-async function runOne({ ch, sit, rep, primeLine }) {
+async function runOne({ ch, sit, rep, primeLine, history = [] }) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'persona-eval-'))
   const mem = (f) => path.join(dir, f)
   await savePlayer(mem('PLAYER.md'), {
@@ -100,6 +112,7 @@ async function runOne({ ch, sit, rep, primeLine }) {
 
   const real = createAnthropicProvider(config)
   let mode = primeLine != null ? 'prime' : 'live'
+  let pendingPrime = primeLine
   let calls = 0
   let sample = null
   const endLoop = () => ({
@@ -114,7 +127,7 @@ async function runOne({ ch, sit, rep, primeLine }) {
         // Stand-in for the greeting turn that opened this session: the
         // character's own greeting line from the same rep.
         mode = 'primed'
-        const tu = { id: 'prime1', name: 'say', input: { text: primeLine } }
+        const tu = { id: 'prime1', name: 'say', input: { text: pendingPrime } }
         return { text: '', toolUses: [tu], content: [{ type: 'tool_use', ...tu }], usage: {}, stopReason: 'tool_use' }
       }
       if (mode === 'primed') return endLoop()
@@ -153,6 +166,17 @@ async function runOne({ ch, sit, rep, primeLine }) {
   })
   if (primeLine != null) {
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
+    // Earlier exchanges of a longer session (--history). Each is its own
+    // stubbed turn, a beat apart: a turn's lines are recorded within a few ms
+    // of each other, and two turns are seconds apart in a real session.
+    for (const h of history) {
+      await new Promise((r) => setTimeout(r, 300))
+      if (h.playerLine) orch.recordIncomingChat(PLAYER_NAME, h.playerLine)
+      pendingPrime = h.say
+      mode = 'prime'
+      await orch.handleDispatch('sei:idle', { quietMs: 20000 }, new AbortController().signal)
+    }
+    if (history.length) await new Promise((r) => setTimeout(r, 300))
     mode = 'live'
   }
   const data = JSON.parse(JSON.stringify(sit.dispatch.data).replaceAll('{NAME}', ch.name))
@@ -165,7 +189,8 @@ async function runOne({ ch, sit, rep, primeLine }) {
   return {
     char: ch.key, name: ch.name, situation: sit.id, rep, model: MODEL,
     playerLine: sit.dispatch.event === 'player_chat' ? data.text : null,
-    event: sit.dispatch.event, primeLine: primeLine ?? null, error, ...(sample ?? {}),
+    event: sit.dispatch.event, primeLine: primeLine ?? null,
+    ...(history.length ? { history: history.map((h) => h.say) } : {}), error, ...(sample ?? {}),
   }
 }
 
@@ -205,9 +230,28 @@ for (const r of greetRows) {
   greetingLine.set(`${r.char}/${r.rep}`, r.says?.[0] || 'hey')
 }
 const rest = sits.filter((s) => s.id !== 'greeting' && (!SITS || SITS.includes(s.id)))
+// --history: the same character and rep's spoken lines from another run, in
+// situation order. Each item gets the N situations that come before it
+// (wrapping around), never itself, the greeting or the goodbye.
+const historyRows = HISTORY
+  ? fs.readFileSync(HISTORY, 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((r) => !r.error && r.says?.length)
+  : []
+const HIST_SITS = SITUATIONS.map((s) => s.id).filter((id) => id !== 'greeting' && id !== 'goodbye')
+function historyFor(ch, sit, rep) {
+  if (!HISTORY || sit.prime === false) return []
+  const i = HIST_SITS.indexOf(sit.id)
+  const out = []
+  for (let k = 1; k < HIST_SITS.length && out.length < HISTORY_N; k++) {
+    const id = HIST_SITS[((i < 0 ? 0 : i) - k + HIST_SITS.length) % HIST_SITS.length]
+    if (id === sit.id) continue
+    const row = historyRows.find((r) => r.char === ch.key && r.rep === rep && r.situation === id)
+    if (row) out.unshift({ playerLine: row.playerLine ?? null, say: row.says.join(' ') })
+  }
+  return out
+}
 const jobs = []
 for (const sit of rest) for (const ch of chars) for (let rep = 0; rep < REPS; rep++) {
-  jobs.push({ ch, sit, rep, primeLine: sit.prime === false ? null : greetingLine.get(`${ch.key}/${rep}`), meta: { char: ch.key, situation: sit.id, rep } })
+  jobs.push({ ch, sit, rep, primeLine: sit.prime === false ? null : greetingLine.get(`${ch.key}/${rep}`), history: historyFor(ch, sit, rep), meta: { char: ch.key, situation: sit.id, rep } })
 }
 await pool(jobs, CONC, async (j) => { const r = await runOne(j); write(r); return r })
 out.end()

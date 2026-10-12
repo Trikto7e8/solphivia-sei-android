@@ -3453,7 +3453,10 @@ function maybeWarnByteCap(loop, warned) {
               // the procedural write-back (D-08) has it when the milestone later
               // completes without re-importing the spine into the brain.
               const n = link.primary
-              linkedGoals.push({ text, ids: link.ids, id: n.id, label: n.label, procedure: n.procedure })
+              // Store the text as the heartbeat line holds it (appendGoal folds
+              // newlines), so the later remove() substring still matches.
+              const lineText = text.replace(/\s*\n+\s*/g, ' ').trim()
+              linkedGoals.push({ text: lineText, ids: link.ids, id: n.id, label: n.label, procedure: n.procedure })
             }
           } catch { /* linking is best-effort; a free-text goal just stays unlinked */ }
         }

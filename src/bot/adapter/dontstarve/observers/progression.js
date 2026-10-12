@@ -10,7 +10,7 @@
 // winter prep. Each label leaves a part for the player.
 //
 // Node shape matches the other spines: { id, label, key, needs[], goal,
-// unlock?, procedure? }. `key` is the phrase matchFrontierNode looks for in
+// unlock?, procedure? }. `key` is the phrase brain/goalLink.js looks for in
 // a setGoal text. Goal predicates:
 //   { have, count? }      the body holds >= count (inventory + equipped)
 //   { anyOf: [prefabs] }  holds at least one of them

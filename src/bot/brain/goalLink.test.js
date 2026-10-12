@@ -54,6 +54,27 @@ describe('linkGoalToSpine', () => {
     expect(linkGoalToSpine('Finish when we have a crafting table', prog)).toBeNull()
   })
 
+  it('matches plurals and item ids, so a conjunction keeps every node (261012 review)', () => {
+    const prog = computeProgression({})
+    expect(linkGoalToSpine('Get diamonds with Alex. Finish when we have an iron pickaxe and 3 diamonds', prog).ids)
+      .toEqual(['iron_pickaxe', 'diamonds'])
+    expect(linkGoalToSpine('Finish when we have 12 ender pearls and blaze rods', prog).ids).toEqual(['blaze_rods', 'ender_pearls'])
+    expect(linkGoalToSpine('Finish when I hold an iron_pickaxe', prog).ids).toEqual(['iron_pickaxe'])
+    expect(linkGoalToSpine('Finish when we have an eye of ender', prog).ids).toEqual(['ender_eyes'])
+    expect(nodesNamedIn('make a wooden pickaxe', computeProgression({}).spine).map((n) => n.id)).toEqual(['wood_pickaxe'])
+  })
+
+  it('does not link a goal that asks for more than the node counts', () => {
+    const prog = computeProgression({})
+    expect(linkGoalToSpine('Gather wood for Alex. Finish when we have 64 wood', prog)).toBeNull()
+    expect(linkGoalToSpine('Finish when we have 3 diamonds', prog).ids).toEqual(['diamonds'])
+  })
+
+  it('an explicit finish cue wins over an earlier "until"', () => {
+    expect(finishClause('Follow Alex until he logs off. Finish when we have a furnace')).toBe('we have a furnace')
+    expect(finishClause('mine until we have 3 iron')).toBe('we have 3 iron')
+  })
+
   it('needs every node of a conjunction (DST)', () => {
     const link = linkGoalToSpine('Gear up with Ouen. Finish when we have a pickaxe and a torch', computeDst({ items: {} }))
     expect(link.ids.sort()).toEqual(['light', 'tools'])
@@ -169,6 +190,23 @@ describe('orchestrator goal auto-clear (261012)', () => {
     Object.assign(state, { items: { oak_log: 6, crafting_table: 1 } })
     await orch.handleDispatch('sei:idle', { reason: 'idle', quietMs: 30000 })
     expect((await readGoals(hb)).map((g) => g.text)).toEqual([goal])
+  })
+
+  it('auto-clears a goal whose setGoal text spanned several lines', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { state, adapter, config, hb } = setup()
+    const goal = 'Get a furnace with Steve.\nFinish when we have a furnace'
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'g1', name: 'setGoal', input: { text: goal } }, { id: 's1', name: 'say', input: { text: 'ok' } }] },
+      sayOnly('s2'),
+    ])
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('get a furnace'))
+    expect((await readGoals(hb)).map((g) => g.text)).toEqual(['Get a furnace with Steve. Finish when we have a furnace'])
+    Object.assign(state, { items: { furnace: 1 }, pickaxeTier: 2 })
+    await orch.handleDispatch('sei:idle', { reason: 'idle', quietMs: 30000 })
+    expect(await readGoals(hb)).toEqual([])
+    expect(lastUserText(provider)).toContain('PROGRESS: you just finished')
   })
 
   it('setting a second linked goal does not delete the first', async () => {

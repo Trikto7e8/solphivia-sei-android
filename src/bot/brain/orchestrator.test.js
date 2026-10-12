@@ -429,6 +429,16 @@ describe('composeSeedBlocks — player_message block (260616 #2)', () => {
     const blocks = await composeSeedBlocks(baseArgs)
     expect(blocks.some((b) => b.name === 'player_message')).toBe(false)
   })
+
+  // 261012: the note naming a word her own lines keep repeating rides right
+  // after the core (ownRepeats.js), and is absent when nothing repeats.
+  it('places own_repeats right after core, and only when given', async () => {
+    const blocks = await composeSeedBlocks({ ...baseArgs, ownRepeatsText: 'Your own recent lines keep using "nya".' })
+    const names = blocks.map((b) => b.name)
+    expect(names.indexOf('own_repeats')).toBe(names.indexOf('core') + 1)
+    const none = await composeSeedBlocks(baseArgs)
+    expect(none.some((b) => b.name === 'own_repeats')).toBe(false)
+  })
 })
 
 // ─────────── empty cuboid grammar (260909, first DST summon) ───────────

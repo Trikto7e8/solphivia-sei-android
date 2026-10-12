@@ -40,6 +40,7 @@ import { normalizeNextStep, nextStepMemoryLine } from './nextStep.js'
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
+import { ownRepeatsNote } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
 import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
@@ -641,6 +642,8 @@ export async function composeSeedBlocks({
   recentConversationText = null,
   // 260921: notes from earlier web lookups this session (lookups.js).
   lookupsText = null,
+  // 261012: words her own recent lines keep repeating (ownRepeats.js), or null.
+  ownRepeatsText = null,
   playerMessageText = null,
   companions = [],
   frontierText = '',
@@ -838,6 +841,12 @@ export async function composeSeedBlocks({
   // renderCore tolerates an old-format persona with no # CORE (name-derived
   // fallback, never throws), so this block is always present.
   blocks.push({ type: 'text', name: 'core', text: renderCore(config?.persona) })
+  // 261012: a signature word in every line reads as a parody over a session,
+  // and only naming the actual word moved it (ownRepeats.js). Right after the
+  // core, which is what tells her to hold her voice.
+  if (ownRepeatsText) {
+    blocks.push({ type: 'text', name: 'own_repeats', text: ownRepeatsText })
+  }
   // 260616 (#1): high-recency say() reminder on EVERY turn. The live test showed
   // Haiku ignoring the say() contract from the (cached, far-up) system prompt and
   // going fully silent, so we restate it right before generation.
@@ -1052,6 +1061,22 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // 261011: every line also feeds the process-level session digest, which
   // main reads for the player-end "next time" check (sessionDigest.js).
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
+  // 261012: the note naming a word her recent lines keep repeating, or null.
+  // Never throws: a bad line in the ring must not cost the turn.
+  // The words it must never name: names are how she addresses someone, and
+  // a word from the snapshot or the goals is an item or the job at hand
+  // ("stone", "pickaxe"), which a status line needs. The last snapshot and
+  // goals are cached as they are read, so the sync interrupt path has them.
+  const _repeatsContext = { snapshot: '', goals: '', frontier: '' }
+  function ownRepeatsText() {
+    try {
+      const { selfLines, playerLines } = convoMemory.recentChat._internal
+      const names = [config?.player_display_name, config?.player_username, ...companions]
+      const { snapshot, goals, frontier } = _repeatsContext
+      return ownRepeatsNote(selfLines, playerLines, { names, context: [snapshot, goals, frontier] })
+    } catch { return null }
+  }
+  const ownRepeatsTail = () => { const t = ownRepeatsText(); return t ? `\n\n${t}` : '' }
   // 261012: the first-spawn greeting and the player's own first "hey" cross
   // in flight. Her greeting is decided on the first idle tick but reaches
   // chat a few seconds later (paced typing), the player types hello in that
@@ -1996,7 +2021,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (gamePaused) return pausedNotice()
     try {
       const w = worldRegistry?.current?.() ?? null
-      return snapshotComposer.next({
+      const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
         // Player-priority pin: keep the player in `nearby entities` even when
@@ -2012,6 +2037,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // observer fn and a `world` opt would shadow it.
         worldTag: w ? `#${w.num}${w.label ? ` ${w.label}` : ''}` : null,
       })
+      if (typeof text === 'string') _repeatsContext.snapshot = text
+      return text
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
@@ -2187,7 +2214,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       voice: voiceCallActive,
       peers: companions,
       fromTeammate: teammate === true,
-    })) + crossedTail
+    })) + crossedTail + (humanLine ? ownRepeatsTail() : '')
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -2858,12 +2885,21 @@ function maybeWarnByteCap(loop, warned) {
       ])
     } else if (sessionState && playerStore) {
       let seedBlocks
+      // 261012: the goals and frontier, for the own_repeats note's word filter.
+      _repeatsContext.frontier = progFrontierText || ''
+      if (config?.memory?.heartbeat_md_path) {
+        try {
+          _repeatsContext.goals = await readHeartbeatForSeed(
+            config.memory.heartbeat_md_path, config.memory.seed_heartbeat_budget_bytes ?? 2048)
+        } catch { /* keep the last read */ }
+      }
       try {
         seedBlocks = await composeSeedBlocks({
           sessionState, playerStore, config, adapter,
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
+          ownRepeatsText: ownRepeatsText(),
           playerMessageText,
           companions,
           frontierText: progFrontierText,

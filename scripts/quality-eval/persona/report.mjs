@@ -4,6 +4,9 @@
 //   node scripts/quality-eval/persona/report.mjs <runDir>                 -> <runDir>/report.md
 //   node scripts/quality-eval/persona/report.mjs <beforeDir> <afterDir>   -> <afterDir>/compare.md
 //
+// A run directory that has not been judged yet (samples.jsonl only) still gets
+// the speech-only sections: signature-tic frequency and phrase repetition.
+//
 // Rates carry 95% Wilson intervals (stats.mjs); before/after differences carry
 // Newcombe intervals. Reps inside one (character, situation) cell are
 // independent model samples of a fixed prompt, so items are treated as
@@ -31,13 +34,132 @@ const ci = ([a, b]) => `[${pct(a)}, ${pct(b)}]`
 const rate = (k, n) => `${pct(n ? k / n : 0)} ${ci(wilson(k, n))} (${k}/${n})`
 const usd = (x) => `$${x.toFixed(2)}`
 
+const readJsonl = (f) => fs.readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+
 export function load(dir) {
-  const rows = fs.readFileSync(path.join(dir, 'judgments.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
-  const samples = fs.readFileSync(path.join(dir, 'samples.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l))
-  const ju = JSON.parse(fs.readFileSync(path.join(dir, 'judge-usage.json'), 'utf8'))
+  const samples = readJsonl(path.join(dir, 'samples.jsonl'))
+  const judged = fs.existsSync(path.join(dir, 'judgments.jsonl'))
+  const rows = judged ? readJsonl(path.join(dir, 'judgments.jsonl')) : []
+  const ju = judged ? JSON.parse(fs.readFileSync(path.join(dir, 'judge-usage.json'), 'utf8')) : null
   const genCost = samples.reduce((a, s) => a + (s.usage ? costOf(s.model ?? 'claude-haiku-5-5', s.usage) : 0), 0)
-  const judgeCost = costOf(ju.model, ju.usage.attribution) + costOf(ju.model, ju.usage.consistency)
-  return { rows, samples, genCost, judgeCost, errors: samples.filter((s) => s.error).length }
+  const judgeCost = ju ? costOf(ju.model, ju.usage.attribution) + costOf(ju.model, ju.usage.consistency) : 0
+  return { rows, samples, judged, genCost, judgeCost, errors: samples.filter((s) => s.error).length }
+}
+
+// ── speech-only metrics: signature tics and repeated phrases ─────────────────
+
+// What one sample said out loud, the same way judge.mjs reads it: say() lines
+// plus a quit_game farewell. '' when the companion stayed silent.
+export function speechOf(s) {
+  const farewells = (s.actions ?? []).filter((a) => a.name === 'quit_game' && a.input?.farewell).map((a) => String(a.input.farewell))
+  return [...(s.says ?? []), ...farewells].join(' / ').trim()
+}
+
+function spokenLines(samples, key) {
+  return samples.filter((s) => !s.error && s.char === key).map((s) => ({ ...s, line: speechOf(s) })).filter((s) => s.line)
+}
+
+/** Per character: how many spoken items contain each of its signature tics. */
+export function ticStats(samples, ch) {
+  const lines = spokenLines(samples, ch.key)
+  return {
+    n: lines.length,
+    tics: ch.tics.map((t) => ({ name: t.name, k: lines.filter((l) => t.re.test(l.line)).length })),
+  }
+}
+
+const STOP = new Set(('a an the and or but so to of in on at for with by from up down out over into about as is are was were be been am ' +
+  "i im i'm me my you you're your it it's its this that these those we us our they them he him she her there here " +
+  "do did does done not no yes ok okay just too very really then than what who how why when where which " +
+  "can can't will i'll would could should have has had get got go going let let's oh um uh like if all").split(/\s+/))
+const tokens = (line) => line.toLowerCase().replace(/[^a-z0-9' ]+/g, ' ').split(/\s+/).filter(Boolean)
+
+// Every 2 to 4 word phrase in a line that carries at least one content word.
+function phrasesOf(line) {
+  const t = tokens(line), out = new Set()
+  for (let n = 2; n <= 4; n++) {
+    for (let i = 0; i + n <= t.length; i++) {
+      const g = t.slice(i, i + n)
+      if (g.some((w) => !STOP.has(w))) out.add(g.join(' '))
+    }
+  }
+  return out
+}
+
+/**
+ * Phrase repetition for one character. A phrase "recurs" when the character
+ * says it in at least `minSits` different situations: that is a stock line it
+ * reaches for whatever is happening, which is what reads as a parody over a
+ * long session (a phrase repeated inside one situation is usually just the
+ * situation's own content, like "the villager"). Also the cross-rep rate:
+ * share of (situation) cells where two or more reps open with the same three
+ * words.
+ */
+export function repetition(samples, ch, minSits = 3) {
+  const lines = spokenLines(samples, ch.key)
+  const sitsOf = new Map(), linesOf = new Map()
+  const perLine = lines.map((l) => phrasesOf(l.line))
+  perLine.forEach((ps, i) => {
+    for (const p of ps) {
+      if (!sitsOf.has(p)) { sitsOf.set(p, new Set()); linesOf.set(p, 0) }
+      sitsOf.get(p).add(lines[i].situation)
+      linesOf.set(p, linesOf.get(p) + 1)
+    }
+  })
+  const recurring = new Set([...sitsOf].filter(([, s]) => s.size >= minSits).map(([p]) => p))
+  const k = perLine.filter((ps) => [...ps].some((p) => recurring.has(p))).length
+  // Top phrases, longest first among ties, dropping a phrase that only ever
+  // appears inside a longer listed one.
+  const ranked = [...recurring].map((p) => ({ p, sits: sitsOf.get(p).size, lines: linesOf.get(p) }))
+    .sort((a, b) => b.lines - a.lines || b.p.split(' ').length - a.p.split(' ').length)
+  const top = []
+  for (const r of ranked) {
+    if (top.some((t) => t.p.includes(r.p) && t.lines >= r.lines)) continue
+    top.push(r)
+    if (top.length >= 4) break
+  }
+  const cells = new Map()
+  for (const l of lines) {
+    const open = tokens(l.line).slice(0, 3).join(' ')
+    if (!cells.has(l.situation)) cells.set(l.situation, [])
+    cells.get(l.situation).push(open)
+  }
+  const cellsN = [...cells.values()].filter((v) => v.length >= 2).length
+  const sameOpen = [...cells.values()].filter((v) => v.length >= 2 && new Set(v).size < v.length).length
+  return { n: lines.length, k, top, cellsN, sameOpen }
+}
+
+function ticSection(samples, chars) {
+  const L = ['Signature tics (share of spoken items containing the tic; healthy is now and then, roughly 15-30%):', '',
+    '| char | tic | rate [95% CI] |', '|---|---|---|']
+  for (const c of chars) {
+    const t = ticStats(samples, c)
+    for (const x of t.tics) L.push(`| ${c.key} | ${x.name} | ${rate(x.k, t.n)} |`)
+  }
+  L.push('', `Phrase repetition (a phrase recurs when the character says it in 3 or more different situations; same opening = cells where 2+ reps open with the same three words):`, '',
+    '| char | items with a recurring phrase | same opening across reps | top recurring phrases (lines/situations) |', '|---|---|---|---|')
+  for (const c of chars) {
+    const r = repetition(samples, c)
+    L.push(`| ${c.key} | ${rate(r.k, r.n)} | ${rate(r.sameOpen, r.cellsN)} | ${r.top.map((t) => `"${t.p}" ${t.lines}/${t.sits}`).join(', ') || '-'} |`)
+  }
+  return L.join('\n')
+}
+
+function ticCompare(A, B, chars, diff) {
+  const L = ['Signature tics (share of spoken items):', '', '| char | tic | before | after | change [95% CI] |', '|---|---|---|---|---|']
+  for (const c of chars) {
+    const x = ticStats(A, c), y = ticStats(B, c)
+    x.tics.forEach((t, i) => {
+      const u = y.tics[i]
+      L.push(`| ${c.key} | ${t.name} | ${rate(t.k, x.n)} | ${rate(u.k, y.n)} | ${diff(t.k, x.n, u.k, y.n)} |`)
+    })
+  }
+  L.push('', 'Items with a phrase recurring across 3+ situations:', '', '| char | before | after | change [95% CI] | after: top phrases (lines/situations) |', '|---|---|---|---|---|')
+  for (const c of chars) {
+    const x = repetition(A, c), y = repetition(B, c)
+    L.push(`| ${c.key} | ${rate(x.k, x.n)} | ${rate(y.k, y.n)} | ${diff(x.k, x.n, y.k, y.n)} | ${y.top.map((t) => `"${t.p}" ${t.lines}/${t.sits}`).join(', ') || '-'} |`)
+  }
+  return L.join('\n')
 }
 
 export function metrics(rows) {
@@ -75,7 +197,11 @@ function confusion(rows, chars) {
 
 export function single(dir, charsDir) {
   const chars = loadCharacters(charsDir)
-  const { rows, genCost, judgeCost, errors } = load(dir)
+  const { rows, samples, judged, genCost, judgeCost, errors } = load(dir)
+  if (!judged) {
+    const text = `Not judged yet (no judgments.jsonl); speech-only sections. Generation errors: ${errors}.\n\n${ticSection(samples, chars)}\n\nCost: generation ${usd(genCost)}.`
+    return { text, M: null, cost: genCost }
+  }
   const M = metrics(rows)
   const chance = 1 / chars.length
   const L = []
@@ -109,6 +235,7 @@ export function single(dir, charsDir) {
     const has = (f) => mine.filter((r) => r.actions.some(f)).length
     L.push(`| ${c.key} | ${rate(has(() => true), mine.length)} | ${rate(has((a) => a === 'setGoal'), mine.length)} | ${rate(has((a) => a === 'follow' || a === 'come'), mine.length)} | ${rate(has((a) => /attack/i.test(a)), mine.length)} | ${rate(has((a) => a === 'remember'), mine.length)} |`)
   }
+  L.push('', ticSection(samples, chars))
   L.push('', `Cost: generation ${usd(genCost)} (Haiku 5.5), judging ${usd(judgeCost)} (Opus 5.5), total ${usd(genCost + judgeCost)}.`)
   return { text: L.join('\n'), M, cost: genCost + judgeCost }
 }
@@ -116,12 +243,14 @@ export function single(dir, charsDir) {
 export function compare(beforeDir, afterDir, charsDir) {
   const chars = loadCharacters(charsDir)
   const A = load(beforeDir), B = load(afterDir)
-  const a = metrics(A.rows), b = metrics(B.rows)
   const diff = (k1, n1, k2, n2) => {
     const [lo, hi] = newcombe(k1, n1, k2, n2)
     const d = (n2 ? k2 / n2 : 0) - (n1 ? k1 / n1 : 0)
     return `${d >= 0 ? '+' : ''}${(100 * d).toFixed(0)} pts [${(100 * lo).toFixed(0)}, ${(100 * hi).toFixed(0)}]`
   }
+  const tics = ticCompare(A.samples, B.samples, chars, diff)
+  if (!A.judged || !B.judged) return `Speech-only comparison (one side is not judged yet).\n\n${tics}`
+  const a = metrics(A.rows), b = metrics(B.rows)
   const sdiff = (x, y) => {
     const d = mean(y) - mean(x)
     const h = 1.96 * Math.sqrt(sd(x) ** 2 / x.length + sd(y) ** 2 / y.length)
@@ -140,6 +269,7 @@ export function compare(beforeDir, afterDir, charsDir) {
     L.push(`| ${c.key} | ${rate(x.correct, x.n)} | ${rate(y.correct, y.n)} | ${rate(x.judgedN - x.off, x.judgedN)} | ${rate(y.judgedN - y.off, y.judgedN)} |`)
   }
   L.push('', 'After-run confusion matrix:', '', confusion(B.rows, chars))
+  L.push('', tics)
   return L.join('\n')
 }
 

@@ -70,6 +70,14 @@ describe('linkGoalToSpine', () => {
     expect(linkGoalToSpine('Finish when we have 3 diamonds', prog).ids).toEqual(['diamonds'])
   })
 
+  it('the finish clause ends with its sentence (live eval 261012)', () => {
+    const goal = "Get a wooden pickaxe, then stone tools and iron with Alex. Finish when I hold an iron ingot made with Alex's help. Start: gather wood."
+    expect(finishClause(goal)).toBe("I hold an iron ingot made with Alex's help.")
+    expect(linkGoalToSpine(goal, computeProgression({}))).toBeNull()
+    expect(linkGoalToSpine('Get iron tools. Finish when I hold an iron pickaxe. Invite Alex in along the way.', computeProgression({})).ids)
+      .toEqual(['iron_pickaxe'])
+  })
+
   it('an explicit finish cue wins over an earlier "until"', () => {
     expect(finishClause('Follow Alex until he logs off. Finish when we have a furnace')).toBe('we have a furnace')
     expect(finishClause('mine until we have 3 iron')).toBe('we have 3 iron')

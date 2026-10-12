@@ -61,7 +61,11 @@ export function finishClause(text) {
   const t = String(text ?? '')
   const m = FINISH_CUE.exec(t) ?? UNTIL_CUE.exec(t)
   if (!m) return null
-  const rest = t.slice(m.index + m[0].length).trim()
+  // The clause is its own sentence: a trailing "Start: gather wood." or
+  // "Invite Alex along the way." is a step, not part of the finish condition
+  // (live eval 261012: a goal finished by an iron ingot cleared at the first
+  // log because its clause ran on into "Start: gather wood").
+  const rest = t.slice(m.index + m[0].length).trim().split(/(?<=[.!?;])\s+|\n/)[0].trim()
   return rest || null
 }
 

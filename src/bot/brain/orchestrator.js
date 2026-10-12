@@ -492,6 +492,13 @@ export function isBareStopLine(text) {
   const t = String(text ?? '').toLowerCase().replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
   return t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t)
 }
+// 261012 (pass 5): the player's line asks her to stop or wait (not "don't
+// stop"). Gates the idle hold, so her OWN stop() while switching to a new
+// order ("can you smelt this" answered with stop + say "on it") is no hold.
+const ASKS_STOP_RE = /(?<!\b(?:dont|don't|do not|never|not|cant|can't|wont|won't)\s+)\b(?:stop|halt|cancel|nevermind|never mind|enough|pause|freeze|hold on|hold up|wait|quit it)\b/
+export function asksToStop(text) {
+  return ASKS_STOP_RE.test(String(text ?? '').toLowerCase())
+}
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
@@ -4583,11 +4590,14 @@ function maybeWarnByteCap(loop, warned) {
       // playerStopAt); a player line answered with new work ends it. A bare
       // "stop" line counts even when the model answered it with end_loop,
       // since the chat fast path and the end_loop backstop cancel the action.
-      // "stop, come here" (stop + goTo) is new work, not a hold.
+      // "stop, come here" (stop + goTo) is new work, not a hold. Her stop()
+      // counts only when the player's line asked for one (asksToStop): a
+      // stop she calls to drop her own action for a new order is not a hold.
       if (_p1Trigger && loop._lastPlayerLine) {
         const newWork = newSuspendingTools.some(u => u.name !== 'unfollow')
+        const line = loop._lastPlayerLine.text
         if (newWork) playerStopAt = 0
-        else if (hasStop || isBareStopLine(loop._lastPlayerLine.text)) playerStopAt = Date.now()
+        else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
       }
 
       // 260921: a player line answered with ACTIONS ONLY: text + a world

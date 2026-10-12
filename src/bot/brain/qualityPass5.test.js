@@ -10,7 +10,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
-import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
+import { createOrchestrator, _setTickIntervalForTests, asksToStop } from './orchestrator.js'
 
 function makeProvider(script) {
   let i = 0
@@ -147,6 +147,30 @@ describe('261012 player stop holds idle initiative', () => {
     const before = provider.calls.length
     await orch.handleDispatch('sei:idle', {})
     expect(provider.calls.length).toBe(before + 1)
+  })
+
+  it('her own stop while taking a new order is no hold', async () => {
+    // eval smelt_iron #5: "can you smelt this raw iron" answered with
+    // stop() + say("on it") and no action; the hold kept her idle 120s.
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      gatherTurn,
+      { text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'yep on it' } }, { id: 'st1', name: 'stop', input: {} }] },
+      { text: '', toolUses: [{ id: 'el1', name: 'end_loop', input: {} }] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:chat_received', chat('can you smelt this raw iron into ingots'))
+    await flush()
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:idle', {})
+    expect(provider.calls.length).toBe(before + 1)
+  })
+
+  it('asksToStop reads the player line, not negations', () => {
+    for (const t of ['stop', 'actually stop', 'stop moving', 'wait stop', 'ok hold on']) expect(asksToStop(t)).toBe(true)
+    for (const t of ['dont stop', 'never stop chopping', 'can you smelt this raw iron', 'unstoppable']) expect(asksToStop(t)).toBe(false)
   })
 
   it('new work from the player ends the hold', async () => {

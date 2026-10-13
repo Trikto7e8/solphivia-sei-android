@@ -144,6 +144,22 @@ describe('goalDisplayText', () => {
     expect(goalDisplayText('Note: build a house')).toBe('Note: build a house');
     expect(goalDisplayText('   ')).toBe('');
   });
+
+  // 261013 (pass 6b): a player's task carries a tag (heartbeat.js) and is
+  // usually written as "Alex asked: ...". The card shows the task itself.
+  it('drops the player-task tag and the "who asked" head', () => {
+    expect(goalDisplayText('(player task) Bring Alex 10 logs. Finish when he has them')).toBe('Bring Alex 10 logs');
+    expect(goalDisplayText('(player task) Alex asked: grab coal from the ore, then come back. Done when Alex has it.')).toBe(
+      'Grab coal from the ore, then come back',
+    );
+    expect(goalDisplayText('(player task) Alex asked me to mine coal near the river. Done when I hand it over')).toBe(
+      'Mine coal near the river',
+    );
+    expect(goalDisplayText('(player task) For Alex: chop 5 oak logs, then meet Alex at the house')).toBe(
+      'Chop 5 oak logs, then meet Alex at the house',
+    );
+    expect(goalDisplayText('(player task)')).toBe('');
+  });
 });
 
 describe('parseLedger', () => {

@@ -44,6 +44,7 @@ import { nextStepMemoryLine } from '../bot/brain/nextStep.js';
 import { atomicWrite } from '../bot/brain/storage/atomicWrite.js';
 import { withFileLock } from '../bot/brain/storage/fileLock.js';
 import { goalsFileFor } from './playerEndNextStep';
+import { PLAYER_TASK_TAG } from '../bot/brain/promptLibrary.js';
 
 /** A plan or goal older than this is not shown. */
 export const NEXT_STEP_MAX_AGE_MS = 7 * 24 * 60 * 60_000;
@@ -138,11 +139,22 @@ const FINISH_CUE = /\b(?:finish(?:ed)?|done|complete(?:d)?|success)\s*(?:when|on
  */
 export function goalDisplayText(text: string): string {
   let s = String(text ?? '').replace(/\s+/g, ' ').trim();
+  // A task the player gave (setGoal for_player) is stored with a tag in front
+  // and usually written as "Alex asked: grab coal..." or "For Alex: chop...".
+  // The card shows the task itself: no tag, no "who asked" head, and the
+  // colon rule below would keep only that head.
+  const playerTask = s.startsWith(PLAYER_TASK_TAG);
+  if (playerTask) {
+    s = s
+      .slice(PLAYER_TASK_TAG.length)
+      .trim()
+      .replace(/^(?:for\s+[^\s:]+\s*:|[^\s:]+\s+(?:asked|wants)(?:\s+me)?(?:\s+to)?\s*:?)\s*/i, '');
+  }
   const fc = FINISH_CUE.exec(s);
   if (fc && fc.index > 0) s = s.slice(0, fc.index);
   s = s.split(/(?<=[.!?;])\s+/)[0] ?? '';
   const colon = s.indexOf(':');
-  if (colon >= 8) s = s.slice(0, colon);
+  if (colon >= 8 && !playerTask) s = s.slice(0, colon);
   s = s.replace(/[\s.,;:!?-]+$/, '').trim();
   return capitalize(s);
 }

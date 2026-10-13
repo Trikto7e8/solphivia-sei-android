@@ -3519,7 +3519,10 @@ function maybeWarnByteCap(loop, warned) {
         }
         // 261013 (pass 6b): a player's task is tagged so the seed lists it ahead
         // of the bot's own goals (promptLibrary PLAYER_TASK_TAG).
-        const forPlayer = use.input?.for_player === true || isPlayerTask(text)
+        // Some providers (small local / OpenAI-compatible models) send the
+        // boolean as the string "true".
+        const fp = use.input?.for_player
+        const forPlayer = fp === true || String(fp).toLowerCase() === 'true' || isPlayerTask(text)
         const added = await heartbeatLog.append(text, new Date(), { forPlayer })
         lastActionResult = 'goal set'
         // Link this goal to the spine nodes its finish condition names, so JS

@@ -260,6 +260,18 @@ describe('orchestrator goal auto-clear (261012)', () => {
     expect(lastUserText(provider)).not.toContain('PROGRESS: you just finished')
   })
 
+  it('takes for_player sent as the string "true" (local / OpenAI-compatible models)', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter, config, hb } = setup()
+    const task = 'Bring Steve 4 logs and come back. Finish when Steve has them'
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'g1', name: 'setGoal', input: { text: task, for_player: 'true' } }, { id: 's1', name: 'say', input: { text: 'ok' } }] },
+    ])
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('bring me 4 logs'))
+    expect((await readGoals(hb)).map((g) => g.text)).toEqual([`${PLAYER_TASK_TAG} ${task}`])
+  })
+
   it('setGoal tool schema offers for_player', () => {
     const { adapter, config } = setup()
     const provider = makeProvider([sayOnly('s1')])

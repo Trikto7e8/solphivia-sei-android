@@ -23,6 +23,7 @@
 import { readFile } from 'node:fs/promises'
 import { atomicWrite } from '../storage/atomicWrite.js'
 import { withFileLock } from '../storage/fileLock.js'
+import { PLAYER_TASK_TAG } from '../promptLibrary.js'
 
 const HEADER =
   '# Heartbeat\n' +
@@ -42,26 +43,42 @@ function entryLine(timestamp, text) {
 // heartbeat already holds (the tool description forbids duplicates; this
 // enforces it so a re-stated goal can't pile up across loops).
 function normalizeForDedup(text) {
-  return String(text ?? '')
+  return stripPlayerTaskTag(text)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
+// 261013 (pass 6b): a task the player gave the bot is stored with
+// PLAYER_TASK_TAG in front of its text, so the seed can list it apart from (and
+// ahead of) the bot's own goals, and so JS never auto-clears it from the
+// progression spine (only the model can tell when it was handed over).
+export function isPlayerTask(text) {
+  return String(text ?? '').trimStart().startsWith(PLAYER_TASK_TAG)
+}
+
+function stripPlayerTaskTag(text) {
+  const t = String(text ?? '').trim()
+  return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t
+}
+
 export function createHeartbeatLog({ path: filePath } = {}) {
   if (!filePath) throw new Error('createHeartbeatLog: path required')
   return {
     path: filePath,
-    append: (text, when) => appendGoal(filePath, text, when),
+    append: (text, when, opts) => appendGoal(filePath, text, when, opts),
     remove: (query) => removeGoal(filePath, query),
     readAll: () => readHeartbeatFull(filePath),
   }
 }
 
-export async function appendGoal(filePath, text, when) {
-  const safe = String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()
-  if (!safe) return 0
+export async function appendGoal(filePath, text, when, { forPlayer = false } = {}) {
+  const folded = String(text ?? '').replace(/\s*\n+\s*/g, ' ')
+  const body = stripPlayerTaskTag(folded)
+  if (!body) return 0
+  // The model may also copy the tag into the text itself from the seed view.
+  const safe = (forPlayer || isPlayerTask(folded)) ? `${PLAYER_TASK_TAG} ${body}` : body
   let whenDate
   if (when instanceof Date) whenDate = when
   else if (typeof when === 'string') whenDate = new Date(when)

@@ -35,6 +35,7 @@ import {
   NEXT_TIME_GOODBYE,
   NEXT_TIME_GREETING,
   FIRST_CONTACT,
+  MEMORY_GOAL_TAIL,
 } from './prompts.js'
 import { normalizeNextStep, nextStepMemoryLine } from './nextStep.js'
 import { buildAnthropicTools } from './schemaBridge.js'
@@ -46,7 +47,7 @@ import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask } from './memory/heartbeat.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -1613,7 +1614,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       input_schema: {
         type: 'object',
         properties: {
-          text: { type: 'string', minLength: 1, description: 'The whole committed goal or standing order, including its finish condition, in one line.' },
+          text: { type: 'string', minLength: 1, description: 'The whole goal or task in one line: every part of it and when it counts as done.' },
+          for_player: { type: 'boolean', description: 'true when this is a task the player asked you to do; leave it out for a goal of your own.' },
         },
         required: ['text'],
       },
@@ -2858,7 +2860,12 @@ function maybeWarnByteCap(loop, warned) {
             ? NUDGES.greetCrossed
             : 'Reply with the say() tool — a direct message never gets silence, even if your answer is a refusal or a single word. ' +
               'Your text output is a private scratchpad the player can NEVER see — a reply that exists only in your text is silence to them; only say() reaches them. ' +
-              NUDGES.replyNoRestate)
+              NUDGES.replyNoRestate +
+              // 261013 (pass 6b): the mid-action variants already end on this
+              // check; a line that starts a fresh loop did not, and errands
+              // given while she was idle ("grab coal then come back") were
+              // never recorded (0/18 in the goals harness).
+              (fromTeammate ? '' : MEMORY_GOAL_TAIL))
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
@@ -3510,7 +3517,10 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'setGoal: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'setGoal: empty', is_error: true }, terminate: false }
         }
-        const added = await heartbeatLog.append(text, new Date())
+        // 261013 (pass 6b): a player's task is tagged so the seed lists it ahead
+        // of the bot's own goals (promptLibrary PLAYER_TASK_TAG).
+        const forPlayer = use.input?.for_player === true || isPlayerTask(text)
+        const added = await heartbeatLog.append(text, new Date(), { forPlayer })
         lastActionResult = 'goal set'
         // Link this goal to the spine nodes its finish condition names, so JS
         // can clear it once they are ALL done (goalLink.js). 261012: no longer
@@ -3518,7 +3528,10 @@ function maybeWarnByteCap(loop, warned) {
         // the goal's first rung and deleted the whole goal when that rung was
         // done. Setting a new linked goal no longer deletes the previous one
         // either; replacing a goal is the model's call (clearGoal).
-        if (added === 1 && typeof adapter.getProgression === 'function') {
+        // A player's task is never linked: its finish is usually theirs (the
+        // coal handed over, the bot back at the house), which the spine cannot
+        // see, and a node it names ("logs") would clear it before the hand-over.
+        if (added === 1 && !forPlayer && typeof adapter.getProgression === 'function') {
           try {
             const prog = adapter.getProgression(progressionFlags)
             const link = linkGoalToSpine(text, prog)

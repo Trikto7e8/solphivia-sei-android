@@ -9,6 +9,7 @@ import { finishClause, nodesNamedIn, linkGoalToSpine, linkFinished } from './goa
 import { computeProgression } from '../adapter/minecraft/observers/progression.js'
 import { computeProgression as computeDst } from '../adapter/dontstarve/observers/progression.js'
 import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
+import { PLAYER_TASK_TAG } from './promptLibrary.js'
 
 describe('finishClause', () => {
   it('returns the text after the finish cue', () => {
@@ -232,5 +233,53 @@ describe('orchestrator goal auto-clear (261012)', () => {
     const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
     await orch.handleDispatch('sei:chat_received', chat('two things'))
     expect((await readGoals(hb)).map((g) => g.text)).toEqual([a, b])
+  })
+
+  // 261013 (pass 6b): a task the player gives is stored tagged (renderHeartbeat
+  // lists it ahead of the bot's own goals) and never auto-cleared by the spine
+  // (its finish is usually the hand-over, which the spine cannot see).
+  it('tags a for_player task and never auto-clears it from the spine', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { state, adapter, config, hb } = setup()
+    const own = 'Get iron tools with Steve. Finish when I hold an iron pickaxe'
+    const task = 'Bring Steve a furnace and come back to him. Finish when I have a furnace and gave it to Steve'
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'g1', name: 'setGoal', input: { text: own } }, { id: 's1', name: 'say', input: { text: 'deal' } }] },
+      { text: '', toolUses: [{ id: 'g2', name: 'setGoal', input: { text: task, for_player: true } }, { id: 's2', name: 'say', input: { text: 'on it' } }] },
+      sayOnly('s3'),
+    ])
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('lets get iron'))
+    await orch.handleDispatch('sei:chat_received', chat('can u make me a furnace and bring it here'))
+    expect((await readGoals(hb)).map((g) => g.text)).toEqual([own, `${PLAYER_TASK_TAG} ${task}`])
+
+    // The furnace node is done, but the task names the hand-over: it stays.
+    Object.assign(state, { items: { furnace: 1, cobblestone: 8 }, pickaxeTier: 2 })
+    await orch.handleDispatch('sei:idle', { reason: 'idle', quietMs: 30000 })
+    expect((await readGoals(hb)).map((g) => g.text)).toEqual([own, `${PLAYER_TASK_TAG} ${task}`])
+    expect(lastUserText(provider)).not.toContain('PROGRESS: you just finished')
+  })
+
+  it('takes for_player sent as the string "true" (local / OpenAI-compatible models)', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter, config, hb } = setup()
+    const task = 'Bring Steve 4 logs and come back. Finish when Steve has them'
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'g1', name: 'setGoal', input: { text: task, for_player: 'true' } }, { id: 's1', name: 'say', input: { text: 'ok' } }] },
+    ])
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('bring me 4 logs'))
+    expect((await readGoals(hb)).map((g) => g.text)).toEqual([`${PLAYER_TASK_TAG} ${task}`])
+  })
+
+  it('setGoal tool schema offers for_player', () => {
+    const { adapter, config } = setup()
+    const provider = makeProvider([sayOnly('s1')])
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    return orch.handleDispatch('sei:chat_received', chat('hi')).then(() => {
+      const tool = provider.calls[0].tools.find((t) => t.name === 'setGoal')
+      expect(tool.input_schema.properties.for_player.type).toBe('boolean')
+      expect(tool.input_schema.required).toEqual(['text'])
+    })
   })
 })

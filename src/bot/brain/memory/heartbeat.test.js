@@ -14,7 +14,9 @@ import {
   removeGoal,
   readHeartbeatForSeed,
   readHeartbeatFull,
+  isPlayerTask,
 } from './heartbeat.js'
+import { PLAYER_TASK_TAG } from '../promptLibrary.js'
 
 let dir
 let file
@@ -127,3 +129,32 @@ describe('heartbeat store', () => {
     expect(seed).toContain('older goals truncated')
   })
 })
+
+// 261013 (pass 6b): a player's task is stored with PLAYER_TASK_TAG ahead of
+// its text, so the seed can list it apart from the bot's own goals.
+describe('heartbeat player tasks', () => {
+  it('tags a for-player goal and dedups it against the same text, tagged or not', async () => {
+    const when = new Date('2026-10-13T00:00:00.000Z')
+    expect(await appendGoal(file, 'Bring Alex 10 logs. Finish when he has them', when, { forPlayer: true })).toBe(1)
+    const raw = await readFile(file, 'utf8')
+    expect(raw).toContain(`- [2026-10-13T00:00:00.000Z] ${PLAYER_TASK_TAG} Bring Alex 10 logs. Finish when he has them`)
+    expect(await appendGoal(file, 'Bring Alex 10 logs. Finish when he has them', when)).toBe(0)
+    expect(await appendGoal(file, `${PLAYER_TASK_TAG} Bring Alex 10 logs. Finish when he has them`, when)).toBe(0)
+  })
+
+  it('keeps a tag the model copied into the text, without doubling it', async () => {
+    await appendGoal(file, `${PLAYER_TASK_TAG} meet Alex at the house`, new Date('2026-10-13T00:00:00.000Z'))
+    const raw = await readFile(file, 'utf8')
+    expect(raw).toContain(`] ${PLAYER_TASK_TAG} meet Alex at the house`)
+    expect(raw.split(PLAYER_TASK_TAG).length).toBe(2)
+    expect(isPlayerTask(`${PLAYER_TASK_TAG} x`)).toBe(true)
+    expect(isPlayerTask('x')).toBe(false)
+  })
+
+  it('clearGoal by a substring of the task text removes the tagged line', async () => {
+    await appendGoal(file, 'grab coal and come back', new Date(), { forPlayer: true })
+    expect(await removeGoal(file, 'grab coal')).toBe(1)
+    expect(await readHeartbeatForSeed(file, 2048)).toBe('')
+  })
+})
+

@@ -17,7 +17,7 @@ import {
 } from './prompts.js'
 // SESSION_END_CLAUSE is not (yet) re-exported through the prompts.js barrel —
 // pull it straight from the source of truth.
-import { SESSION_END_CLAUSE, MEMORY_GOAL_CUE } from './promptLibrary.js'
+import { SESSION_END_CLAUSE, MEMORY_GOAL_CUE, PLAYER_TASK_TAG } from './promptLibrary.js'
 
 // 260703: live-session bug — the player said "lets call it here for now" / "cya"
 // / "bye" and the bot kept saying goodbye lines without ever calling quit, so it
@@ -97,6 +97,56 @@ describe('renderProactivenessDirective — static, cached-system directive', () 
   })
 })
 
+// 261013 (pass 6b): player tasks get their own head, ahead of the bot's own goals.
+describe('renderHeartbeat — player tasks first', () => {
+  it('lists tagged player tasks before the bot own goals', () => {
+    const hb = renderHeartbeat(2, `- [t] Get iron tools. Finish when I hold an iron pickaxe\n- [u] ${PLAYER_TASK_TAG} grab coal and come back to Alex`, 'stone tools')
+    const tasks = hb.indexOf('Tasks the player asked you to do')
+    const own = hb.indexOf('Your own goals')
+    expect(tasks).toBeGreaterThan(-1)
+    expect(own).toBeGreaterThan(tasks)
+    expect(hb.indexOf('grab coal')).toBeLessThan(own)
+    expect(hb.indexOf('Get iron tools')).toBeGreaterThan(own)
+    expect(hb).not.toContain('Reachable next')
+  })
+
+  it('lists a player task from an earlier session last, to ask about, not to start', () => {
+    const start = Date.parse('2026-10-13T12:00:00.000Z')
+    const own = '- [2026-10-12T09:00:00.000Z] Get iron tools. Finish when I hold an iron pickaxe'
+    const old = `- [2026-10-12T10:00:00.000Z] ${PLAYER_TASK_TAG} grab coal and come back to Alex`
+    const now = `- [2026-10-13T12:05:00.000Z] ${PLAYER_TASK_TAG} bring Alex 10 logs`
+    const hb = renderHeartbeat(2, [own, old, now].join('\n'), 'stone tools', { sessionStartMs: start })
+    const cur = hb.indexOf('Tasks the player asked you to do')
+    const ownAt = hb.indexOf('Your own goals')
+    const earlier = hb.indexOf('Tasks the player gave you in an earlier session')
+    expect(cur).toBeGreaterThan(-1)
+    expect(ownAt).toBeGreaterThan(cur)
+    expect(earlier).toBeGreaterThan(ownAt)
+    expect(hb.indexOf('bring Alex 10 logs')).toBeLessThan(ownAt)
+    expect(hb.indexOf('grab coal')).toBeGreaterThan(earlier)
+
+    // Only an earlier task and her own goal: her goal is worked as usual.
+    const hb2 = renderHeartbeat(2, [own, old].join('\n'), 'stone tools', { sessionStartMs: start })
+    expect(hb2).not.toContain('Tasks the player asked you to do')
+    expect(hb2.indexOf('Your active goals')).toBeLessThan(hb2.indexOf('earlier session'))
+
+    // Only an earlier task: nothing is being worked, so the agentic menu stays.
+    const hb3 = renderHeartbeat(2, old, 'stone tools', { sessionStartMs: start })
+    expect(hb3).toContain('No active goals yet')
+    expect(hb3).toContain('Reachable next: stone tools')
+
+    // Without a session start every task counts as this session's.
+    expect(renderHeartbeat(2, old, '')).toContain('Tasks the player asked you to do')
+  })
+
+  it('keeps the plain goals head when there is no player task, and one list when passive', () => {
+    expect(renderHeartbeat(2, '- [t] go for diamonds', '')).toContain('Your active goals')
+    const passive = renderHeartbeat(0, `- [u] ${PLAYER_TASK_TAG} grab coal`, '')
+    expect(passive).toContain('Tasks the player has given you')
+    expect(passive).not.toContain('Tasks the player asked you to do')
+  })
+})
+
 describe('renderHeartbeat — goal + frontier only (no directive)', () => {
   it('does NOT embed the proactiveness directive any more', () => {
     const hb = renderHeartbeat(2, '', 'stone tools · food')
@@ -130,7 +180,7 @@ describe('MEMORY_GOAL_CUE — memory/goal capture (260708)', () => {
   it('cues remember() for keepsakes and setGoal for multi-step objectives, with no trigger-phrase matching', () => {
     expect(MEMORY_GOAL_CUE).toContain('record it with remember() in the same turn')
     expect(MEMORY_GOAL_CUE).toContain('keep something in mind')
-    expect(MEMORY_GOAL_CUE).toContain('record it with setGoal in the same turn')
+    expect(MEMORY_GOAL_CUE).toContain('record it with setGoal (for_player true) in the same turn')
     expect(MEMORY_GOAL_CUE).toContain('Nothing you say out loud is stored anywhere')
   })
 

@@ -23,7 +23,7 @@
 // Key: ANTHROPIC_API_KEY or ~/.sei-dev/anthropic-test-key, never printed.
 // Output: DIR/runs.jsonl (one row per run with per-step calls and heartbeat),
 // DIR/summary.md (scores per game), DIR/requests/ (one captured request per
-// game for diagnosis).
+// game and scenario, for diagnosis).
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
@@ -85,6 +85,9 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
 function mcSnapshot(w) {
   const inv = (w.inv ?? []).map(([n, c]) => `${n}×${c}`).join(', ') || '(empty)'
+  // `owner` moves the player ({x, y, z, dist}); `next` is the live snapshot's
+  // advisory progression line (the real composer always prints one).
+  const o = w.owner ?? { x: 109, y: 71, z: -38, dist: 3 }
   return [
     'world: #1 Meadow', 'pos: 112,71,-40', 'facing: north. forward -z, back +z, left -x, right +x',
     'biome: plains  surroundings: outside  light: sky 15 block 0  time: day (2400)',
@@ -93,8 +96,10 @@ function mcSnapshot(w) {
     `holding: ${w.inv?.length ? w.inv[0][0] : '(empty hand)'}`,
     `inventory (${(w.inv ?? []).length}/36 slots): ${inv}`,
     'terrain at feet: 25 grass_block', 'nearby blocks:', ...(w.blocks ?? ['#1 grass_block x412 @111,70,-40', '#2 oak_log x14 @118,72,-47', '#3 water x30 @104,70,-52']),
-    'nearby entities:', '#4 Alex @109,71,-38', '#5 cow @121,71,-31',
-    'follow_target: (none)', 'owner Alex: @109,71,-38 (3 blocks away), hp 20/20',
+    'nearby entities:', `#4 Alex @${o.x},${o.y},${o.z}`, '#5 cow @121,71,-31',
+    'follow_target: (none)',
+    ...(w.next ? [`next: ${w.next}`] : []),
+    `owner Alex: @${o.x},${o.y},${o.z} (${o.dist} blocks away), hp 20/20`,
     `last_action_result: ${w.last ?? '(none)'}`,
   ].join('\n')
 }
@@ -134,7 +139,10 @@ function makeWorld(game, ch, config) {
         const row = o.inventory.find((it) => it.name === name)
         if (row && count <= 0) o.inventory = o.inventory.filter((it) => it !== row)
         else if (row) row.count = count
+        else if (count > 0) o.inventory.push({ ...o.inventory[o.inventory.length - 1], name, count })
       }
+      // `playerAt` moves the farmer: { x, y, dist }.
+      if (w.playerAt) o.player = { ...o.player, ...w.playerAt }
       last = w.last ?? last
       em.emit('obs', { obs: o })
     }
@@ -150,7 +158,7 @@ function makeWorld(game, ch, config) {
   const apply = (w) => {
     const mod = createFakeMod({ botPort: 1, token: 'x', name: ch.botName })
     const f = mod.frame(true)
-    for (const e of f.ents) if (e.n === 'Steve') e.n = 'Ouen'
+    for (const e of f.ents) if (e.n === 'Steve') { e.n = 'Ouen'; if (w.playerX != null) e.x = w.playerX }
     const drop = new Set(w.drop ?? [])
     f.ents = f.ents.filter((e) => !drop.has(e.p))
     let g = 5000
@@ -204,6 +212,7 @@ async function runOne({ game, sid, ch, rep }) {
   const config = botConfig(game, ch, mem)
   const world = makeWorld(game, ch, config)
   let step = null
+  let held = null
   const actionsLog = []
   const overrides = {
     createSnapshotComposer: () => world.composer(),
@@ -214,6 +223,15 @@ async function runOne({ game, sid, ch, rep }) {
       // further action in the same step just succeeds.
       if (step && !step._resultUsed) {
         step._resultUsed = true
+        // `hold`: the step's first action stays in flight until the next
+        // step's wake has been handled, so a chat in that step lands
+        // MID-ACTION (handleActionTick), the way most live orders arrive.
+        if (step.hold) {
+          const st = step
+          return new Promise((resolve) => {
+            held = () => { if (st.afterWorld) world.apply(st.afterWorld); resolve(st.result ?? `${name}: done`) }
+          })
+        }
         if (step.afterWorld) world.apply(step.afterWorld)
         return step.result ?? `${name}: done`
       }
@@ -248,10 +266,11 @@ async function runOne({ game, sid, ch, rep }) {
         text: String(resp.text ?? '').trim().slice(0, 600),
         tools: resp.toolUses.map((t) => ({ name: t.name, input: t.input })),
       })
-      const key = `${game}`
+      // GOALS_CAPTURE_ALL=1 keeps every request of the first run per scenario.
+      const key = process.env.GOALS_CAPTURE_ALL ? `${game}-${sid}-${captured.size}` : `${game}-${sid}`
       if (!captured.has(key)) {
         captured.add(key)
-        fs.writeFileSync(path.join(OUT, 'requests', `${game}-${sid}.json`), JSON.stringify({ systemBlocks: req.systemBlocks, messages: req.messages, tools: (req.tools ?? []).map((t) => t.name) }, null, 1))
+        fs.writeFileSync(path.join(OUT, 'requests', `${key}.json`), JSON.stringify({ systemBlocks: req.systemBlocks, messages: req.messages, tools: (req.tools ?? []).map((t) => t.name) }, null, 1))
       }
       return resp
     },
@@ -282,6 +301,8 @@ async function runOne({ game, sid, ch, rep }) {
       hopsLeft = HOPS
       calls = []
       await orch.handleDispatch(st.wake.event, st.wake.data, new AbortController().signal)
+      // Settle the previous step's held action now that this wake was handled.
+      if (held && !st.hold) { const h = held; held = null; h() }
       // Drain re-enqueued continuations (action_complete) single-flight.
       for (let guard = 0; guard < 12; guard++) {
         await sleep(30)
@@ -319,7 +340,9 @@ async function pool(items, n, fn) {
 
 const chars = loadCharacters(CHARS_DIR, CHAR_KEYS)
 const jobs = []
-for (const game of GAMES) for (const sid of SCEN) for (const ch of chars) for (let rep = 0; rep < REPS; rep++) jobs.push({ game, sid, ch, rep })
+// Not every scenario exists for every game (the player-task set is fullest
+// in Minecraft); missing pairs are skipped.
+for (const game of GAMES) for (const sid of SCEN) for (const ch of chars) for (let rep = 0; rep < REPS; rep++) if (SCENARIOS[game][sid]) jobs.push({ game, sid, ch, rep })
 const outFile = path.join(OUT, 'runs.jsonl')
 const stream = fs.createWriteStream(outFile, { flags: 'a' })
 let spent = 0

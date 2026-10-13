@@ -2932,6 +2932,35 @@ card per app session) and `home_next_step_clicked`, both `{character_id,
 source: plan|goal, age_hours, surface: game|call|backseat|unknown, game?}`.
 Verify with `?dashshot=home&step=plan|call|untagged|goal|long|none`.
 
+**Sessions an app quit ended get the check on the next launch (261013,
+T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call
+live) has no time for an LLM call, so it never ran the player-end check
+(live 0.6.8: 3 of 73 session ends had a hook). `src/main/quitNextStep.ts`
+splits it across the quit. In before-quit, `closePlaySession` with reason
+`app_quit` (skipped when a goodbye already ended it) and `persistCallsForQuit`
+(out-of-game calls that connected, `callState.liveCallsNow`) write
+`PENDING_NEXT_STEP.json` to the character's memory dir: synchronous
+mkdir + write + rename of a few KB, try/catch, no network or await, so it
+cannot delay or break quit. A game keeps its session digest (refreshed by
+the final digest the bot posts while `supervisor.shutdown()` drains it,
+`refreshQuitDigest`); a call keeps only its window (its lines are voice rows
+in the transcript). Sessions under 2 min write nothing. On the next launch
+(`LAUNCH_DELAY_MS` 10 s after bootstrap, and after every scope switch via
+`initProfileScope({ onScopeSwitched })`) each pending file in the active
+profile runs through `startPlayerEndNextStep` (same gates: trivial, offline,
+over limit, local time box, scoped turn; plus a cloud backend needs a
+signed-in session first, else the file waits), saves + tags the plan and
+notifies Home. Deleted after any answer; kept for up to 3 launches when the
+check failed (offline / error / timeout), kept as is when busy or cancelled.
+Dropped unrun after 7 days, or when a newer session with the character
+started (game online / call greeting this run, `noteNewSessionForQuit`, or a
+later bot-game play / call row in the transcript); such a check in flight is
+aborted on any provider (`yieldAlways`). Events: the same
+`next_step_checked` / `next_step_saved` with `source: 'app_quit'` and
+`late_hours`. Not covered: a crash or force-kill (nothing runs at exit), and
+on macOS a call whose window was closed earlier still counts as live at the
+later Cmd-Q (its duration is overstated; the lines are right).
+
 **Forge/NeoForge hosts are blocked before summon (260929).** Only on STRONG
 evidence: the status ping's forgeData/modinfo (`forgeModCount != null`) or an
 explicit launch target on the host command line (`LanHost.forgeLaunchTarget`,

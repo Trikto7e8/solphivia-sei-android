@@ -32,6 +32,7 @@ let supervisorRef: BotSupervisorType | null = null;
 let getMainWindowRef: () => BrowserWindow | null = () => null;
 let endVoiceCallsRef: ((reason: string) => Promise<void>) | undefined;
 let teardownCeilingMs: number | undefined;
+let onScopeSwitchedRef: (() => void) | undefined;
 
 export function initProfileScope(deps: {
   supervisor: BotSupervisorType;
@@ -40,11 +41,17 @@ export function initProfileScope(deps: {
   endVoiceCalls?: (reason: string) => Promise<void>;
   /** Bound on ending the old account's sessions (tests; default 10s). */
   teardownCeilingMs?: number;
+  /**
+   * 261013 (T120): the new scope is live (after the renderer push). Runs the
+   * new account's pending app-quit "next time" checks. Fire and forget.
+   */
+  onScopeSwitched?: () => void;
 }): void {
   supervisorRef = deps.supervisor;
   getMainWindowRef = deps.getMainWindow;
   endVoiceCallsRef = deps.endVoiceCalls;
   teardownCeilingMs = deps.teardownCeilingMs;
+  onScopeSwitchedRef = deps.onScopeSwitched;
 }
 
 /**
@@ -259,6 +266,11 @@ async function runScopeSwitch(userId: string | null): Promise<void> {
     const payload: ScopeChangedEvent = { scope: nextScope, reason };
     win.webContents.send(IpcChannel.app.scopeChanged, payload);
   }
+  try {
+    onScopeSwitchedRef?.();
+  } catch {
+    /* best-effort */
+  }
 }
 
 /** TEST-ONLY: clear the injected supervisor / window refs. */
@@ -268,4 +280,5 @@ export function _resetForTests(): void {
   getMainWindowRef = () => null;
   endVoiceCallsRef = undefined;
   teardownCeilingMs = undefined;
+  onScopeSwitchedRef = undefined;
 }

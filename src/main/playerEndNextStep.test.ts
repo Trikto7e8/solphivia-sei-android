@@ -241,6 +241,32 @@ describe('never a wall, never a block', () => {
     expect(saved).toHaveLength(1);
   });
 
+  it('a deferred app-quit check (yieldAlways) is aborted by a new session even on a remote model', async () => {
+    const slow = provider(
+      (p) =>
+        new Promise<string>((_resolve, reject) => {
+          p.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        }),
+    );
+    const { d, saved, events } = deps({}, slow);
+    const p = startPlayerEndNextStep(input({ source: 'app_quit' }), d, { yieldAlways: true });
+    await vi.waitFor(() => expect(slow.calls).toHaveLength(1));
+    yieldToNewSession('char-1');
+    expect(await p).toBe('cancelled');
+    expect(saved).toEqual([]);
+    expect(events).toEqual([]);
+  });
+
+  it('an app-quit check reports its source and how late it ran', async () => {
+    const { d, events } = deps();
+    expect(await runPlayerEndNextStep(input({ source: 'app_quit', eventProps: { late_hours: 14.5 } }), d)).toBe('saved');
+    const base = { character_id: 'char-1', source: 'app_quit', surface: 'game', game: 'minecraft', late_hours: 14.5 };
+    expect(events).toEqual([
+      ['next_step_checked', { ...base, saved: true, outcome: 'saved' }],
+      ['next_step_saved', base],
+    ]);
+  });
+
   it('one check per character inside the dedupe window', async () => {
     let now = 1_000_000;
     const llm = provider('finish the cabin roof');

@@ -216,6 +216,13 @@ export interface PlayerEndInput {
   playerLines: number;
   /** Read this game's goal file (HEARTBEAT[.game].md) for goals. Unset = no goals. */
   goalsGame?: string | null;
+  /**
+   * 261013 (T120): analytics `source`. 'app_quit' is a session the app quit
+   * ended, checked on the next launch (quitNextStep.ts). Default 'player_end'.
+   */
+  source?: 'player_end' | 'app_quit';
+  /** Extra shape-only props for the two events (T120: `late_hours`). */
+  eventProps?: Record<string, string | number | boolean>;
 }
 
 export type PlayerEndOutcome =
@@ -365,9 +372,10 @@ export async function runPlayerEndNextStep(
   if (reachedModel && outcome !== 'cancelled') {
     const base = {
       character_id: characterId,
-      source: 'player_end',
+      source: input.source ?? 'player_end',
       surface: input.surface,
       ...(input.game ? { game: input.game } : {}),
+      ...(input.eventProps ?? {}),
     };
     try {
       deps.capture('next_step_checked', { ...base, saved: outcome === 'saved', outcome });
@@ -381,14 +389,20 @@ export async function runPlayerEndNextStep(
 
 // ── scheduling ────────────────────────────────────────────────────────────
 
-const inflight = new Map<string, { ctrl: AbortController; local: boolean | null }>();
+const inflight = new Map<string, { ctrl: AbortController; local: boolean | null; always: boolean }>();
 const lastRun = new Map<string, number>();
 
 /**
  * Start a check in the background. Never rejects. Skipped ('busy') while one
  * is running for the character or one ran inside DEDUPE_WINDOW_MS.
+ * `yieldAlways` (T120, a deferred app-quit check): a new session aborts it on
+ * any provider, since a plan saved after the new greeting is already stale.
  */
-export function startPlayerEndNextStep(input: PlayerEndInput, deps?: PlayerEndDeps): Promise<PlayerEndOutcome> {
+export function startPlayerEndNextStep(
+  input: PlayerEndInput,
+  deps?: PlayerEndDeps,
+  opts: { yieldAlways?: boolean } = {},
+): Promise<PlayerEndOutcome> {
   const { characterId } = input;
   const d = deps ?? defaultDeps();
   const now = d.now();
@@ -398,7 +412,7 @@ export function startPlayerEndNextStep(input: PlayerEndInput, deps?: PlayerEndDe
   }
   lastRun.set(characterId, now);
   const ctrl = new AbortController();
-  const entry = { ctrl, local: null as boolean | null };
+  const entry = { ctrl, local: null as boolean | null, always: opts.yieldAlways === true };
   inflight.set(characterId, entry);
   const tracked: PlayerEndDeps = {
     ...d,
@@ -418,11 +432,12 @@ export function startPlayerEndNextStep(input: PlayerEndInput, deps?: PlayerEndDe
 
 /**
  * A new session for this character is starting. A check on a LOCAL model is
- * aborted so it does not compete with the session for the same machine.
+ * aborted so it does not compete with the session for the same machine, and
+ * so is a deferred app-quit check on any model (`yieldAlways`).
  */
 export function yieldToNewSession(characterId: string): void {
   const entry = inflight.get(characterId);
-  if (entry && entry.local !== false) entry.ctrl.abort();
+  if (entry && (entry.always || entry.local !== false)) entry.ctrl.abort();
 }
 
 /** Tests only. */
@@ -486,7 +501,14 @@ function defaultDeps(): PlayerEndDeps {
     capture(event, props) {
       void (async () => {
         try {
-          const { loadAnalytics } = await import('./lazyAnalytics');
+          // One cached import: the checked + saved pair fires in the same tick,
+          // and two concurrent dynamic imports can resolve to different module
+          // instances under vitest mocking (lazyAnalytics.ts).
+          lazyAnalytics ??= import('./lazyAnalytics').catch((err) => {
+            lazyAnalytics = null;
+            throw err;
+          });
+          const { loadAnalytics } = await lazyAnalytics;
           const { capture } = await loadAnalytics();
           capture(event, props);
         } catch {
@@ -505,6 +527,8 @@ function defaultDeps(): PlayerEndDeps {
     log: (msg) => console.log(msg),
   };
 }
+
+let lazyAnalytics: Promise<typeof import('./lazyAnalytics')> | null = null;
 
 let boundMemoryDir: ((characterId: string) => string) | null = null;
 /** Unbound (bindPlayerEndRuntime never ran) = refuse, never a relative path. */

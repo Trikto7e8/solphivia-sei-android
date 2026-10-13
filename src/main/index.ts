@@ -33,7 +33,7 @@ import { createMinecraftGameModule } from './games/minecraft';
 import { createDontStarveGameModule } from './games/dontstarve';
 import { createStardewGameModule } from './games/stardew';
 import type { GameId, WorldState, WorldStates } from '../shared/gameIpc';
-import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls } from './voice/callState';
+import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls, liveCallsNow } from './voice/callState';
 import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
@@ -48,6 +48,15 @@ import {
   yieldToNewSession,
 } from './playerEndNextStep';
 import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, tagLatestPlan } from './homeNextStep';
+import {
+  LAUNCH_DELAY_MS,
+  bindQuitNextStepRuntime,
+  callDigestFromRows,
+  noteNewSessionForQuit,
+  persistQuitSession,
+  refreshQuitDigest,
+  runPendingQuitNextSteps,
+} from './quitNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
 import { initNotices } from './notices';
@@ -453,6 +462,20 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   if (failed) {
     capture('bot_session_failed', { character_id: id, duration_s: durationS, game: started.game, ...end });
   }
+  // 261013 (T120): the app is quitting, so there is no time for the
+  // player-end check below. Keep what it needs (synchronous, a few KB, never
+  // throws) and run it on the next launch (quitNextStep.ts). Skipped when a
+  // goodbye already ended the session or set up a plan.
+  if (end.reason === 'app_quit' && !goodbye.companionEnded && !goodbye.nextStepHook) {
+    persistQuitSession({
+      characterId: id,
+      surface: 'game',
+      game: started.game,
+      durationMs,
+      endedAt: Date.now(),
+      ...(digest ? { digest } : {}),
+    });
+  }
   // 261011: the player ended it (Stop, closed the world), so no goodbye turn
   // set up a next session. One small background check after teardown decides
   // if there is a plan worth saving (playerEndNextStep.ts). Fire and forget:
@@ -494,17 +517,14 @@ function updateHomeNextStep(id: string, run: (memoryDir: string) => Promise<bool
 async function startCallNextStep(id: string, connectedMs: number): Promise<void> {
   try {
     const { readRecent } = await import('./chat/chatStore');
-    const since = Date.now() - connectedMs - 30_000;
-    const rows = (await readRecent(id, 80)).filter(
-      (r) => r.voice === true && r.ts >= since && (r.role === 'user' || r.role === 'companion'),
-    );
+    const call = callDigestFromRows(await readRecent(id, 80), Date.now() - connectedMs - 30_000);
     await startPlayerEndNextStep({
       characterId: id,
       surface: 'call',
       activity: 'a voice call',
       durationMs: connectedMs,
-      lines: rows.slice(-16).map((r) => ({ who: r.role === 'user' ? 'player' : 'you', text: r.text })),
-      playerLines: rows.filter((r) => r.role === 'user').length,
+      lines: call.lines,
+      playerLines: call.playerLines,
     });
   } catch {
     /* best-effort, never surfaces */
@@ -519,6 +539,20 @@ async function startCallNextStep(id: string, connectedMs: number): Promise<void>
  */
 function endAllPlaySessionsForQuit(): void {
   for (const id of [...playStartedAt.keys()]) closePlaySession(id, { reason: 'app_quit' }, false);
+}
+
+/**
+ * 261013 (T120): an out-of-game voice call still live at quit gets the same
+ * deferred "next time" check as a game session (quitNextStep.ts). Its lines
+ * are already in the chat transcript, so only the call window is kept.
+ * Synchronous and never throws; an in-game call rides that game's session.
+ */
+function persistCallsForQuit(): void {
+  const now = Date.now();
+  for (const c of liveCallsNow(now)) {
+    if (onlineIds.has(c.characterId) || playStartedAt.has(c.characterId)) continue;
+    persistQuitSession({ characterId: c.characterId, surface: 'call', durationMs: c.connectedMs, endedAt: now });
+  }
 }
 
 function broadcastStatus(status: BotStatus): void {
@@ -560,6 +594,8 @@ function broadcastStatus(status: BotStatus): void {
       const game: GameId = status.game ?? 'minecraft';
       playStartedAt.set(id, { at: Date.now(), game });
       clearSessionDigest(id); // 261011: nothing from an earlier session
+      // 261013 (T120): this greeting moved on from an app-quit session.
+      noteNewSessionForQuit(id);
       // 261013 (T119): this session's first-spawn greeting is told about the
       // saved plan, so the Home card stops offering it.
       updateHomeNextStep(id, (dir) => consumeNextStep(dir));
@@ -988,6 +1024,12 @@ async function bootstrap(): Promise<void> {
   try {
     const [{ paths }, { providerTimeoutMs }] = await Promise.all([import('./paths'), import('./llm')]);
     bindPlayerEndRuntime({ memoryDir: paths.memoryDir, providerTimeoutMs, isOnline: () => net.isOnline() });
+    // 261013 (T120): sessions an app quit ended are checked on the next launch.
+    bindQuitNextStepRuntime({
+      memoryDir: paths.memoryDir,
+      memoryRoot: () => path.join(paths.profileRoot(), 'memory'),
+      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} together`,
+    });
   } catch (err) {
     logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
   }
@@ -1034,7 +1076,11 @@ async function bootstrap(): Promise<void> {
     onActionStats: (characterId, stats) => mcSessionReporter.stats(characterId, stats),
     // 261011: the session's recent conversation, kept in memory for the
     // player-end next-step check (never sent to analytics).
-    onSessionDigest: noteSessionDigest,
+    onSessionDigest: (id, raw) => {
+      noteSessionDigest(id, raw);
+      // 261013 (T120): the final digest a bot posts while quit drains it.
+      refreshQuitDigest(id, raw);
+    },
     sendLog: broadcastLog,
     // Hand the skin server's baseUrl into each bot init payload.
     // Closure-via-getter so a later restart of the skin server (port-drift
@@ -1116,6 +1162,8 @@ async function bootstrap(): Promise<void> {
       supervisor,
       getMainWindow: () => mainWindow,
       endVoiceCalls: endVoiceCallsForAccountSwitch,
+      // 261013 (T120): the new account's sessions an app quit ended.
+      onScopeSwitched: () => void runPendingQuitNextSteps(),
     });
   }
 
@@ -1305,6 +1353,7 @@ async function bootstrap(): Promise<void> {
     greetVoiceCall: (id, peers = []) => {
       noteSurface('voice'); // 261005: app_quit.last_surface
       yieldToNewSession(id);
+      noteNewSessionForQuit(id); // 261013 (T120)
       // 261013 (T119): the call greeting is told about the saved plan, so the
       // Home card stops offering it.
       updateHomeNextStep(id, (dir) => consumeNextStep(dir));
@@ -1419,6 +1468,11 @@ async function bootstrap(): Promise<void> {
   initNotices({ getMainWindow: () => mainWindow });
   initUpdater({ getMainWindow: () => mainWindow });
 
+  // 5d. 261013 (T120): run the "next time" check for sessions the last quit
+  //     ended, once auth and the token refresh have settled. Fire and forget;
+  //     each check waits for a ready backend and never surfaces an error.
+  setTimeout(() => void runPendingQuitNextSteps(), LAUNCH_DELAY_MS).unref?.();
+
   // 6. Linux fallback warning (RESEARCH Pitfall 3)
   if (process.platform === 'linux' && safeStorageBackendKind() === 'basic_text') {
     logger.warn(
@@ -1523,6 +1577,9 @@ if (!gotLock) {
     // mid-conversation is the normal way a chat ends, and an event captured
     // after shutdownAnalytics() would never be sent.
     try { await (await import('./chat/chatSession')).endAllChatSessions(); } catch { /* best-effort */ }
+    // 261013 (T120): an out-of-game call keeps its window for the next
+    // launch's "next time" check. Synchronous, local disk, no LLM call.
+    try { persistCallsForQuit(); } catch { /* best-effort */ }
     try { endAllPlaySessionsForQuit(); } catch { /* best-effort */ }
     // 261005: end chess, Draw! and backseat BEFORE the flush too. They used to
     // be shut down after it (and backseat not at all), so their *_ended events

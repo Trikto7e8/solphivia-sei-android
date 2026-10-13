@@ -60,11 +60,14 @@ function termsOf(text) {
 }
 
 // A word and its singular forms, so a plural matches ("logs" -> log,
-// "torches" -> torch, "berries" -> berry). Over-stripping is harmless here:
-// both sides go through the same keys, and a false match only drops a note.
+// "torches" -> torch, "berries" -> berry) and its stem ("mining" -> mine).
+// Over-stripping is harmless here: both sides go through the same keys, and
+// a false match only drops a note.
+// A possessive counts as its owner ("alex's" -> alex, "table's" -> table).
 function wordKeys(w) {
+  if (/.'s$/.test(w)) return [w, ...wordKeys(w.slice(0, -2))]
   const out = [w]
-  for (const [re, rep] of [[/ies$/, 'y'], [/es$/, ''], [/s$/, '']]) {
+  for (const [re, rep] of [[/ies$/, 'y'], [/es$/, ''], [/s$/, ''], [/ing$/, ''], [/ing$/, 'e']]) {
     if (re.test(w) && !/ss$/.test(w)) { const k = w.replace(re, rep); if (k.length >= 3) out.push(k) }
   }
   return out
@@ -72,6 +75,30 @@ function wordKeys(w) {
 // Every spelling of a term with its words' keys, so "more logs" meets "more log".
 const termKeys = (term) => term.split(' ').reduce(
   (acc, w) => acc.flatMap((a) => wordKeys(w).map((k) => (a ? `${a} ${k}` : k))), [''])
+
+// 261013: the game's own nouns (items, blocks, mobs), from the adapter
+// (gameVocabulary). Names like "oak_log" or "iron_ingot" count word by word,
+// with plurals and stems, so "oak trees" or "iron ingots" read as the job
+// even when none of it is in her inventory. Built once per list.
+const _vocabCache = new WeakMap()
+function vocabKeys(vocab) {
+  if (!vocab || typeof vocab !== 'object') return null
+  let keys = _vocabCache.get(vocab)
+  if (keys) return keys
+  keys = new Set()
+  for (const n of vocab) for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) keys.add(k)
+  _vocabCache.set(vocab, keys)
+  return keys
+}
+
+// Words of the card's voice (its example lines and description). An opener
+// from here is a signature, which the tic note owns (3 of 4 turns).
+let _sigCache = { text: null, words: new Set() }
+function signatureWords(text) {
+  const t = typeof text === 'string' ? text : ''
+  if (_sigCache.text !== t) _sigCache = { text: t, words: new Set(tokensOf(t)) }
+  return _sigCache.words
+}
 
 /** Group self lines ({at, text}, oldest first) into turns. */
 export function groupTurns(selfLines, gapMs = TURN_GAP_MS) {
@@ -140,13 +167,244 @@ export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minT
   return out
 }
 
-/** The prompt note for the next turn, or null when nothing repeats. */
-export function ownRepeatsNote(selfLines, playerLines = [], opts) {
-  const hits = repeatedOwnTerms(selfLines, playerLines, opts)
+/** The tic half of the note (repeatedOwnTerms hits), or null when nothing repeats. */
+function ticNote(hits) {
   if (!hits.length) return null
   const quoted = hits.map((h) => `"${h.term}"`).join(' and ')
   const n = hits[0].of
   return `Your own recent lines keep using ${quoted} (in ${hits[0].count} of your last ${n}). ` +
     'A signature word or catchphrase wears thin when it is in every line, so leave it out of this one unless the moment really calls for it. ' +
     'You still sound like yourself without it.'
+}
+
+// ---------------------------------------------------------------------------
+// 261013: whole lines and bits, not only single words.
+//
+// In the scripted-conversation eval (261012 scorecard and the pass-5 and
+// persona-tics compares) "repetitive" was the largest share of off lines, and
+// almost none of it was a one-word tic. It was:
+//   - the last line again: a comeback, callback or offer from her previous
+//     turn reused word for word in the next one ("you owe me a snack" in two
+//     replies running, "i got an iron sword and zero wood" twice in a row);
+//   - a bit she keeps coming back to across a few turns ("you're the boss of
+//     the wood pile" three times in 45 s, "you owe me a cobble trip" three
+//     times, "stay close, we grab wood next" four times).
+// Every one of those lines was in her prompt, in the conversation block,
+// marked as hers, under a header and a reply tail that both say not to repeat
+// them. The rule alone did not hold, the same way "use your catchphrase now
+// and then" did not hold for tics; what moved tics was naming the word. So
+// this names the lines: her last turn or two, quoted, and any phrase two of
+// her recent turns share. Data about what she said, never a fixed list, and
+// nothing she says is ever edited.
+
+// Her last turns are quoted only while they are fresh. An hour-old line is
+// not the thing she is about to repeat.
+const LAST_LINES_TURNS = 2
+const LAST_LINES_WITHIN_MS = 120_000
+// A shared phrase is looked for in this many recent turns, inside this time.
+const PHRASE_TURNS = 8
+const PHRASE_WITHIN_MS = 300_000
+const MAX_PHRASES = 2
+const MAX_QUOTE_CHARS = 160
+// Words that only carry the job or its timing. A phrase whose own wording is
+// just these ("need stone", "pickaxe next", "mining stone now") is the task
+// she is on, which a status line has to name, not a bit.
+const TASK_GLUE = new Set((
+  'next now need needs want wanna first again still more soon later ready ' +
+  'make made get grab dig mine craft find build gather punch chop collect place put use try start pick'
+).split(' '))
+
+const clip = (s, n = MAX_QUOTE_CHARS) => {
+  const t = String(s ?? '').replace(/\s+/g, ' ').trim()
+  return t.length > n ? `${t.slice(0, n - 3).trimEnd()}...` : t
+}
+
+/**
+ * Her last `turns` turns, oldest first, when they were said in the last
+ * `withinMs`. A turn is one say() line (groupTurns).
+ *
+ * @param {Array<{at:number,text:string}>} selfLines  oldest first
+ * @returns {Array<{at:number,text:string}>}
+ */
+export function recentOwnTurns(selfLines, { now = Date.now(), turns = LAST_LINES_TURNS, withinMs = LAST_LINES_WITHIN_MS } = {}) {
+  return groupTurns(selfLines).filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs).slice(-turns)
+}
+
+/**
+ * Phrases (two words or more) found in at least `minTurns` of her last
+ * `window` turns. Kept only when the phrase has two content words and most of
+ * them are her own wording: not a name, and not an item, block, mob or task
+ * word (from `context`, the game's `vocab`, or the task verbs). Two of her
+ * lines about "the stone pickaxe" or "the oak trees" share the job, not a
+ * bit; "boss of the wood pile" in two lines is a bit. Phrases the player also
+ * used recently are left out, as in repeatedOwnTerms. Only the longest form
+ * of a phrase is returned.
+ *
+ * @param {Array<{at:number,text:string}>} selfLines   oldest first
+ * @param {Array<{text:string,who?:string}>} [playerLines]
+ * @returns {Array<{phrase:string, count:number}>} at most `max`, most repeated first
+ */
+export function repeatedOwnPhrases(selfLines, playerLines = [], {
+  now = Date.now(), window = PHRASE_TURNS, withinMs = PHRASE_WITHIN_MS, minTurns = 2, max = MAX_PHRASES,
+  playerWindow = 8, names = [], context = [], vocab = null,
+} = {}) {
+  const turns = groupTurns(selfLines)
+    .filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs)
+    .slice(-window)
+  if (turns.length < minTurns) return []
+  const known = new Set()
+  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who), ...(context ?? [])]) {
+    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) known.add(k)
+  }
+  const nameKeys = new Set()
+  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who)]) {
+    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) nameKeys.add(k)
+  }
+  const game = vocabKeys(vocab)
+  const isKnown = (w) => wordKeys(w).some((k) => known.has(k) || TASK_GLUE.has(k) || game?.has(k))
+  const isName = (w) => wordKeys(w).some((k) => nameKeys.has(k))
+  const heard = (playerLines ?? []).slice(-playerWindow).map((l) => ` ${tokensOf(l?.text).join(' ')} `)
+
+  // Every phrase of 2..10 words in each turn, counted once per turn.
+  const counts = new Map()
+  for (const turn of turns) {
+    const t = tokensOf(turn.text)
+    const seen = new Set()
+    for (let i = 0; i < t.length; i++) {
+      for (let n = 2; n <= 10 && i + n <= t.length; n++) seen.add(t.slice(i, i + n).join(' '))
+    }
+    for (const p of seen) counts.set(p, (counts.get(p) ?? 0) + 1)
+  }
+  const ok = (p) => {
+    const words = p.split(' ')
+    if (words.some(isName)) return false
+    const content = words.filter(isContent)
+    if (content.length < 2) return false
+    // Most of it has to be her own wording: "heading to the oak trees" or
+    // "need iron ingots" is the job, "boss of the wood pile" is a bit.
+    if (content.filter((w) => !isKnown(w)).length * 2 <= content.length) return false
+    // It starts and ends on a content word, so "of the wood" never stands
+    // in for "boss of the wood pile".
+    if (!isContent(words[0]) || !isContent(words[words.length - 1])) return false
+    return !heard.some((h) => h.includes(` ${p} `))
+  }
+  const hits = [...counts]
+    .filter(([p, c]) => c >= minTurns && ok(p))
+    .map(([phrase, count]) => ({ phrase, count }))
+    .sort((a, b) => b.count - a.count || b.phrase.split(' ').length - a.phrase.split(' ').length)
+  const out = []
+  for (const h of hits) {
+    // One phrase per bit: "boss of the wood pile" covers "wood pile" and
+    // "ok fine you're the boss of the wood" (two content words in common).
+    const shared = (a, b) => { const bw = new Set(b.split(' ').filter(isContent)); return a.split(' ').filter((w) => isContent(w) && bw.has(w)).length }
+    if (out.some((o) => shared(h.phrase, o.phrase) >= 2)) continue
+    out.push(h)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+// First words that say nothing about the line ("i got", "the zombie").
+const PLAIN_OPENERS = new Set("i i'm im i'll i've the a an you you're we it it's that this my".split(' '))
+
+/**
+ * The first word her recent turns keep opening with ("ok ok stopping", "ok
+ * fine", "ok alex"), when at least `min` of her last `turns` turns start with
+ * it. Never an opener habit: plain function words, names, and item, block or
+ * task words (`context`, `vocab`), possessives included ("table's" is the
+ * table). A word from her card's own voice (`signature`, e.g. Roger's
+ * "w-wait") or a stutter is a signature, which the tic note owns: it counts
+ * only at the tic note's bar of `sigMin` of her last `sigTurns` turns, and
+ * not at all when the tic note already names it (`skipTerms`).
+ *
+ * @returns {string|null}
+ */
+export function repeatedOpener(selfLines, {
+  now = Date.now(), turns = 3, min = 2, sigTurns = 4, sigMin = 3, withinMs = LAST_LINES_WITHIN_MS,
+  names = [], context = [], vocab = null, signature = '', skipTerms = [],
+} = {}) {
+  const fresh = groupTurns(selfLines).filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs)
+  const known = new Set()
+  for (const n of [...(names ?? []), ...(context ?? [])]) {
+    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) known.add(k)
+  }
+  const game = vocabKeys(vocab)
+  const sig = signatureWords(signature)
+  const skip = new Set(skipTerms ?? [])
+  const isSignature = (w) => sig.has(w) || /^([a-z])-\1/.test(w)
+  const firstWord = (t) => {
+    const w = tokensOf(t.text)[0]
+    if (!w) return null
+    const bare = w.replace(/'s$/, '')
+    if (PLAIN_OPENERS.has(w) || PLAIN_OPENERS.has(bare) || skip.has(w)) return null
+    if (wordKeys(w).some((k) => known.has(k) || game?.has(k) || TASK_GLUE.has(k))) return null
+    return w
+  }
+  const count = (list) => {
+    const c = new Map()
+    for (const t of list) { const w = firstWord(t); if (w) c.set(w, (c.get(w) ?? 0) + 1) }
+    return c
+  }
+  const plain = [...count(fresh.slice(-turns))].filter(([w, n]) => !isSignature(w) && n >= min)
+  const sigs = [...count(fresh.slice(-sigTurns))].filter(([w, n]) => isSignature(w) && n >= sigMin)
+  const top = [...plain, ...sigs].sort((a, b) => b[1] - a[1])[0]
+  return top ? top[0] : null
+}
+
+// What the note asks for, by the kind of turn it rides on:
+//   reply   the player just spoke. The full ask, which is what moved the
+//           repetitive share in the MC compare (17 -> 11% off).
+//   idle    a turn of her own with no line to answer (idle tick, an event).
+//           No quote and no ask, only the phrases and opener she keeps
+//           reusing, when there are any. The full note made her start the
+//           next job without a word (pass6a persona review: Sui spoke on 1 of
+//           6 idle ticks, 5 of 6 before). A lighter ask that still quoted her
+//           lines did the same (19 of 30 idle ticks silent against 10 of 30),
+//           so on these turns the quote is what tips her into silence.
+//   checkin a check-in while her action runs, every few seconds. Silence is
+//           already the default there; a short form keeps a line she does
+//           say new without the full note each tick.
+const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
+
+/** The line half of the note: her last lines, quoted, and what they share. */
+function linesNote(selfLines, playerLines, opts = {}) {
+  const mode = opts.mode === 'idle' || opts.mode === 'checkin' ? opts.mode : 'reply'
+  const last = recentOwnTurns(selfLines, { now: opts.now })
+  if (!last.length) return null
+  // A word the tic note already names is not named twice ("big brother").
+  const skip = (opts.skipTerms ?? []).map((t) => ` ${t} `)
+  const phrases = repeatedOwnPhrases(selfLines, playerLines, opts)
+    .filter((p) => !skip.some((t) => ` ${p.phrase} `.includes(t)))
+  const names = [...(opts.names ?? []), ...(playerLines ?? []).map((l) => l?.who)]
+  const quoted = last.map((t) => `"${clip(t.text)}"`).join(' and then ')
+  const lead = last.length === 1 ? `Your last line to them was ${quoted}.` : `Your last lines to them were ${quoted}.`
+  const bits = phrases.length
+    ? ` You have said ${phrases.map((p) => `"${p.phrase}"`).join(' and ')} more than once already, so leave ${phrases.length === 1 ? 'it' : 'them'} out of this line.`
+    : ''
+  if (mode === 'checkin') {
+    return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}, so if you say something this tick, make it new.${bits}`
+  }
+  const opener = repeatedOpener(selfLines, {
+    now: opts.now, names, context: opts.context, vocab: opts.vocab, signature: opts.signature, skipTerms: opts.skipTerms,
+  })
+  const open = opener ? ` Your recent lines keep starting with "${opener}", so start this one another way.` : ''
+  if (mode === 'idle') return (bits + open).trim() || null
+  return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}. ` +
+    REUSE_ASK +
+    bits + open +
+    ' If something has to come up again, like a count or the plan, say it in new words.'
+}
+
+/**
+ * The prompt note for the next turn, or null when she has said nothing
+ * recently and nothing repeats. `opts.mode` is the kind of turn: 'reply'
+ * (default, the player just spoke), 'idle' or 'checkin' (see the note above
+ * REUSE_ASK).
+ */
+export function ownRepeatsNote(selfLines, playerLines = [], opts = {}) {
+  const { names, context } = opts
+  const tics = repeatedOwnTerms(selfLines, playerLines, { names, context })
+  const lines = linesNote(selfLines, playerLines, { ...opts, skipTerms: tics.map((h) => h.term) })
+  const parts = [lines, ticNote(tics)].filter(Boolean)
+  return parts.length ? parts.join(' ') : null
 }

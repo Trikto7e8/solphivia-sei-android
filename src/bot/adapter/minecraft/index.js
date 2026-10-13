@@ -19,6 +19,7 @@ import { sessionActionStats, classifyActionOutcome } from '../../brain/actionSta
 import { createSnapshotComposer } from './observers/snapshot.js'
 import { getProgression as readProgression } from './observers/progression.js'
 import { setWorldPaused } from './behaviors/pause.js'
+import { minecraftVocabulary } from './vocabulary.js'
 import { closeContainerSession } from './behaviors/container.js'
 import { closeFurnaceSession } from './behaviors/furnace.js'
 import { wireBotEvents } from './fsmWires.js'
@@ -173,6 +174,9 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false, act
     cuboidGrammar,
     eventAddendum: (event, data) => eventAddendum(event, data, config?.vision?.mode),
     cantReachNudge,
+    // 261013: item, block and mob names for the brain's repeat note
+    // (vocabulary.js), so it never names the job as a habit.
+    gameVocabulary: () => minecraftVocabulary(bot.version),
 
     // ─── Session lifecycle ───────────────────────────────────────────
     attach(handlers) {

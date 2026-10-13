@@ -157,6 +157,11 @@
  * @property {(args: {x:number,y:number,z:number,range:number}) => string} [cantReachNudge]
  *   Mid-loop nudge when pathfinder cant_reach trips twice on the same dest.
  *   (Consumed by the Minecraft postProcessToolBatch, not by the brain.)
+ * @property {() => string[]|null}                                         [gameVocabulary]
+ *   261013: the game's item, block and mob words ("oak_log", "zombie", ...).
+ *   The repeat note (ownRepeats.js) treats a phrase made mostly of them as
+ *   the job she is on, never a habit to drop. Return the same array each
+ *   call (the brain caches per array). Absent: names from the snapshot only.
  *
  * Session lifecycle:
  * @property {(handlers: AdapterHandlers) => void}                         attach

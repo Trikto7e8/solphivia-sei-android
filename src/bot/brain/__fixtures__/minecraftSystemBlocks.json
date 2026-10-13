@@ -30,7 +30,7 @@
       },
       {
         "name": "remember",
-        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
+        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts, and a task they gave you also goes in setGoal so you carry it out); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1046,7 +1046,7 @@
       },
       {
         "name": "remember",
-        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
+        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts, and a task they gave you also goes in setGoal so you carry it out); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2061,7 +2061,7 @@
       },
       {
         "name": "remember",
-        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
+        "description": "Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts, and a task they gave you also goes in setGoal so you carry it out); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.",
         "input_schema": {
           "type": "object",
           "properties": {

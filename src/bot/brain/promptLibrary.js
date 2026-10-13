@@ -654,6 +654,12 @@ export const SEED_HEADERS = {
 export const NEXT_TIME_FIELD =
   'Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words, like "finish the roof". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up.'
 
+// 261014: the same step written to the player, for the Home "up next" strip
+// (shown under "Up next with <name>"). Saved apart from the memory note
+// (homeNextStep.ts sidecar), so the model never reads it back as a plan.
+export const NEXT_TIME_FOR_PLAYER_FIELD =
+  'Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like "Finish the cabin roof" or "Tell Sui how the interview went" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player\'s name out.'
+
 export const NEXT_TIME_GOODBYE =
   'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time we finish the roof". If you leave it out, just say a normal goodbye.'
 
@@ -667,14 +673,76 @@ export const NEXT_TIME_SPOKEN =
 export const NEXT_TIME_GREETING =
   'If your memory has a "Plan for next time" entry from your last session, you can bring it up if it fits.'
 
+// 261014: the greeting cue when the host knows the plan is still open (the
+// newest unexpired, unused "Plan for next time", homeNextStep.ts). The soft
+// hint above was raised 7 of 9 times in the example run, and never by a
+// character with a strong running bit (Marv) or when the last chat line was
+// more vivid (Roger asked about the dog walk, not the vet). Naming the plan
+// and asking for it outright fixes both; the voice stays the character's.
+// `plan` null = the host checked and there is none, so no cue at all (an old,
+// already-raised plan in MEMORY.md must not come up again). undefined = the
+// host did not say (CLI runs): the soft hint.
+/** @param {string | null | undefined} plan */
+export function nextTimeGreeting(plan) {
+  if (plan === null) return ''
+  if (typeof plan !== 'string' || !plan.trim()) return NEXT_TIME_GREETING
+  const text = plan.replace(/\s+/g, ' ').trim().replace(/"/g, "'")
+  return (
+    `At the end of your last session you saved this to pick up next time: "${text}". ` +
+    'Make it the main thing your greeting is about, in your own words and your usual style. A joke or a dry remark is fine, as long as it is clear what you want to pick up. ' +
+    'Bring it up the way you would with a friend, and open with it rather than picking up where the earlier conversation stopped. ' +
+    'If it is about something that may not have happened yet, bring it up in a way that fits that.'
+  )
+}
+
+// The out-of-game voice call greeting (chatService sendVoiceGreetingTurnImpl),
+// a system note appended to the last user turn. Lives here (not in
+// chatService, which imports Electron) so the probe harness sends the exact
+// text. `peers` = other companions already on a group call: the joiner
+// announces itself instead, and the plan is not raised. 261014: `plan` as in
+// nextTimeGreeting (string = raise it, null = none open). The greeting is
+// told it is never (silence): the call primer's "reply (silence) when the last
+// thing said needs no reply" rule made a shy character (Lyra) answer the
+// phone with silence in 2 to 4 of 4 runs once the plan cue was added (261014
+// probe), and 0 of 4 with this line.
+/** @param {{ peers?: string[], plan?: string | null }} [opts] */
+export function callGreetingNote({ peers = [], plan } = {}) {
+  if (peers.length > 0) {
+    return `[System note — not the player speaking: you were just added to an ongoing group voice call with the player and ${peers.join(' and ')}. ` +
+      'Announce yourself to the room in one short spoken line, in your own voice, like walking into a call already in progress. Do not mention this note.]'
+  }
+  const open = typeof plan === 'string' && plan.trim() ? plan : null
+  const cue = open
+    ? nextTimeGreeting(open)
+    : `You can bring up something you remember about them, or just say hi.${plan === null ? '' : ` ${NEXT_TIME_GREETING}`}`
+  return '[System note — not the player speaking: the player just started a voice call with you ' +
+    'and the line is live now. Greet them first, like answering the phone: one short line, ' +
+    'in your own voice. They often call with no particular reason, just to hang out, so do not ' +
+    `ask why they called or what is up. ${cue} This greeting is always a spoken line, never (silence). Do not mention this note.]`
+}
+
 // The first-spawn greeting (orchestrator, reason just_connected_first_spawn).
 // 261011: two variants. `known` (a memory entry or the in-app chat it came
 // from) keeps the returning-friend wording; a first-ever session greets the
 // player as someone new, since "glad to be back" made the first line claim a
 // shared past that did not exist.
-export const FIRST_CONTACT = ({ gameName, known }) => known
-  ? `FIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool (a hello, a tease, a boast — whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; just greet them the way you would greet a friend coming back, then carry on the way your persona would. If your memories above hold something relevant, work it into that greeting instead of a generic hello — anything the player said last time about themselves, about you, or about what they wanted to do in ${gameName} (asking about something they told you beats a plain hello). ${NEXT_TIME_GREETING} This is only a hint: if nothing fits, a plain greeting is completely fine — don't force it.`
-  : `FIRST CONTACT: you just spawned into the player's world, and this is the first time you two have played together, so you have no memories of them yet. This greeting is the first thing they will see from you. Before anything else, open with exactly ONE short in-character greeting via the say() tool, the way you would greet someone you are meeting for the first time (a hello, a tease, a boast, whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory. Since you have not played together before, do not talk as if you are coming back. After the greeting, carry on the way your persona would.`
+//
+// 261014: `plan` is the saved plan still waiting for this greeting (main
+// ships it in the init, homeNextStep.ts readPendingPlan). With one, the
+// greeting is asked to raise it (nextTimeGreeting) and the "only a hint, a
+// plain greeting is fine" escape is left out, since it let a bit-heavy
+// character skip the plan every time.
+export const FIRST_CONTACT = ({ gameName, known, plan }) => {
+  const open = typeof plan === 'string' && plan.trim() ? plan : null
+  if (open) {
+    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open)}`
+  }
+  if (known) {
+    const cue = nextTimeGreeting(plan)
+    return `FIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool (a hello, a tease, a boast — whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; just greet them the way you would greet a friend coming back, then carry on the way your persona would. If your memories above hold something relevant, work it into that greeting instead of a generic hello — anything the player said last time about themselves, about you, or about what they wanted to do in ${gameName} (asking about something they told you beats a plain hello). ${cue ? `${cue} ` : ''}This is only a hint: if nothing fits, a plain greeting is completely fine — don't force it.`
+  }
+  return `FIRST CONTACT: you just spawned into the player's world, and this is the first time you two have played together, so you have no memories of them yet. This greeting is the first thing they will see from you. Before anything else, open with exactly ONE short in-character greeting via the say() tool, the way you would greet someone you are meeting for the first time (a hello, a tease, a boast, whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory. Since you have not played together before, do not talk as if you are coming back. After the greeting, carry on the way your persona would.`
+}
 
 // 261011: the same hook when the PLAYER ends the session (Stop, closing the
 // world, hanging up), which is most sessions. There is no goodbye turn then,
@@ -682,12 +750,17 @@ export const FIRST_CONTACT = ({ gameName, known }) => known
 // with this as the system text and a compact session summary as the user
 // message. The reply is a stored note, never spoken. It is saved with the
 // same "Plan for next time" line, so NEXT_TIME_GREETING covers it.
+// 261014: it answers two labeled lines, the note (saved to MEMORY.md) and a
+// line written to the player for the Home strip (parseNextStepReply).
 export const PLAYER_END_NEXT_STEP_SYSTEM =
   'You are {name}, an AI companion who plays games and talks with the player. ' +
   'The player just ended a session with you. You will get a short summary of it: what you were doing, the end of the conversation, your goals, and some of your memories.\n\n' +
   'Decide if there is one real thing to pick up next time: a goal you did not finish, something the two of you were in the middle of, a plan one of you said out loud, or something coming up for the player that you could ask about. ' +
-  'If there is, reply with only that next step in a few words, written as a note to yourself, like "finish the cabin roof" or "ask how the job interview went". ' +
-  'Write it in the language you and the player talk in.\n\n' +
+  'If there is, reply with exactly two lines, labeled like this:\n' +
+  'note: the next step in a few words, written as a note to yourself, like "finish the cabin roof" or "ask how the job interview went".\n' +
+  'player: the same step as one short line for the player. It is shown on their home screen under "Up next with {card_name}", and the player is the one reading it, so write it as something for them to do, starting with a verb, like "Finish the cabin roof", "Mine iron with {card_name}" or "Tell {card_name} how the job interview went". Keep it under 60 characters and to one step. Name yourself only when the step needs you, as {card_name} and never as I, me or we, and leave the player\'s name out.\n\n' +
+  'Do not put words like tomorrow or tonight in either line, because both are read on a later day. ' +
+  'Keep the labels note: and player: as they are, and write the rest in the language you and the player talk in.\n\n' +
   'If nothing was left open, or the session was only small talk, reply with only the word none. ' +
   'Do not make one up, and do not pick something that is already done.'
 

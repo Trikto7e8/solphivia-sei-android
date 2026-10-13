@@ -34,10 +34,11 @@ import {
   NEXT_TIME_FIELD,
   NEXT_TIME_GOODBYE,
   NEXT_TIME_GREETING,
+  NEXT_TIME_FOR_PLAYER_FIELD,
   FIRST_CONTACT,
   MEMORY_GOAL_TAIL,
 } from './prompts.js'
-import { normalizeNextStep, nextStepMemoryLine } from './nextStep.js'
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from './nextStep.js'
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
@@ -1694,6 +1695,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
           // 261008: retention hook. Saved to MEMORY.md for the next greeting;
           // its presence (never its text) is what bot_session_ended counts.
           next_time: { type: 'string', description: NEXT_TIME_FIELD },
+          // 261014: the same step written to the player, for the Home card.
+          next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
         },
         additionalProperties: false,
       },
@@ -1719,6 +1722,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
             description: 'Your goodbye line, spoken into the call as it ends. Short, in your own voice. ' + NEXT_TIME_GOODBYE,
           },
           next_time: { type: 'string', description: NEXT_TIME_FIELD },
+          next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
         },
         additionalProperties: false,
       },
@@ -2924,7 +2928,9 @@ function maybeWarnByteCap(loop, warned) {
       // wording ("glad to be back", say("back in business")) made the very
       // first line claim a shared past: "yo alex, back in the world" to a
       // player she had never met (quality eval 2026-10-11, 3 of 7 sessions).
-      eventText += `\n\n${FIRST_CONTACT({ gameName: caps.gameName, known: await knowsPlayer() })}`
+      // 261014: the plan still open for this greeting, from main's init
+      // (null = none open, undefined = not told, e.g. a CLI run).
+      eventText += `\n\n${FIRST_CONTACT({ gameName: caps.gameName, known: await knowsPlayer(), plan: config?._seiNextStepPlan })}`
     }
     // 260618: refresh the progression view before composing the seed — latch
     // dimension milestones, detect whether the committed goal's milestone just
@@ -3330,9 +3336,13 @@ function maybeWarnByteCap(loop, warned) {
   // surface, reads it back like any memory. Returns whether the model gave
   // one, which is all the host reports (bot_session_ended / voice_call_ended
   // next_step_hook). The farewell itself is the model's own line, untouched.
-  async function saveNextStep(raw) {
+  // 261014: plus the step written to the player (next_time_for_player), which
+  // is NOT saved here: it rides the quit / call-end message to main, which
+  // keeps it next to the plan's tag for the Home card.
+  async function saveNextStep(raw, rawLine) {
     const step = normalizeNextStep(raw)
-    if (!step) return false
+    if (!step) return { hook: false, line: null }
+    const line = normalizePlayerLine(rawLine)
     try {
       const written = await memoryLog.append(nextStepMemoryLine(step), new Date())
       if (written) {
@@ -3343,7 +3353,7 @@ function maybeWarnByteCap(loop, warned) {
     } catch (err) {
       logger.warn?.(`[sei/orch] next-time hook save failed: ${err?.message ?? err}`)
     }
-    return true
+    return { hook: true, line }
   }
 
   /**
@@ -3449,9 +3459,9 @@ function maybeWarnByteCap(loop, warned) {
       }
       // Awaited before the (deferred) teardown below, so the entry is on disk
       // before the process exits.
-      const nextStepHook = await saveNextStep(use.input?.next_time)
+      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player)
       const fireQuit = () => {
-        try { onQuitRequested?.({ nextStepHook }) } catch (err) { logger.warn?.(`[sei/orch] onQuitRequested failed: ${err?.message ?? err}`) }
+        try { onQuitRequested?.({ nextStepHook: next.hook, nextStepLine: next.line }) } catch (err) { logger.warn?.(`[sei/orch] onQuitRequested failed: ${err?.message ?? err}`) }
       }
       const waitMs = Math.min(10_000, Math.max(0, _lastChatSendDeadline - Date.now()) + 250)
       if (waitMs > 250) logger.info?.(`[sei/orch] quit deferred ${waitMs}ms so the goodbye finishes sending`)
@@ -3476,8 +3486,8 @@ function maybeWarnByteCap(loop, warned) {
         try { _emitSayLine(loop, farewell) } catch {}
       }
       lastActionResult = 'ended call'
-      const nextStepHook = await saveNextStep(use.input?.next_time)
-      try { onCallEndRequested?.({ nextStepHook }) } catch (err) { logger.warn?.(`[sei/orch] onCallEndRequested failed: ${err?.message ?? err}`) }
+      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player)
+      try { onCallEndRequested?.({ nextStepHook: next.hook, nextStepLine: next.line }) } catch (err) { logger.warn?.(`[sei/orch] onCallEndRequested failed: ${err?.message ?? err}`) }
       return { result: { type: 'tool_result', tool_use_id: use.id, content: 'call ended — you are still in the game', is_error: false }, terminate: false }
     }
     if (use.name === 'say') {

@@ -35,3 +35,148 @@ export function normalizeNextStep(raw) {
 export function nextStepMemoryLine(step) {
   return `Plan for next time: ${step}`
 }
+
+// 261014: the player-facing line for the Home "up next" strip.
+//
+// The plan above is the companion's private note ("ask Alex what the vet says
+// about Pepper's leg on Thursday"): good for her memory and her greeting, wrong
+// on the player's own screen. So the plan can carry a second line written TO
+// the player ("Tell Roger what the vet said about Pepper"). It never goes into
+// MEMORY.md (the model would read it as a second plan); main keeps it in the
+// NEXT_STEP.json sidecar next to the plan's tag (src/main/homeNextStep.ts). A
+// plan without one shows the note, as before.
+
+/** About one clause. Longer lines are cut at a clause break when one fits. */
+export const PLAYER_LINE_MAX_CHARS = 60
+/** Past this the line is cut at a word and marked with an ellipsis. */
+export const PLAYER_LINE_HARD_MAX_CHARS = 90
+
+// Read on a later day, a relative day goes stale ("raid the village tomorrow"
+// shown the next evening). "tomorrow"/"tonight" are dropped wherever they
+// stand (adverbs, so the rest still reads); the softer ones only at the end
+// or the start, where removing them cannot break the clause.
+// A possessive ("tonight's stream", "Tonight's the Night") is left alone:
+// dropping the day there leaves "'s stream".
+const RELATIVE_ANYWHERE = /(?:\s*,)?\s*\b(?:(?:by|for|until|on)\s+)?(?:tomorrow|tonight|tmrw?)\b(?!['’]s)(?:\s+(?:morning|night|evening))?/gi
+const RELATIVE_EDGE_END = /(?:\s*,)?\s+(?:(?:later\s+)?today|later|next time|this (?:morning|afternoon|evening|weekend))\s*$/i
+const RELATIVE_EDGE_START = /^(?:next time|later|today|this (?:morning|afternoon|evening|weekend))\s*[,:]?\s+/i
+
+/** A head shorter than this is not worth cutting to ("Go - then ..."). */
+const MIN_CLAUSE_HEAD = 8
+
+/**
+ * Cut at the first clause break ("; ", ", then ", " - ") that leaves a
+ * readable head. A plain comma is not a break: it is usually a list
+ * ("blaze powder, pufferfish and a brewing stand").
+ */
+function firstClause(s) {
+  const re = /(?:\s*;\s+|,?\s+(?:and then|then)\s+|\s+[-–—]\s+)/g
+  for (let m = re.exec(s); m; m = re.exec(s)) {
+    const head = s.slice(0, m.index).replace(/[\s,]+$/, '').trim()
+    if (head.length >= MIN_CLAUSE_HEAD) return head
+  }
+  return s
+}
+
+/** One cleanup pass: quotes, relative days, edge punctuation. */
+function cleanPlayerLine(s) {
+  return s
+    .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
+    .trim()
+    .replace(RELATIVE_ANYWHERE, '')
+    .replace(RELATIVE_EDGE_END, '')
+    .replace(RELATIVE_EDGE_START, '')
+    .replace(/\s+([,.!?])/g, '$1')
+    .replace(/\s+/g, ' ')
+    .replace(/[\s,;:.。-]+$/, '')
+    .replace(/^[\s,;:-]+/, '')
+    .trim()
+}
+
+/**
+ * The model's player-facing line as strip text, or null when it gave none.
+ * One line, no wrapping quotes, no trailing period, no relative day, first
+ * letter up, about PLAYER_LINE_MAX_CHARS long.
+ */
+export function normalizePlayerLine(raw) {
+  if (typeof raw !== 'string') return null
+  // Main runs this again on lines the bot already normalized (tagLatestPlan,
+  // pickNextStep), so it must not change its own output: clean until stable.
+  let s = raw.replace(/\s+/g, ' ').trim()
+  for (let i = 0; i < 4; i++) {
+    const next = cleanPlayerLine(s)
+    if (next === s) break
+    s = next
+  }
+  if (!s) return null
+  if (s.length > PLAYER_LINE_MAX_CHARS) s = firstClause(s)
+  if (s.length > PLAYER_LINE_HARD_MAX_CHARS) {
+    // One under the cap, so the line with its ellipsis still fits it.
+    const max = PLAYER_LINE_HARD_MAX_CHARS - 1
+    const cut = s.slice(0, max)
+    const space = cut.lastIndexOf(' ')
+    s = (space > max / 2 ? cut.slice(0, space) : cut).replace(/[\s,;:-]+$/, '').replace(/\s+(?:and|or|with|to|the|a|an|of|for)$/i, '').trim() + '…'
+  }
+  if (/^[a-z]/.test(s)) s = s[0].toUpperCase() + s.slice(1)
+  return s || null
+}
+
+// 261014 (review): a light check that the player line really is written to
+// the player. The model sometimes hands back its own note instead ("ask how
+// the move went", "remember to ask Alex about the vet"), which on the
+// player's screen reads as a chore for them. Such a line is not stored, and
+// the card shows the note as it did before player lines existed
+// (homeNextStep.ts pickNextStep).
+
+// Openers of a note to self. "Ask Lyra ..." / "Check in with Roger ..." are
+// fine: they name the companion near the start, so they are aimed at it.
+const SELF_NOTE_OPENER = /^(?:ask|remember|remind|find out|follow up|don'?t forget|check (?:in|if|whether|how)|see (?:how|if|whether))\b/i
+const FIRST_PERSON = /\bI\b|\b(?:me|my|myself|we|us|our|ours)\b/i
+
+function escapeRe(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+/** Whether `name` appears as a whole word in `text` (any case, possessive ok). */
+function hasName(text, name) {
+  const n = typeof name === 'string' ? name.trim() : ''
+  if (!n) return false
+  return new RegExp(`(?:^|[^\\p{L}\\p{N}_])${escapeRe(n)}(?![\\p{L}\\p{N}_])`, 'iu').test(text)
+}
+
+/**
+ * Why a normalized player line is not one, or null when it is fine.
+ * `character` is the companion's name, `players` the player's names
+ * (preferred name, Minecraft username); either may be missing.
+ * @param {string} line
+ * @param {{ character?: string | null, players?: Array<string | null | undefined> }} [names]
+ * @returns {null | 'self_note' | 'first_person' | 'names_player'}
+ */
+export function playerLineProblem(line, names = {}) {
+  const s = String(line ?? '')
+  if (/\bthe player\b/i.test(s)) return 'names_player'
+  for (const p of names.players ?? []) {
+    // The companion's name can match a username ("sui"); that one is fine.
+    if (p && !(names.character && p.trim().toLowerCase() === names.character.trim().toLowerCase()) && hasName(s, p)) {
+      return 'names_player'
+    }
+  }
+  if (FIRST_PERSON.test(s)) return 'first_person'
+  if (SELF_NOTE_OPENER.test(s)) {
+    const head = s.split(/\s+/).slice(0, 5).join(' ')
+    if (!(names.character && hasName(head, names.character))) return 'self_note'
+  }
+  return null
+}
+
+/**
+ * The model's player line as stored strip text: normalized, and null when it
+ * is missing or fails playerLineProblem (the card then shows the note).
+ * @param {unknown} raw
+ * @param {{ character?: string | null, players?: Array<string | null | undefined> }} [names]
+ */
+export function acceptPlayerLine(raw, names = {}) {
+  const line = normalizePlayerLine(raw)
+  if (!line) return null
+  return playerLineProblem(line, names) ? null : line
+}

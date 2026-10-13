@@ -13,6 +13,8 @@
  *     `ended_by_companion`.
  *
  * Booleans only: never the hook text, never anything the companion said.
+ * 261014: the note also holds the goodbye's player-facing line
+ * (`next_time_for_player`) for the Home card's tag; it never reaches analytics.
  *
  * 261011: a hook set here also carries `next_step_source: 'companion'`. A
  * session the PLAYER ended can get a plan too, from a background check that
@@ -32,6 +34,14 @@ export interface GoodbyeNote {
   companionEnded: boolean;
   /** Its goodbye carried a next_time hook. */
   nextStepHook: boolean;
+  /** 261014: that hook written to the player, for the Home card. Never sent to analytics. */
+  nextStepLine?: string | null;
+}
+
+/** What a goodbye's next_time fields came to: whether a plan was given, and its player line. */
+export interface NextStepHookResult {
+  hook: boolean;
+  line: string | null;
 }
 
 export const NOTE_TTL_MS = 2 * 60_000;
@@ -42,14 +52,20 @@ const notes = new Map<string, { note: GoodbyeNote; at: number }>();
 
 const key = (characterId: string, surface: GoodbyeSurface): string => `${surface}:${characterId}`;
 
-/** The companion ended a session on `surface`; `nextStepHook` = it left a hook. */
+/**
+ * The companion ended a session on `surface`; `hook` = whether it left a
+ * plan (a boolean, or the plan's result with its player line).
+ */
 export function noteCompanionGoodbye(
   characterId: string,
   surface: GoodbyeSurface,
-  nextStepHook: boolean,
+  hook: boolean | NextStepHookResult,
   now: number = Date.now(),
 ): void {
-  notes.set(key(characterId, surface), { note: { companionEnded: true, nextStepHook }, at: now });
+  const r: NextStepHookResult = typeof hook === 'boolean' ? { hook, line: null } : hook;
+  const note: GoodbyeNote = { companionEnded: true, nextStepHook: r.hook === true };
+  if (note.nextStepHook && typeof r.line === 'string' && r.line) note.nextStepLine = r.line;
+  notes.set(key(characterId, surface), { note, at: now });
 }
 
 /** Read and forget the note for a session that just ended. */

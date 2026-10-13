@@ -32,6 +32,9 @@ export {
   NEXT_TIME_GOODBYE,
   NEXT_TIME_SPOKEN,
   NEXT_TIME_GREETING,
+  NEXT_TIME_FOR_PLAYER_FIELD,
+  nextTimeGreeting,
+  callGreetingNote,
   FIRST_CONTACT,
   // Render functions (interpolate runtime values into the prompt text).
   renderPersona,

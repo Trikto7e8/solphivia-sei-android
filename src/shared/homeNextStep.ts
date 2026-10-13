@@ -24,3 +24,23 @@ export interface HomeNextStep {
   /** Game id for surface 'game' (minecraft, stardew, dontstarve) or a backseat game id. */
   game: string | null;
 }
+
+/**
+ * 261014: a companion name as it reads inside the card's sentences ("Up next
+ * with Red", "Call Red"). A name typed all lowercase ("red") reads as an
+ * ordinary word there, so its first letter is raised. Display only: the
+ * stored name is untouched, and so is any name with a capital in it
+ * ("xXSuiXx", "DeepSeek") or no cased letters at all (CJK). The party tile
+ * shows the name on its own as a caption, where it is kept as typed. Main
+ * uses it too, so the player-end check writes the name the card shows
+ * (playerEndNextStep.ts).
+ */
+export function nameInSentence(name: string): string {
+  const n = String(name ?? '');
+  if (n !== n.toLowerCase() || n === n.toUpperCase()) return n;
+  const chars = Array.from(n);
+  const i = chars.findIndex((c) => c.toUpperCase() !== c);
+  if (i < 0) return n;
+  chars[i] = chars[i].toUpperCase();
+  return chars.join('');
+}

@@ -46,8 +46,9 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { LlmProvider } from './llm/types';
-import { normalizeNextStep, nextStepMemoryLine } from '../bot/brain/nextStep.js';
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
 import { PLAYER_END_NEXT_STEP_SYSTEM } from '../bot/brain/promptLibrary.js';
+import { nameInSentence } from '../shared/homeNextStep';
 
 export type NextStepSurface = 'game' | 'call' | 'backseat';
 
@@ -166,7 +167,8 @@ export function buildPlayerEndPrompt(p: {
   goals: string[];
   memories: string[];
 }): { system: string; user: string } {
-  const system = PLAYER_END_NEXT_STEP_SYSTEM.replace('{name}', p.name);
+  // {card_name}: the name as the Home card shows it ("red" reads "Red").
+  const system = PLAYER_END_NEXT_STEP_SYSTEM.split('{card_name}').join(nameInSentence(p.name)).split('{name}').join(p.name);
   const parts: string[] = [`Session: ${p.activity}, about ${formatMinutes(p.durationMs)}. The player ended it.`];
   const goals = p.goals.slice(-MAX_GOALS);
   parts.push(goals.length ? `Your goals when it ended:\n${goals.map((g) => `- ${g}`).join('\n')}` : 'Your goals when it ended: none.');
@@ -178,18 +180,13 @@ export function buildPlayerEndPrompt(p: {
   );
   const memories = p.memories.slice(-MAX_MEMORIES).map((m) => m.slice(0, MEMORY_CHARS));
   if (memories.length) parts.push(`Some of your recent memories:\n${memories.map((m) => `- ${m}`).join('\n')}`);
-  parts.push('Reply with the next step in a few words, or with none.');
+  parts.push('Reply with the two lines (note: and player:), or with none.');
   return { system, user: parts.join('\n\n') };
 }
 
-/**
- * The model's answer as a plan, or null for "none". Only the first line
- * counts; quotes, a leading "Plan for next time:" and a trailing period are
- * dropped. This parses a stored note, not speech.
- */
-export function parseNextStepReply(text: string): string | null {
-  const first = String(text ?? '').trim().split('\n')[0] ?? '';
-  let s = first
+/** One reply line as a plan note: quotes, a "Plan for next time:" lead and a trailing period dropped. */
+function cleanNote(raw: string): string | null {
+  let s = raw
     .trim()
     .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
     .replace(/^(plan for next time|next time|next step)\s*:\s*/i, '')
@@ -200,6 +197,69 @@ export function parseNextStepReply(text: string): string | null {
   if (/^(none|nothing|no|n\/a)(?![a-z])/i.test(s) && s.split(/\s+/).length <= 3) return null;
   if (/^(无|没有|なし|없음)$/.test(s)) return null;
   return normalizeNextStep(s);
+}
+
+const LABELED = /^\s*[*_-]*\s*(note|player)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$/i;
+/** A second label later on the same line ("note: x player: y"). */
+const INLINE_LABEL = /\s+(?=[*_]*\s*(?:note|player)\s*[*_]*\s*[:：])/i;
+
+export interface PlayerEndPlan {
+  /** The private note, saved to MEMORY.md as the plan. */
+  step: string;
+  /** The line written to the player for the Home strip; null when the model gave none. */
+  line: string | null;
+}
+
+/**
+ * 261014: the model's answer, `note: ...` + `player: ...` lines, as a plan
+ * and its player-facing line, or null for "none". A reply without labels (an
+ * older prompt, a model that ignored the format) is read the old way: its
+ * first line is the note and there is no player line. This parses stored
+ * notes, not speech.
+ */
+export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
+  const lines: string[] = [];
+  for (const raw of String(text ?? '').trim().split('\n')) {
+    // Both labels on one line: split it, so the note does not carry the player line.
+    const m = LABELED.exec(raw);
+    if (m) {
+      const at = m[2].search(INLINE_LABEL);
+      if (at > 0 && LABELED.exec(m[2].slice(at))?.[1].toLowerCase() !== m[1].toLowerCase()) {
+        lines.push(raw.slice(0, raw.length - m[2].length + at), m[2].slice(at).trim());
+        continue;
+      }
+    }
+    lines.push(raw);
+  }
+  let note: string | null = null;
+  let player: string | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const m = LABELED.exec(lines[i]);
+    if (!m) continue;
+    let value = m[2];
+    // A label with its text on the next line.
+    if (!value.trim()) {
+      const next = lines.slice(i + 1).find((l) => l.trim());
+      if (next !== undefined && !LABELED.test(next)) value = next;
+    }
+    // Markdown left around the value ("**note:** finish roof**").
+    value = value.replace(/^[\s*_]+|[\s*_]+$/g, '');
+    if (m[1].toLowerCase() === 'note' && note === null) note = value;
+    else if (m[1].toLowerCase() === 'player' && player === null) player = value;
+  }
+  if (note === null && player === null) {
+    const step = cleanNote(lines[0] ?? '');
+    return step ? { step, line: null } : null;
+  }
+  const step = cleanNote(note || player || '');
+  if (!step) return null;
+  const line = player !== null && cleanNote(player) ? normalizePlayerLine(player) : null;
+  return { step, line };
+}
+
+/** The plan note alone (see parsePlayerEndReply), or null for "none". */
+export function parseNextStepReply(text: string): string | null {
+  return parsePlayerEndReply(text)?.step ?? null;
 }
 
 // ── the check ─────────────────────────────────────────────────────────────
@@ -251,9 +311,10 @@ export interface PlayerEndDeps {
   save(characterId: string, line: string): Promise<boolean>;
   /**
    * 261013 (T119): record where a just-saved plan came from, for the Home
-   * "up next" card (homeNextStep.ts). Optional; best-effort.
+   * "up next" card (homeNextStep.ts). Optional; best-effort. 261014: plus
+   * the line written to the player for that card, when the model gave one.
    */
-  tagPlan?(characterId: string, surface: NextStepSurface, game: string | undefined): Promise<void>;
+  tagPlan?(characterId: string, surface: NextStepSurface, game: string | undefined, line?: string | null): Promise<void>;
   capture(event: string, props: Record<string, unknown>): void;
   /** The deadline for one call on this provider (providerTimeoutMs). */
   timeoutMs(provider: LlmProvider, ms: number): number;
@@ -342,17 +403,18 @@ export async function runPlayerEndNextStep(
             signal: ctrl.signal,
           });
           if (ctrl.signal.aborted) return 'cancelled';
-          const step = parseNextStepReply(res.text);
+          const plan = parsePlayerEndReply(res.text);
+          const step = plan?.step ?? null;
           const u = res.usage ?? {};
           deps.log(
-            `[sei/next-step] ${short} player-end check: ${step ? `plan (${step.length} chars)` : 'none'}, ` +
+            `[sei/next-step] ${short} player-end check: ${step ? `plan (${step.length} chars${plan?.line ? `, line ${plan.line.length}` : ', no line'})` : 'none'}, ` +
               `in ${u.input_tokens ?? 0} / out ${u.output_tokens ?? 0} tokens`,
           );
           if (!step) return 'none';
           const saved = await deps.save(characterId, nextStepMemoryLine(step));
           if (saved && deps.tagPlan) {
             try {
-              await deps.tagPlan(characterId, input.surface, input.game);
+              await deps.tagPlan(characterId, input.surface, input.game, plan?.line ?? null);
             } catch {
               /* the card falls back to the games picker */
             }
@@ -491,12 +553,14 @@ function defaultDeps(): PlayerEndDeps {
       }
       return written > 0;
     },
-    async tagPlan(characterId, surface, game) {
+    async tagPlan(characterId, surface, game, line) {
       const { scopedTurnCurrent, trackScopedWrite } = await import('./profile/scopeBarrier');
       if (!scopedTurnCurrent()) return;
       const { tagLatestPlan, noteHomeNextStepChanged } = await import('./homeNextStep');
+      const { readPlayerLineNames } = await import('./playerLineNames');
       const dir = memoryDirOf(characterId);
-      if (await trackScopedWrite(tagLatestPlan(dir, { surface, game }))) noteHomeNextStepChanged(characterId);
+      const names = await readPlayerLineNames(characterId);
+      if (await trackScopedWrite(tagLatestPlan(dir, { surface, game, line, names }))) noteHomeNextStepChanged(characterId);
     },
     capture(event, props) {
       void (async () => {

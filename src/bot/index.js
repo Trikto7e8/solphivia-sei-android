@@ -123,12 +123,17 @@ export async function start(config, hooks = {}) {
     // main-initiated stop would (drain, disconnect, exit → supervisor reaps).
     // 261008: `nextStepHook` = the quit carried a next_time hook (already
     // saved to MEMORY.md); it rides summon-stopped for bot_session_ended.
-    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true }) } catch {} },
+    // 261014: + `nextStepLine`, that plan written to the player (Home card).
+    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true, nextStepLine: info?.nextStepLine }) } catch {} },
     // Voice calls (260705) — the bot called end_call(): ask main to hang up
     // the player's call (the bot stays in the game). The farewell say() was
     // already routed up before this fires, and the renderer drains its TTS
     // queue before tearing the call down.
-    onCallEndRequested: (info) => emitLifecycle({ type: 'call-end', nextStepHook: info?.nextStepHook === true }),
+    onCallEndRequested: (info) => emitLifecycle({
+      type: 'call-end',
+      nextStepHook: info?.nextStepHook === true,
+      ...(typeof info?.nextStepLine === 'string' && info.nextStepLine ? { nextStepLine: info.nextStepLine } : {}),
+    }),
   })
 
   _runtime = await mod.createRuntime(config, {
@@ -473,6 +478,11 @@ async function bootstrapWithInit(initData) {
     // and the cold FIRST CONTACT greeting is skipped on the first tick (no race
     // with the post-spawn {type:'voice-call'} message). See orchestrator.js.
     voiceCallActive: initVoiceCallActive,   // boolean | undefined
+    // 261014: the saved plan still open for this session's first greeting
+    // (main's homeNextStep readPendingPlan, read before the session marks it
+    // used). Stashed as config._seiNextStepPlan for FIRST_CONTACT. null = none
+    // open; undefined (older main / CLI) = the greeting gets the soft hint.
+    nextStepPlan,         // string | null | undefined
     // 260909: web search settings bridged from UserConfig.web_search_* by
     // the supervisor: { provider, api_key } | undefined. Maps into config.web
     // below; absent (older main) -> keyless 'auto' chain.
@@ -688,6 +698,12 @@ async function bootstrapWithInit(initData) {
     config._seiKnowledge = typeof knowledge === 'string' ? knowledge : ''
   } catch {}
 
+  // 261014: the open plan for FIRST_CONTACT (see nextStepPlan above).
+  try {
+    config._seiNextStepPlan =
+      typeof nextStepPlan === 'string' && nextStepPlan.trim() ? nextStepPlan : nextStepPlan === null ? null : undefined
+  } catch {}
+
   // 260801: the supervisor's watchdog deadline, read by connect.js to size its
   // connect guard so a stalled join names its own cause. Stashed post-parse
   // like _seiKnowledge — ConfigSchema strips unknown keys.
@@ -855,7 +871,7 @@ async function emitVisionCapability() {
  *   lifecycle so main can tell a companion that quit() on its own from any
  *   other clean exit.
  */
-async function gracefulShutdown(reason = 'stop', { nextStepHook = false } = {}) {
+async function gracefulShutdown(reason = 'stop', { nextStepHook = false, nextStepLine = null } = {}) {
   // Re-entry guard. Both the bot's own onTerminalError and the supervisor's
   // {type:'stop'} can drive shutdown concurrently (the daily-limit / depleted
   // backstop in botSupervisor.ts now actively drains the session on the same
@@ -880,7 +896,12 @@ async function gracefulShutdown(reason = 'stop', { nextStepHook = false } = {}) 
       ])
     }
   } catch {}
-  emitLifecycle({ type: 'summon-stopped', reason, ...(nextStepHook ? { nextStepHook: true } : {}) })
+  emitLifecycle({
+    type: 'summon-stopped',
+    reason,
+    ...(nextStepHook ? { nextStepHook: true } : {}),
+    ...(nextStepHook && typeof nextStepLine === 'string' && nextStepLine ? { nextStepLine } : {}),
+  })
   // Give the lifecycle message a tick to flush before exiting
   setTimeout(() => process.exit(0), 100)
 }

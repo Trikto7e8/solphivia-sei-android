@@ -40,7 +40,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { HomeNextStep, HomeNextStepSurface } from '../shared/homeNextStep';
 import { GAME_IDS } from '../shared/gameIpc';
-import { nextStepMemoryLine } from '../bot/brain/nextStep.js';
+import { acceptPlayerLine, nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
 import { atomicWrite } from '../bot/brain/storage/atomicWrite.js';
 import { withFileLock } from '../bot/brain/storage/fileLock.js';
 import { goalsFileFor } from './playerEndNextStep';
@@ -65,6 +65,12 @@ export interface NextStepTag {
   at: string;
   surface: HomeNextStepSurface;
   game?: string;
+  /**
+   * 261014: the plan written to the player, shown on the card in place of
+   * the companion's own note. Absent on tags written before it existed and
+   * when the model gave none; the card then shows the note.
+   */
+  line?: string;
 }
 
 export interface NextStepLedger {
@@ -169,17 +175,30 @@ export interface PickInput {
   now: number;
 }
 
+/**
+ * The newest plan when it is still open: under NEXT_STEP_MAX_AGE_MS old and
+ * not yet seen by a later greeting. Older plans never count (see top).
+ */
+export function openPlan(p: { memory: string; ledger: NextStepLedger; now: number }): StampedEntry | null {
+  const plan = newest(planEntries(p.memory));
+  if (!plan || p.now - plan.at > NEXT_STEP_MAX_AGE_MS) return null;
+  const consumedAt = p.ledger.consumedAt ? Date.parse(p.ledger.consumedAt) : NaN;
+  if (Number.isFinite(consumedAt) && plan.at <= consumedAt) return null;
+  return plan;
+}
+
 /** The card for one character, or null when there is nothing to show. */
 export function pickNextStep(p: PickInput): HomeNextStep | null {
   const fresh = (at: number) => p.now - at <= NEXT_STEP_MAX_AGE_MS;
-  const plan = newest(planEntries(p.memory));
-  const consumedAt = p.ledger.consumedAt ? Date.parse(p.ledger.consumedAt) : NaN;
-  if (plan && fresh(plan.at) && !(Number.isFinite(consumedAt) && plan.at <= consumedAt)) {
-    const text = planDisplayText(plan.text);
+  const plan = openPlan(p);
+  if (plan) {
+    const key = planKey(plan.text);
+    let tag: NextStepTag | undefined;
+    for (const t of p.ledger.tags) if (t.key === key) tag = t; // newest tag wins
+    // 261014: the line written to the player when there is one, else the
+    // companion's note as before.
+    const text = (tag?.line && normalizePlayerLine(tag.line)) || planDisplayText(plan.text);
     if (text) {
-      const key = planKey(plan.text);
-      let tag: NextStepTag | undefined;
-      for (const t of p.ledger.tags) if (t.key === key) tag = t; // newest tag wins
       return {
         characterId: p.characterId,
         source: 'plan',
@@ -219,6 +238,8 @@ export function parseLedger(raw: string | null): NextStepLedger {
             (t.surface === 'game' || t.surface === 'call' || t.surface === 'backseat') &&
             (t.game === undefined || typeof t.game === 'string'),
         )
+          // 261014: a non-string line is dropped, the tag kept.
+          .map((t) => (t.line === undefined || typeof t.line === 'string' ? t : { ...t, line: undefined }))
       : [];
     const out: NextStepLedger = { v: 1, tags };
     if (typeof j.consumedAt === 'string' && Number.isFinite(Date.parse(j.consumedAt))) out.consumedAt = j.consumedAt;
@@ -268,13 +289,36 @@ export async function readHomeNextStep(memoryDir: string, characterId: string, n
 }
 
 /**
+ * The plan a greeting starting now should raise (openPlan), as its note
+ * text, or null. Read BEFORE consumeNextStep marks it used: main ships it in
+ * the bot's init (FIRST_CONTACT) and the call greeting note. Never throws.
+ */
+export async function readPendingPlan(memoryDir: string, now = Date.now()): Promise<string | null> {
+  try {
+    const [memory, ledger] = await Promise.all([readOrEmpty(path.join(memoryDir, 'MEMORY.md')), readLedger(memoryDir)]);
+    return openPlan({ memory, ledger, now })?.text ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Record where the newest plan came from. Call right after a plan was
  * written (it must be at most TAG_WINDOW_MS old). Returns whether a tag was
- * written. Never throws.
+ * written. Never throws. 261014: `line` is the plan written to the player,
+ * shown on the card instead of the note (normalized here; empty = none). A
+ * line that reads as the companion's own note (playerLineProblem) is not
+ * stored, so the card shows the note as before.
  */
 export async function tagLatestPlan(
   memoryDir: string,
-  source: { surface: HomeNextStepSurface; game?: string | null },
+  source: {
+    surface: HomeNextStepSurface;
+    game?: string | null;
+    line?: string | null;
+    /** Checked against (nextStep.js playerLineProblem); a line that fails is not stored. */
+    names?: { character?: string | null; players?: string[] };
+  },
   now = Date.now(),
 ): Promise<boolean> {
   try {
@@ -286,6 +330,8 @@ export async function tagLatestPlan(
       surface: source.surface,
       ...(source.game ? { game: source.game } : {}),
     };
+    const line = acceptPlayerLine(source.line ?? null, source.names ?? {});
+    if (line) tag.line = line;
     return await updateLedger(memoryDir, (l) => {
       l.tags = [...l.tags.filter((t) => t.key !== tag.key), tag].slice(-MAX_TAGS);
       return true;

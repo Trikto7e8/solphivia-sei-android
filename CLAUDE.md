@@ -2932,6 +2932,51 @@ card per app session) and `home_next_step_clicked`, both `{character_id,
 source: plan|goal, age_hours, surface: game|call|backseat|unknown, game?}`.
 Verify with `?dashshot=home&step=plan|call|untagged|goal|long|none`.
 
+**Strip text addressed to the player, and greetings that raise the plan
+(261014).** The saved plan is the companion's private note ("ask Alex what
+the vet says about Pepper's leg on Thursday"); shown verbatim on the strip it
+talked about the player in the third person and kept stale days
+("tomorrow"). So every plan writer also produces a short line written TO the
+player ("Tell Roger what the vet said about Pepper"): the player-end check
+answers two labeled lines, `note:` and `player:` (`PLAYER_END_NEXT_STEP_SYSTEM`,
+parsed by `parsePlayerEndReply`; an unlabeled reply still reads as the note
+alone), and every goodbye tool has an optional `next_time_for_player` field
+(`NEXT_TIME_FOR_PLAYER_FIELD`). The line never goes into MEMORY.md (the model
+would read it as a second plan): it rides to main (bot: `nextStepLine` on
+`summon-stopped` / `call-end`; chat: `honorNextStep`'s result) through the
+goodbye note in `sessionGoodbye.ts` (never analytics) and is stored as `line`
+on the plan's tag in `NEXT_STEP.json`. `nextStep.js normalizePlayerLine`
+cleans it (drops tomorrow/tonight anywhere and next time/later/today at the
+edges, cuts past 60 chars at a clause break, hard cap 90 with an ellipsis;
+idempotent, since main runs it again, and a possessive like "tonight's
+stream" is left alone). Before storing, `tagLatestPlan` checks it with
+`acceptPlayerLine` / `playerLineProblem` against the companion and player
+names (`playerLineNames.ts`): a line that opens like a note to self ("ask
+how...", "remember to...", "find out..." not followed by the companion's
+name), names the player in the third person, or uses I/me/we is dropped.
+The card shows the tag's line, else the note as before (old plans, a goodbye
+that left the field out, a dropped line). The player-end prompt names the companion with
+`nameInSentence` (`src/shared/homeNextStep.ts`), which the card also uses for
+"Up next with Red" / "Call Red": an all-lowercase name gets its first letter
+raised in those sentences only (the party tile caption keeps it as typed).
+Greetings: main reads the OPEN plan (`readPendingPlan`: newest, under 7 days,
+unconsumed) before marking it used and hands it over, as init `nextStepPlan`
+-> `config._seiNextStepPlan` -> `FIRST_CONTACT({ plan })` for a game, and as
+`sendVoiceGreetingTurn(id, peers, { plan })` -> `callGreetingNote` for a
+call. With a plan, `nextTimeGreeting(plan)` quotes it and asks for it to be
+the main thing the greeting is about (the "only a hint" escape is left out);
+`null` means none open and drops the hint entirely, so an old raised plan
+still in MEMORY.md is not raised again; `undefined` (CLI, or the supervisor's 1s
+plan read timing out) keeps the old soft hint. Two wording traps found live: the cue must not say "the last thing
+said" (the call primer's `(silence)` rule keys on it), and must not call the
+plan a "note" (collides with the call's "Do not mention this note"); both
+made calls answer with `(silence)`. The call greeting now also says it is
+never `(silence)`. Probe: `npx tsx scripts/next-step-examples.ts` (10 scripted
+sessions, plan reps + greetings, `--greet-only <results.json> --greet-reps 4`)
+and `scripts/next-step-examples-strips.ts` (renders the strips via
+`?dashshot=home&name=&text=&surface=`). 261014 run: greetings raised the plan
+36 of 36 (was 26 of 36; Marv 0 of 4 and Roger 1 of 4 before).
+
 **Sessions an app quit ended get the check on the next launch (261013,
 T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call
 live) has no time for an LLM call, so it never ran the player-end check

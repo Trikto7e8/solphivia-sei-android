@@ -47,7 +47,8 @@ import {
   takeSessionDigest,
   yieldToNewSession,
 } from './playerEndNextStep';
-import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, tagLatestPlan } from './homeNextStep';
+import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, readPendingPlan, tagLatestPlan } from './homeNextStep';
+import { readPlayerLineNames } from './playerLineNames';
 import {
   LAUNCH_DELAY_MS,
   bindQuitNextStepRuntime,
@@ -443,7 +444,14 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // 261013 (T119): the companion's goodbye left a plan, so record that it came
   // from this game for the Home "up next" card (homeNextStep.ts).
   if (goodbye.nextStepHook) {
-    updateHomeNextStep(id, (dir) => tagLatestPlan(dir, { surface: 'game', game: started.game }));
+    updateHomeNextStep(id, async (dir) =>
+      tagLatestPlan(dir, {
+        surface: 'game',
+        game: started.game,
+        line: goodbye.nextStepLine ?? null,
+        names: await readPlayerLineNames(id),
+      }),
+    );
   }
   // One event name across games (the analytics dashboard sums playtime by
   // event name, keyed on `duration_ms`); `game` is the split.
@@ -1342,7 +1350,11 @@ async function bootstrap(): Promise<void> {
         ...callEndHookProps(goodbye),
       });
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
-      if (goodbye.nextStepHook) updateHomeNextStep(id, (dir) => tagLatestPlan(dir, { surface: 'call' }));
+      if (goodbye.nextStepHook) {
+        updateHomeNextStep(id, async (dir) =>
+          tagLatestPlan(dir, { surface: 'call', line: goodbye.nextStepLine ?? null, names: await readPlayerLineNames(id) }),
+        );
+      }
       // 261011: the player hung up (no companion goodbye), outside a game.
       if (!goodbye.companionEnded && !onlineIds.has(id)) void startCallNextStep(id, connectedMs);
     },
@@ -1354,17 +1366,34 @@ async function bootstrap(): Promise<void> {
       noteSurface('voice'); // 261005: app_quit.last_surface
       yieldToNewSession(id);
       noteNewSessionForQuit(id); // 261013 (T120)
-      // 261013 (T119): the call greeting is told about the saved plan, so the
-      // Home card stops offering it.
-      updateHomeNextStep(id, (dir) => consumeNextStep(dir));
       // A solo in-game session greets over the port (say() routes to the call).
       // On a group call we always run the standalone greeting turn so the joiner
       // can name the room — the in-game greet path has no group framing.
-      if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) return;
+      if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) {
+        // 261013 (T119): a new session, so the Home card stops offering the
+        // plan (the game's own first greeting was already told about it).
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir));
+        return;
+      }
       void (async () => {
+        // 261014: the plan this greeting should raise, read BEFORE it is
+        // marked used (consumeNextStep), so the two cannot race. A group
+        // joiner only announces itself, so it gets none.
+        let plan: string | null = null;
+        if (peers.length === 0) {
+          try {
+            const { paths } = await import('./paths');
+            plan = await readPendingPlan(paths.memoryDir(id));
+          } catch {
+            plan = null;
+          }
+        }
+        // 261013 (T119): the call greeting is told about the saved plan, so the
+        // Home card stops offering it.
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir));
         try {
           const { sendVoiceGreetingTurn } = await import('./chat/chatService');
-          const replies = await sendVoiceGreetingTurn(id, peers);
+          const replies = await sendVoiceGreetingTurn(id, peers, { plan });
           // The greeting is spoken, so each line carries its place in the reply
           // for TTS conditioning (260729): first line no `prev`, last no `more`.
           replies.forEach((r, i) =>

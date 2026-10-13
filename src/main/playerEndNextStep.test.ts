@@ -9,6 +9,7 @@ import {
   isPlayerEndedGame,
   noteSessionDigest,
   parseNextStepReply,
+  parsePlayerEndReply,
   runPlayerEndNextStep,
   startPlayerEndNextStep,
   takeSessionDigest,
@@ -302,6 +303,73 @@ describe('never a wall, never a block', () => {
     const { d, saved } = deps({ tagPlan: async () => Promise.reject(new Error('disk')) });
     expect(await runPlayerEndNextStep(input(), d)).toBe('saved');
     expect(saved).toHaveLength(1);
+  });
+});
+
+describe('two-line reply parsing (261014)', () => {
+  it('reads the note and the player line', () => {
+    expect(parsePlayerEndReply("note: ask Alex what the vet says about Pepper's leg on Thursday\nplayer: Tell Roger what the vet said about Pepper")).toEqual({
+      step: "ask Alex what the vet says about Pepper's leg on Thursday",
+      line: 'Tell Roger what the vet said about Pepper',
+    });
+    expect(parsePlayerEndReply('**Note:** finish the roof.\n**Player:** "finish the cabin roof tomorrow"')).toEqual({
+      step: 'finish the roof',
+      line: 'Finish the cabin roof',
+    });
+  });
+
+  it('none, an unlabeled reply, and a missing player line', () => {
+    expect(parsePlayerEndReply('none')).toBeNull();
+    expect(parsePlayerEndReply('note: none\nplayer: none')).toBeNull();
+    expect(parsePlayerEndReply('finish the roof')).toEqual({ step: 'finish the roof', line: null });
+    expect(parsePlayerEndReply('note: finish the roof')).toEqual({ step: 'finish the roof', line: null });
+    expect(parsePlayerEndReply('player: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' });
+    expect(parseNextStepReply('note: finish the roof\nplayer: Finish the roof')).toBe('finish the roof');
+  });
+
+  it('a label with its text on the next line (review 261014)', () => {
+    expect(parsePlayerEndReply('note:\nfinish the roof\nplayer:\nFinish the roof with Sui')).toEqual({
+      step: 'finish the roof',
+      line: 'Finish the roof with Sui',
+    });
+    // An empty label followed by the other label is not given that label's text.
+    expect(parsePlayerEndReply('note:\nplayer: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' });
+  });
+
+  it('strips markdown left after the value', () => {
+    expect(parsePlayerEndReply('**note:** finish roof**\n**player:** Finish the roof**')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof',
+    });
+  });
+
+  it('splits both labels written on one line', () => {
+    expect(parsePlayerEndReply('note: finish roof player: Finish the roof with Sui')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof with Sui',
+    });
+    expect(parsePlayerEndReply('**note:** finish roof **player:** Finish the roof')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof',
+    });
+  });
+
+  it('the system text names the companion as the card shows it', () => {
+    const { system } = buildPlayerEndPrompt({ name: 'red', activity: 'playing Minecraft together', durationMs: 600_000, lines: [], goals: [], memories: [] });
+    expect(system).toContain('You are red,');
+    expect(system).toContain('"Up next with Red"');
+    expect(system).not.toContain('{name}');
+    expect(system).not.toContain('{card_name}');
+  });
+
+  it('passes the player line to the tag', async () => {
+    const tags: Array<[string, string, string | undefined, string | null | undefined]> = [];
+    const tagPlan = async (id: string, surface: string, game: string | undefined, line?: string | null) => {
+      tags.push([id, surface, game, line]);
+    };
+    const reply = 'note: ask how the move went\nplayer: Tell Lyra how the move went';
+    expect(await runPlayerEndNextStep(input({ characterId: 'char-9' }), deps({ tagPlan }, provider(reply)).d)).toBe('saved');
+    expect(tags).toEqual([['char-9', 'game', 'minecraft', 'Tell Lyra how the move went']]);
   });
 });
 

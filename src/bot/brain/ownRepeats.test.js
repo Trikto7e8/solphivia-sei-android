@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { groupTurns, repeatedOwnTerms, ownRepeatsNote } from './ownRepeats.js'
+import { groupTurns, repeatedOwnTerms, ownRepeatsNote, recentOwnTurns, repeatedOwnPhrases, repeatedOpener } from './ownRepeats.js'
 
 // One say() line is recorded as several chat messages within a few ms; turns
 // are seconds apart.
@@ -133,5 +133,83 @@ describe('ownRepeatsNote', () => {
     expect(ownRepeatsNote(session(['hey', 'zombie!', 'got the logs']))).toBeNull()
     expect(ownRepeatsNote([])).toBeNull()
     expect(ownRepeatsNote(undefined)).toBeNull()
+  })
+})
+
+// 261013: line-level repeats. session() starts at 1_000_000 with turns 5 s
+// apart, so "now" just after the last turn keeps every line fresh.
+const nowAfter = (n, start = 1_000_000) => start + n * 5000 + 1000
+
+describe('recentOwnTurns', () => {
+  it('returns her last two turns while they are fresh', () => {
+    const lines = session(['one', ['two', 'still two'], 'three'])
+    expect(recentOwnTurns(lines, { now: nowAfter(3) }).map((t) => t.text)).toEqual(['two still two', 'three'])
+    expect(recentOwnTurns(lines, { now: nowAfter(3) + 10 * 60_000 })).toEqual([])
+  })
+})
+
+describe('repeatedOwnPhrases', () => {
+  const opts = (n, extra = {}) => ({ now: nowAfter(n), ...extra })
+
+  it('names a bit she has used twice, once, in its longest form', () => {
+    const lines = session([
+      "ok stopping, you're the boss of the wood pile now",
+      'trees are over there',
+      "ok fine, you're the boss of the wood pile",
+    ])
+    const hits = repeatedOwnPhrases(lines, [], opts(3))
+    expect(hits.map((h) => h.phrase)).toEqual(['boss of the wood pile'])
+    expect(hits[0].count).toBe(2)
+  })
+
+  it('leaves out the task she is on', () => {
+    const lines = session(['need stone, pickaxe next', 'mining stone now, need stone', 'pickaxe next, then stone'])
+    expect(repeatedOwnPhrases(lines, [], opts(3, { context: ['stone_pickaxe×1, cobblestone×3'] }))).toEqual([])
+  })
+
+  it('leaves out names and what the player also said', () => {
+    const named = session(['nice one alex smith', 'good job alex smith'])
+    expect(repeatedOwnPhrases(named, [], opts(2, { names: ['Alex Smith'] }))).toEqual([])
+    const echoed = session(['you owe me a snack', 'fine, you owe me a snack'])
+    expect(repeatedOwnPhrases(echoed, [{ who: 'Alex', text: 'i owe you a snack? you owe me a snack' }], opts(2))).toEqual([])
+    expect(repeatedOwnPhrases(echoed, [], opts(2)).map((h) => h.phrase)).toEqual(['owe me a snack'])
+  })
+
+  it('ignores old turns', () => {
+    const lines = session(['you owe me a snack', 'fine, you owe me a snack'])
+    expect(repeatedOwnPhrases(lines, [], opts(2, { now: nowAfter(2) + 10 * 60_000 }))).toEqual([])
+  })
+})
+
+describe('repeatedOpener', () => {
+  it('finds an opener she keeps using, never a plain word or a name', () => {
+    expect(repeatedOpener(session(['ok stopping', 'ok fine', 'wood next']), { now: nowAfter(3) })).toBe('ok')
+    expect(repeatedOpener(session(["i'm here", "i'm going", 'i got it']), { now: nowAfter(3) })).toBeNull()
+    expect(repeatedOpener(session(['alex look', 'alex wait']), { now: nowAfter(2), names: ['Alex'] })).toBeNull()
+  })
+})
+
+describe('ownRepeatsNote, line level', () => {
+  it('quotes her last lines, names the bit and the opener, in plain text', () => {
+    const lines = session([
+      "ok stopping, you're the boss of the wood pile now",
+      'ok so trees are over there',
+    ])
+    const note = ownRepeatsNote(lines, [], { now: nowAfter(2) })
+    expect(note).toContain(`"ok stopping, you're the boss of the wood pile now" and then "ok so trees are over there"`)
+    expect(note).toContain('keep starting with "ok"')
+    expect(note).not.toMatch(/[—–]/)
+    const again = session([...["ok stopping, you're the boss of the wood pile now", 'trees are over there'], "fine, you're the boss of the wood pile"])
+    expect(ownRepeatsNote(again, [], { now: nowAfter(3) })).toContain('"boss of the wood pile" more than once')
+  })
+
+  it('does not name a tic phrase twice', () => {
+    const roger = session(['ok big brother!', 'the cow ran, big brother', 'big brother, the water is cold'])
+    const note = ownRepeatsNote(roger, [], { now: nowAfter(3) })
+    expect(note.match(/"big brother"/g)).toHaveLength(1)
+  })
+
+  it('is null when her lines are old and nothing repeats', () => {
+    expect(ownRepeatsNote(session(['hey', 'zombie!']), [], { now: nowAfter(2) + 10 * 60_000 })).toBeNull()
   })
 })

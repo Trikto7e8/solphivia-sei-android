@@ -1078,6 +1078,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // main reads for the player-end "next time" check (sessionDigest.js).
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
   // 261012: the note naming a word her recent lines keep repeating, or null.
+  // 261013: it also quotes her last line or two and names a phrase or opener
+  // her recent lines share (ownRepeats.js), and rides silent check-ins too.
   // Never throws: a bad line in the ring must not cost the turn.
   // The words it must never name: names are how she addresses someone, and
   // a word from the snapshot or the goals is an item or the job at hand
@@ -4148,7 +4150,7 @@ function maybeWarnByteCap(loop, warned) {
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
           waitingAsk: tickWaitingAsk,
-        }))
+        })) + ownRepeatsTail()
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps
     // the loop alive on a text-only response. A carried player message is

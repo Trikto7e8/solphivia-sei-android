@@ -316,7 +316,7 @@ function linesNote(selfLines, playerLines, opts = {}) {
     : ''
   const open = opener ? ` Your recent lines keep starting with "${opener}", so start this one another way.` : ''
   return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}. ` +
-    'Do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; give a new thought, or keep it short.' +
+    'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.' +
     bits + open +
     ' If something has to come up again, like a count or the plan, say it in new words.'
 }

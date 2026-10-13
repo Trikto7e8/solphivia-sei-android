@@ -1079,22 +1079,37 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
   // 261012: the note naming a word her recent lines keep repeating, or null.
   // 261013: it also quotes her last line or two and names a phrase or opener
-  // her recent lines share (ownRepeats.js), and rides silent check-ins too.
+  // her recent lines share (ownRepeats.js), and rides silent check-ins too,
+  // in a lighter form on turns where the player did not just speak.
   // Never throws: a bad line in the ring must not cost the turn.
   // The words it must never name: names are how she addresses someone, and
   // a word from the snapshot or the goals is an item or the job at hand
   // ("stone", "pickaxe"), which a status line needs. The last snapshot and
   // goals are cached as they are read, so the sync interrupt path has them.
   const _repeatsContext = { snapshot: '', goals: '', frontier: '' }
-  function ownRepeatsText() {
+  // 261013: the game's item, block and mob names (optional adapter member),
+  // read once, so a phrase like "oak trees" or "iron ingots" is the job even
+  // when it is not in the snapshot.
+  let _gameVocab
+  const gameVocab = () => {
+    if (_gameVocab === undefined) {
+      try { _gameVocab = typeof adapter?.gameVocabulary === 'function' ? (adapter.gameVocabulary() ?? null) : null } catch { _gameVocab = null }
+    }
+    return _gameVocab
+  }
+  // `mode` is the kind of turn (ownRepeats.js REUSE_ASK): 'reply' when the
+  // player just spoke, 'idle' for a turn of her own, 'checkin' mid-action.
+  function ownRepeatsText(mode = 'reply') {
     try {
       const { selfLines, playerLines } = convoMemory.recentChat._internal
       const names = [config?.player_display_name, config?.player_username, ...companions]
       const { snapshot, goals, frontier } = _repeatsContext
-      return ownRepeatsNote(selfLines, playerLines, { names, context: [snapshot, goals, frontier] })
+      return ownRepeatsNote(selfLines, playerLines, {
+        mode, names, context: [snapshot, goals, frontier], vocab: gameVocab(), signature: config?.persona?.expanded,
+      })
     } catch { return null }
   }
-  const ownRepeatsTail = () => { const t = ownRepeatsText(); return t ? `\n\n${t}` : '' }
+  const ownRepeatsTail = (mode) => { const t = ownRepeatsText(mode); return t ? `\n\n${t}` : '' }
   // 261012: the first-spawn greeting and the player's own first "hey" cross
   // in flight. Her greeting is decided on the first idle tick but reaches
   // chat a few seconds later (paced typing), the player types hello in that
@@ -2246,7 +2261,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       peers: companions,
       fromTeammate: teammate === true,
       ownAction,
-    })) + crossedTail + (humanLine ? ownRepeatsTail() : '')
+    })) + crossedTail + (humanLine ? ownRepeatsTail('reply') : '')
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -2939,7 +2954,7 @@ function maybeWarnByteCap(loop, warned) {
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
-          ownRepeatsText: ownRepeatsText(),
+          ownRepeatsText: ownRepeatsText(playerMessageText ? 'reply' : 'idle'),
           playerMessageText,
           companions,
           frontierText: progFrontierText,
@@ -4150,7 +4165,7 @@ function maybeWarnByteCap(loop, warned) {
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
           waitingAsk: tickWaitingAsk,
-        })) + ownRepeatsTail()
+        })) + ownRepeatsTail('checkin')
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps
     // the loop alive on a text-only response. A carried player message is

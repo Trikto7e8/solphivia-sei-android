@@ -213,3 +213,109 @@ describe('ownRepeatsNote, line level', () => {
     expect(ownRepeatsNote(session(['hey', 'zombie!']), [], { now: nowAfter(2) + 10 * 60_000 })).toBeNull()
   })
 })
+
+// 261013 (pass6a review): the note on turns where the player did not speak,
+// item words, openers.
+describe('ownRepeatsNote, by kind of turn', () => {
+  const lines = session([
+    "hey alex, want to grab wood with me?",
+    "i'll get the oak trees, can you keep an eye on me?",
+  ])
+  const now = nowAfter(2)
+  const QUOTE = `Your last lines to them were "hey alex, want to grab wood with me?" and then "i'll get the oak trees, can you keep an eye on me?". They already heard these.`
+
+  it('keeps the full reply-turn wording, byte for byte', () => {
+    const reply = `${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less. If something has to come up again, like a count or the plan, say it in new words.`
+    expect(ownRepeatsNote(lines, [], { now, names: ['Alex'] })).toBe(reply)
+    expect(ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'reply' })).toBe(reply)
+  })
+
+  it('on an idle turn keeps the quote and the joke ask, without offers, plans or saying less', () => {
+    const note = ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'idle' })
+    expect(note).toBe(`${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback or greeting from your recent lines in this one. If something has to come up again, like a count or the plan, say it in new words.`)
+    expect(note).not.toMatch(/offer|say less/)
+  })
+
+  it('on a check-in is a short form: the quote and a new line if any', () => {
+    const note = ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'checkin' })
+    expect(note).toBe(`Your last lines to them were "hey alex, want to grab wood with me?" and then "i'll get the oak trees, can you keep an eye on me?". They already heard these, so if you say something this tick, make it new.`)
+    expect(note).not.toMatch(/offer|say less|plan/)
+  })
+
+  it('still names a repeated bit on idle and check-in turns', () => {
+    const bit = session(["ok fine, you're the boss of the wood pile", "sure thing, boss of the wood pile"])
+    for (const mode of ['idle', 'checkin']) {
+      expect(ownRepeatsNote(bit, [], { now: nowAfter(2), mode })).toContain('"boss of the wood pile" more than once')
+    }
+  })
+
+  it('has no dashes in any form', () => {
+    for (const mode of ['reply', 'idle', 'checkin']) expect(ownRepeatsNote(lines, [], { now, mode })).not.toMatch(/[—–]/)
+  })
+})
+
+describe('repeatedOwnPhrases, item vocabulary', () => {
+  // What the Minecraft adapter hands over (gameVocabulary): item, block and
+  // mob names. A few real ones are enough for the probes.
+  const VOCAB = ['oak_log', 'oak_planks', 'crafting_table', 'iron_ingot', 'raw_iron', 'iron_ore', 'zombie', 'tree']
+  const opts = (n, extra = {}) => ({ now: nowAfter(n), vocab: VOCAB, ...extra })
+
+  it('does not name the oak trees she is heading to', () => {
+    const lines = session(['heading to the oak trees', 'ok heading to the oak trees now'])
+    expect(repeatedOwnPhrases(lines, [], opts(2))).toEqual([])
+    // Without the game words "oak" and "trees" read as her own wording.
+    expect(repeatedOwnPhrases(lines, [], { now: nowAfter(2) }).map((h) => h.phrase)).toEqual(['heading to the oak trees'])
+  })
+
+  it('does not name a crafting table she does not have yet', () => {
+    const lines = session(['need a crafting table first', 'still need a crafting table'])
+    expect(repeatedOwnPhrases(lines, [], opts(2, { context: ['inventory (1/36 slots): oak_log×3'] }))).toEqual([])
+  })
+
+  it('does not name iron ingots when the bag holds raw iron', () => {
+    const lines = session(['need iron ingots for the pick', 'smelting, need iron ingots'])
+    const context = ['inventory (2/36 slots): raw_iron×3, cobblestone×12']
+    expect(repeatedOwnPhrases(lines, [], opts(2, { context }))).toEqual([])
+  })
+
+  it('still names a bit that mentions an item', () => {
+    const wood = session(["ok fine, you're the boss of the wood pile", 'boss of the wood pile reporting in'])
+    expect(repeatedOwnPhrases(wood, [], opts(2, { vocab: [...VOCAB, 'wood'] })).map((h) => h.phrase)).toEqual(['boss of the wood pile'])
+    const snack = session(['you owe me a snack', 'fine, you owe me a snack'])
+    expect(repeatedOwnPhrases(snack, [], opts(2)).map((h) => h.phrase)).toEqual(['owe me a snack'])
+  })
+})
+
+describe('repeatedOpener, context and signatures', () => {
+  it('never names an item word from the snapshot, possessive included', () => {
+    const lines = session(["table's down, crafting now", "table's ready", "table's placed by the door"])
+    expect(repeatedOpener(lines, { now: nowAfter(3) })).toBe("table's")
+    expect(repeatedOpener(lines, { now: nowAfter(3), context: ['inventory: crafting_table×1'] })).toBeNull()
+    expect(repeatedOpener(lines, { now: nowAfter(3), vocab: ['crafting_table'] })).toBeNull()
+  })
+
+  it('never names a name in its possessive form', () => {
+    const lines = session(["alex's house is so cute", "alex's base needs a door"])
+    expect(repeatedOpener(lines, { now: nowAfter(2), names: ['Alex'] })).toBeNull()
+  })
+
+  it('leaves a signature stutter to the tic note until 3 of 4 turns', () => {
+    const card = 'Examples:\n"W-wait... wasn\'t that symbol on the door earlier?"'
+    const two = session(['w-wait, a zombie!', 'w-wait for me', 'i got the logs'])
+    expect(repeatedOpener(two, { now: nowAfter(3), signature: card })).toBeNull()
+    // A stutter shape is a signature even when the card does not show it.
+    expect(repeatedOpener(two, { now: nowAfter(3) })).toBeNull()
+    const three = session(['w-wait, a zombie!', 'w-wait for me', 'w-wait, is that iron?'])
+    expect(repeatedOpener(three, { now: nowAfter(3), signature: card })).toBe('w-wait')
+    // Not when the tic note already names it.
+    expect(repeatedOpener(three, { now: nowAfter(3), signature: card, skipTerms: ['w-wait'] })).toBeNull()
+    // A plain opener habit still counts at 2 of 3.
+    expect(repeatedOpener(session(['ok stopping', 'ok fine', 'wood next']), { now: nowAfter(3), signature: card })).toBe('ok')
+  })
+
+  it('reaches the note through ownRepeatsNote context', () => {
+    const lines = session(["table's down", "table's ready"])
+    expect(ownRepeatsNote(lines, [], { now: nowAfter(2) })).toContain('keep starting with')
+    expect(ownRepeatsNote(lines, [], { now: nowAfter(2), context: ['crafting_table×1'] })).not.toContain('keep starting with')
+  })
+})

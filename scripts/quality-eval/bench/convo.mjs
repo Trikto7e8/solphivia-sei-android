@@ -69,6 +69,30 @@ export const CONVO = [
       { say: 'i gotta go soon, bye', needs: 'reply' },
     ],
   },
+  // 261013 (pass 6b): errands the player hands her while she has a project of
+  // her own: a grab-then-bring-back, chatter that lands mid-errand, a count
+  // order, then calling the count off for a meet-up. Scored like the others
+  // per line; whether she recorded each errand (setGoal) is counted from
+  // companion.raw.log.
+  {
+    id: 'errands',
+    title: 'Errands (fetch and bring back, a count order, called off for a meet-up)',
+    world: [...tree(186, 6), ...tree(190, -6), ...tree(194, 2), ...tree(198, -8), `fill 198 ${Y} 10 199 ${Y + 1} 11 coal_ore`],
+    start: (c) => [tp(c.bot, S, { x: 198, y: Y, z: 10 }), tp(c.playerName, P, S), `give ${c.bot} stone_pickaxe`],
+    lines: [
+      { say: 'hey', needs: 'reply' },
+      { say: 'can u grab me some coal from that ore over there and bring it back here? i need torches', needs: 'order', wait: 9000 },
+      { say: 'btw do u like caves or nah', needs: 'reply' },
+      { say: 'lol ok', needs: 'none', wait: 15000 },
+      { say: 'hows it going', needs: 'reply' },
+      { say: 'cool', needs: 'none', wait: 10000 },
+      { say: 'get me like 8 logs, i wanna build a dock', needs: 'order', wait: 10000 },
+      { say: 'whats ur favorite block', needs: 'reply' },
+      { say: 'ok', needs: 'none', wait: 15000 },
+      { say: 'actually forget the logs, just meet me over here', needs: 'order', walkBefore: { x: 156, y: Y, z: -10 }, max: 25000 },
+      { say: 'thanks', needs: 'none', wait: 8000 },
+    ],
+  },
 ]
 
 export const QUICK_CONVO = ['work_session']

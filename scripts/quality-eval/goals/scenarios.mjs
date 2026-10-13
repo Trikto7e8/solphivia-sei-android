@@ -20,6 +20,23 @@
 //             shows is met; a quiet idle tick. Cleared, and not resumed?
 //   oneshot   greet, then a one-step request. No goal recorded for it?
 //
+// 261013 (pass 6b): player tasks given while she already runs a goal of her
+// own (the live shape: she sets a progression goal at the greeting, then the
+// player hands her short orders). Scored by score.mjs `ptask`:
+//   fetch     "grab X then come back": recorded with its come-back part, and
+//             after the X part finishes her next world action goes back to
+//             the player instead of her own goal.
+//   count     "get me N of X": the first gather comes up short; does she keep
+//             going to N instead of switching to her own goal?
+//   meet      "do X, then meet me at <place>": does she go there after X?
+//   interrupt fetch, but an unrelated chat line lands before X finishes;
+//             does she still come back afterwards?
+//   cancel    fetch, then the player calls it off. Task goal gone, her own
+//             goal kept, no more X?
+//   swap      fetch, then the player asks for something else instead. Old
+//             task gone, new one taken on?
+// Minecraft has all six; Stardew and DST have fetch and cancel.
+//
 // `match` is the regex that identifies the scenario's task in a goal line.
 
 export const PLAYER = { minecraft: 'Alex', stardew: 'Ouen', dontstarve: 'Ouen' }
@@ -234,5 +251,154 @@ const DST = {
   },
 }
 
+// ── Player tasks over her own goal (pass 6b) ───────────────────────────────
+// Shared shape for a `ptask` scenario (score.mjs):
+//   own        regex naming her own goal line (already in the heartbeat)
+//   match      regex naming the player's task in a goal line
+//   tail       regex the task goal should carry for its second part
+//   first      index of the step whose FIRST world action is the task's first
+//              half (it gets the step's scripted result)
+//   through    (tool, game) => true for the follow-through action
+//   taskAct    (tool) => true for more work on the first half
+//   cancelAt   index of the step where the player calls it off (cancel/swap)
+//   newMatch   regex for the replacement task (swap)
+const argText = (t) => JSON.stringify(t?.input ?? {}).toLowerCase()
+const near = (t, x, z, r = 8) => t.name === 'goTo' && Math.abs((t.input?.x ?? 1e9) - x) <= r && Math.abs((t.input?.z ?? 1e9) - z) <= r
+const toPlayer = (names) => (t) => t.name === 'follow' || t.name === 'come'
+  || (t.name === 'goTo' && names.some((n) => argText(t).includes(n)))
+
+const MC_OWN = 'Get iron tools with Alex: furnace, mine iron, smelt it, craft an iron pickaxe. Finish when I hold an iron pickaxe.'
+const mcOwnWorld = {
+  inv: [['stone_pickaxe', 1], ['cobblestone', 9], ['oak_planks', 6], ['stick', 4], ['crafting_table', 1]],
+  last: 'craft: crafted 1 stone_pickaxe',
+  owner: { x: 110, y: 71, z: -38, dist: 3 },
+  next: 'furnace: craft a furnace from 8 cobblestone, then mine iron_ore with your stone pickaxe',
+  blocks: ['#1 grass_block x380 @111,70,-40', '#2 coal_ore x6 @118,66,-48', '#3 iron_ore x3 @121,60,-52', '#4 oak_log x9 @140,72,-20', '#5 stone x200 @115,66,-45'],
+}
+// After the first half: she walked off to the coal; Alex stayed by the river.
+const MC_ALEX_FAR = { x: 135, y: 71, z: -18, dist: 30 }
+const mcAfterCoal = { ...mcOwnWorld, inv: [...mcOwnWorld.inv, ['coal', 8]], owner: MC_ALEX_FAR, last: 'gather: gathered 8/8 coal (mined from coal_ore)' }
+const mcBackWithCoal = { ...mcAfterCoal, owner: { x: 113, y: 71, z: -39, dist: 2 }, last: 'goTo: reached (next to Alex)' }
+const mcThrough = (t) => t.name === 'follow' || near(t, MC_ALEX_FAR.x, MC_ALEX_FAR.z)
+const FETCH_LINE = 'yo can u grab me some coal from that ore over there then come back here? i need it for torches'
+
+MC.fetch = {
+  kind: 'ptask', own: /iron/i, match: /\bcoal\b/i, tail: /\b(back|return|bring|give|hand|toss|drop|alex)\b/i,
+  first: 0, through: mcThrough, taskAct: (t) => /coal/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    { wake: chat('minecraft', FETCH_LINE), world: mcOwnWorld, result: 'gather: gathered 8/8 coal (mined from coal_ore)', afterWorld: mcAfterCoal },
+    { wake: idle(15000), world: mcAfterCoal, result: 'goTo: reached (next to Alex)', afterWorld: mcBackWithCoal },
+    { wake: idle(15000), world: mcBackWithCoal, result: 'dropItem: dropped 8 coal' },
+  ],
+}
+MC.count = {
+  kind: 'ptask', own: /iron/i, match: /\b(log|logs|wood)\b/i, tail: /\b(10|ten)\b/,
+  // Walking to the oak patch at 150,-5 that the snapshot names is the task too.
+  first: 0, through: (t) => /log|wood/.test(argText(t)) || t.name === 'explore' || near(t, 150, -5), taskAct: (t) => /log|wood/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    {
+      wake: chat('minecraft', 'get me 10 logs, i wanna build a dock'),
+      world: mcOwnWorld,
+      result: 'gather: gathered 6/10 oak_log (no more oak_log reachable nearby)',
+      afterWorld: { inv: [...mcOwnWorld.inv, ['oak_log', 6]], blocks: ['#1 grass_block x380 @111,70,-40', '#2 coal_ore x6 @118,66,-48', '#3 iron_ore x3 @121,60,-52', '#4 oak_log x12 @150,73,-5 (birch forest edge)'], last: 'gather: gathered 6/10 oak_log (no more oak_log reachable nearby)' },
+    },
+    {
+      wake: idle(15000),
+      world: { ...mcOwnWorld, inv: [...mcOwnWorld.inv, ['oak_log', 6]], blocks: ['#1 grass_block x380 @111,70,-40', '#2 coal_ore x6 @118,66,-48', '#3 iron_ore x3 @121,60,-52', '#4 oak_log x12 @150,73,-5 (birch forest edge)'], last: 'gather: gathered 6/10 oak_log (no more oak_log reachable nearby)' },
+      result: 'gather: gathered 4/4 oak_log',
+      afterWorld: { inv: [...mcOwnWorld.inv, ['oak_log', 10]], last: 'gather: gathered 4/4 oak_log' },
+    },
+  ],
+}
+const MC_HOUSE = { x: 140, z: -70 }
+MC.meet = {
+  kind: 'ptask', own: /iron/i, match: /\b(house|meet)\b/i, tail: /\b(house|meet)\b/i,
+  first: 0, through: (t) => t.name === 'follow' || near(t, MC_HOUSE.x, MC_HOUSE.z, 10), taskAct: (t) => /oak_log|log|wood/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    {
+      wake: chat('minecraft', 'chop like 5 logs for me and then meet me at my house, the oak one by the river. im heading there now'),
+      world: { ...mcOwnWorld, blocks: [...mcOwnWorld.blocks, '#6 oak_planks x64 @140,72,-70 (a house)'] },
+      result: 'gather: gathered 5/5 oak_log',
+      afterWorld: { inv: [...mcOwnWorld.inv, ['oak_log', 5]], owner: { x: 141, y: 72, z: -68, dist: 31 }, last: 'gather: gathered 5/5 oak_log', blocks: [...mcOwnWorld.blocks, '#6 oak_planks x64 @140,72,-70 (a house)'] },
+    },
+    {
+      wake: idle(15000),
+      world: { ...mcOwnWorld, inv: [...mcOwnWorld.inv, ['oak_log', 5]], owner: { x: 141, y: 72, z: -68, dist: 31 }, last: 'gather: gathered 5/5 oak_log', blocks: [...mcOwnWorld.blocks, '#6 oak_planks x64 @140,72,-70 (a house)'] },
+      result: 'goTo: reached',
+    },
+  ],
+}
+MC.interrupt = {
+  kind: 'ptask', own: /iron/i, match: /\bcoal\b/i, tail: /\b(back|return|bring|give|hand|toss|drop|alex)\b/i,
+  first: 1, through: mcThrough, taskAct: (t) => /coal/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    { wake: chat('minecraft', FETCH_LINE), world: mcOwnWorld, result: 'goTo: reached the coal_ore at 118,66,-48' },
+    { wake: chat('minecraft', 'lol btw did u see that creeper blow up the hill earlier'), world: { ...mcOwnWorld, owner: MC_ALEX_FAR, last: 'goTo: reached the coal_ore at 118,66,-48' }, result: 'gather: gathered 8/8 coal (mined from coal_ore)', afterWorld: mcAfterCoal },
+    { wake: idle(15000), world: mcAfterCoal, result: 'goTo: reached (next to Alex)' },
+  ],
+}
+MC.cancel = {
+  kind: 'ptask', own: /iron/i, match: /\bcoal\b/i, tail: /\b(back|return|bring|give|hand|toss|drop|alex)\b/i,
+  first: 0, cancelAt: 1, through: mcThrough, taskAct: (t) => /coal/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    { wake: chat('minecraft', FETCH_LINE), world: mcOwnWorld, result: 'gather: gathered 3/8 coal (still mining)', afterWorld: { inv: [...mcOwnWorld.inv, ['coal', 3]], last: 'gather: gathered 3/8 coal (still mining)' } },
+    { wake: chat('minecraft', 'nvm forget the coal, i just found a ton in a cave. do ur own thing'), world: { ...mcOwnWorld, inv: [...mcOwnWorld.inv, ['coal', 3]], owner: MC_ALEX_FAR, last: 'gather: gathered 3/8 coal' }, result: 'craft: crafted 1 furnace' },
+  ],
+}
+MC.swap = {
+  kind: 'ptask', own: /iron/i, match: /\bcoal\b/i, newMatch: /\b(log|logs|wood)\b/i, tail: /\b(back|return|bring|give|hand|toss|drop|alex)\b/i,
+  first: 0, cancelAt: 1, through: mcThrough, taskAct: (t) => /coal/.test(argText(t)), newAct: (t) => /log|wood/.test(argText(t)), heartbeat: [MC_OWN],
+  steps: [
+    { wake: chat('minecraft', FETCH_LINE), world: mcOwnWorld, result: 'gather: gathered 3/8 coal (still mining)', afterWorld: { inv: [...mcOwnWorld.inv, ['coal', 3]], last: 'gather: gathered 3/8 coal (still mining)' } },
+    { wake: chat('minecraft', 'actually forget the coal, i found some. bring me like 6 logs instead'), world: { ...mcOwnWorld, inv: [...mcOwnWorld.inv, ['coal', 3]], owner: MC_ALEX_FAR, last: 'gather: gathered 3/8 coal' }, result: 'gather: gathered 6/6 oak_log' },
+  ],
+}
+
+// Stardew: her own goal is the parsnip plot; Ouen asks for wood by the house.
+const SD_OWN = 'Get the farm going with Ouen: clear the plot, plant the 15 parsnip seeds and water them. Finish when all 15 are planted and watered.'
+const sdOwnWorld = { ...sdStart, playerAt: { x: 63, y: 18, dist: 1 } }
+const sdAfterWood = { ...sdStart, inv: { 'Parsnip Seeds': 15, Wood: 30 }, playerAt: { x: 64, y: 15, dist: 28 }, last: 'chopped 30 wood' }
+SD.fetch = {
+  kind: 'ptask', own: /parsnip/i, match: /\bwood\b/i, tail: /\b(back|return|bring|give|hand|ouen|house|farmhouse)\b/i,
+  first: 0, through: (t) => ['come', 'follow', 'give'].includes(t.name) || (t.name === 'goTo' && /ouen|house|farmhouse/.test(argText(t))),
+  taskAct: (t) => t.name === 'chop' || /wood|tree/.test(argText(t)), heartbeat: [SD_OWN],
+  steps: [
+    { wake: chat('stardew', 'hey can u chop like 30 wood from the trees west of here and then bring it back to me at the house? i wanna build a chest'), world: sdOwnWorld, result: 'chopped 30 wood', afterWorld: sdAfterWood },
+    { wake: idle(15000), world: sdAfterWood, result: 'walked to Ouen' },
+  ],
+}
+SD.cancel = {
+  kind: 'ptask', own: /parsnip/i, match: /\bwood\b/i, tail: /\b(back|return|bring|give|hand|ouen|house|farmhouse)\b/i,
+  first: 0, cancelAt: 1, through: (t) => ['come', 'follow', 'give'].includes(t.name), taskAct: (t) => t.name === 'chop' || /wood|tree/.test(argText(t)), heartbeat: [SD_OWN],
+  steps: [
+    { wake: chat('stardew', 'hey can u chop like 30 wood from the trees west of here and then bring it back to me at the house? i wanna build a chest'), world: sdOwnWorld, result: 'chopped 8 wood (still chopping)', afterWorld: { ...sdStart, inv: { 'Parsnip Seeds': 15, Wood: 8 } } },
+    { wake: chat('stardew', 'oh nvm about the wood, i had a bunch in a chest already. go back to what u were doing'), world: { ...sdStart, inv: { 'Parsnip Seeds': 15, Wood: 8 }, playerAt: { x: 64, y: 15, dist: 20 }, last: 'chopped 8 wood' }, result: 'done' },
+  ],
+}
+
+// DST: her own goal is the science machine; Ouen wants torch makings by the fire.
+const dstFar = { inv: { axe: 1, log: 6, berries: 3, cutgrass: 6, twigs: 6 }, drop: ['researchlab'], playerX: 30, phase: 'dusk', last: 'picked 6 cut grass and 4 twigs' }
+DST.fetch = {
+  kind: 'ptask', own: /science/i, match: /\b(grass|twigs?)\b/i, tail: /\b(back|return|bring|give|hand|ouen|fire|camp)\b/i,
+  // #1 is Ouen and #3 the campfire in dstStart's snapshot; a torch craft is
+  // part of the ask ("we need torches"), so it is not her own goal.
+  first: 0, through: (t) => ['come', 'follow', 'give'].includes(t.name) || (t.name === 'goTo' && /ouen|fire|camp|"#[13]"/.test(argText(t))),
+  taskAct: (t) => t.name === 'pick' || /grass|twig|torch/.test(argText(t)), heartbeat: [DST_SCIENCE_GOAL],
+  steps: [
+    { wake: chat('dontstarve', 'can u grab some grass and twigs over there and then come back to the fire? we need torches before it gets dark'), world: { ...dstStart, phase: 'dusk' }, result: 'picked 6 cut grass and 4 twigs', afterWorld: dstFar },
+    { wake: idle(15000), world: dstFar, result: 'arrived next to Ouen' },
+  ],
+}
+DST.cancel = {
+  kind: 'ptask', own: /science/i, match: /\b(grass|twigs?)\b/i, tail: /\b(back|return|bring|give|hand|ouen|fire|camp)\b/i,
+  first: 0, cancelAt: 1, through: (t) => ['come', 'follow', 'give'].includes(t.name), taskAct: (t) => t.name === 'pick' || /grass|twig|torch/.test(argText(t)), heartbeat: [DST_SCIENCE_GOAL],
+  steps: [
+    { wake: chat('dontstarve', 'can u grab some grass and twigs over there and then come back to the fire? we need torches before it gets dark'), world: { ...dstStart, phase: 'dusk' }, result: 'picked 2 cut grass (still picking)', afterWorld: { inv: { axe: 1, log: 2, berries: 3, twigs: 2, cutgrass: 2 }, drop: ['researchlab'] } },
+    { wake: chat('dontstarve', 'nvm i already made a torch, i had grass on me. do ur thing'), world: { inv: { axe: 1, log: 2, berries: 3, twigs: 2, cutgrass: 2 }, drop: ['researchlab'], playerX: 20, phase: 'dusk', last: 'picked 2 cut grass' }, result: 'done' },
+  ],
+}
+
 export const SCENARIOS = { minecraft: MC, stardew: SD, dontstarve: DST }
 export const SCENARIO_IDS = ['task', 'change', 'done_said', 'stale', 'oneshot']
+// The pass 6b player-task set: `--scenarios fetch,count,meet,interrupt,cancel,swap,oneshot`.
+export const PTASK_IDS = ['fetch', 'count', 'meet', 'interrupt', 'cancel', 'swap']

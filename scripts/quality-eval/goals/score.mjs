@@ -8,8 +8,50 @@ const BRAIN = new Set(['say', 'remember', 'forget', 'setGoal', 'clearGoal', 'end
 const calledIn = (step, name) => step.calls.some((c) => c.tools.some((t) => t.name === name))
 const worldCalls = (step) => step.calls.flatMap((c) => c.tools.filter((t) => !BRAIN.has(t.name)))
 
+// World tool uses of a step in call order.
+const stepWorld = (step) => step.calls.flatMap((c) => c.tools.filter((t) => !BRAIN.has(t.name)))
+const setGoalTexts = (step) => step.calls.flatMap((c) => c.tools.filter((t) => t.name === 'setGoal').map((t) => String(t.input?.text ?? '')))
+
+// 261013 (pass 6b): a player task given over her own goal (scenarios.mjs).
+function scorePlayerTask(row, sc) {
+  const S = row.steps
+  const out = {}
+  const task = (goals) => goals.filter((g) => sc.match.test(g))
+  const reqGoals = task(S[0].goals)
+  out.recorded = reqGoals.length > 0
+  out.recorded_by_setgoal = setGoalTexts(S[0]).some((t) => sc.match.test(t))
+  out.tail_kept = out.recorded ? reqGoals.some((g) => sc.tail.test(g)) : null
+  out.own_goal_overwritten = sc.own ? !S[0].goals.some((g) => sc.own.test(g)) : null
+  // What she did once the first half was done: the world actions after the
+  // `first` step's first one, through the end (or up to the cancel step).
+  const end = sc.cancelAt ?? S.length
+  const after = []
+  for (let i = sc.first; i < end; i++) {
+    const w = stepWorld(S[i])
+    after.push(...(i === sc.first ? w.slice(1) : w))
+  }
+  const firstAfter = after.find((t) => !(sc.taskAct?.(t) && !sc.through(t, row.game)))
+  if (sc.cancelAt == null) {
+    out.followed_through = !!firstAfter && sc.through(firstAfter, row.game)
+    out.own_goal_first = !!firstAfter && !sc.through(firstAfter, row.game)
+    out.first_after = firstAfter ? firstAfter.name : null
+  } else {
+    const c = S[sc.cancelAt]
+    out.task_goal_removed = out.recorded ? task(c.goals).length === 0 : null
+    out.own_goal_kept = sc.own ? c.goals.some((g) => sc.own.test(g)) : null
+    out.kept_working_task = stepWorld(c).some((t) => sc.taskAct(t))
+    if (sc.newMatch) {
+      out.new_recorded = c.goals.some((g) => sc.newMatch.test(g))
+      out.new_acted = stepWorld(c).some((t) => sc.newAct(t))
+    }
+  }
+  out.goals_at_end = S[S.length - 1].goals.length
+  return out
+}
+
 export function scoreRun(row, sc) {
   if (row.error || !row.steps?.length) return { error: true }
+  if (sc.kind === 'ptask') return scorePlayerTask(row, sc)
   const S = row.steps
   const m = (goals) => goals.filter((g) => sc.match.test(g))
   const last = S[S.length - 1]
@@ -17,8 +59,13 @@ export function scoreRun(row, sc) {
   switch (row.scenario) {
     case 'task': {
       out.greet_selfgoal = S[0].goals.length > 0
+      // 261013: her own greeting goal often names wood or a shelter too; it is
+      // not the player's task, so it never counts as a task goal (it made a
+      // finished task look uncleared and a single task look duplicated).
+      const own = new Set(S[0].goals)
+      const m = (goals) => goals.filter((g) => sc.match.test(g) && !own.has(g))
       out.recorded = m(S[1].goals).length > 0
-      out.selfgoal_left = out.recorded && S[1].goals.some((g) => !sc.match.test(g))
+      out.selfgoal_left = out.recorded && S[1].goals.some((g) => !sc.match.test(g) || own.has(g))
       out.recorded_by_setgoal = S[1].calls.some((c) => c.tools.some((t) => t.name === 'setGoal' && sc.match.test(String(t.input?.text ?? ''))))
       out.recorded_by_step2 = out.recorded || m(S[2].goals).length > 0
       // A task never named by a goal has nothing to keep, update or clear.
@@ -110,6 +157,30 @@ const ROWS = [
   ['stale.clear_called', 'Idle tick, goal already met: clearGoal called'],
   ['stale.cleared', 'Idle tick, goal already met: cleared'],
   ['oneshot.spurious_goal', 'One-step request: recorded as a goal (wrong)'],
+  ['fetch.recorded', 'Grab-then-return: recorded as a goal'],
+  ['fetch.tail_kept', 'Grab-then-return: goal keeps the return part'],
+  ['fetch.followed_through', 'Grab-then-return: went back after the grab'],
+  ['fetch.own_goal_first', 'Grab-then-return: went to her own goal instead'],
+  ['fetch.own_goal_overwritten', 'Grab-then-return: her own goal deleted'],
+  ['count.recorded', 'Count order: recorded as a goal'],
+  ['count.tail_kept', 'Count order: goal keeps the number'],
+  ['count.followed_through', 'Count order: kept going after a short gather'],
+  ['count.own_goal_first', 'Count order: switched to her own goal'],
+  ['meet.recorded', 'Meet-me-at: recorded as a goal'],
+  ['meet.followed_through', 'Meet-me-at: went to the place after the chore'],
+  ['meet.own_goal_first', 'Meet-me-at: went to her own goal instead'],
+  ['interrupt.recorded', 'Interrupted fetch: recorded as a goal'],
+  ['interrupt.followed_through', 'Interrupted fetch: went back after the chat line'],
+  ['interrupt.own_goal_first', 'Interrupted fetch: went to her own goal instead'],
+  ['cancel.recorded', 'Cancelled fetch: recorded before the cancel'],
+  ['cancel.task_goal_removed', 'Cancelled fetch: task goal removed'],
+  ['cancel.own_goal_kept', 'Cancelled fetch: her own goal kept'],
+  ['cancel.kept_working_task', 'Cancelled fetch: kept working the cancelled task (wrong)'],
+  ['swap.recorded', 'Changed fetch: first task recorded'],
+  ['swap.task_goal_removed', 'Changed fetch: old task goal removed'],
+  ['swap.new_recorded', 'Changed fetch: new task recorded'],
+  ['swap.new_acted', 'Changed fetch: started the new task'],
+  ['swap.kept_working_task', 'Changed fetch: kept working the old task (wrong)'],
 ]
 
 export function renderSummary(rows, meta = {}) {

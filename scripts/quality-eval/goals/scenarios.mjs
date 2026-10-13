@@ -337,6 +337,18 @@ MC.interrupt = {
     { wake: idle(15000), world: mcAfterCoal, result: 'goTo: reached (next to Alex)' },
   ],
 }
+// 261013: the same orders landing MID-ACTION. A first idle step has her
+// start her own goal's next step, and that action is held in flight, so the
+// player's line arrives through handleActionTick (the actionTurn variant), as
+// live orders mostly do. `req` is the step that carries the order.
+const mcOwnStep = { wake: idle(30000), world: mcOwnWorld, hold: true, result: 'dig: mined 8 stone' }
+const midAction = (sc) => ({
+  ...sc, req: 1, first: sc.first + 1, ...(sc.cancelAt != null ? { cancelAt: sc.cancelAt + 1 } : {}),
+  steps: [mcOwnStep, ...sc.steps],
+})
+MC.fetch_mid = midAction(MC.fetch)
+MC.count_mid = midAction(MC.count)
+MC.meet_mid = midAction(MC.meet)
 MC.cancel = {
   kind: 'ptask', own: /iron/i, match: /\bcoal\b/i, tail: /\b(back|return|bring|give|hand|toss|drop|alex)\b/i,
   first: 0, cancelAt: 1, through: mcThrough, taskAct: (t) => /coal/.test(argText(t)), heartbeat: [MC_OWN],
@@ -401,4 +413,4 @@ DST.cancel = {
 export const SCENARIOS = { minecraft: MC, stardew: SD, dontstarve: DST }
 export const SCENARIO_IDS = ['task', 'change', 'done_said', 'stale', 'oneshot']
 // The pass 6b player-task set: `--scenarios fetch,count,meet,interrupt,cancel,swap,oneshot`.
-export const PTASK_IDS = ['fetch', 'count', 'meet', 'interrupt', 'cancel', 'swap']
+export const PTASK_IDS = ['fetch', 'count', 'meet', 'interrupt', 'cancel', 'swap', 'fetch_mid', 'count_mid', 'meet_mid']

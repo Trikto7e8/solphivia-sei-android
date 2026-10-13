@@ -212,6 +212,7 @@ async function runOne({ game, sid, ch, rep }) {
   const config = botConfig(game, ch, mem)
   const world = makeWorld(game, ch, config)
   let step = null
+  let held = null
   const actionsLog = []
   const overrides = {
     createSnapshotComposer: () => world.composer(),
@@ -222,6 +223,15 @@ async function runOne({ game, sid, ch, rep }) {
       // further action in the same step just succeeds.
       if (step && !step._resultUsed) {
         step._resultUsed = true
+        // `hold`: the step's first action stays in flight until the next
+        // step's wake has been handled, so a chat in that step lands
+        // MID-ACTION (handleActionTick), the way most live orders arrive.
+        if (step.hold) {
+          const st = step
+          return new Promise((resolve) => {
+            held = () => { if (st.afterWorld) world.apply(st.afterWorld); resolve(st.result ?? `${name}: done`) }
+          })
+        }
         if (step.afterWorld) world.apply(step.afterWorld)
         return step.result ?? `${name}: done`
       }
@@ -256,10 +266,11 @@ async function runOne({ game, sid, ch, rep }) {
         text: String(resp.text ?? '').trim().slice(0, 600),
         tools: resp.toolUses.map((t) => ({ name: t.name, input: t.input })),
       })
-      const key = `${game}-${sid}`
+      // GOALS_CAPTURE_ALL=1 keeps every request of the first run per scenario.
+      const key = process.env.GOALS_CAPTURE_ALL ? `${game}-${sid}-${captured.size}` : `${game}-${sid}`
       if (!captured.has(key)) {
         captured.add(key)
-        fs.writeFileSync(path.join(OUT, 'requests', `${game}-${sid}.json`), JSON.stringify({ systemBlocks: req.systemBlocks, messages: req.messages, tools: (req.tools ?? []).map((t) => t.name) }, null, 1))
+        fs.writeFileSync(path.join(OUT, 'requests', `${key}.json`), JSON.stringify({ systemBlocks: req.systemBlocks, messages: req.messages, tools: (req.tools ?? []).map((t) => t.name) }, null, 1))
       }
       return resp
     },
@@ -290,6 +301,8 @@ async function runOne({ game, sid, ch, rep }) {
       hopsLeft = HOPS
       calls = []
       await orch.handleDispatch(st.wake.event, st.wake.data, new AbortController().signal)
+      // Settle the previous step's held action now that this wake was handled.
+      if (held && !st.hold) { const h = held; held = null; h() }
       // Drain re-enqueued continuations (action_complete) single-flight.
       for (let guard = 0; guard < 12; guard++) {
         await sleep(30)

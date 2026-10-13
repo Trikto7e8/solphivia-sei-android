@@ -37,6 +37,7 @@ import {
   type SpokenLineContext,
 } from '../shared/ipc';
 import { GAME_IDS, isGameId, type GameId, type WorldState, type WorldStates } from '../shared/gameIpc';
+import type { HomeNextStep } from '../shared/homeNextStep';
 import { CharacterSchema, UserConfigSchema, UserPreferencesSchema, MAX_COMPANION_SLOTS, type Character, type UserConfig } from '../shared/characterSchema';
 import { SHOWN_PROVIDERS, GRANDFATHERED_PROVIDERS, type ProviderKind } from '../shared/llmCatalog';
 import { loadConfig } from './configStore';
@@ -2565,6 +2566,25 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         } catch {
           /* per-character read failure — skip this id, never throw the batch */
         }
+      }),
+    );
+    return out;
+  });
+
+  // 261013 (T119): the Home "up next" card. Ids are the renderer's Home
+  // roster (at most a handful); each one reads its own memory dir, and a
+  // character with nothing to show (or an unreadable dir) is just omitted.
+  ipcMain.handle(IpcChannel.home.nextSteps, async (_event, idsArg: unknown): Promise<Record<string, HomeNextStep>> => {
+    // Each id becomes a path component under paths.memoryDir, so it is
+    // format-gated like the recovery handlers' (no separator, no dot).
+    const ids = z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(16).parse(idsArg);
+    const { readHomeNextStep } = await import('./homeNextStep');
+    const now = Date.now();
+    const out: Record<string, HomeNextStep> = {};
+    await Promise.all(
+      [...new Set(ids)].map(async (id) => {
+        const step = await readHomeNextStep(paths.memoryDir(id), id, now);
+        if (step) out[id] = step;
       }),
     );
     return out;

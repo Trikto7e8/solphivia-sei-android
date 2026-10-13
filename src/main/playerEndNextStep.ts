@@ -242,6 +242,11 @@ export interface PlayerEndDeps {
   characterName(characterId: string): Promise<string | null>;
   /** Append the plan line. false = not written (duplicate, scope moved). */
   save(characterId: string, line: string): Promise<boolean>;
+  /**
+   * 261013 (T119): record where a just-saved plan came from, for the Home
+   * "up next" card (homeNextStep.ts). Optional; best-effort.
+   */
+  tagPlan?(characterId: string, surface: NextStepSurface, game: string | undefined): Promise<void>;
   capture(event: string, props: Record<string, unknown>): void;
   /** The deadline for one call on this provider (providerTimeoutMs). */
   timeoutMs(provider: LlmProvider, ms: number): number;
@@ -338,6 +343,13 @@ export async function runPlayerEndNextStep(
           );
           if (!step) return 'none';
           const saved = await deps.save(characterId, nextStepMemoryLine(step));
+          if (saved && deps.tagPlan) {
+            try {
+              await deps.tagPlan(characterId, input.surface, input.game);
+            } catch {
+              /* the card falls back to the games picker */
+            }
+          }
           return saved ? 'saved' : 'none';
         })(),
         budget,
@@ -463,6 +475,13 @@ function defaultDeps(): PlayerEndDeps {
         }
       }
       return written > 0;
+    },
+    async tagPlan(characterId, surface, game) {
+      const { scopedTurnCurrent, trackScopedWrite } = await import('./profile/scopeBarrier');
+      if (!scopedTurnCurrent()) return;
+      const { tagLatestPlan, noteHomeNextStepChanged } = await import('./homeNextStep');
+      const dir = memoryDirOf(characterId);
+      if (await trackScopedWrite(tagLatestPlan(dir, { surface, game }))) noteHomeNextStepChanged(characterId);
     },
     capture(event, props) {
       void (async () => {

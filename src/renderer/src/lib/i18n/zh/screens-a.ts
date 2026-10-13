@@ -255,4 +255,7 @@ export const ZH_SCREENS_A: Record<string, string> = {
   'You: {text}': '你：{text}',
   'Voice recognition hiccup. Install the local backup model so calls keep working offline?':
     '语音识别出现问题。安装本地备用模型，让通话在离线时也能继续？',
+  // Home "up next" strip (261013)
+  'Up next with {name}': '和{name}的下一步',
+  'Call {name}': '给{name}打电话',
 };

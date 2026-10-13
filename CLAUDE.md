@@ -2911,6 +2911,27 @@ game?, saved, outcome}` and `next_step_saved {source:'player_end', surface,
 game?}` as follow-ups (the `_ended` event has already gone out). Live check:
 `npx tsx scripts/player-end-next-step-probe.ts --reps 3`.
 
+**The Home "up next" strip reads those plans back (261013, T119).** One
+strip above the party wall: the first Home companion (wall order) with an
+unconsumed `Plan for next time:` under 7 days old, else the first with an
+active goal (`HEARTBEAT[.game].md`, also under 7 days), with one button that
+reuses the tile launch paths (bot game: gate + `openGame`; backseat game: its
+modal; call: `startOrOpenCall`; unknown: the games picker). No plan and no
+goal renders nothing. Companions in a game or call are skipped; the x hides a
+card for the app session. Rules: `src/main/homeNextStep.ts` (pure +
+tested). MEMORY.md does not say where a plan came from and is model-facing,
+so main keeps a sidecar `NEXT_STEP.json` in the memory dir: tags (plan text
+key -> surface/game, written right after a goodbye plan or a player-end save)
+and a `consumedAt` watermark set when a bot session goes online or a call
+greeting runs (both greetings are told about the plan). Only the NEWEST plan
+counts: a consumed or expired newest plan never falls back to an older one.
+IPC `home:next-steps` + push `home:next-step-changed`; renderer
+`lib/homeNextStep.ts`, `useHomeNextStepStore` (cleared on account switch),
+`HomeNextStepCard`. Events (shape only): `home_next_step_shown` (once per
+card per app session) and `home_next_step_clicked`, both `{character_id,
+source: plan|goal, age_hours, surface: game|call|backseat|unknown, game?}`.
+Verify with `?dashshot=home&step=plan|call|untagged|goal|long|none`.
+
 **Forge/NeoForge hosts are blocked before summon (260929).** Only on STRONG
 evidence: the status ping's forgeData/modinfo (`forgeModCount != null`) or an
 explicit launch target on the host command line (`LanHost.forgeLaunchTarget`,

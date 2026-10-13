@@ -47,6 +47,7 @@ import {
   takeSessionDigest,
   yieldToNewSession,
 } from './playerEndNextStep';
+import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, tagLatestPlan } from './homeNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
 import { initNotices } from './notices';
@@ -429,6 +430,12 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // its compact summary also rides on bot_session_ended.
   const actionSummary = started.game === 'minecraft' ? mcSessionReporter.close(id, end.reason) : {};
   const digest = takeSessionDigest(id);
+  const goodbye = consumeGoodbye(id, 'game');
+  // 261013 (T119): the companion's goodbye left a plan, so record that it came
+  // from this game for the Home "up next" card (homeNextStep.ts).
+  if (goodbye.nextStepHook) {
+    updateHomeNextStep(id, (dir) => tagLatestPlan(dir, { surface: 'game', game: started.game }));
+  }
   // One event name across games (the analytics dashboard sums playtime by
   // event name, keyed on `duration_ms`); `game` is the split.
   capture('bot_session_ended', {
@@ -439,7 +446,7 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
     ...actionSummary,
     ...end,
     // 261008: did the companion's goodbye set up a next session (retention).
-    ...gameEndHookProps(consumeGoodbye(id, 'game')),
+    ...gameEndHookProps(goodbye),
   });
   // Deliberately no duration_ms: not a playtime event (not in SESSION_EVENTS),
   // and the ended event above already counts this time.
@@ -463,6 +470,20 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
       goalsGame: started.game,
     }).catch(() => {});
   }
+}
+
+/**
+ * 261013 (T119): Home "up next" card bookkeeping (homeNextStep.ts) on the
+ * character's memory dir, fire and forget. Tracked like the closing rows so
+ * an account switch waits for it before the scope moves; a write that
+ * changed something tells the renderer to re-read the card.
+ */
+function updateHomeNextStep(id: string, run: (memoryDir: string) => Promise<boolean>): void {
+  void trackScopedWrite(import('./paths').then(({ paths }) => run(paths.memoryDir(id))))
+    .then((changed) => {
+      if (changed) noteHomeNextStepChanged(id);
+    })
+    .catch(() => {});
 }
 
 /**
@@ -539,6 +560,9 @@ function broadcastStatus(status: BotStatus): void {
       const game: GameId = status.game ?? 'minecraft';
       playStartedAt.set(id, { at: Date.now(), game });
       clearSessionDigest(id); // 261011: nothing from an earlier session
+      // 261013 (T119): this session's first-spawn greeting is told about the
+      // saved plan, so the Home card stops offering it.
+      updateHomeNextStep(id, (dir) => consumeNextStep(dir));
       if (game === 'minecraft') {
         const lanHost = latestLanState.kind === 'open' ? latestLanState.host : undefined;
         const hostWarning = lanHostWarning(lanHost);
@@ -967,6 +991,12 @@ async function bootstrap(): Promise<void> {
   } catch (err) {
     logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
   }
+  // 261013 (T119): a plan saved, tagged or used up re-reads the Home card.
+  bindHomeNextStepNotifier((characterId) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IpcChannel.home.nextStepChanged, { characterId });
+    }
+  });
 
   // 4. Bot supervisor
   supervisor = createBotSupervisor({
@@ -1263,6 +1293,8 @@ async function bootstrap(): Promise<void> {
         duration_ms: connectedMs,
         ...callEndHookProps(goodbye),
       });
+      // 261013 (T119): the companion's hang-up left a plan; it came from a call.
+      if (goodbye.nextStepHook) updateHomeNextStep(id, (dir) => tagLatestPlan(dir, { surface: 'call' }));
       // 261011: the player hung up (no companion goodbye), outside a game.
       if (!goodbye.companionEnded && !onlineIds.has(id)) void startCallNextStep(id, connectedMs);
     },
@@ -1273,6 +1305,9 @@ async function bootstrap(): Promise<void> {
     greetVoiceCall: (id, peers = []) => {
       noteSurface('voice'); // 261005: app_quit.last_surface
       yieldToNewSession(id);
+      // 261013 (T119): the call greeting is told about the saved plan, so the
+      // Home card stops offering it.
+      updateHomeNextStep(id, (dir) => consumeNextStep(dir));
       // A solo in-game session greets over the port (say() routes to the call).
       // On a group call we always run the standalone greeting turn so the joiner
       // can name the room — the in-game greet path has no group framing.

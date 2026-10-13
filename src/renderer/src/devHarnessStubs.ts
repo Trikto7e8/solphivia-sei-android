@@ -64,6 +64,11 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // ?dashshot=onboard (261012): OnboardApp from the intro. Analytics calls are
   // kept on window.__seiDevTrack so a driver can read onboarding_step.
   const onboardMode = (params.get('dashshot') ?? '') === 'onboard';
+  // ?dashshot=home (261013): the Home wall with the "up next" strip. `&step=`
+  // picks the card for the first companion: plan (a Minecraft plan, the
+  // default), call, untagged, goal, long (two-line clamp), or none (no card).
+  // Analytics calls are kept on window.__seiDevTrack.
+  const homeMode = (params.get('dashshot') ?? '') === 'home';
   const now = Date.now();
   const chatRows = Array.from({ length: 24 }, (_, i) => ({
     id: `row-${i}`,
@@ -215,6 +220,36 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
           track: () => undefined,
         }
       : {}),
+    ...(homeMode
+      ? {
+          homeNextSteps: async (ids: string[]) => {
+            const kind = params.get('step') ?? 'plan';
+            const id = ids[0];
+            if (!id || kind === 'none') return {};
+            const at = Date.now() - 20 * 3_600_000;
+            const card =
+              kind === 'goal'
+                ? { source: 'goal', text: 'Get iron tools together', surface: 'game', game: 'minecraft' }
+                : kind === 'call'
+                  ? { source: 'plan', text: 'Ask how the job interview went', surface: 'call', game: null }
+                  : kind === 'untagged'
+                    ? { source: 'plan', text: 'Finish the cabin roof', surface: null, game: null }
+                    : kind === 'long'
+                      ? {
+                          source: 'plan',
+                          text: 'Finish the lake house roof with the spruce planks we saved, then build the dock out past the reeds so we can fish from it at night',
+                          surface: 'game',
+                          game: 'minecraft',
+                        }
+                      : { source: 'plan', text: 'Finish the lake house roof with the spruce planks we saved', surface: 'game', game: 'minecraft' };
+            return { [id]: { characterId: id, at, ...card } };
+          },
+          track: (event: string, props: unknown) => {
+            const dev = window as unknown as { __seiDevTrack?: Array<{ event: string; props: unknown; at: number }> };
+            (dev.__seiDevTrack ??= []).push({ event, props, at: Date.now() });
+          },
+        }
+      : {}),
     ...(onboardMode
       ? {
           track: (event: string, props: unknown) => {
@@ -224,7 +259,7 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
         }
       : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

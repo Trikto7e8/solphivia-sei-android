@@ -1158,34 +1158,59 @@ function isPlayerTaskLine(line) {
   return !!m && m[1].startsWith(PLAYER_TASK_TAG)
 }
 
+// A task given before this session started (its stamp is older). Heartbeat
+// files are per character and game, not per world, and a task never expires
+// on its own: without this, yesterday's "grab coal and come back to me" was
+// the first thing she went to do on the next join, in 5 of 6 harness runs.
+export const PLAYER_TASKS_EARLIER_HEAD = 'Tasks the player gave you in an earlier session. They may have moved on, and a place a task names may be in a different world. Do not start one on your own: ask the player once whether they still want it, work on it if they say yes, and call clearGoal on it if they say no:'
+
+function isEarlierLine(line, sessionStartMs) {
+  if (!Number.isFinite(sessionStartMs)) return false
+  const m = /^- \[([^\]]*)\]/.exec(String(line ?? '').trim())
+  const at = m ? Date.parse(m[1]) : NaN
+  return Number.isFinite(at) && at < sessionStartMs
+}
+
+const OWN_GOALS_HEAD = 'Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:'
+const OWN_GOALS_AFTER_TASKS_HEAD = "Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:"
+const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'
+
 // Render the per-loop heartbeat block: persisted goals (or a note that there are
 // none) plus the reachable frontier. The proactiveness DIRECTIVE no longer lives
 // here (it moved to the cached system prefix, 260618); the heartbeat is now
 // literally "goal + frontier", the only parts that change as the bot plays.
-export function renderHeartbeat(proactiveness, goalsText, frontierText = '') {
+// `sessionStartMs` (optional) splits off player tasks from earlier sessions.
+export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null } = {}) {
   const lvl = Number.isInteger(proactiveness) ? proactiveness : 1
   let goals
+  let hasGoal = !!(goalsText && goalsText.trim())
   // Player tasks get their own head ahead of the bot's own goals (passive keeps
   // one list: every goal it holds is already the player's).
   const allLines = String(goalsText ?? '').trim().split('\n').filter((l) => l.trim())
   const taskLines = lvl === 0 ? [] : allLines.filter(isPlayerTaskLine)
   if (taskLines.length) {
     const own = allLines.filter((l) => !isPlayerTaskLine(l))
-    goals = `${PLAYER_TASKS_HEAD}\n${taskLines.join('\n')}`
-    if (own.length) {
-      goals += `\n\nYour own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:\n${own.join('\n')}`
-    }
+    const current = taskLines.filter((l) => !isEarlierLine(l, sessionStartMs))
+    const earlier = taskLines.filter((l) => isEarlierLine(l, sessionStartMs))
+    const parts = []
+    if (current.length) parts.push(`${PLAYER_TASKS_HEAD}\n${current.join('\n')}`)
+    if (own.length) parts.push(`${current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.join('\n')}`)
+    else if (!current.length) parts.push(lvl === 2 ? NO_GOALS_AGENTIC : 'No active goals right now.')
+    if (earlier.length) parts.push(`${PLAYER_TASKS_EARLIER_HEAD}\n${earlier.join('\n')}`)
+    goals = parts.join('\n\n')
+    // Only earlier-session tasks: nothing is being worked yet, so the agentic
+    // frontier menu stays up.
+    hasGoal = own.length > 0 || current.length > 0
   } else if (goalsText && goalsText.trim()) {
     const head = lvl === 0
       ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment. Once a task is finished, or the player says it is done or no longer wanted, call clearGoal on it:'
-      : 'Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:'
+      : OWN_GOALS_HEAD
     goals = `${head}\n${goalsText.trim()}`
   } else if (lvl === 2) {
-    goals = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'
+    goals = NO_GOALS_AGENTIC
   } else {
     goals = 'No active goals right now.'
   }
-  const hasGoal = !!(goalsText && goalsText.trim())
   const frontierBlock = renderFrontierBlock(lvl, hasGoal, frontierText)
   return `# HEARTBEAT\n${goals}${frontierBlock}`
 }

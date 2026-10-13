@@ -110,6 +110,35 @@ describe('renderHeartbeat — player tasks first', () => {
     expect(hb).not.toContain('Reachable next')
   })
 
+  it('lists a player task from an earlier session last, to ask about, not to start', () => {
+    const start = Date.parse('2026-10-13T12:00:00.000Z')
+    const own = '- [2026-10-12T09:00:00.000Z] Get iron tools. Finish when I hold an iron pickaxe'
+    const old = `- [2026-10-12T10:00:00.000Z] ${PLAYER_TASK_TAG} grab coal and come back to Alex`
+    const now = `- [2026-10-13T12:05:00.000Z] ${PLAYER_TASK_TAG} bring Alex 10 logs`
+    const hb = renderHeartbeat(2, [own, old, now].join('\n'), 'stone tools', { sessionStartMs: start })
+    const cur = hb.indexOf('Tasks the player asked you to do')
+    const ownAt = hb.indexOf('Your own goals')
+    const earlier = hb.indexOf('Tasks the player gave you in an earlier session')
+    expect(cur).toBeGreaterThan(-1)
+    expect(ownAt).toBeGreaterThan(cur)
+    expect(earlier).toBeGreaterThan(ownAt)
+    expect(hb.indexOf('bring Alex 10 logs')).toBeLessThan(ownAt)
+    expect(hb.indexOf('grab coal')).toBeGreaterThan(earlier)
+
+    // Only an earlier task and her own goal: her goal is worked as usual.
+    const hb2 = renderHeartbeat(2, [own, old].join('\n'), 'stone tools', { sessionStartMs: start })
+    expect(hb2).not.toContain('Tasks the player asked you to do')
+    expect(hb2.indexOf('Your active goals')).toBeLessThan(hb2.indexOf('earlier session'))
+
+    // Only an earlier task: nothing is being worked, so the agentic menu stays.
+    const hb3 = renderHeartbeat(2, old, 'stone tools', { sessionStartMs: start })
+    expect(hb3).toContain('No active goals yet')
+    expect(hb3).toContain('Reachable next: stone tools')
+
+    // Without a session start every task counts as this session's.
+    expect(renderHeartbeat(2, old, '')).toContain('Tasks the player asked you to do')
+  })
+
   it('keeps the plain goals head when there is no player task, and one list when passive', () => {
     expect(renderHeartbeat(2, '- [t] go for diamonds', '')).toContain('Your active goals')
     const passive = renderHeartbeat(0, `- [u] ${PLAYER_TASK_TAG} grab coal`, '')

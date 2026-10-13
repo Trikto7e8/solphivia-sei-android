@@ -655,6 +655,10 @@ export async function composeSeedBlocks({
   playerMessageText = null,
   companions = [],
   frontierText = '',
+  // 261013 (pass 6b): when this session started (ms). Player tasks stamped
+  // before it are from an earlier session; renderHeartbeat asks before
+  // working them. Omitted = every task is treated as this session's.
+  sessionStartMs = null,
   voiceCall = false,
   logger = console,
 }) {
@@ -813,7 +817,7 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -1028,6 +1032,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // idle ticks are skipped, so her own initiative waits for the player. It
   // ends when the player gives her something new to do, or after the window.
   let playerStopAt = 0
+  // 261013 (pass 6b): one orchestrator per summon, so this is the session's
+  // start. A player task stamped before it was given in an earlier session.
+  const sessionStartedAt = Date.now()
   const PLAYER_STOP_HOLD_MS = config?.memory?.player_stop_hold_ms ?? 120_000
   const playerStopHeld = () => playerStopAt > 0 && Date.now() - playerStopAt < PLAYER_STOP_HOLD_MS
   // 17-04 (D-08): node ids whose known-good `procedure` has already been written
@@ -2948,6 +2955,7 @@ function maybeWarnByteCap(loop, warned) {
           playerMessageText,
           companions,
           frontierText: progFrontierText,
+          sessionStartMs: sessionStartedAt,
           voiceCall: voiceCallActive,
           logger,
         })

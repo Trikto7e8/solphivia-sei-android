@@ -39,7 +39,7 @@ import {
   PLAYER_END_MAX_TOKENS,
   type DigestLine,
 } from '../src/main/playerEndNextStep';
-import { nextStepMemoryLine } from '../src/bot/brain/nextStep.js';
+import { nextStepMemoryLine, normalizePlayerLine, playerLineProblem } from '../src/bot/brain/nextStep.js';
 import { applyAnthropicModelDefaults } from '../src/bot/brain/llm/anthropicModelDefaults.js';
 import { FIRST_CONTACT, callGreetingNote } from '../src/bot/brain/promptLibrary.js';
 import { ConfigSchema } from '../src/bot/config.js';
@@ -398,6 +398,13 @@ async function create(body: Record<string, unknown>): Promise<any> {
 }
 
 // ── 1. the plan check ───────────────────────────────────────────────────────
+/** The check main runs before storing a player line (tagLatestPlan): ' [REJECTED: why]' or ''. */
+function lineVerdict(line: string | null, character: string): string {
+  if (!line) return '';
+  const problem = playerLineProblem(normalizePlayerLine(line) ?? '', { character, players: ['Alex'] });
+  return problem ? `  [REJECTED: ${problem}, card shows the note]` : '';
+}
+
 async function planCheck(s: Session, c: Char): Promise<{ plan: string | null; line: string | null; raw: string }> {
   const { system, user } = buildPlayerEndPrompt({
     name: c.name,
@@ -635,7 +642,7 @@ async function main(): Promise<void> {
     if (!gate) console.log('  gate: trivial, no check would run');
     runs.forEach((r, i) =>
       console.log(
-        `  plan #${i + 1}: ${r.plan ? `${JSON.stringify(r.plan)}  |  line ${JSON.stringify(r.line)}` : `none (raw ${JSON.stringify(r.raw.slice(0, 60))})`}`,
+        `  plan #${i + 1}: ${r.plan ? `${JSON.stringify(r.plan)}  |  line ${JSON.stringify(r.line)}${lineVerdict(r.line, c.name)}` : `none (raw ${JSON.stringify(r.raw.slice(0, 60))})`}`,
       ),
     );
     let greeting: { said: string[]; other: string[] } | null = null;

@@ -40,7 +40,7 @@ import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { HomeNextStep, HomeNextStepSurface } from '../shared/homeNextStep';
 import { GAME_IDS } from '../shared/gameIpc';
-import { nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
+import { acceptPlayerLine, nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
 import { atomicWrite } from '../bot/brain/storage/atomicWrite.js';
 import { withFileLock } from '../bot/brain/storage/fileLock.js';
 import { goalsFileFor } from './playerEndNextStep';
@@ -306,11 +306,19 @@ export async function readPendingPlan(memoryDir: string, now = Date.now()): Prom
  * Record where the newest plan came from. Call right after a plan was
  * written (it must be at most TAG_WINDOW_MS old). Returns whether a tag was
  * written. Never throws. 261014: `line` is the plan written to the player,
- * shown on the card instead of the note (normalized here; empty = none).
+ * shown on the card instead of the note (normalized here; empty = none). A
+ * line that reads as the companion's own note (playerLineProblem) is not
+ * stored, so the card shows the note as before.
  */
 export async function tagLatestPlan(
   memoryDir: string,
-  source: { surface: HomeNextStepSurface; game?: string | null; line?: string | null },
+  source: {
+    surface: HomeNextStepSurface;
+    game?: string | null;
+    line?: string | null;
+    /** Checked against (nextStep.js playerLineProblem); a line that fails is not stored. */
+    names?: { character?: string | null; players?: string[] };
+  },
   now = Date.now(),
 ): Promise<boolean> {
   try {
@@ -322,7 +330,7 @@ export async function tagLatestPlan(
       surface: source.surface,
       ...(source.game ? { game: source.game } : {}),
     };
-    const line = normalizePlayerLine(source.line ?? null);
+    const line = acceptPlayerLine(source.line ?? null, source.names ?? {});
     if (line) tag.line = line;
     return await updateLedger(memoryDir, (l) => {
       l.tags = [...l.tags.filter((t) => t.key !== tag.key), tag].slice(-MAX_TAGS);

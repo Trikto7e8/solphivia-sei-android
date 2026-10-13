@@ -32,7 +32,7 @@ describe('nextStepMemoryLine', () => {
 })
 
 // 261014: the player-facing line for the Home strip, and the greeting cues.
-import { normalizePlayerLine, PLAYER_LINE_HARD_MAX_CHARS } from './nextStep.js'
+import { normalizePlayerLine, playerLineProblem, acceptPlayerLine, PLAYER_LINE_HARD_MAX_CHARS } from './nextStep.js'
 import { nextTimeGreeting, callGreetingNote, FIRST_CONTACT } from './prompts.js'
 
 describe('normalizePlayerLine', () => {
@@ -64,9 +64,95 @@ describe('normalizePlayerLine', () => {
 
   it('hard-caps a runaway line at a word with an ellipsis', () => {
     const out = normalizePlayerLine('Mine diamonds with Marv at the deep strip mine under the old stone tower by the birch forest past the lava lake')
-    expect(out.length).toBeLessThanOrEqual(PLAYER_LINE_HARD_MAX_CHARS + 1)
+    expect(out.length).toBeLessThanOrEqual(PLAYER_LINE_HARD_MAX_CHARS)
     expect(out.endsWith('…')).toBe(true)
     expect(out).not.toMatch(/\s(?:the|and)…$/)
+  })
+
+  it('leaves a possessive relative day alone (review 261014)', () => {
+    expect(normalizePlayerLine("Watch tonight's stream with Sui")).toBe("Watch tonight's stream with Sui")
+    expect(normalizePlayerLine("Finish the Tonight's the Night quest")).toBe("Finish the Tonight's the Night quest")
+    expect(normalizePlayerLine('Watch tonight’s stream')).toBe('Watch tonight’s stream')
+  })
+
+  it('cuts at an early clause break too', () => {
+    expect(normalizePlayerLine('Mine iron, then build a furnace and smelt it all down for armor and tools'))
+      .toBe('Mine iron')
+  })
+
+  it('does not change its own output (main runs it up to 3 times)', () => {
+    const samples = [
+      "Watch tonight's stream",
+      "Tonight's the Night quest",
+      'Tomorrow, get more wood and finish the roof',
+      'Next time, later plant the wheat',
+      'do it later tomorrow',
+      '"raid the east village for beds tomorrow."',
+      'Mine iron, then build a furnace and smelt it all down for armor and tools',
+      'Mine diamonds with Marv at the deep strip mine under the old stone tower by the birch forest past the lava lake',
+      'Gather blaze powder, pufferfish and a brewing stand, then return to the ocean monument for sponges',
+      'x'.repeat(120),
+      '  ,  tell Lyra how the move went ; and then more  ',
+    ]
+    for (const raw of samples) {
+      const once = normalizePlayerLine(raw)
+      expect(normalizePlayerLine(once)).toBe(once)
+      expect(normalizePlayerLine(normalizePlayerLine(once))).toBe(once)
+    }
+  })
+})
+
+describe('playerLineProblem / acceptPlayerLine (review 261014)', () => {
+  const names = { character: 'Lyra', players: ['Alex', 'alex_mc'] }
+
+  it('accepts lines written to the player', () => {
+    for (const line of [
+      'Tell Lyra how the move went and how Pixel did',
+      'Mine iron with Lyra to make an iron pickaxe',
+      'Ask Lyra about her new cat tree',
+      'Check in with Lyra about the farm',
+      'Get more birch wood from the river grove',
+      'Mine 2 more diamonds at y -54',
+    ]) expect(playerLineProblem(line, names)).toBeNull()
+  })
+
+  it('rejects a note to self', () => {
+    expect(playerLineProblem('Ask how the move on Saturday went', names)).toBe('self_note')
+    expect(playerLineProblem('Remember to bring up the vet visit', names)).toBe('self_note')
+    expect(playerLineProblem('Find out how the interview went', names)).toBe('self_note')
+    expect(playerLineProblem('See how Pixel did in the carrier', names)).toBe('self_note')
+    // Aimed at someone else than this companion.
+    expect(playerLineProblem('Check in with Roger about Pepper', names)).toBe('self_note')
+  })
+
+  it('rejects the player named in the third person', () => {
+    expect(playerLineProblem('Get iron with Alex for the pickaxe', names)).toBe('names_player')
+    expect(playerLineProblem("Ask about Alex's move", names)).toBe('names_player')
+    expect(playerLineProblem('Raid the village with alex_mc', names)).toBe('names_player')
+    expect(playerLineProblem('Tell the player about the base', names)).toBe('names_player')
+    // A name inside another word is not the name.
+    expect(playerLineProblem('Find Alexandrite for the crown', names)).toBeNull()
+  })
+
+  it('a username equal to the companion name is not the player', () => {
+    expect(playerLineProblem('Build the dock with Sui', { character: 'Sui', players: ['sui'] })).toBeNull()
+  })
+
+  it('rejects first person', () => {
+    expect(playerLineProblem('Help me finish the roof', names)).toBe('first_person')
+    expect(playerLineProblem('Finish our house', names)).toBe('first_person')
+    expect(playerLineProblem('Mine 2 more diamonds', names)).toBeNull()
+  })
+
+  it('works without names', () => {
+    expect(playerLineProblem('Ask how the move went')).toBe('self_note')
+    expect(playerLineProblem('Finish the cabin roof')).toBeNull()
+  })
+
+  it('acceptPlayerLine normalizes, then drops a line that fails', () => {
+    expect(acceptPlayerLine('"tell Lyra how the move went tomorrow."', names)).toBe('Tell Lyra how the move went')
+    expect(acceptPlayerLine('ask Alex how the move went', names)).toBeNull()
+    expect(acceptPlayerLine(undefined, names)).toBeNull()
   })
 })
 

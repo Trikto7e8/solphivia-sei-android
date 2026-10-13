@@ -735,7 +735,7 @@ export function callGreetingNote({ peers = [], plan } = {}) {
 export const FIRST_CONTACT = ({ gameName, known, plan }) => {
   const open = typeof plan === 'string' && plan.trim() ? plan : null
   if (open) {
-    return `FIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open)}`
+    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open)}`
   }
   if (known) {
     const cue = nextTimeGreeting(plan)

@@ -229,6 +229,18 @@ describe('files', () => {
     expect((await readHomeNextStep(dir, 'c1', NOW))?.text).toBe('Raid the east village for beds tomorrow');
   });
 
+  it('261014: a line that reads as the companion note is not stored, so the card shows the note', async () => {
+    await writeMemory([NOW - 60_000, 'Plan for next time: ask how the move on Saturday went']);
+    const names = { character: 'Lyra', players: ['Alex'] };
+    expect(await tagLatestPlan(dir, { surface: 'call', line: 'Ask how the move went', names }, NOW)).toBe(true);
+    expect((await ledger()).tags[0]).not.toHaveProperty('line');
+    expect((await readHomeNextStep(dir, 'c1', NOW))?.text).toBe('Ask how the move on Saturday went');
+    await tagLatestPlan(dir, { surface: 'call', line: 'Tell Alex about the move', names }, NOW);
+    expect((await ledger()).tags[0]).not.toHaveProperty('line');
+    await tagLatestPlan(dir, { surface: 'call', line: 'Tell Lyra how the move went', names }, NOW);
+    expect((await ledger()).tags[0].line).toBe('Tell Lyra how the move went');
+  });
+
   it('261014: readPendingPlan peeks the open plan until it is consumed', async () => {
     expect(await readPendingPlan(dir, NOW)).toBeNull();
     await writeMemory([NOW - 2 * HOUR, 'Plan for next time: plant parsnips']);

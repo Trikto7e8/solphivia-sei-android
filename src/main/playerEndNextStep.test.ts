@@ -327,6 +327,33 @@ describe('two-line reply parsing (261014)', () => {
     expect(parseNextStepReply('note: finish the roof\nplayer: Finish the roof')).toBe('finish the roof');
   });
 
+  it('a label with its text on the next line (review 261014)', () => {
+    expect(parsePlayerEndReply('note:\nfinish the roof\nplayer:\nFinish the roof with Sui')).toEqual({
+      step: 'finish the roof',
+      line: 'Finish the roof with Sui',
+    });
+    // An empty label followed by the other label is not given that label's text.
+    expect(parsePlayerEndReply('note:\nplayer: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' });
+  });
+
+  it('strips markdown left after the value', () => {
+    expect(parsePlayerEndReply('**note:** finish roof**\n**player:** Finish the roof**')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof',
+    });
+  });
+
+  it('splits both labels written on one line', () => {
+    expect(parsePlayerEndReply('note: finish roof player: Finish the roof with Sui')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof with Sui',
+    });
+    expect(parsePlayerEndReply('**note:** finish roof **player:** Finish the roof')).toEqual({
+      step: 'finish roof',
+      line: 'Finish the roof',
+    });
+  });
+
   it('the system text names the companion as the card shows it', () => {
     const { system } = buildPlayerEndPrompt({ name: 'red', activity: 'playing Minecraft together', durationMs: 600_000, lines: [], goals: [], memories: [] });
     expect(system).toContain('You are red,');

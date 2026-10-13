@@ -200,6 +200,8 @@ function cleanNote(raw: string): string | null {
 }
 
 const LABELED = /^\s*[*_-]*\s*(note|player)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$/i;
+/** A second label later on the same line ("note: x player: y"). */
+const INLINE_LABEL = /\s+(?=[*_]*\s*(?:note|player)\s*[*_]*\s*[:：])/i;
 
 export interface PlayerEndPlan {
   /** The private note, saved to MEMORY.md as the plan. */
@@ -216,20 +218,40 @@ export interface PlayerEndPlan {
  * notes, not speech.
  */
 export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
-  const lines = String(text ?? '').trim().split('\n');
+  const lines: string[] = [];
+  for (const raw of String(text ?? '').trim().split('\n')) {
+    // Both labels on one line: split it, so the note does not carry the player line.
+    const m = LABELED.exec(raw);
+    if (m) {
+      const at = m[2].search(INLINE_LABEL);
+      if (at > 0 && LABELED.exec(m[2].slice(at))?.[1].toLowerCase() !== m[1].toLowerCase()) {
+        lines.push(raw.slice(0, raw.length - m[2].length + at), m[2].slice(at).trim());
+        continue;
+      }
+    }
+    lines.push(raw);
+  }
   let note: string | null = null;
   let player: string | null = null;
-  for (const l of lines) {
-    const m = LABELED.exec(l);
+  for (let i = 0; i < lines.length; i++) {
+    const m = LABELED.exec(lines[i]);
     if (!m) continue;
-    if (m[1].toLowerCase() === 'note' && note === null) note = m[2];
-    else if (m[1].toLowerCase() === 'player' && player === null) player = m[2];
+    let value = m[2];
+    // A label with its text on the next line.
+    if (!value.trim()) {
+      const next = lines.slice(i + 1).find((l) => l.trim());
+      if (next !== undefined && !LABELED.test(next)) value = next;
+    }
+    // Markdown left around the value ("**note:** finish roof**").
+    value = value.replace(/^[\s*_]+|[\s*_]+$/g, '');
+    if (m[1].toLowerCase() === 'note' && note === null) note = value;
+    else if (m[1].toLowerCase() === 'player' && player === null) player = value;
   }
   if (note === null && player === null) {
     const step = cleanNote(lines[0] ?? '');
     return step ? { step, line: null } : null;
   }
-  const step = cleanNote(note ?? player ?? '');
+  const step = cleanNote(note || player || '');
   if (!step) return null;
   const line = player !== null && cleanNote(player) ? normalizePlayerLine(player) : null;
   return { step, line };
@@ -535,8 +557,10 @@ function defaultDeps(): PlayerEndDeps {
       const { scopedTurnCurrent, trackScopedWrite } = await import('./profile/scopeBarrier');
       if (!scopedTurnCurrent()) return;
       const { tagLatestPlan, noteHomeNextStepChanged } = await import('./homeNextStep');
+      const { readPlayerLineNames } = await import('./playerLineNames');
       const dir = memoryDirOf(characterId);
-      if (await trackScopedWrite(tagLatestPlan(dir, { surface, game, line }))) noteHomeNextStepChanged(characterId);
+      const names = await readPlayerLineNames(characterId);
+      if (await trackScopedWrite(tagLatestPlan(dir, { surface, game, line, names }))) noteHomeNextStepChanged(characterId);
     },
     capture(event, props) {
       void (async () => {

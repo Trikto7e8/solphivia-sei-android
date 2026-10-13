@@ -2947,9 +2947,15 @@ would read it as a second plan): it rides to main (bot: `nextStepLine` on
 goodbye note in `sessionGoodbye.ts` (never analytics) and is stored as `line`
 on the plan's tag in `NEXT_STEP.json`. `nextStep.js normalizePlayerLine`
 cleans it (drops tomorrow/tonight anywhere and next time/later/today at the
-edges, cuts past 60 chars at a clause break, hard cap 90 with an ellipsis).
+edges, cuts past 60 chars at a clause break, hard cap 90 with an ellipsis;
+idempotent, since main runs it again, and a possessive like "tonight's
+stream" is left alone). Before storing, `tagLatestPlan` checks it with
+`acceptPlayerLine` / `playerLineProblem` against the companion and player
+names (`playerLineNames.ts`): a line that opens like a note to self ("ask
+how...", "remember to...", "find out..." not followed by the companion's
+name), names the player in the third person, or uses I/me/we is dropped.
 The card shows the tag's line, else the note as before (old plans, a goodbye
-that left the field out). The player-end prompt names the companion with
+that left the field out, a dropped line). The player-end prompt names the companion with
 `nameInSentence` (`src/shared/homeNextStep.ts`), which the card also uses for
 "Up next with Red" / "Call Red": an all-lowercase name gets its first letter
 raised in those sentences only (the party tile caption keeps it as typed).
@@ -2960,8 +2966,8 @@ unconsumed) before marking it used and hands it over, as init `nextStepPlan`
 call. With a plan, `nextTimeGreeting(plan)` quotes it and asks for it to be
 the main thing the greeting is about (the "only a hint" escape is left out);
 `null` means none open and drops the hint entirely, so an old raised plan
-still in MEMORY.md is not raised again; `undefined` (CLI) keeps the old soft
-hint. Two wording traps found live: the cue must not say "the last thing
+still in MEMORY.md is not raised again; `undefined` (CLI, or the supervisor's 1s
+plan read timing out) keeps the old soft hint. Two wording traps found live: the cue must not say "the last thing
 said" (the call primer's `(silence)` rule keys on it), and must not call the
 plan a "note" (collides with the call's "Do not mention this note"); both
 made calls answer with `(silence)`. The call greeting now also says it is

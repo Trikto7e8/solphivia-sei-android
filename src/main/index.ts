@@ -48,6 +48,7 @@ import {
   yieldToNewSession,
 } from './playerEndNextStep';
 import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, readPendingPlan, tagLatestPlan } from './homeNextStep';
+import { readPlayerLineNames } from './playerLineNames';
 import {
   LAUNCH_DELAY_MS,
   bindQuitNextStepRuntime,
@@ -443,8 +444,13 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // 261013 (T119): the companion's goodbye left a plan, so record that it came
   // from this game for the Home "up next" card (homeNextStep.ts).
   if (goodbye.nextStepHook) {
-    updateHomeNextStep(id, (dir) =>
-      tagLatestPlan(dir, { surface: 'game', game: started.game, line: goodbye.nextStepLine ?? null }),
+    updateHomeNextStep(id, async (dir) =>
+      tagLatestPlan(dir, {
+        surface: 'game',
+        game: started.game,
+        line: goodbye.nextStepLine ?? null,
+        names: await readPlayerLineNames(id),
+      }),
     );
   }
   // One event name across games (the analytics dashboard sums playtime by
@@ -1345,7 +1351,9 @@ async function bootstrap(): Promise<void> {
       });
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
       if (goodbye.nextStepHook) {
-        updateHomeNextStep(id, (dir) => tagLatestPlan(dir, { surface: 'call', line: goodbye.nextStepLine ?? null }));
+        updateHomeNextStep(id, async (dir) =>
+          tagLatestPlan(dir, { surface: 'call', line: goodbye.nextStepLine ?? null, names: await readPlayerLineNames(id) }),
+        );
       }
       // 261011: the player hung up (no companion goodbye), outside a game.
       if (!goodbye.companionEnded && !onlineIds.has(id)) void startCallNextStep(id, connectedMs);

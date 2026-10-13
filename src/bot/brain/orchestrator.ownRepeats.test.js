@@ -2,9 +2,9 @@
 //
 // 261013 (pass6a review): the own_repeats note takes its wording from the kind
 // of turn. A reply to the player keeps the full ask (what moved the MC
-// repetitive share); an idle seed drops "offer or plan" and "or say less",
-// which silenced proactive idle turns in the persona eval; a check-in while an
-// action runs gets the short form.
+// repetitive share); an idle seed gets no quote and no ask, only what repeats,
+// since the quote silenced proactive idle turns in the persona eval; a
+// check-in while an action runs gets the short form.
 import os from 'node:os'
 import path from 'node:path'
 import { describe, it, expect, vi, afterEach } from 'vitest'
@@ -74,12 +74,11 @@ const blockText = (call, name) => call.blocks
 const lastTurnText = (call) => call.blocks.at(-1).content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
 
 const REPLY_ASK = 'do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
-const IDLE_ASK = 'do not reuse a joke, comeback or greeting from your recent lines in this one.'
 
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('own_repeats wording by kind of turn', () => {
-  it('idle seed gets the light ask, a player line the full one', async () => {
+  it('idle seed gets no quote, a player line the full ask', async () => {
     _setTickIntervalForTests(10_000_000)
     const { orch, provider } = makeOrch([
       { text: '', toolUses: [say('t1', 'want to go fishing after this?')] },
@@ -89,10 +88,8 @@ describe('own_repeats wording by kind of turn', () => {
     orch.recordIncomingChat('newb', 'hey')
     await orch.handleDispatch('sei:chat_received', chat('hey'))
     await orch.handleDispatch('sei:idle', { quietMs: 20_000 })
-    const idle = blockText(provider.calls[1], 'own_repeats')
-    expect(idle).toContain('Your last line to them was "want to go fishing after this?"')
-    expect(idle).toContain(IDLE_ASK)
-    expect(idle).not.toMatch(/offer or plan|say less/)
+    expect(JSON.stringify(provider.calls[1].blocks)).toContain('want to go fishing after this?')
+    expect(blockText(provider.calls[1], 'own_repeats')).toBe('')
 
     orch.recordIncomingChat('newb', 'sure')
     await orch.handleDispatch('sei:chat_received', chat('sure'))
@@ -113,7 +110,6 @@ describe('own_repeats wording by kind of turn', () => {
     const text = lastTurnText(provider.calls.at(-1))
     expect(text).toContain('Your last line to them was "on it, chopping now". They already heard it, so if you say something this tick, make it new.')
     expect(text).not.toContain(REPLY_ASK)
-    expect(text).not.toContain(IDLE_ASK)
     finish?.('done')
   })
 })

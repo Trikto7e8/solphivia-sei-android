@@ -230,10 +230,18 @@ describe('ownRepeatsNote, by kind of turn', () => {
     expect(ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'reply' })).toBe(reply)
   })
 
-  it('on an idle turn keeps the quote and the joke ask, without offers, plans or saying less', () => {
-    const note = ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'idle' })
-    expect(note).toBe(`${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback or greeting from your recent lines in this one. If something has to come up again, like a count or the plan, say it in new words.`)
-    expect(note).not.toMatch(/offer|say less/)
+  it('on an idle turn with nothing repeated is no note at all', () => {
+    expect(ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'idle' })).toBeNull()
+  })
+
+  it('on an idle turn names only what repeats, with no quote and no ask', () => {
+    const bit = session(["ok fine, you're the boss of the wood pile", "sure thing, boss of the wood pile"])
+    expect(ownRepeatsNote(bit, [], { now: nowAfter(2), mode: 'idle' }))
+      .toBe('You have said "boss of the wood pile" more than once already, so leave it out of this line.')
+    const opener = session(['wow the cows are cute', 'i love this hill', 'wow what a view'])
+    const note = ownRepeatsNote(opener, [], { now: nowAfter(3), mode: 'idle' })
+    expect(note).toBe('Your recent lines keep starting with "wow", so start this one another way.')
+    expect(note).not.toMatch(/last line|already heard|say less|offer/)
   })
 
   it('on a check-in is a short form: the quote and a new line if any', () => {
@@ -250,7 +258,7 @@ describe('ownRepeatsNote, by kind of turn', () => {
   })
 
   it('has no dashes in any form', () => {
-    for (const mode of ['reply', 'idle', 'checkin']) expect(ownRepeatsNote(lines, [], { now, mode })).not.toMatch(/[—–]/)
+    for (const mode of ['reply', 'idle', 'checkin']) expect(ownRepeatsNote(lines, [], { now, mode }) ?? '').not.toMatch(/[—–]/)
   })
 })
 

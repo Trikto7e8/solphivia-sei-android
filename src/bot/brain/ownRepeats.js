@@ -355,17 +355,16 @@ export function repeatedOpener(selfLines, {
 //   reply   the player just spoke. The full ask, which is what moved the
 //           repetitive share in the MC compare (17 -> 11% off).
 //   idle    a turn of her own with no line to answer (idle tick, an event).
-//           Offers and plans are what a proactive character says here, and
-//           "or say less" read as permission to stay quiet (pass6a persona
-//           review: Sui spoke on 1 of 6 idle ticks, 5 of 6 before), so
-//           neither is in it.
+//           No quote and no ask, only the phrases and opener she keeps
+//           reusing, when there are any. The full note made her start the
+//           next job without a word (pass6a persona review: Sui spoke on 1 of
+//           6 idle ticks, 5 of 6 before). A lighter ask that still quoted her
+//           lines did the same (19 of 30 idle ticks silent against 10 of 30),
+//           so on these turns the quote is what tips her into silence.
 //   checkin a check-in while her action runs, every few seconds. Silence is
 //           already the default there; a short form keeps a line she does
 //           say new without the full note each tick.
-const REUSE_ASK = {
-  reply: 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.',
-  idle: 'Sound like yourself as always, but do not reuse a joke, comeback or greeting from your recent lines in this one.',
-}
+const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
 
 /** The line half of the note: her last lines, quoted, and what they share. */
 function linesNote(selfLines, playerLines, opts = {}) {
@@ -389,8 +388,9 @@ function linesNote(selfLines, playerLines, opts = {}) {
     now: opts.now, names, context: opts.context, vocab: opts.vocab, signature: opts.signature, skipTerms: opts.skipTerms,
   })
   const open = opener ? ` Your recent lines keep starting with "${opener}", so start this one another way.` : ''
+  if (mode === 'idle') return (bits + open).trim() || null
   return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}. ` +
-    REUSE_ASK[mode] +
+    REUSE_ASK +
     bits + open +
     ' If something has to come up again, like a count or the plan, say it in new words.'
 }
@@ -398,7 +398,8 @@ function linesNote(selfLines, playerLines, opts = {}) {
 /**
  * The prompt note for the next turn, or null when she has said nothing
  * recently and nothing repeats. `opts.mode` is the kind of turn: 'reply'
- * (default, the player just spoke), 'idle' or 'checkin' (see REUSE_ASK).
+ * (default, the player just spoke), 'idle' or 'checkin' (see the note above
+ * REUSE_ASK).
  */
 export function ownRepeatsNote(selfLines, playerLines = [], opts = {}) {
   const { names, context } = opts

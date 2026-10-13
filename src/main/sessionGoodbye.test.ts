@@ -24,6 +24,16 @@ describe('sessionGoodbye', () => {
     expect(callEndHookProps(consumeGoodbye('sui', 'call', 3_000))).toEqual({ next_step_hook: false, ended_by_companion: false });
   });
 
+  it('261014: carries the player line for the Home card, never into analytics', () => {
+    noteCompanionGoodbye('sui', 'game', { hook: true, line: 'Finish the roof' }, 0);
+    const note = consumeGoodbye('sui', 'game', 1);
+    expect(note).toEqual({ companionEnded: true, nextStepHook: true, nextStepLine: 'Finish the roof' });
+    expect(gameEndHookProps(note)).toEqual({ next_step_hook: true, next_step_source: 'companion' });
+    // A line without a hook is dropped.
+    noteCompanionGoodbye('sui', 'call', { hook: false, line: 'Finish the roof' }, 0);
+    expect(consumeGoodbye('sui', 'call', 1)).toEqual({ companionEnded: true, nextStepHook: false });
+  });
+
   it('keeps surfaces and characters apart', () => {
     noteCompanionGoodbye('sui', 'game', true, 0);
     noteCompanionGoodbye('marv', 'call', false, 0);

@@ -49,6 +49,7 @@ import { getCharacter, patchCharacter } from './characterStore';
 import { loadApiKey, hasApiKey, getAiBackendKind, type AiBackendKind } from './apiKeyStore';
 import { buildLaunchContinuity } from './chat/continuity';
 import { readKnowledgeForPrompt } from './knowledge/knowledgeStore';
+import { readPendingPlan } from './homeNextStep';
 import { loadConfig as loadUserConfig } from './configStore'; // UserConfig for bot init
 import { paths } from './paths';
 import { createLogRouter, type LogRouter } from './logRouter';
@@ -1236,6 +1237,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // payload (the continuity pattern) and appended to the bot's cached
     // system prefix. Pure disk read; edits apply on the next summon.
     const knowledgeP: Promise<string> = readKnowledgeForPrompt(characterId).catch(() => '');
+    // 261014: the saved plan the first-spawn greeting should raise. Read now,
+    // before the session going online marks it used (index.ts
+    // consumeNextStep). Pure disk read; null = none open.
+    const nextStepPlanP: Promise<string | null> = readPendingPlan(paths.memoryDir(characterId)).catch(() => null);
     // ITEM 1 (quick/260523-t8d): expose the AI-backend mode + has-key state to
     // the bot child so brain/log.js can suppress the noisy game-state +
     // [haiku?] prompt logs when running in local (BYOK) mode without a key —
@@ -1416,7 +1421,11 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // player's call (the bot stays in the game). Not a BotStatus event.
       if ((data as { type?: string }).type === 'call-end') {
         // 261008: voice_call_ended reads this back (sessionGoodbye.ts).
-        noteCompanionGoodbye(characterId, 'call', (data as { nextStepHook?: boolean }).nextStepHook === true);
+        const end = data as { nextStepHook?: boolean; nextStepLine?: unknown };
+        noteCompanionGoodbye(characterId, 'call', {
+          hook: end.nextStepHook === true,
+          line: typeof end.nextStepLine === 'string' ? end.nextStepLine : null,
+        });
         opts.onCallEndRequested?.(characterId);
         return;
       }
@@ -1527,7 +1536,12 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         session.selfStopReason = data.reason;
         // 261008: a companion quit() says whether its goodbye left a next_time
         // hook; bot_session_ended reads it back (sessionGoodbye.ts).
-        if (data.reason === 'quit') noteCompanionGoodbye(characterId, 'game', data.nextStepHook === true);
+        if (data.reason === 'quit') {
+          noteCompanionGoodbye(characterId, 'game', {
+            hook: data.nextStepHook === true,
+            line: typeof data.nextStepLine === 'string' ? data.nextStepLine : null,
+          });
+        }
       }
       if (data.type === 'error' && !summonResolved) {
         summonResolved = true;
@@ -1624,6 +1638,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           knowledgeP,
           new Promise<string>((r) => setTimeout(() => r(''), 2_000)),
         ]);
+        const nextStepPlan = await Promise.race([
+          nextStepPlanP,
+          new Promise<null>((r) => setTimeout(() => r(null), 1_000)),
+        ]);
         // Ship mc_username, preferred_name, and skinServerBaseUrl so the bot
         // can satisfy ConfigSchema, seed player_username for player-recognition
         // without disk reads, and log the skin server URL for verification.
@@ -1718,6 +1736,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
               // bot skips its cold FIRST CONTACT greeting (which would otherwise
               // double the standalone launch reply). Deterministic; no race.
               voiceCallActive: opts.isVoiceCallActive?.(characterId) ?? false,
+              // 261014: the open plan for the FIRST CONTACT greeting (null = none).
+              nextStepPlan,
               // 260909: { provider, api_key } for the brain's search / visit
               // tools. The bot maps it onto config.web in bootstrapWithInit.
               webSearch,

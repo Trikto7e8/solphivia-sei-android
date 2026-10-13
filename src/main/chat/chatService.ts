@@ -35,9 +35,9 @@ import type { LlmCallParams, LlmMessage, LlmProvider, LlmResult, LlmToolDef } fr
 import type { UserConfig } from '../../shared/characterSchema';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
 import { isSilenceFiller } from '../../bot/brain/silenceFiller.js';
-import { normalizeNextStep, nextStepMemoryLine } from '../../bot/brain/nextStep.js';
-import { NEXT_TIME_GREETING } from '../../bot/brain/promptLibrary.js';
-import { noteCompanionGoodbye } from '../sessionGoodbye';
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from '../../bot/brain/nextStep.js';
+import { callGreetingNote } from '../../bot/brain/promptLibrary.js';
+import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye';
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
 import { isCallActive } from '../voice/callState';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from '../voice/audioTags';
@@ -304,18 +304,23 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
  * this only saves the FIELD to the shared MEMORY.md (the next greeting on any
  * surface reads it back) and reports whether one was given, for the
  * session's _ended event. Best-effort: a failed write never breaks the turn.
+ * 261014: the result also carries `next_time_for_player`, the step written to
+ * the player; it is not saved here but rides the goodbye note to the Home
+ * card's tag (sessionGoodbye.ts).
  */
-async function honorNextStep(characterId: string, input: unknown): Promise<boolean> {
-  const step = normalizeNextStep((input as { next_time?: unknown } | null)?.next_time);
-  if (!step) return false;
-  if (!turnMayWrite(characterId, 'next_time')) return true;
+async function honorNextStep(characterId: string, input: unknown): Promise<NextStepHookResult> {
+  const fields = input as { next_time?: unknown; next_time_for_player?: unknown } | null;
+  const step = normalizeNextStep(fields?.next_time);
+  if (!step) return { hook: false, line: null };
+  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player) };
+  if (!turnMayWrite(characterId, 'next_time')) return result;
   try {
     const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step));
     if (written > 0) void maybeCompactChatMemory(characterId).catch(() => {});
   } catch (err) {
     console.warn(`[sei] next_time append failed: ${(err as Error).message}`);
   }
-  return true;
+  return result;
 }
 
 /**
@@ -1570,6 +1575,9 @@ async function sendFirstMeetingTurnImpl(
 async function sendVoiceGreetingTurnImpl(
   characterId: string,
   peers: string[] = [],
+  // 261014: the saved plan still open for this greeting (index.ts reads it
+  // with readPendingPlan before marking it used). null = none.
+  opts: { plan?: string | null } = {},
 ): Promise<ChatMessage[]> {
   inflight.get(characterId)?.abort();
   const ctrl = new AbortController();
@@ -1586,15 +1594,8 @@ async function sendVoiceGreetingTurnImpl(
     const { system, messages } = prep;
     // Multi-companion (260706): a companion ADDED to an ongoing call greets the
     // group (it is joining a call already in progress), not the player cold.
-    const note =
-      peers.length > 0
-        ? `[System note — not the player speaking: you were just added to an ongoing group voice call with the player and ${peers.join(' and ')}. ` +
-          'Announce yourself to the room in one short spoken line, in your own voice, like walking into a call already in progress. Do not mention this note.]'
-        : '[System note — not the player speaking: the player just started a voice call with you ' +
-          'and the line is live now. Greet them first, like answering the phone: one short line, ' +
-          'in your own voice. They often call with no particular reason, just to hang out, so do not ' +
-          'ask why they called or what is up. You can bring up something you remember about them, ' +
-          `or just say hi. ${NEXT_TIME_GREETING} Do not mention this note.]`;
+    // 261014: a solo greeting raises the open plan (promptLibrary callGreetingNote).
+    const note = callGreetingNote({ peers, plan: opts.plan ?? null });
     const last = messages[messages.length - 1];
     if (last && last.role === 'user' && typeof last.content === 'string') {
       last.content = `${last.content}\n${note}`;

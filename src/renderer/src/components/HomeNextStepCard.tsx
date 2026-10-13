@@ -11,6 +11,7 @@ import React, { useEffect } from 'react';
 import type { HomeNextStep } from '@shared/homeNextStep';
 import {
   launchHomeNextStep,
+  nameInSentence,
   nextStepButtonLabel,
   nextStepTarget,
   trackNextStepShown,
@@ -32,7 +33,7 @@ export interface HomeNextStepCardProps {
 
 export function HomeNextStepCard({
   step,
-  name,
+  name: rawName,
   portraitImage,
   theme,
   onDismiss,
@@ -45,7 +46,9 @@ export function HomeNextStepCard({
 
   if (!step) return null;
   const target = nextStepTarget(step);
-  const seed = step.characterId + name;
+  // The portrait seed keeps the stored name so the palette never changes.
+  const seed = step.characterId + rawName;
+  const name = nameInSentence(rawName);
 
   return (
     <section

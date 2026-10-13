@@ -51,6 +51,8 @@ export function nextStepTarget(step: HomeNextStep): NextStepTarget {
   return { kind: 'picker' };
 }
 
+export { nameInSentence } from '@shared/homeNextStep';
+
 /** The button label for a target ("Play Minecraft", "Call Sui", "Play"). */
 export function nextStepButtonLabel(
   target: NextStepTarget,

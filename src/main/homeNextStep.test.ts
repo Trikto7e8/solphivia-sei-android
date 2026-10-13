@@ -14,6 +14,7 @@ import {
   planEntries,
   planKey,
   readHomeNextStep,
+  readPendingPlan,
   tagLatestPlan,
   type NextStepLedger,
 } from './homeNextStep';
@@ -163,6 +164,15 @@ describe('goalDisplayText', () => {
 });
 
 describe('parseLedger', () => {
+  it('261014: keeps a string line and drops a malformed one, keeping the tag', () => {
+    const l = parseLedger(
+      JSON.stringify({ v: 1, tags: [{ key: 'a', at: iso(NOW), surface: 'call', line: 'Tell Sui' }, { key: 'b', at: iso(NOW), surface: 'call', line: 7 }] }),
+    );
+    expect(l.tags[0].line).toBe('Tell Sui');
+    expect(l.tags[1].key).toBe('b');
+    expect(l.tags[1].line).toBeUndefined();
+  });
+
   it('drops malformed parts and reads good ones', () => {
     expect(parseLedger(null)).toEqual(empty);
     expect(parseLedger('{oops')).toEqual(empty);
@@ -203,6 +213,30 @@ describe('files', () => {
     await writeMemory([NOW - TAG_WINDOW_MS - 60_000, 'Plan for next time: old']);
     expect(await tagLatestPlan(dir, { surface: 'call' }, NOW)).toBe(false);
     expect((await ledger()).tags).toEqual([]);
+  });
+
+  it('261014: a tag with a player line shows that line instead of the note', async () => {
+    await writeMemory([NOW - 60_000, "Plan for next time: ask Alex what the vet says about Pepper's leg on Thursday"]);
+    expect(await tagLatestPlan(dir, { surface: 'call', line: 'tell Roger what the vet said about Pepper.' }, NOW)).toBe(true);
+    expect((await ledger()).tags[0].line).toBe('Tell Roger what the vet said about Pepper');
+    expect(await readHomeNextStep(dir, 'c1', NOW)).toMatchObject({ text: 'Tell Roger what the vet said about Pepper', surface: 'call' });
+  });
+
+  it('261014: an old tag without a line (or an empty line) keeps the note text', async () => {
+    await writeMemory([NOW - 60_000, 'Plan for next time: raid the east village for beds tomorrow']);
+    await tagLatestPlan(dir, { surface: 'game', game: 'minecraft', line: '  ' }, NOW);
+    expect((await ledger()).tags[0]).not.toHaveProperty('line');
+    expect((await readHomeNextStep(dir, 'c1', NOW))?.text).toBe('Raid the east village for beds tomorrow');
+  });
+
+  it('261014: readPendingPlan peeks the open plan until it is consumed', async () => {
+    expect(await readPendingPlan(dir, NOW)).toBeNull();
+    await writeMemory([NOW - 2 * HOUR, 'Plan for next time: plant parsnips']);
+    expect(await readPendingPlan(dir, NOW)).toBe('plant parsnips');
+    expect(await readPendingPlan(dir, NOW)).toBe('plant parsnips'); // a peek writes nothing
+    await consumeNextStep(dir, NOW);
+    expect(await readPendingPlan(dir, NOW + 1)).toBeNull();
+    expect(await readPendingPlan(path.join(dir, 'nope'), NOW)).toBeNull();
   });
 
   it('re-tagging the same plan replaces its tag', async () => {

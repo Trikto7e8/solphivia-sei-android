@@ -26,6 +26,7 @@ import {
   VOICE_PUNCTUATION_DIRECTIVE,
   renderLanguageDirective,
   NEXT_TIME_FIELD,
+  NEXT_TIME_FOR_PLAYER_FIELD,
   NEXT_TIME_GOODBYE,
   NEXT_TIME_SPOKEN,
 } from '../../bot/brain/promptLibrary.js';
@@ -574,7 +575,11 @@ export const END_CALL_TOOL = {
   input_schema: {
     type: 'object' as const,
     // 261008: retention hook, saved to MEMORY.md (chatService honorNextStep).
-    properties: { next_time: { type: 'string', description: NEXT_TIME_FIELD } },
+    // 261014: + the same step written to the player, for the Home card.
+    properties: {
+      next_time: { type: 'string', description: NEXT_TIME_FIELD },
+      next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+    },
     required: [] as string[],
   },
 };
@@ -592,7 +597,10 @@ export const QUIT_TOOL = {
     ' You can still be reached here in chat afterward.',
   input_schema: {
     type: 'object' as const,
-    properties: { next_time: { type: 'string', description: NEXT_TIME_FIELD } },
+    properties: {
+      next_time: { type: 'string', description: NEXT_TIME_FIELD },
+      next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+    },
     required: [] as string[],
   },
 };

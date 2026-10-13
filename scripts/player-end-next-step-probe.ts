@@ -13,7 +13,13 @@
  *
  * Key (dev-only): ANTHROPIC_API_KEY env wins, else ~/.sei-dev/anthropic-test-key.
  *
- * Usage: npx tsx scripts/player-end-next-step-probe.ts [--reps 3] [--scene MC_ROOF]
+ * 261013 (T119): + FIRST-session scenes (group "first"): no memories yet, the
+ * bot's own progression goal, terse player lines ("ok", "lol", "gtg").
+ * `--group first|base` runs one group; `--system-file <path>` swaps in a
+ * candidate system prompt ({name} placeholder) without editing src/, for
+ * before/after numbers on the same scenes.
+ *
+ * Usage: npx tsx scripts/player-end-next-step-probe.ts [--reps 3] [--scene MC_ROOF] [--group first] [--system-file f.txt]
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync } from 'node:fs';
@@ -36,6 +42,9 @@ const flag = (n: string, d: string | null = null) => {
 };
 const REPS = Number(flag('--reps', '1')) || 1;
 const SCENE = flag('--scene');
+const GROUP = flag('--group');
+const SYSTEM_FILE = flag('--system-file');
+const SYSTEM_OVERRIDE = SYSTEM_FILE ? readFileSync(SYSTEM_FILE, 'utf8').trim() : null;
 
 function resolveApiKey(): string | undefined {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -63,6 +72,8 @@ const BASE_MEMORY = [
 
 interface Scene {
   id: string;
+  /** 'first' = a first session: no memories, short terse conversation. */
+  group?: 'base' | 'first';
   open: boolean; // true = something was left open, a plan is the right answer
   activity: string;
   minutes: number;
@@ -222,6 +233,151 @@ const SCENES: Scene[] = [
       P('nice, ok night'),
     ],
   },
+  // ── first sessions (261013, T119): no memories yet ─────────────────────
+  {
+    id: 'FS_MC_IRON_GOAL',
+    group: 'first',
+    open: true,
+    activity: 'playing Minecraft together',
+    minutes: 17,
+    goals: ['Get wood, then wooden pickaxe, then stone and iron with Alex. Finish when we have an iron pickaxe.'],
+    memories: [],
+    lines: [
+      P('hi'),
+      Y('hey! want to get some tools going?'),
+      P('ok'),
+      Y('grabbing wood, then a crafting table'),
+      P('lol nice'),
+      Y('stone pickaxe done, iron is next'),
+      P('gtg'),
+    ],
+  },
+  {
+    id: 'FS_MC_GOAL_QUIET',
+    group: 'first',
+    open: true,
+    activity: 'playing Minecraft together',
+    minutes: 9,
+    goals: ['Get iron tools with Alex: gather wood, make wooden pickaxe, mine stone, then find iron. Finish when an iron pickaxe is crafted.'],
+    memories: [],
+    lines: [
+      P('hi'),
+      Y('hey! lets get some wood first'),
+      Y('got 6 logs, making a table'),
+      Y('wooden pickaxe ready, heading for stone'),
+    ],
+  },
+  {
+    id: 'FS_MC_HOUSE',
+    group: 'first',
+    open: true,
+    activity: 'playing Minecraft together',
+    minutes: 24,
+    goals: ['Build a small oak starter house with Alex near spawn. Done when it has walls, a door and a roof.'],
+    memories: [],
+    lines: [
+      P('can u help me build a house'),
+      Y('yes! oak or spruce?'),
+      P('oak'),
+      Y('walls are up, we still need a roof and a door'),
+      P('ok'),
+      P('i have to go'),
+    ],
+  },
+  {
+    id: 'FS_MC_SAID',
+    group: 'first',
+    open: true,
+    activity: 'playing Minecraft together',
+    minutes: 13,
+    goals: [],
+    memories: [],
+    lines: [
+      P('this seed is cool'),
+      Y('right? I saw a village from the hill'),
+      P('lets go there next time'),
+      Y('deal'),
+      P('ok bye'),
+    ],
+  },
+  {
+    id: 'FS_CALL_EXAM',
+    group: 'first',
+    open: true,
+    activity: 'a voice call',
+    minutes: 5,
+    goals: [],
+    memories: [],
+    lines: [
+      P('hey sui'),
+      Y('hi! nice to finally hear you'),
+      P('haha. i have a math exam tomorrow'),
+      Y('oh, do you feel ready?'),
+      P('not really'),
+      Y('you got this'),
+      P('ok bye'),
+    ],
+  },
+  {
+    id: 'FS_STARDEW_PLANT',
+    group: 'first',
+    open: true,
+    activity: 'playing Stardew Valley together',
+    minutes: 15,
+    goals: ['Clear the farm plot and plant the parsnip seeds with Alex. Finish when all 15 parsnips are planted.'],
+    memories: [],
+    lines: [
+      P('wow the farm is a mess'),
+      Y('I will clear the weeds by the house'),
+      P('ok'),
+      Y('9 parsnips planted, 6 to go'),
+      P('lol im tired, saving'),
+    ],
+  },
+  {
+    id: 'FS_MC_HELLO',
+    group: 'first',
+    open: false,
+    activity: 'playing Minecraft together',
+    minutes: 6,
+    goals: [],
+    memories: [],
+    lines: [P('hi'), Y('hey! nice to meet you'), P('ok'), Y('nice spot you picked'), P('lol'), P('bye')],
+  },
+  {
+    id: 'FS_MC_GOAL_DONE',
+    group: 'first',
+    open: false,
+    activity: 'playing Minecraft together',
+    minutes: 22,
+    goals: [],
+    memories: [],
+    lines: [
+      Y('iron pickaxe crafted, we did it'),
+      P('yay'),
+      Y('that was fun'),
+      P('ya'),
+      P('gtg'),
+    ],
+  },
+  {
+    id: 'FS_CALL_HELLO',
+    group: 'first',
+    open: false,
+    activity: 'a voice call',
+    minutes: 4,
+    goals: [],
+    memories: [],
+    lines: [
+      P('hello?'),
+      Y('hi! nice to meet you'),
+      P('this is so cool'),
+      Y('right? what do you like to play?'),
+      P('minecraft mostly'),
+      Y('same, it is the best'),
+      P('ok bye'),
+    ],
+  },
 ];
 
 type Row = { scene: Scene; plan: string | null; raw: string; inTok: number; outTok: number };
@@ -235,10 +391,11 @@ async function runScene(scene: Scene): Promise<Row> {
     goals: scene.goals,
     memories: scene.memories,
   });
+  const sys = SYSTEM_OVERRIDE ? SYSTEM_OVERRIDE.replace('{name}', 'Sui') : system;
   const res = await client.messages.create({
     model: MODEL,
     max_tokens: PLAYER_END_MAX_TOKENS,
-    system,
+    system: sys,
     messages: [{ role: 'user', content: user }],
     ...(MODEL.startsWith('claude-haiku-5') ? { thinking: { type: 'disabled' } } : {}),
   } as Anthropic.MessageCreateParamsNonStreaming);
@@ -247,7 +404,7 @@ async function runScene(scene: Scene): Promise<Row> {
 }
 
 async function main(): Promise<void> {
-  const scenes = SCENES.filter((s) => !SCENE || s.id === SCENE);
+  const scenes = SCENES.filter((s) => (!SCENE || s.id === SCENE) && (!GROUP || (s.group ?? 'base') === GROUP));
   const rows: Row[] = [];
   for (let r = 0; r < REPS; r++) {
     for (const scene of scenes) {
@@ -264,7 +421,11 @@ async function main(): Promise<void> {
   const inTok = rows.reduce((a, x) => a + x.inTok, 0);
   const outTok = rows.reduce((a, x) => a + x.outTok, 0);
   const cost = (inTok * PRICE.in + outTok * PRICE.out) / 1e6;
-  console.log(`\nmodel ${MODEL}, ${rows.length} checks`);
+  console.log(`\nmodel ${MODEL}, ${rows.length} checks${SYSTEM_FILE ? `, system from ${SYSTEM_FILE}` : ''}`);
+  for (const sc of scenes) {
+    const g = rows.filter((x) => x.scene === sc);
+    console.log(`  ${sc.open ? 'open' : 'none'} ${sc.id.padEnd(18)} saved ${g.filter((x) => x.plan).length}/${g.length}`);
+  }
   console.log(`saved on open sessions: ${rate(true)}; saved on nothing-notable sessions: ${rate(false)}`);
   console.log(
     `tokens in ${inTok} (avg ${Math.round(inTok / rows.length)}), out ${outTok} (avg ${(outTok / rows.length).toFixed(1)}); ` +

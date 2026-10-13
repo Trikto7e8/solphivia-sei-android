@@ -259,6 +259,24 @@ describe('never a wall, never a block', () => {
     expect(await runPlayerEndNextStep(input(), d)).toBe('none');
     expect(events.map((e) => e[0])).toEqual(['next_step_checked']);
   });
+
+  it('tags a saved plan with where it came from (Home card), and only a saved one', async () => {
+    const tags: Array<[string, string, string | undefined]> = [];
+    const tagPlan = async (id: string, surface: string, game: string | undefined) => {
+      tags.push([id, surface, game]);
+    };
+    expect(await runPlayerEndNextStep(input({ game: 'stardew', goalsGame: 'stardew' }), deps({ tagPlan }).d)).toBe('saved');
+    expect(tags).toEqual([['char-1', 'game', 'stardew']]);
+    expect(await runPlayerEndNextStep(input({ characterId: 'char-2' }), deps({ tagPlan }, provider('none')).d)).toBe('none');
+    expect(await runPlayerEndNextStep(input({ characterId: 'char-3' }), deps({ tagPlan, save: async () => false }).d)).toBe('none');
+    expect(tags).toHaveLength(1);
+  });
+
+  it('a failing tag never fails the save', async () => {
+    const { d, saved } = deps({ tagPlan: async () => Promise.reject(new Error('disk')) });
+    expect(await runPlayerEndNextStep(input(), d)).toBe('saved');
+    expect(saved).toHaveLength(1);
+  });
 });
 
 describe('reply parsing', () => {

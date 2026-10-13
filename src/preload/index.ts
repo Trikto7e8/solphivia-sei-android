@@ -137,6 +137,12 @@ const api: RendererApi = {
   chatSend: (args) => ipcRenderer.invoke(IpcChannel.chat.send, args),
   chatOpened: (characterId, opts) => ipcRenderer.invoke(IpcChannel.chat.opened, characterId, opts),
   chatPreviews: () => ipcRenderer.invoke(IpcChannel.chat.previews),
+  homeNextSteps: (characterIds) => ipcRenderer.invoke(IpcChannel.home.nextSteps, characterIds),
+  onHomeNextStepChanged(cb: (push: { characterId: string }) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, push: { characterId: string }) => cb(push);
+    ipcRenderer.on(IpcChannel.home.nextStepChanged, handler);
+    return () => ipcRenderer.off(IpcChannel.home.nextStepChanged, handler);
+  },
   onChatMessage(cb: (push: ChatMessagePush) => void) {
     const handler = (_e: Electron.IpcRendererEvent, push: ChatMessagePush) => cb(push);
     ipcRenderer.on(IpcChannel.chat.message, handler);

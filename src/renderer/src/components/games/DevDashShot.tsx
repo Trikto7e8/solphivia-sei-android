@@ -22,6 +22,8 @@
  *                                                  (&ready=1 set up, &pack=missing the pack card, &fs=1 in-app fullscreen)
  *     http://localhost:5173/?dashshot=chatchess    a finished chess game (the result card) inside the real ChatScreen
  *     http://localhost:5173/?dashshot=chatcall     a live call with Sui on her scene (VoiceCallScreen, backdrop mode)
+ *     http://localhost:5173/?dashshot=home&step=plan|call|untagged|goal|long|none  the Home wall with the "up next" strip (261013);
+ *                                                  sei.track calls land on window.__seiDevTrack
  *     http://localhost:5173/?dashshot=chatui&part=chat|picker|settings  the rail + a screen, for theme/accent checks
  *                                                  (&lang=zh on any of these for the Chinese copy)
  *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open)
@@ -57,6 +59,7 @@ import { useLangStore } from '../../lib/i18n';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
 import { VoiceCallScreen } from '../../screens/VoiceCallScreen';
 import { SettingsScreen } from '../../screens/SettingsScreen';
+import { CharactersScreen } from '../../screens/CharactersScreen';
 import { IconRail } from '../IconRail';
 import { GamesPickerModal } from '../GamesPickerModal';
 
@@ -207,6 +210,19 @@ function seed(): void {
   if (which === 'chatcall') {
     useVoiceStore.setState({ participants: [SUI_ID], status: 'live', liveAt: Date.now() - (params.has('fresh') ? 0 : 42_000) });
   }
+  // ?dashshot=home (261013): a clean three-companion wall (the other
+  // harnesses seed characters with live games at import), nobody in a session.
+  if (which === 'home') {
+    const now = Date.now();
+    useDataStore.setState({
+      summons: {},
+      characters: [
+        { id: 'dashshot-home-sui', name: 'Sui', portrait_image: './img/onboard/sui-stand.png', last_chatted: new Date(now - 20 * 3_600_000).toISOString() },
+        { id: 'dashshot-home-marv', name: 'Marv', last_chatted: new Date(now - 50 * 3_600_000).toISOString() },
+        { id: 'dashshot-home-lyra', name: 'Lyra', last_chatted: new Date(now - 90 * 3_600_000).toISOString() },
+      ] as unknown as ReturnType<typeof useDataStore.getState>['characters'],
+    });
+  }
   if (params.get('dashshot') === 'chatfirst') {
     if (params.has('lan')) useDataStore.setState({ lan: { kind: 'open', port: 25565, motd: 'My World', lastSeenAt: Date.now() } });
     useFirstMomentStore.getState().arm(FIRST_ID);
@@ -252,6 +268,7 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
       </div>
     );
   }
+  if (which === 'home') return <DevHomeShot />;
   if (which === 'chatui') {
     const part = new URLSearchParams(window.location.search).get('part') ?? 'chat';
     return (
@@ -303,6 +320,20 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
           <StardewDashboardPanel characterId={SDV_ID} />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** ?dashshot=home (261013): the Home wall, plus the games picker when the card opens it. */
+function DevHomeShot(): React.ReactElement {
+  const modal = useUiStore((s) => s.modal);
+  return (
+    <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--window)' }}>
+      <IconRail />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <CharactersScreen />
+      </div>
+      {modal?.kind === 'games-picker' ? <GamesPickerModal characterId={modal.characterId} /> : null}
     </div>
   );
 }

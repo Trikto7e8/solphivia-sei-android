@@ -11,10 +11,10 @@
  *
  * Cleared here: chat transcripts + previews + in-flight reveals, imported
  * avatar manifests, unsent feedback drafts, the dev console's bot log (bot
- * lines quote the conversation), the recently-deleted id set, and a pending
- * guided first moment. Stores that already re-seed on scope or
- * auth change (characters, library state, credits, cloud ids) are not
- * repeated here.
+ * lines quote the conversation), the recently-deleted id set, a pending
+ * guided first moment, and the Home "up next" cards. Stores that already
+ * re-seed on scope or auth change (characters, library state, credits, cloud
+ * ids) are not repeated here.
  *
  * Live surfaces (260926): endLiveSurfaces() drops the renderer's half of every
  * per-account session (the voice call, screen capture, the chess and Draw!
@@ -27,6 +27,7 @@ import { useChatStore } from './stores/useChatStore';
 import { useAvatarStore } from './stores/useAvatarStore';
 import { useDataStore } from './stores/useDataStore';
 import { useFirstMomentStore } from './stores/useFirstMomentStore';
+import { useHomeNextStepStore } from './stores/useHomeNextStepStore';
 import { clearAllFeedbackDrafts } from './feedbackDraft';
 import { useVoiceStore } from './stores/useVoiceStore';
 import { useBackseatStore } from './stores/useBackseatStore';
@@ -99,4 +100,6 @@ export function resetAccountScopedState(): void {
   clearAllFeedbackDrafts();
   // A pending guided first moment belongs to the account that armed it.
   useFirstMomentStore.getState().reset();
+  // 261013 (T119): the Home "up next" cards are read from this account's memory.
+  useHomeNextStepStore.getState().reset();
 }

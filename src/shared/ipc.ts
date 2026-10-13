@@ -70,6 +70,7 @@ import type { OsPermissionKind, OsPermissionStatus, PermissionResume } from './p
 export type { OsPermissionKind, OsPermissionStatus, PermissionResume } from './permissionsIpc';
 import type { McDashboardSnapshot, McDashboardSnapshotPush } from './mcDashboardIpc';
 import type { GameId, WorldState, WorldStates, GameDashboardSnapshot } from './gameIpc';
+import type { HomeNextStep } from './homeNextStep';
 import { StardewIpcChannel, type StardewInstallState, type StardewInstallProgressEvent, type StardewLaunchResult } from './stardewIpc';
 import { GameIpcChannel } from './gameIpc';
 export type { GameId, WorldState, WorldStates, GameDashboardSnapshot } from './gameIpc';
@@ -2031,6 +2032,14 @@ export interface RendererApi {
    * lines. The renderer appends them to the transcript (deduped by id).
    */
   onChatMessage(cb: (push: ChatMessagePush) => void): Unsubscribe;
+  /**
+   * 261013 (T119): the Home "up next" card. For each given character id, its
+   * latest unexpired, unconsumed "Plan for next time" (or else its newest
+   * active goal). Ids with nothing to show are missing from the map.
+   */
+  homeNextSteps(characterIds: string[]): Promise<Record<string, HomeNextStep>>;
+  /** Push: a character's card may have changed (plan saved, tagged or used up). */
+  onHomeNextStepChanged(cb: (push: { characterId: string }) => void): Unsubscribe;
 
   // --- Chess minigame (260710) --- see src/shared/chessIpc.ts for the state
   // model + reveal/interrupt protocol. All methods are character-scoped (one
@@ -3270,6 +3279,13 @@ export const IpcChannel = {
     message: 'chat:message',
     /** Pull: last chat line per character for roster previews (ChatPreview). */
     previews: 'chat:previews',
+  },
+  // 261013 (T119): the Home "up next" card (src/main/homeNextStep.ts).
+  home: {
+    /** Invoke: characterIds string[] -> Record<id, HomeNextStep>. */
+    nextSteps: 'home:next-steps',
+    /** Push (main -> renderer): {characterId}, the card may have changed. */
+    nextStepChanged: 'home:next-step-changed',
   },
   // Chess minigame (260710) — request/response pairs are character-scoped;
   // `state` and `download` are pushes (main → renderer). Protocol details in

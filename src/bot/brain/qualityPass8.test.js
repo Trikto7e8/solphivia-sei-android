@@ -195,3 +195,68 @@ describe('prompt text', () => {
     expect(ACTION_DESCRIPTIONS.give).not.toMatch(/\bsay(ing)?\b/i)
   })
 })
+
+describe('orchestrator: clearGoal in the same turn as give', () => {
+  const GOAL = 'Bring Steve 3 coal. Done when Steve has the coal.'
+
+  async function run(giveResult, secondTurn) {
+    _setTickIntervalForTests(10_000_000)
+    const cfg = config()
+    const events = []
+    const executed = []
+    const base = makeAdapter(executed)
+    const adapter = {
+      ...base,
+      handOverResult: (name, r) => (name === 'give' ? /^gave \d/.test(String(r ?? '')) : null),
+      executeAction: (name) => {
+        executed.push(name)
+        return Promise.resolve(name === 'give' ? giveResult : 'done')
+      },
+    }
+    const provider = makeProvider([
+      turn(goal('g1', GOAL), say('s1', 'ok'), { id: 'e1', name: 'end_loop', input: {} }),
+      secondTurn,
+      turn({ id: 'e2', name: 'end_loop', input: {} }),
+    ])
+    const orch = createOrchestrator({ adapter, config: cfg, reenqueue: (ev, d) => events.push([ev, d]), _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', line('bring me 3 coal'))
+    await orch.handleDispatch('sei:chat_received', line('got it?'))
+    for (let i = 0; i < 20 && !events.some(([ev]) => ev === 'sei:action_complete'); i++) await new Promise(r => setTimeout(r, 5))
+    const done = events.find(([ev]) => ev === 'sei:action_complete')
+    if (done) await orch.handleDispatch(done[0], done[1])
+    const fs = await import('node:fs')
+    const heartbeat = fs.existsSync(cfg.memory.heartbeat_md_path) ? fs.readFileSync(cfg.memory.heartbeat_md_path, 'utf8') : ''
+    return { provider, executed, heartbeat }
+  }
+
+  const giveUse = { id: 'gv', name: 'give', input: { item: 'coal', count: 3 } }
+  const clearUse = { id: 'cg', name: 'clearGoal', input: { text: 'Bring Steve 3 coal' } }
+
+  it('clears the goal once give hands the items over', async () => {
+    const { provider, executed, heartbeat } = await run(
+      'gave 3 coal to Steve, tossed at their feet; you have 0 coal left',
+      turn(say('s2', 'here'), giveUse, clearUse),
+    )
+    expect(executed).toEqual(['give'])
+    expect(heartbeat).not.toContain('Bring Steve 3 coal')
+    expect(JSON.stringify(provider.calls[2].messages)).toContain('goal cleared (1)')
+  })
+
+  it('keeps the goal when give fails, even with clearGoal first in the turn', async () => {
+    const { provider, executed, heartbeat } = await run(
+      'cannot see Steve nearby, so nothing was given; you still have 3 coal',
+      turn(say('s2', 'here'), clearUse, giveUse),
+    )
+    expect(executed).toEqual(['give'])
+    expect(heartbeat).toContain('Bring Steve 3 coal')
+    const sent = JSON.stringify(provider.calls[2].messages)
+    expect(sent).toContain('goal kept')
+    expect(sent).not.toContain('goal cleared')
+  })
+
+  it('clears right away when there is no give in the turn', async () => {
+    const { provider, heartbeat } = await run('unused', turn(say('s2', 'all done'), clearUse, { id: 'e3', name: 'end_loop', input: {} }))
+    expect(heartbeat).not.toContain('Bring Steve 3 coal')
+    expect(provider.calls.length).toBe(2)
+  })
+})

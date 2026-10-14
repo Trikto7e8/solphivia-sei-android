@@ -37,6 +37,8 @@ export const ADAPTER_DEFAULTS = Object.freeze({
   wikiHosts: Object.freeze(['minecraft.wiki']),
   prefilterToolBatch: () => [],
   postProcessToolBatch: () => ({ nudge: null }),
+  // 261015: no hand-over action, so a clearGoal never waits on one.
+  handOverResult: () => null,
   surfaceBaseline: () => MINECRAFT_BASELINE,
   sessionEndClause: () => SESSION_END_CLAUSE,
   // The mid-action check-in's "path is not working" instruction. With Looking
@@ -105,6 +107,7 @@ export function resolveAdapterCaps(adapter, config) {
     visionActions: new Set(pick('visionActions')),
     prefilterToolBatch: pick('prefilterToolBatch'),
     postProcessToolBatch: pick('postProcessToolBatch'),
+    handOverResult: pick('handOverResult'),
     surfaceBaseline: pick('surfaceBaseline'),
     sessionEndClause: pick('sessionEndClause'),
     stuckNudges: pick('stuckNudges'),

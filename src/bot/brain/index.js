@@ -264,7 +264,8 @@ export async function start({ config, adapter, logger = console, onTerminalError
         try { orchestrator.recordIncomingChat?.(evt.username, evt.text, { companion: evt.fromCompanion === true }) } catch {}
       } else {
         // 261014: it still happened, so it is a "game:" line in the transcript.
-        try { orchestrator.recordGameEvent?.('game', { text: evt.text }) } catch {}
+        // The notice is written as an instruction; only its fact is recorded.
+        try { orchestrator.recordGameEvent?.('game', { text: evt.text, fact: evt.eventFact }) } catch {}
       }
       // 260618 (M1): a message aimed only at another companion, or a sibling
       // bot's own chatter, is recorded above but must NOT interrupt this bot.

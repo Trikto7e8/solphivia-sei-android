@@ -29,6 +29,12 @@ export const SESSION_EVENT_CAPACITY = 12
 const EVENT_TEXT_MAX = 140
 /** Repeated hits from the same attacker within this window are one line. */
 export const HIT_COALESCE_MS = 30_000
+/**
+ * The same action result again within this window is one line. Busy work
+ * ("dug coal_ore" a dozen times) would otherwise fill the ring and push out
+ * the one event the player asks about later (the zombie she killed).
+ */
+export const ACTION_COALESCE_MS = 60_000
 
 // Actions that only look, move, or get ready are not events worth recalling
 // ("you used goTo"), and in a busy session they would push out the ones that
@@ -71,11 +77,22 @@ export function describeActionEvent(name, result) {
   if (!name || QUIET_ACTIONS.has(name)) return null
   const text = clip(resultText(result))
   if (!text) return null
+  // "no coal within 4m", "no target", "no oak_log in inventory": a failure
+  // that changed nothing, whatever the classifier makes of it.
+  if (/^no\b/i.test(text)) return null
   const reason = classifyActionOutcome({ result })
   const kept = reason === null || reason === 'partial' ||
     (reason === 'aborted_by_preempt' && /\b[1-9]\d*\/\d+\b/.test(text))
   if (!kept) return null
   return `you used ${name}: ${text}`
+}
+
+/**
+ * Fold key for an action event line: the line with its numbers blanked, so
+ * "dug coal_ore at 10,61,-4" and "dug coal_ore at 11,61,-4" fold together.
+ */
+export function actionEventKey(line) {
+  return `act:${String(line ?? '').replace(/-?\d+(\.\d+)?/g, '#')}`
 }
 
 function mobName(label) {
@@ -90,7 +107,11 @@ function mobName(label) {
  * survival heads-up.
  *
  * @param {object} evt  { attackerKind, attackerLabel, ownerLabel, threat, engaged }
- * @returns {{text:string, key:string}|null}
+ * `again` is the line shown once the same attacker has kept at it inside the
+ * fold window. It never counts: attacks reach the brain throttled (one every
+ * few seconds), so a count would be lower than the hits that landed.
+ *
+ * @returns {{text:string, key:string, again:string}|null}
  */
 export function describeAttackEvent(evt) {
   if (!evt || typeof evt !== 'object') return null
@@ -98,17 +119,21 @@ export function describeAttackEvent(evt) {
   const label = evt.attackerLabel ?? null
   if (kind === 'player') {
     const who = String(label ?? '').trim() || 'a player'
-    return { text: `${who} hit you`, key: `hit:${who}` }
+    return { text: `${who} hit you`, key: `hit:${who}`, again: `${who} kept hitting you` }
   }
   if (kind === 'defend') {
     const owner = String(evt.ownerLabel ?? '').trim() || 'the player'
     const mob = mobName(label)
-    if (evt.threat === true) return { text: `${mob} came at ${owner}`, key: `owner:${mob}` }
-    return { text: `${mob} attacked ${owner}`, key: `owner:${mob}` }
+    // A warning (it is coming at them) and a hit that landed are different
+    // events: separate keys, so a hit is never folded into the warning.
+    if (evt.threat === true) {
+      return { text: `${mob} came at ${owner}`, key: `threat:${owner}:${mob}`, again: `${mob} kept coming at ${owner}` }
+    }
+    return { text: `${mob} attacked ${owner}`, key: `owner-hit:${owner}:${mob}`, again: `${mob} kept attacking ${owner}` }
   }
   if (kind === 'hostile_mob' || kind === 'mob' || kind === 'other') {
     const mob = mobName(label)
-    return { text: `${mob} hit you`, key: `hit:${mob}` }
+    return { text: `${mob} hit you`, key: `hit:${mob}`, again: `${mob} kept hitting you` }
   }
   return null
 }
@@ -127,14 +152,37 @@ export function describeDeathEvent(evt) {
 }
 
 /**
+ * The fact line for a game's own notice (Stardew's new day, 10 PM). The
+ * notice itself is written as an instruction to the model ("[A new day:
+ * spring 3, sunny. Your energy and health are full. ... This is a game event,
+ * not the player talking; act on it ...]"), and clipped into the transcript it
+ * read as a cut-off order. The record keeps only what happened: the adapter's
+ * own `fact` when it sends one, else the notice's first sentence.
+ *
+ * @param {{text?: string, fact?: string}} data
+ * @returns {string}
+ */
+export function gameEventFact(data) {
+  const fact = String(data?.fact ?? '').trim()
+  if (fact) return fact
+  let t = String(data?.text ?? '').replace(/\s+/g, ' ').trim()
+  t = t.replace(/^\[\s*/, '').replace(/\s*\]$/, '')
+  const end = t.search(/[.!?](\s|$)/)
+  if (end > 0) t = t.slice(0, end)
+  return t.trim()
+}
+
+/**
  * Ring of event lines. `key` + `windowMs` fold a repeat into the entry
- * before it ("a zombie hit you (3 times)") instead of filling the ring.
+ * before it instead of filling the ring; the folded entry then reads as
+ * `again` ("a zombie kept hitting you"), or the text plus "more than once".
+ * No count: what reaches the brain is throttled, so a count would be wrong.
  */
 export function createSessionEventLog({ capacity = SESSION_EVENT_CAPACITY, now = () => Date.now() } = {}) {
-  /** @type {Array<{at:number, lastAt:number, text:string, key:string|null, n:number}>} */
+  /** @type {Array<{at:number, lastAt:number, text:string, again:string|null, key:string|null, n:number}>} */
   const entries = []
 
-  function record(text, { key = null, windowMs = 0 } = {}) {
+  function record(text, { key = null, windowMs = 0, again = null } = {}) {
     const t = clip(text)
     if (!t) return false
     const at = now()
@@ -150,14 +198,17 @@ export function createSessionEventLog({ capacity = SESSION_EVENT_CAPACITY, now =
         break
       }
     }
-    entries.push({ at, lastAt: at, text: t, key, n: 1 })
+    entries.push({ at, lastAt: at, text: t, again: again ? clip(again) : null, key, n: 1 })
     while (entries.length > capacity) entries.shift()
     return true
   }
 
-  /** Oldest first: [{at, text}] with repeat counts folded into the text. */
+  /** Oldest first: [{at, text}], a folded repeat worded as one. */
   function list() {
-    return entries.map((e) => ({ at: e.at, text: e.n > 1 ? `${e.text} (${e.n} times)` : e.text }))
+    return entries.map((e) => ({
+      at: e.at,
+      text: e.n > 1 ? (e.again ?? `${e.text}, more than once`) : e.text,
+    }))
   }
 
   return { record, list, get size() { return entries.length }, _internal: { entries } }

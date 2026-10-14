@@ -17,8 +17,11 @@ import {
   describeAttackEvent,
   describeDeathEvent,
   createSessionEventLog,
+  actionEventKey,
+  gameEventFact,
   SESSION_EVENT_CAPACITY,
   HIT_COALESCE_MS,
+  ACTION_COALESCE_MS,
 } from './sessionEvents.js'
 import { SEED_HEADERS } from './prompts.js'
 
@@ -46,6 +49,12 @@ describe('describeActionEvent', () => {
     expect(describeActionEvent('gather', 'gathered 0/6 oak_log')).toBeNull()
     expect(describeActionEvent('dig', 'no path to the block')).toBeNull()
   })
+  it('skips a result that starts with "no" (nothing there, nothing done)', () => {
+    expect(describeActionEvent('dig', 'no target')).toBeNull()
+    expect(describeActionEvent('pickup', 'no coal within 4m')).toBeNull()
+    expect(describeActionEvent('placeBlock', 'No cobblestone in inventory')).toBeNull()
+    expect(describeActionEvent('dig', 'dug coal_ore at 10,61,-4')).toBe('you used dig: dug coal_ore at 10,61,-4')
+  })
   it('keeps a partial result and an abort that got something done', () => {
     expect(describeActionEvent('gather', 'gathered 3/6 oak_log')).toBe('you used gather: gathered 3/6 oak_log')
     expect(describeActionEvent('gather', 'aborted after 1/10 oak_log')).toBe('you used gather: aborted after 1/10 oak_log')
@@ -64,6 +73,17 @@ describe('describeAttackEvent / describeDeathEvent', () => {
     expect(describeAttackEvent({ attackerKind: 'player', attackerLabel: 'Alex' }).text).toBe('Alex hit you')
     expect(describeAttackEvent({ attackerKind: 'defend', attackerLabel: 'cave_spider', ownerLabel: 'Alex' }).text).toBe('a cave spider attacked Alex')
     expect(describeAttackEvent({ attackerKind: 'defend', attackerLabel: 'zombie', ownerLabel: 'Alex', threat: true }).text).toBe('a zombie came at Alex')
+  })
+  it('a warning and a real hit on the player have different fold keys', () => {
+    const warn = describeAttackEvent({ attackerKind: 'defend', attackerLabel: 'zombie', ownerLabel: 'Alex', threat: true })
+    const hit = describeAttackEvent({ attackerKind: 'defend', attackerLabel: 'zombie', ownerLabel: 'Alex' })
+    expect(warn.key).not.toBe(hit.key)
+    let t = 1_000
+    const log = createSessionEventLog({ now: () => t })
+    log.record(warn.text, { key: warn.key, windowMs: HIT_COALESCE_MS, again: warn.again })
+    t += 2_000
+    log.record(hit.text, { key: hit.key, windowMs: HIT_COALESCE_MS, again: hit.again })
+    expect(log.list().map((e) => e.text)).toEqual(['a zombie came at Alex', 'a zombie attacked Alex'])
   })
   it('skips a warning that was not a hit', () => {
     expect(describeAttackEvent({ attackerKind: 'reflex', attackerLabel: 'creeper' })).toBeNull()
@@ -85,10 +105,45 @@ describe('createSessionEventLog', () => {
     log.record('a zombie hit you', { key: 'hit:a zombie', windowMs: HIT_COALESCE_MS })
     t += 2_000
     log.record('a zombie hit you', { key: 'hit:a zombie', windowMs: HIT_COALESCE_MS })
-    expect(log.list().map((e) => e.text)).toEqual(['a zombie hit you (3 times)'])
+    expect(log.list().map((e) => e.text)).toEqual(['a zombie hit you, more than once'])
     t += HIT_COALESCE_MS + 1
     log.record('a zombie hit you', { key: 'hit:a zombie', windowMs: HIT_COALESCE_MS })
     expect(log.size).toBe(2)
+  })
+  it('words a folded hit as kept hitting, never with a count', () => {
+    let t = 1_000
+    const log = createSessionEventLog({ now: () => t })
+    const ev = describeAttackEvent({ attackerKind: 'hostile_mob', attackerLabel: 'zombie' })
+    for (let i = 0; i < 4; i++) {
+      log.record(ev.text, { key: ev.key, windowMs: HIT_COALESCE_MS, again: ev.again })
+      t += 3_500
+    }
+    expect(log.list().map((e) => e.text)).toEqual(['a zombie kept hitting you'])
+    expect(log.list()[0].text).not.toMatch(/\d/)
+  })
+  it('busy work folds, so an earlier kill is still in the record', () => {
+    let t = 1_000
+    const log = createSessionEventLog({ now: () => t })
+    const put = (name, result) => {
+      const line = describeActionEvent(name, result)
+      if (line) log.record(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
+    }
+    put('attackEntity', 'killed zombie (4 hits)')
+    for (let i = 0; i < 20; i++) {
+      t += 2_000
+      put('dig', `dug coal_ore at ${10 + i},61,-4`)
+      put('pickup', 'no coal within 4m')
+    }
+    const texts = log.list().map((e) => e.text)
+    expect(texts[0]).toBe('you used attackEntity: killed zombie (4 hits)')
+    expect(texts).toEqual([
+      'you used attackEntity: killed zombie (4 hits)',
+      'you used dig: dug coal_ore at 10,61,-4, more than once',
+    ])
+    // Past the window the same result is a new line again.
+    t += ACTION_COALESCE_MS + 1
+    put('dig', 'dug coal_ore at 40,61,-4')
+    expect(log.size).toBe(3)
   })
   it('is bounded, oldest out first', () => {
     const log = createSessionEventLog()
@@ -96,6 +151,16 @@ describe('createSessionEventLog', () => {
     const texts = log.list().map((e) => e.text)
     expect(texts).toHaveLength(SESSION_EVENT_CAPACITY)
     expect(texts[0]).toBe('event 3')
+  })
+})
+
+describe('gameEventFact', () => {
+  it('keeps the fact of a game notice and drops the instructions', () => {
+    const text = '[A new day: spring 4, rain. Your energy and health are full. On the farm this morning: 15 crops need water. This is a game event, not the player talking; act on it, and only speak if it fits.]'
+    expect(gameEventFact({ text })).toBe('A new day: spring 4, rain')
+    expect(gameEventFact({ text: '[It is 10 PM. The day ends at 2 AM and you pass out if you are still up.]' })).toBe('It is 10 PM')
+    expect(gameEventFact({ text, fact: 'a new day began (spring 4, rain)' })).toBe('a new day began (spring 4, rain)')
+    expect(gameEventFact({})).toBe('')
   })
 })
 
@@ -146,6 +211,8 @@ describe('game lines in the conversation transcript', () => {
     expect(SEED_HEADERS.conversation).toContain('Lines marked "game:"')
     expect(SEED_HEADERS.conversation).toContain('if you told them to do something, that does not mean they did it')
     expect(SEED_HEADERS.conversation).toContain('say you are not sure')
+    // Past-session recall comes from memory, not this transcript.
+    expect(SEED_HEADERS.conversation).toContain('not in here or in your memory')
   })
 })
 
@@ -171,8 +238,12 @@ function makeProvider(script) {
 function makeOrch({ script, executeAction }) {
   const adapter = {
     gameName: 'Minecraft',
-    listActions: () => ['attackEntity', 'follow', 'goTo'],
-    getActionSchema: () => z.object({ entity: z.string().optional(), player: z.string().optional() }),
+    listActions: () => ['attackEntity', 'follow', 'goTo', 'gather'],
+    getActionSchema: () => z.object({
+      entity: z.string().optional(), player: z.string().optional(),
+      x: z.number().optional(), y: z.number().optional(), z: z.number().optional(),
+      block: z.string().optional(), count: z.number().optional(),
+    }),
     getActionDescription: (n) => `do ${n}`,
     capabilityParagraph: () => 'caps',
     worldPrimer: () => 'world',
@@ -243,5 +314,72 @@ describe('a finished action reaches the next loop as a game line', () => {
     expect(convo).not.toContain('creeper')
     // her line comes before the result of the action it announced
     expect(convo.indexOf('stay behind me')).toBeLessThan(convo.indexOf('killed zombie'))
+  })
+})
+
+describe('an action finished by the post-teardown drain is recorded too', () => {
+  it('the drained gather shows up as a game line in the next turn', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const finish = []
+    const executeAction = async (name, args, ctx = {}) => {
+      if (name === 'goTo') return new Promise(() => {})
+      if (name === 'gather') {
+        return new Promise((res) => {
+          finish.push(() => res('gathered 16/16 oak_log'))
+          ctx.signal?.addEventListener('abort', () => res('aborted'), { once: true })
+        })
+      }
+      return `${name}:ok`
+    }
+    const { orch, provider } = makeOrch({
+      executeAction,
+      script: [
+        { text: '', toolUses: [
+          { id: 's1', name: 'say', input: { text: 'on it' } },
+          { id: 'g1', name: 'goTo', input: { x: 1, y: 64, z: 1 } },
+          { id: 'a1', name: 'gather', input: { block: 'oak_log', count: 16 } },
+        ] },
+        { text: 'ok', toolUses: [] },
+        { text: '', toolUses: [{ id: 's2', name: 'say', input: { text: 'sixteen logs' } }] },
+      ],
+    })
+    orch.recordIncomingChat('Alex', 'get wood')
+    await orch.handleDispatch('sei:chat_received', chat('get wood'))
+    expect(orch.currentLoop?._pendingToolUses?.map((e) => e.use.name)).toEqual(['gather'])
+    // An attack tears the loop down; the stranded gather runs in the drain.
+    await orch.handleDispatch('sei:attacked', { attackerLabel: 'zombie', attackerKind: 'mob' })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(orch.currentLoop).toBeNull()
+    expect(finish).toHaveLength(1)
+    finish[0]()
+    await new Promise((r) => setTimeout(r, 0))
+    await new Promise((r) => setTimeout(r, 0))
+    orch.recordIncomingChat('Alex', 'how much wood did you get?')
+    await orch.handleDispatch('sei:chat_received', chat('how much wood did you get?'))
+    expect(convoOf(provider.calls.at(-1))).toContain('game: you used gather: gathered 16/16 oak_log')
+  })
+})
+
+describe('deaths and game notices reach the transcript through recordGameEvent', () => {
+  it('records the death cause and only the fact of a game notice', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider } = makeOrch({
+      executeAction: async () => 'ok',
+      script: [{ text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'yeah' } }] }],
+    })
+    orch.recordGameEvent('death', { lastAttack: { label: 'skeleton', kind: 'hostile_mob' } })
+    orch.recordGameEvent('game', {
+      text: '[A new day: spring 4, rain. Your energy and health are full. This is a game event, not the player talking; act on it, and only speak if it fits.]',
+      fact: 'a new day began (spring 4, rain)',
+    })
+    orch.recordGameEvent('game', { text: '[It is 10 PM. The day ends at 2 AM and you pass out if you are still up.]' })
+    orch.recordIncomingChat('Alex', 'what happened?')
+    await orch.handleDispatch('sei:chat_received', chat('what happened?'))
+    const convo = convoOf(provider.calls.at(-1))
+    expect(convo).toContain('game: you died (last hit by a skeleton)')
+    expect(convo).toContain('game: a new day began (spring 4, rain)')
+    expect(convo).toContain('game: It is 10 PM')
+    expect(convo).not.toContain('act on it')
+    expect(convo).not.toContain('pass out')
   })
 })

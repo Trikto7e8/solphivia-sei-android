@@ -44,7 +44,11 @@ import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
 import { ownRepeatsNote } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
-import { describeActionEvent, describeAttackEvent, describeDeathEvent, HIT_COALESCE_MS } from './sessionEvents.js'
+import {
+  describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
+  gameEventFact,
+  HIT_COALESCE_MS, ACTION_COALESCE_MS,
+} from './sessionEvents.js'
 import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
@@ -3635,7 +3639,7 @@ function maybeWarnByteCap(loop, warned) {
   function noteActionEvent(name, r) {
     try {
       const line = describeActionEvent(name, r)
-      if (line) convoMemory.recentChat.pushEvent(line)
+      if (line) convoMemory.recentChat.pushEvent(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
     } catch {}
   }
 
@@ -5570,17 +5574,18 @@ function maybeWarnByteCap(loop, warned) {
      * re-fired dispatch is never counted twice.
      *   kind 'attacked': the onAttacked payload (reflex/survival kinds skip)
      *   kind 'death':    the sei:death payload
-     *   kind 'game':     { text } a game's own notice (Stardew: a new day)
+     *   kind 'game':     { text, fact? } a game's own notice (Stardew: a new
+     *                    day); only the fact is recorded (gameEventFact)
      */
     recordGameEvent: (kind, data) => {
       try {
         if (kind === 'attacked') {
           const ev = describeAttackEvent(data)
-          if (ev) convoMemory.recentChat.pushEvent(ev.text, { key: ev.key, windowMs: HIT_COALESCE_MS })
+          if (ev) convoMemory.recentChat.pushEvent(ev.text, { key: ev.key, windowMs: HIT_COALESCE_MS, again: ev.again })
         } else if (kind === 'death') {
           convoMemory.recentChat.pushEvent(describeDeathEvent(data))
         } else if (kind === 'game') {
-          const t = String(data?.text ?? '').trim()
+          const t = gameEventFact(data)
           if (t) convoMemory.recentChat.pushEvent(t)
         }
       } catch {}

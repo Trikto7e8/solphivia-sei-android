@@ -107,6 +107,16 @@ describe('resolveRecipient', () => {
     expect(resolveRecipient({ username: 'Sui', players: { SSk1tz: players.SSk1tz } }, 'alex', cfg)?.username).toBe('SSk1tz')
   })
 
+  it('never falls back to a sibling companion when the player is offline', () => {
+    const lyraOnly = { username: 'Sui', players: { Lyra: players.Lyra } }
+    expect(resolveRecipient(lyraOnly, 'Alex', { ...cfg, _seiCompanions: ['Lyra'] })).toBeNull()
+    // Without the roster, Lyra looks like the one human online.
+    expect(resolveRecipient(lyraOnly, 'Alex', cfg)?.username).toBe('Lyra')
+    // With the player online beside a companion, the player still resolves.
+    const both = { username: 'Sui', players }
+    expect(resolveRecipient(both, 'Alex', { ...cfg, _seiCompanions: ['Lyra'] })?.username).toBe('SSk1tz')
+  })
+
   it('finds anyone else only by their own name, never the lone-human fallback', () => {
     const bot = { username: 'Sui', players }
     expect(resolveRecipient(bot, 'lyra', cfg)?.username).toBe('Lyra')

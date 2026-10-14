@@ -505,7 +505,7 @@ export const PERSONALITY_TOOL_DESCRIPTIONS = {
     'Cancel the action you are running now, when the player asks you to stop or it is no longer the right thing to do. To switch to a different task, call the new action instead; it replaces the current one.',
 
   setGoal:
-    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.',
+    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.',
 
   clearGoal:
     'Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.',
@@ -825,6 +825,10 @@ export const NUDGES = {
   // memory write, so that turn started nothing while her say() often said
   // she was on it.
   goalNotStarted: `Your goal is written down, but writing it down does not start any work. If you are starting on it now, call the action for its first step. If it waits until later, call end_loop. Call say() only if you have something new to tell them.`,
+  // The same, when the turn also left the player's line unanswered: the
+  // unanswered-line nudge follows it and asks for the say(), so this one
+  // says nothing about speaking.
+  goalNotStartedReplyOwed: `Your goal is written down, but writing it down does not start any work. If you are starting on it now, call the action for its first step. If it waits until later, call end_loop.`,
 
   // 261012: closes the reply text of a player line (idle and mid-action).
   // The same rule in the conversation header did not hold on its own: in the

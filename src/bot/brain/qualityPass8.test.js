@@ -174,12 +174,44 @@ describe('orchestrator: a goal written down with no action started', () => {
   })
 })
 
+describe('orchestrator: the goal nudge is only for work the player asked for', () => {
+  it('does not fire on the greeting or an idle turn that sets her own goal', async () => {
+    _setTickIntervalForTests(10_000_000)
+    for (const data of [{ reason: 'just_connected_first_spawn' }, { quietMs: 20000 }]) {
+      const provider = makeProvider([
+        turn(say('s1', 'yo, gonna get us iron tools today'), goal('g1', 'Get a stone pickaxe, then iron. Done when I hold an iron pickaxe.')),
+        turn(say('s9', 'unreachable')),
+      ])
+      const executed = []
+      const orch = createOrchestrator({ adapter: makeAdapter(executed), config: config(), reenqueue: () => {}, _anthropicOverride: provider })
+      await orch.handleDispatch('sei:idle', data)
+      expect(provider.calls.length).toBe(1)
+      expect(executed).toEqual([])
+    }
+  })
+
+  it('asks for the reply only once when the player line was answered with setGoal alone', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      turn(goal('g1', 'Get 10 logs for Steve. Done when Steve has them.')),
+      turn(say('s2', 'on it'), { id: 'a1', name: 'gather', input: { name: 'oak_log' } }),
+    ])
+    const orch = createOrchestrator({ adapter: makeAdapter(), config: config(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', line('get me 10 logs'))
+    expect(provider.calls.length).toBe(2)
+    const sent = lastUserText(provider.calls[1])
+    expect(sent).toContain(NUDGES.goalNotStartedReplyOwed)
+    expect(sent).not.toContain(NUDGES.goalNotStarted)
+    expect(sent).toContain('Answer them now with one short say()')
+  })
+})
+
 describe('prompt text', () => {
-  const texts = () => [NUDGES.goalNotStarted, ACTION_DESCRIPTIONS.give, ACTION_DESCRIPTIONS.dropItem, TOOL.setGoal, TOOL.clearGoal, MEMORY_GOAL_TAIL]
+  const texts = () => [NUDGES.goalNotStarted, NUDGES.goalNotStartedReplyOwed, ACTION_DESCRIPTIONS.give, ACTION_DESCRIPTIONS.dropItem, TOOL.setGoal, TOOL.clearGoal, MEMORY_GOAL_TAIL]
 
   it('says writing a goal down starts nothing, near the end of a player turn and in the tool', () => {
     expect(NUDGES.goalNotStarted).toContain('does not start any work')
-    expect(TOOL.setGoal).toContain('Recording a goal does not start it')
+    expect(TOOL.setGoal).toContain('Recording a goal does not start it: when the player wants it done now')
     expect(MEMORY_GOAL_TAIL).toContain('setGoal only writes the task down')
   })
 

@@ -86,8 +86,8 @@ function snapshot(w) {
   const o = w.owner ?? { x: 109, y: 71, z: -38, dist: 3 }
   return [
     'world: #1 Meadow', 'pos: 112,71,-40', 'facing: north. forward -z, back +z, left -x, right +x',
-    'biome: plains  surroundings: outside  light: sky 15 block 0  time: day (2400)',
-    'real time: 7:40 PM — you joined this session 12 minutes ago',
+    `biome: plains  surroundings: outside  light: sky 15 block 0  time: ${w.time ?? 'day (2400)'}`,
+    `real time: 7:40 PM — you joined this session ${w.joined ?? '12 minutes ago'}`,
     'hp: 20/20  food: 18/20  xp: lvl 2',
     `holding: ${w.holding ?? (w.inv?.length ? w.inv[0][0] : '(empty hand)')}`,
     w.doing ?? 'idle: no action is running',
@@ -158,6 +158,18 @@ export const SITUATIONS = {
     world: { inv: [['stone_pickaxe', 1]], doing: 'in_flight: follow Alex (running 20s)', follow: `${PLAYER} (3 blocks away)` },
     order: chat('ok stop following, go chop some wood, like 10 logs'),
   },
+  // First spawn, before the player has said anything (convo eval openings).
+  // Here acting is NOT the goal: a world action started on the greeting turn
+  // means she walked off before the player spoke (night_social-B: off
+  // gathering when the zombie reached the player). Scored separately.
+  greet_day: {
+    greeting: true,
+    world: { inv: [], time: 'day (1000)', joined: 'just now', last: '(none)' },
+  },
+  greet_night: {
+    greeting: true,
+    world: { inv: [['iron_sword', 1], ['bread', 4]], holding: 'iron_sword', time: 'night (14000)', joined: 'just now', last: '(none)', blocks: ['  #1 grass_block x412 @111,70,-40', '  #2 oak_log x6 @130,72,-60'] },
+  },
   // Delivery: she has the coal and stands next to the player.
   deliver_near: {
     history: [
@@ -203,7 +215,8 @@ async function runOne({ sid, ch, rep }) {
     exists: true, player_uuid: 'u-alex', player_username: PLAYER, first_seen: '2026-10-01T10:00:00Z',
     last_seen: '2026-10-10T19:30:00Z', total_sessions: 3, preferred_name: PLAYER, pronouns: null,
   })
-  fs.writeFileSync(mem('MEMORY.md'), `# MEMORY\n\n- [2026-10-08 19:15] ${PLAYER} likes building near water.\n`)
+  // A greeting opens the first session together, like the convo eval.
+  fs.writeFileSync(mem('MEMORY.md'), sit.greeting ? '# MEMORY\n' : `# MEMORY\n\n- [2026-10-08 19:15] ${PLAYER} likes building near water.\n`)
   const config = botConfig(ch, mem)
   let world = { ...sit.world }
   const bot = {
@@ -296,6 +309,14 @@ async function runOne({ sid, ch, rep }) {
   let error = null
   let historyActs = 0
   try {
+    if (sit.greeting) {
+      // The greeting turn itself is what is measured.
+      phase = 'order'
+      hopsLeft = HOPS
+      await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
+      await drain()
+      throw Object.assign(new Error('greeting done'), { greetingDone: true })
+    }
     // The greeting that opened the session.
     stub = stubResp([tu('say', { text: `hey ${PLAYER.toLowerCase()}` })])
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
@@ -322,7 +343,7 @@ async function runOne({ sid, ch, rep }) {
     orch.recordIncomingChat(PLAYER, sit.order.data.text)
     await orch.handleDispatch(sit.order.event, sit.order.data, new AbortController().signal)
     await drain()
-  } catch (err) { error = String(err?.stack ?? err).slice(0, 400) }
+  } catch (err) { if (!err?.greetingDone) error = String(err?.stack ?? err).slice(0, 400) }
   try { releaseHeld?.() } catch {}
   for (const r of orderHolds) { try { r() } catch {} }
   try { orch.dispose?.() } catch {}
@@ -337,6 +358,7 @@ async function runOne({ sid, ch, rep }) {
   const dropped = called.includes('dropItem') || called.includes('give')
   const row = {
     situation: sid, char: ch.key, rep, model: MODEL, error, cost, calls, orderActs, says,
+    ...(sit.greeting ? { greeting: true } : {}),
     acted, first: firstWorld, hops: calls.length,
     goalOnly: first.some((t) => t.name === 'setGoal') && !firstWorld,
     announce: !acted && says.some((s) => INTENT.test(s)),
@@ -376,11 +398,13 @@ function summarize(rows) {
     lines.push(`| ${name} | ${pct(rs.filter((r) => r.acted).length, rs.length)} | ${pct(rs.filter((r) => r.first).length, rs.length)} | ${pct(rs.filter((r) => r.goalOnly).length, rs.length)} | ${pct(rs.filter((r) => r.announce).length, rs.length)} | ${del.length ? pct(del.filter((r) => r.dropped).length, del.length) : '-'} | ${del.length ? pct(del.filter((r) => r.claim).length, del.length) : '-'} | ${del.length ? pct(del.filter((r) => r.clearedNoDrop).length, del.length) : '-'} | ${(rs.reduce((s, r) => s + r.sayCalls, 0) / Math.max(1, rs.length)).toFixed(2)} | ${(rs.reduce((s, r) => s + (r.hops ?? 0), 0) / Math.max(1, rs.length)).toFixed(2)} |`)
   }
   for (const s of sids) row(s, ok.filter((r) => r.situation === s))
-  const orders = ok.filter((r) => !('dropped' in r))
+  const orders = ok.filter((r) => !('dropped' in r) && !r.greeting)
   row('**all orders**', orders)
   row('**all deliveries**', ok.filter((r) => 'dropped' in r))
+  const greets = ok.filter((r) => r.greeting)
+  if (greets.length) row('**all greetings** (acted = left before the player spoke; lower is better)', greets)
   lines.push('', '## Turns that did not act', '')
-  for (const r of ok.filter((r) => !r.acted || r.claim)) {
+  for (const r of ok.filter((r) => !r.greeting && (!r.acted || r.claim))) {
     lines.push(`- ${r.situation}/${r.char}/${r.rep}: ${r.calls.map((c) => c.tools.map((t) => t.name === 'say' ? `say("${String(t.input?.text ?? '').slice(0, 90)}")` : t.name).join(' + ') || '(text only)').join(' -> ')}`)
   }
   return lines.join('\n') + '\n'

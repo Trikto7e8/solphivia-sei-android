@@ -64,7 +64,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1112,7 +1112,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2159,7 +2159,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {

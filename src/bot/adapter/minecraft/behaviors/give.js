@@ -49,13 +49,17 @@ async function faceEntity(bot, ent) {
 }
 
 // The player she plays with goes through resolveOwner, which maps the name she
-// calls them (a preferred name) to their LAN login. Anyone else must be in
-// the tab list under that name: resolveOwner's last fallback (the one human
-// online) would otherwise hand a sibling companion's items to the player.
+// calls them (a preferred name) to their LAN login. It gets the companion
+// roster (config._seiCompanions, the list the snapshot and chat.js use), so
+// its last fallback (the one human online) can never pick a sibling companion
+// while the player is offline. Anyone else must be in the tab list under that
+// name: the fallback would otherwise hand items meant for a named sibling to
+// the player.
 export function resolveRecipient(bot, who, config) {
   const lc = String(who).toLowerCase()
   const pins = [config?.player_username, config?.player_display_name].filter(Boolean).map((n) => String(n).toLowerCase())
-  if (pins.includes(lc)) return resolveOwner(bot, config?.player_username ?? who, [])
+  const companions = Array.isArray(config?._seiCompanions) ? config._seiCompanions : []
+  if (pins.includes(lc)) return resolveOwner(bot, config?.player_username ?? who, companions)
   const players = bot?.players || {}
   if (players[who]) return { username: who, player: players[who] }
   for (const [name, p] of Object.entries(players)) {

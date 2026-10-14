@@ -4471,11 +4471,25 @@ function maybeWarnByteCap(loop, warned) {
   // 261015 (quality pass 8): the one-shot "your goal starts nothing" nudge
   // for a turn whose only work was writing a NEW goal (see the call site in
   // runIterations). Returns the nudge text or null.
+  //
+  // Only when the player asked for the work (loop._playerDirected: the loop
+  // answers a player line, or one was folded in). Her own goal on a greeting
+  // or idle turn is left to the idle tick as before: nudged there, she walked
+  // off before the player's first line in 15 of 18 eval sessions (2 of 18
+  // without), and in night_social she was away gathering when the zombie
+  // reached the player.
+  //
+  // When the same turn also left the player's line unanswered, the
+  // unanswered-line nudge rides this call and asks for a say(), so the goal
+  // nudge drops its own "say() only if new" sentence instead of contradicting it.
   function goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop }) {
     if (continueLoop || hasEndLoop || hasStop || loop.isTerminal || loop._goalStartNudged) return null
+    if (!loop._playerDirected) return null
     if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return null
     const newGoal = toolUses.some((u, i) => u.name === 'setGoal' && results[i]?.content === 'goal set')
-    return newGoal ? NUDGES.goalNotStarted : null
+    if (!newGoal) return null
+    const replyOwed = !!loop._unansweredNudgeText && !loop._spokeThisLoop
+    return replyOwed ? NUDGES.goalNotStartedReplyOwed : NUDGES.goalNotStarted
   }
 
   async function runIterations(loop, byteWarn) {

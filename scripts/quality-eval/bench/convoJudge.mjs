@@ -37,10 +37,11 @@ export function renderConvo(sess, units) {
       }
       case 'line': out.push(`${ts} ${sess.companion} says: ${e.text}`); break
       case 'chat_out': if (!e.folded) out.push(`${ts} ${sess.companion} says: ${e.text}`); break
-      case 'action': out.push(`${ts} ${sess.companion} action: ${e.item.name}(${clip(JSON.stringify(e.item.args ?? {}), 140)})`); break
+      case 'action': out.push(`${ts} ${sess.companion} action: ${e.item.name}(${clip(JSON.stringify(e.item.args ?? {}), 140)})${e.item.preStart ? '   (started just before the session began, still running)' : ''}`); break
       case 'result': out.push(`${ts}   result: ${clip(e.text.replace(/^A\d+ /, ''))}`); break
       case 'private': out.push(`${ts}   (${sess.companion} private note, player cannot see: ${e.text})`); break
       case 'snapshot': out.push(`${ts}   (${sess.companion}'s sensors: ${e.text})`); break
+      case 'sensed': out.push(`${ts}   (what ${sess.companion}'s sensors showed her as she spoke: ${e.text})`); break
       case 'event': out.push(`${ts}   (event: ${e.text})`); break
       default: break
     }

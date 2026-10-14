@@ -34,7 +34,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createRequire } from 'node:module'
-import { parseSnapshot, makeSnapshotGate } from './snapshot.mjs'
+import { parseSnapshot, parseSensed, makeSnapshotGate } from './snapshot.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const repo = path.resolve(process.env.QE_BOT_REPO || path.resolve(here, '..', '..'))
@@ -108,7 +108,12 @@ function parseCalls(body) {
 // Ground truth for the judge: a compact slice of the bot's own snapshot at
 // each LLM turn (snapshot.mjs), rate limited.
 const snapGate = makeSnapshotGate()
+// 261014: the gated snapshot can be 20s old when she speaks, so the judge
+// marked counts that matched her prompt as wrong. Each llm_turn carries what
+// that turn's prompt showed.
+let lastSensed = null
 function grabSnapshot(s) {
+  try { lastSensed = parseSensed(s) } catch { lastSensed = null }
   const snap = parseSnapshot(s)
   if (snap && snapGate(Date.now(), snap)) emit({ kind: 'snapshot', ...snap })
 }
@@ -133,6 +138,7 @@ function onLogString(s) {
         scratchpad: f.text === '(empty)' ? '' : (f.text ?? ''),
         calls: parseCalls(f.calls),
         usage,
+        ...(lastSensed ? { sensed: lastSensed } : {}),
       })
       break
     }

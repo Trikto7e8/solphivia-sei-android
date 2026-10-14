@@ -146,7 +146,7 @@ export function dropItemsFor(bot, blockName) {
  *
  * @param {{ name?:string, x?:number, y?:number, z?:number, maxDistance?:number, count?:number }} args
  * @param {import('mineflayer').Bot} bot
- * @param {{ signal?: AbortSignal, pathfinder_timeout_ms?: number, onProgress?: (p:{dug:number,total:number})=>void }} [config]
+ * @param {{ signal?: AbortSignal, pathfinder_timeout_ms?: number, onProgress?: (p:{dug:number,total:number,items?:string[],before?:number})=>void }} [config]
  * @param {{ goTo?: typeof realGoTo, digAction?: typeof realDigAction, sleep?: (ms:number)=>Promise<void> }} [_deps]
  *        Optional dependency injection — used by unit tests to stub the
  *        per-block side effects. Defaults fall through to the real imports
@@ -214,6 +214,11 @@ export async function gatherAction(args, bot, config, _deps) {
   // Set once the anchor block is known (below); mineComponent reads them.
   let dropItems = []
   let got = () => 0
+  // 261014: the drop items and how many of them she held at the start ride on
+  // every progress tick, so the snapshot can say what she holds right now
+  // instead of a count that lags one pickup behind.
+  let progressExtra = {}
+  const tick = () => { try { config?.onProgress?.({ dug: got(), total: want, ...progressExtra }) } catch {} }
 
   // Shared across re-anchor rounds: every position ever swept by a flood-fill
   // (dug or failed) stays in `visited`, so a component whose digs all failed
@@ -357,7 +362,7 @@ export async function gatherAction(args, bot, config, _deps) {
           // slow dig ('timeout') or a stale block is not a reachability signal.
           for (const entry of positions) entry.done = true
           nextEntry.done = true
-          try { config?.onProgress?.({ dug: got(), total: want }) } catch {}
+          tick()
           return dug
         }
       } else {
@@ -369,7 +374,7 @@ export async function gatherAction(args, bot, config, _deps) {
       // 260513-wkd: push progress tick after each entry is marked done so the
       // snapshot's `in_flight: gather(...) — K/W` line tracks the batch in real
       // time. Same onProgress channel as cuboid build/dig.
-      try { config?.onProgress?.({ dug: got(), total: want }) } catch {}
+      tick()
     }
   }
 
@@ -410,10 +415,15 @@ export async function gatherAction(args, bot, config, _deps) {
     for (const name of dropItems) n += Math.max(0, (now?.get(name) ?? 0) - (invBefore.get(name) ?? 0))
     return n
   }
+  if (countItems) {
+    let before = 0
+    for (const name of dropItems) before += invBefore.get(name) ?? 0
+    progressExtra = { items: dropItems.slice(), before }
+  }
   // 260513-wkd: emit an initial 0/W progress tick the moment the batch is
   // known so the next snapshot's `in_flight:` line shows `dug 0/W` instead of
   // running progress-less for the first dig.
-  try { config?.onProgress?.({ dug: 0, total: want }) } catch {}
+  tick()
 
   // What the result calls the haul: the dropped item when it differs from the
   // block ("cobblestone (mined from stone)").

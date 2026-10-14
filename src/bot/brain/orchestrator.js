@@ -2071,6 +2071,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
+        // 261014: lets the composer tell her own haul from a gift.
+        recentActions: inflight.recent(),
         // Player-priority pin: keep the player in `nearby entities` even when
         // six other entities are closer. Without this, busy-area entity
         // congestion (sheep / foxes / traders / llamas) can evict the player
@@ -2872,6 +2874,9 @@ function maybeWarnByteCap(loop, warned) {
         eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice
           : crossed ? NUDGES.playerInterruptHintGreetCrossed
           : NUDGES.playerInterruptHint
+        // 261014: say whether anything is running, rather than tell every reply
+        // that its say() keeps "the current action" going.
+        eventAddendum += ' ' + (inflight.current() ? NUDGES.replyWhileRunning : NUDGES.replyWhileIdle)
         const opener = (fromTeammate && speakerName)
           ? (isVoiceLine
             ? `your teammate ${speakerName} just said this on the voice call`

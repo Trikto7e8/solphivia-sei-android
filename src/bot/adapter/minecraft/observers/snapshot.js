@@ -206,7 +206,8 @@ export function composeSnapshot(bot, opts = {}) {
   // brain + adapter share a single source-of-truth formatter. The helper
   // preserves the em-dash + y=<currentY> channels byte-stable;
   // only the elapsed trailer changes from `(Xs)` to `started=Xs ago`.
-  const inFlightLine = getInFlightLineForSnapshot(inFlight)
+  // 261014: the gather line reads the same item counts as the inventory line.
+  const inFlightLine = getInFlightLineForSnapshot(inFlight, Date.now(), { inventory: inv })
   if (inFlightLine) lines.push(inFlightLine)
   // 261012: say so when nothing runs. The absence of an in_flight line was the
   // only signal, and in the scripted-convo eval she told the player "still
@@ -411,6 +412,55 @@ export function composeSnapshot(bot, opts = {}) {
 // nearby set despawns at once → "killed wolf; killed arrow"), and on picked-up
 // or despawned dropped items ("killed item"). That fed the model fabricated
 // history. Inventory + hp deltas remain diff-based.
+// 261014: which of her own actions can account for an inventory change.
+// Gains: a gather's drop items (or anything, when it did not say which), and
+// whatever a dig, craft, kill, pickup, withdraw or furnace take brings in.
+// Losses: anything used up by an action that places, crafts, eats, drops,
+// stores, smelts, or wears out a tool. Moving and following explain nothing:
+// items the player tosses get picked up while she walks.
+const OWN_GAIN_ACTIONS = new Set(['dig', 'craft', 'attackEntity', 'pickup', 'withdrawItem', 'takeSmelted', 'shelter'])
+const OWN_LOSS_ACTIONS = new Set(['gather', 'dig', 'placeBlock', 'build', 'shelter', 'craft', 'consumeItem', 'dropItem', 'depositItem', 'smeltInput', 'addFuel', 'activateItem', 'activateBlock', 'attackEntity'])
+// An action that ended just before the last tick can still have drops landing.
+const OWN_ACTION_SLACK_MS = 2000
+
+/**
+ * Split inventory deltas into the ones her own actions in the window explain
+ * and the rest.
+ * @param {Array<{item:string, n:number}>} deltas  signed counts
+ * @param {Array<{name:string, startedAt:number, endedAt:number|null, progress?:any}>|null|undefined} actions
+ * @param {number|null} sinceMs  previous snapshot time
+ * @param {number} nowMs
+ * @returns {{ own: Array<{item:string,n:number}>, ownNames: string[], other: Array<{item:string,n:number}> }}
+ */
+export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs) {
+  const own = []
+  const other = []
+  const names = []
+  const inWindow = (Array.isArray(actions) ? actions : []).filter(a =>
+    a && typeof a.name === 'string' &&
+    typeof a.startedAt === 'number' && a.startedAt <= nowMs &&
+    (a.endedAt == null || sinceMs == null || a.endedAt >= sinceMs - OWN_ACTION_SLACK_MS))
+  for (const d of deltas) {
+    const who = inWindow.find(a => {
+      if (d.n > 0) {
+        if (a.name === 'gather') {
+          const items = a.progress?.items
+          return !Array.isArray(items) || items.length === 0 || items.includes(d.item)
+        }
+        return OWN_GAIN_ACTIONS.has(a.name)
+      }
+      return OWN_LOSS_ACTIONS.has(a.name)
+    })
+    if (who) {
+      own.push(d)
+      if (!names.includes(who.name)) names.push(who.name)
+    } else {
+      other.push(d)
+    }
+  }
+  return { own, ownNames: names, other }
+}
+
 /**
  * Create a stateful snapshot composer that tracks per-instance previous
  * inventory / hp state and injects a `recent_events:` line into each composed
@@ -426,6 +476,7 @@ export function createSnapshotComposer({ bot }) {
   trackEntityDeaths(bot)
   let prevInventory = null
   let prevHp = null
+  let prevTickAt = null
   // Session clock anchor: the composer is created once per bot session (right
   // around join), so "now minus this" is minutes-in-world for the `real time`
   // snapshot line.
@@ -466,25 +517,32 @@ export function createSnapshotComposer({ bot }) {
   // — the bot kept overlooking handoffs like "i'll turn your logs to planks"
   // because the gain/loss was buried in a trailing recent_events line). Deaths +
   // hp stay in `other` → the existing recent_events line.
-  function computeEvents(currInv, currHp) {
+  function computeEvents(currInv, currHp, recentActions, now) {
     // 1. Inventory deltas — gains then losses, capped to 6 entries total.
-    const inv = []
+    const deltas = []
     if (prevInventory) {
       // Gains / increases
       for (const [k, v] of Object.entries(currInv)) {
         const prev = prevInventory[k] ?? 0
-        if (v > prev) inv.push(`+${v - prev} ${k}`)
+        if (v > prev) deltas.push({ item: k, n: v - prev })
       }
       // Losses / removed keys
       for (const [k, v] of Object.entries(prevInventory)) {
         const curr = currInv[k] ?? 0
-        if (curr < v) inv.push(`-${v - curr} ${k}`)
+        if (curr < v) deltas.push({ item: k, n: curr - v })
       }
     }
+    // 261014: changes her own actions explain (a gather's logs, a craft's
+    // planks) are split from the rest, so they are not read as a gift.
+    const { own, ownNames, other: unexplained } = splitOwnInventoryChanges(deltas, recentActions, prevTickAt, now)
     const cap = 6
-    const invCapped = inv.length > cap
-      ? [...inv.slice(0, cap), `(+${inv.length - cap} more)`]
-      : inv
+    const fmt = (d) => `${d.n > 0 ? '+' : '-'}${Math.abs(d.n)} ${d.item}`
+    const capList = (list) => {
+      const out = list.map(fmt)
+      return out.length > cap ? [...out.slice(0, cap), `(+${out.length - cap} more)`] : out
+    }
+    const invCapped = capList(unexplained)
+    const ownCapped = capList(own)
 
     const other = []
     // 2. Real creature deaths near the bot (from entityDead — see above). No
@@ -499,7 +557,7 @@ export function createSnapshotComposer({ bot }) {
       other.push(`hp -${prevHp - currHp}`)
     }
 
-    return { inv: invCapped, other }
+    return { inv: invCapped, own: ownCapped, ownNames, other }
   }
 
   return {
@@ -507,23 +565,37 @@ export function createSnapshotComposer({ bot }) {
       const base = composeSnapshot(bot, { ...opts, sessionStartedAtMs })
       const currInv = inventory(bot)
       const currHp = Math.round(bot.health ?? 0)
-      const { inv, other } = computeEvents(currInv, currHp)
+      const now = Date.now()
+      const { inv, own, ownNames, other } = computeEvents(currInv, currHp, opts.recentActions, now)
 
       // Update inv/hp state AFTER computing — first call has no deltas.
       prevInventory = currInv
       prevHp = currHp
+      prevTickAt = now
       deaths = new Map()   // drain the death buffer for the next window
 
-      if (inv.length === 0 && other.length === 0) return base
+      if (inv.length === 0 && own.length === 0 && other.length === 0) return base
       const lines = base.split('\n')
+      const invIdx = () => lines.findIndex(l => l.startsWith('inventory ('))
+
+      // 261014: her own haul, stated as hers and as already counted. Under the
+      // loud banner below she read her gather's logs as the player's gift
+      // ("got 6 now, you're welcome") or added them on top of the inventory
+      // count ("3 so far, plus the two i just got").
+      if (own.length > 0) {
+        const ownLine = `since last tick your own ${ownNames.join(' and ')} changed your inventory: ${own.join(', ')} (already counted on the inventory line above)`
+        const i = invIdx()
+        if (i >= 0) lines.splice(i + 1, 0, ownLine)
+        else lines.unshift(ownLine)
+      }
 
       // Inventory changes get a LOUD, dedicated section right under the
       // inventory line — the bot reads inventory there, so a handoff / pickup /
       // drop is impossible to miss, and it knows to act on what just arrived.
       if (inv.length > 0) {
         const invLine = `*** INVENTORY JUST CHANGED ***: ${inv.join(', ')}  <- items entered or left your inventory since last tick (the player handed you something, you picked it up, or you used/dropped it). React to it: equip a new tool, eat new food, build with new blocks. If you were waiting on something you asked for, this is it arriving.`
-        const i = lines.findIndex(l => l.startsWith('inventory ('))
-        if (i >= 0) lines.splice(i + 1, 0, invLine)
+        const i = invIdx()
+        if (i >= 0) lines.splice(i + 1 + (own.length > 0 ? 1 : 0), 0, invLine)
         else lines.unshift(invLine)
       }
 
@@ -539,6 +611,7 @@ export function createSnapshotComposer({ bot }) {
     reset() {
       prevInventory = null
       prevHp = null
+      prevTickAt = null
       deaths = new Map()
     },
     dispose() {

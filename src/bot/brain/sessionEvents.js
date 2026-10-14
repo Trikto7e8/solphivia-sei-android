@@ -193,6 +193,9 @@ export function createSessionEventLog({ capacity = SESSION_EVENT_CAPACITY, now =
         if (at - e.lastAt <= windowMs) {
           e.n += 1
           e.lastAt = at
+          // Numbers are blanked in action keys, so keep the newest wording
+          // ("got 5/5 oak_log", not the "3/5" from the first pass).
+          e.text = t
           return true
         }
         break

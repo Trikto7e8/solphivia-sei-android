@@ -138,7 +138,7 @@ describe('createSessionEventLog', () => {
     expect(texts[0]).toBe('you used attackEntity: killed zombie (4 hits)')
     expect(texts).toEqual([
       'you used attackEntity: killed zombie (4 hits)',
-      'you used dig: dug coal_ore at 10,61,-4, more than once',
+      'you used dig: dug coal_ore at 29,61,-4, more than once',
     ])
     // Past the window the same result is a new line again.
     t += ACTION_COALESCE_MS + 1

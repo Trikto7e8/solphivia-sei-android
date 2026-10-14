@@ -44,6 +44,11 @@ import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
 import { ownRepeatsNote } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
+import {
+  describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
+  gameEventFact,
+  HIT_COALESCE_MS, ACTION_COALESCE_MS,
+} from './sessionEvents.js'
 import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
@@ -3146,6 +3151,7 @@ function maybeWarnByteCap(loop, warned) {
               ...config, signal: controller.signal,
             })
             try { logActionResult(entry.use.name, r) } catch {}
+            noteActionEvent(entry.use.name, r)
           } catch (err) {
             logger.warn?.(`[sei/orch] post-teardown drain ${entry.use.name} failed: ${err?.message ?? err}`)
           } finally {
@@ -3625,6 +3631,19 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 261014 (pass 7b): a finished world action goes into the session's event
+   * record (sessionEvents.js), which the conversation transcript shows as a
+   * "game:" line. A loop's own history holds its results only until the loop
+   * ends, and every player line opens a new loop.
+   */
+  function noteActionEvent(name, r) {
+    try {
+      const line = describeActionEvent(name, r)
+      if (line) convoMemory.recentChat.pushEvent(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
+    } catch {}
+  }
+
+  /**
    * 260514-gam: attach the `.then`/`.catch` settle handler to a startLongRunner
    * promise. Fires sei:action_complete at P2.1 carrying { name, input, result,
    * aborted, tool_use_id }. Single source of truth — both the for-loop FIRST
@@ -3640,6 +3659,7 @@ function maybeWarnByteCap(loop, warned) {
         const aborted = runner.abortController.signal.aborted
         const result = formatToolResult(use.name, r)
         try { logActionResult(use.name, r) } catch {}
+        noteActionEvent(use.name, r)
         // 260517-fix: capture _tickClaimed BEFORE clearing/nulling, so the
         // dispatcher knows the tool_use was already paired via tick.
         const tickClaimed = !!inflightEntry._tickClaimed
@@ -5547,6 +5567,29 @@ function maybeWarnByteCap(loop, warned) {
     // opts.companion: a sibling AI's line; anything else is the human player's
     // and is labelled by role in the transcript (convoMemory.playerLabel).
     recordIncomingChat: (who, text, opts) => convoMemory.recentChat.pushPlayer(who, text, opts),
+    /**
+     * 261014 (pass 7b): record something that happened in the game, for the
+     * "game:" lines of the conversation transcript (sessionEvents.js). Called
+     * by brain/index.js once per real event, before it is queued, so a
+     * re-fired dispatch is never counted twice.
+     *   kind 'attacked': the onAttacked payload (reflex/survival kinds skip)
+     *   kind 'death':    the sei:death payload
+     *   kind 'game':     { text, fact? } a game's own notice (Stardew: a new
+     *                    day); only the fact is recorded (gameEventFact)
+     */
+    recordGameEvent: (kind, data) => {
+      try {
+        if (kind === 'attacked') {
+          const ev = describeAttackEvent(data)
+          if (ev) convoMemory.recentChat.pushEvent(ev.text, { key: ev.key, windowMs: HIT_COALESCE_MS, again: ev.again })
+        } else if (kind === 'death') {
+          convoMemory.recentChat.pushEvent(describeDeathEvent(data))
+        } else if (kind === 'game') {
+          const t = gameEventFact(data)
+          if (t) convoMemory.recentChat.pushEvent(t)
+        }
+      } catch {}
+    },
     // 260921: the idle timer's floor-hold (see REPLY_WINDOW_MS). brain/index.js
     // folds it into idleFallbackMs so the FSM needs no knowledge of speech.
     // Always in Stardew (REPLY_WINDOW_GAMES). 261011 (quality pass 2): in

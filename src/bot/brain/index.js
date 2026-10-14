@@ -262,6 +262,10 @@ export async function start({ config, adapter, logger = console, onTerminalError
       // read as a speaker and reset "has the player spoken since my last line".
       if (!evt.gameEvent) {
         try { orchestrator.recordIncomingChat?.(evt.username, evt.text, { companion: evt.fromCompanion === true }) } catch {}
+      } else {
+        // 261014: it still happened, so it is a "game:" line in the transcript.
+        // The notice is written as an instruction; only its fact is recorded.
+        try { orchestrator.recordGameEvent?.('game', { text: evt.text, fact: evt.eventFact }) } catch {}
       }
       // 260618 (M1): a message aimed only at another companion, or a sibling
       // bot's own chatter, is recorded above but must NOT interrupt this bot.
@@ -306,6 +310,9 @@ export async function start({ config, adapter, logger = console, onTerminalError
       // (P0_SAFETY). The event NAME stays 'sei:attacked' — downstream dispatch
       // and the reflex-vs-attack prompt framing key on attackerKind, not the
       // name. See attackedPriority in ./fsm.js.
+      // 261014: a "game:" line in the transcript (reflex warnings are skipped
+      // inside; repeat hits fold into one line).
+      try { orchestrator.recordGameEvent?.('attacked', evt) } catch {}
       queue.enqueue(attackedPriority(evt), 'sei:attacked', evt)
     },
     onDeath: (evt) => {
@@ -329,6 +336,7 @@ export async function start({ config, adapter, logger = console, onTerminalError
             secondsBefore: Math.max(1, Math.round(sinceMs / 1000)),
           }
         : null
+      try { orchestrator.recordGameEvent?.('death', lastAttack ? { lastAttack } : {}) } catch {}
       queue.enqueue(Priority.P1_CHAT, 'sei:death', {
         pos: evt?.pos ?? null,
         ...(lastAttack ? { lastAttack } : {}),

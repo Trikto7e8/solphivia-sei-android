@@ -14,12 +14,17 @@
  * Own lines stay marked "you:" and the header says they are not new input,
  * which is what the split was protecting.
  *
+ * 261014: a third ring holds what HAPPENED in the game (sessionEvents.js),
+ * rendered in the same transcript as "game:" lines so a recall answer has a
+ * record of who did what, not only her own lines about it.
+ *
  * Cross-loop continuity / long-term memory lives in MEMORY.md (written via
  * the remember() tool, read in the seed turn each loop). This module is
  * intra-session only.
  */
 
 import { SEED_HEADERS } from './prompts.js'
+import { createSessionEventLog } from './sessionEvents.js'
 
 const RECENT_CHAT_CAPACITY = 40
 const RECENT_CHAT_LINE_TRUNC = 240
@@ -94,6 +99,10 @@ function fmtAgo(now, at) {
 export function createConvoMemory({ onLine = null } = {}) {
   const playerLines = []
   const selfLines = []
+  // 261014: what happened in the game, rendered into the same transcript as
+  // "game:" lines (sessionEvents.js). Never a speaker: the say() gates and
+  // "has the player spoken since" read only the two rings above.
+  const events = createSessionEventLog()
   const tap = (who, text) => {
     if (typeof onLine !== 'function') return
     try { onLine(who, text) } catch {}
@@ -144,7 +153,12 @@ export function createConvoMemory({ onLine = null } = {}) {
     return `${SEED_HEADERS.selfRecent}\n${body}`
   }
 
-  /** Both sides as ONE exchange, oldest first. null when nobody has spoken. */
+  /**
+   * Both sides as ONE exchange, oldest first, with the session's game events
+   * (sessionEvents.js) in time order between the lines. The turn window counts
+   * spoken lines only; every kept event is shown, so one that happened before
+   * the oldest line still shown sits at the top. null when nobody has spoken.
+   */
   function formatConversationBlock() {
     if (playerLines.length === 0 && selfLines.length === 0) return null
     const now = Date.now()
@@ -154,10 +168,24 @@ export function createConvoMemory({ onLine = null } = {}) {
       ...playerLines.map((l, i) => ({ ...l, self: false, i })),
       ...selfLines.map((l, i) => ({ ...l, self: true, i })),
     ].sort((a, b) => (a.at - b.at) || (Number(a.self) - Number(b.self)) || (a.i - b.i))
-    const body = lastTurns(merged)
-      .map((l) => `[${fmtAgo(now, l.at)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`)
-      .join('\n')
-    return `${SEED_HEADERS.conversation}\n${body}`
+    const spoken = lastTurns(merged).map((l) => ({
+      at: l.at, line: `[${fmtAgo(now, l.at)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`,
+    }))
+    // An event recorded in the same millisecond as a line goes after it: the
+    // line was decided first (say() is emitted before the action runs).
+    const happened = events.list().map((e) => ({ at: e.at, line: `[${fmtAgo(now, e.at)}] game: ${e.text}` }))
+    const all = [...spoken.map((x, i) => ({ ...x, o: 0, i })), ...happened.map((x, i) => ({ ...x, o: 1, i }))]
+      .sort((a, b) => (a.at - b.at) || (a.o - b.o) || (a.i - b.i))
+    return `${SEED_HEADERS.conversation}\n${all.map((x) => x.line).join('\n')}`
+  }
+
+  /**
+   * Record something that happened in the game (not a line anyone said).
+   * @param {string} text  e.g. "you used attackEntity: killed zombie (4 hits)"
+   * @param {{key?: string, windowMs?: number}} [opts]  fold repeats (hits)
+   */
+  function pushEvent(text, opts) {
+    return events.record(text, opts)
   }
 
   return {
@@ -167,6 +195,7 @@ export function createConvoMemory({ onLine = null } = {}) {
       formatPlayerBlock,
       formatSelfBlock,
       formatConversationBlock,
+      pushEvent,
       lastSelf: () => selfLines.length > 0 ? selfLines[selfLines.length - 1] : null,
       // 260730: the pair of these two answers "has the player said anything
       // since I last spoke?", which is what separates a reply from talking to
@@ -174,7 +203,8 @@ export function createConvoMemory({ onLine = null } = {}) {
       lastPlayer: () => playerLines.length > 0 ? playerLines[playerLines.length - 1] : null,
       get playerSize() { return playerLines.length },
       get selfSize() { return selfLines.length },
-      _internal: { playerLines, selfLines },
+      get eventSize() { return events.size },
+      _internal: { playerLines, selfLines, events },
     },
   }
 }

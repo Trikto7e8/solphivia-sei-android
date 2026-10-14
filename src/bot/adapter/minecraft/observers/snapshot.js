@@ -423,7 +423,7 @@ export function composeSnapshot(bot, opts = {}) {
 // tossing her a sword and bread mid-fight has to raise the banner, and a mob
 // drop is not hers in the sense the quiet line means.
 const OWN_GAIN_ACTIONS = new Set(['dig', 'craft', 'pickup', 'withdrawItem', 'takeSmelted', 'shelter'])
-const OWN_LOSS_ACTIONS = new Set(['gather', 'dig', 'placeBlock', 'build', 'shelter', 'craft', 'consumeItem', 'dropItem', 'depositItem', 'smeltInput', 'addFuel', 'activateItem', 'activateBlock', 'attackEntity'])
+const OWN_LOSS_ACTIONS = new Set(['gather', 'dig', 'placeBlock', 'build', 'shelter', 'craft', 'consumeItem', 'dropItem', 'give', 'depositItem', 'smeltInput', 'addFuel', 'activateItem', 'activateBlock', 'attackEntity'])
 // An action that ended just before the last tick can still have drops landing.
 const OWN_ACTION_SLACK_MS = 2000
 // Parts craft() makes from the bag before the asked-for item (craft.js).

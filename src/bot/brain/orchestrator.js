@@ -3802,6 +3802,57 @@ function maybeWarnByteCap(loop, warned) {
     attachSettleHandler(loop, runner, use, inflightEntry)
   }
 
+  // 261015 (pass 8): a clearGoal sent in the same turn as a hand-over (give)
+  // waits for the hand-over. The memory pre-pass used to run it first, so
+  // "give coal + clearGoal" cleared the goal even when give found no player or
+  // no coal, and the job was forgotten with nothing handed over. The clear
+  // now runs once every hand-over in that turn reports success
+  // (caps.handOverResult); any other outcome keeps the goal. A hand-over that
+  // never settles on this loop (dropped, reseeded, drained after teardown)
+  // also keeps it.
+  const CLEAR_WAITS_ON_HANDOVER = 'goal not cleared yet: it is cleared once the items are handed over'
+  const CLEAR_KEPT_NO_HANDOVER = 'goal kept: the items were not handed over, so it was not cleared'
+  function isHandOver(name) {
+    try { return caps.handOverResult(name, '') !== null } catch { return false }
+  }
+  // Queued hand-overs that will never run: settle them as not handed over.
+  async function abandonHandOvers(loop, entries, slots) {
+    for (const e of entries ?? []) {
+      if (e?.use && isHandOver(e.use.name)) {
+        await settleClearAfterHandOver(loop, { tool_use_id: e.use.id, name: e.use.name, aborted: true }, slots)
+      }
+    }
+  }
+  function goalKeptResult(use, content) {
+    return { type: 'tool_result', tool_use_id: use.id, content, is_error: false }
+  }
+  async function settleClearAfterHandOver(loop, data, slots) {
+    const d = loop._clearAfterHandOver
+    if (!d || !d.ids.has(data?.tool_use_id)) return
+    d.ids.delete(data.tool_use_id)
+    let ok = false
+    if (!data.aborted) {
+      try { ok = caps.handOverResult(data.name, typeof data.result === 'string' ? data.result : '') === true } catch { ok = false }
+    }
+    if (!ok) d.ok = false
+    if (d.ids.size > 0) return
+    loop._clearAfterHandOver = null
+    for (const { index, use } of d.clears) {
+      let r = goalKeptResult(use, CLEAR_KEPT_NO_HANDOVER)
+      if (d.ok) {
+        try {
+          r = (await executeInlineMetadata(loop, use)).result
+        } catch (err) {
+          r = { type: 'tool_result', tool_use_id: use.id, content: `error: ${err.message}`, is_error: true }
+        }
+      }
+      // Overwrite the waiting placeholder only while the turn's results are
+      // still open; once a tick appended them, the snapshot shows the outcome.
+      if (slots && slots === d.results) slots[index] = r
+    }
+    logger.info?.(`[sei/orch] clearGoal after hand-over: ${d.ok ? 'cleared' : 'kept'} (loop=${loop.id})`)
+  }
+
   /**
    * 260513-wkd: action_complete dispatch. Appends the long-runner's
    * tool_result into the pending results array, finalizes it via
@@ -3862,6 +3913,7 @@ function maybeWarnByteCap(loop, warned) {
       is_error: false,
     }
     lastActionResult = resultForLast
+    await settleClearAfterHandOver(loop, data, pendingResults)
     loop._pendingResults = null
     loop._pendingActionUse = null
 
@@ -3919,6 +3971,7 @@ function maybeWarnByteCap(loop, warned) {
             is_error: false,
           }
         }
+        await abandonHandOvers(loop, queue, pendingResults)
         // Fall through to appendToolResults below.
       } else {
         // Drain inline entries; on first non-inline, dispatch + return.
@@ -3953,6 +4006,7 @@ function maybeWarnByteCap(loop, warned) {
               content: `aborted: ${entry.use.name} (loop terminal)`,
               is_error: false,
             }
+            await abandonHandOvers(loop, [entry], pendingResults)
             continue
           }
           // Dispatch the next non-inline tool. The remaining queue (still
@@ -4049,6 +4103,9 @@ function maybeWarnByteCap(loop, warned) {
     // instead of dropping. (Timing-gated bug: a chat arriving <10s into the
     // action — before any tick — routes through handleActionComplete, which
     // already folds correctly. Only the tick-claimed window broke.)
+    // The tool_use was already paired by the tick, so a clearGoal waiting on
+    // this hand-over runs (or is kept) without touching that turn's results.
+    await settleClearAfterHandOver(loop, data, null)
     const interrupting = !!(data?.aborted && pendingInterrupt)
     if (data?.aborted && !interrupting) {
       // Genuine stale/terminal abort. P0 attack (terminateLoop) and R3/R4
@@ -4301,6 +4358,7 @@ function maybeWarnByteCap(loop, warned) {
             }
           }
         }
+        await abandonHandOvers(loop, pendingQueue, pendingResults)
       }
       inFlight._tickClaimed = true
       loop._pendingResults = null
@@ -4408,6 +4466,30 @@ function maybeWarnByteCap(loop, warned) {
     const line = loop._lastPlayerLine
     if (!line?.text) return null
     return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+  }
+
+  // 261015 (quality pass 8): the one-shot "your goal starts nothing" nudge
+  // for a turn whose only work was writing a NEW goal (see the call site in
+  // runIterations). Returns the nudge text or null.
+  //
+  // Only when the player asked for the work (loop._playerDirected: the loop
+  // answers a player line, or one was folded in). Her own goal on a greeting
+  // or idle turn is left to the idle tick as before: nudged there, she walked
+  // off before the player's first line in 15 of 18 eval sessions (2 of 18
+  // without), and in night_social she was away gathering when the zombie
+  // reached the player.
+  //
+  // When the same turn also left the player's line unanswered, the
+  // unanswered-line nudge rides this call and asks for a say(), so the goal
+  // nudge drops its own "say() only if new" sentence instead of contradicting it.
+  function goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop }) {
+    if (continueLoop || hasEndLoop || hasStop || loop.isTerminal || loop._goalStartNudged) return null
+    if (!loop._playerDirected) return null
+    if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return null
+    const newGoal = toolUses.some((u, i) => u.name === 'setGoal' && results[i]?.content === 'goal set')
+    if (!newGoal) return null
+    const replyOwed = !!loop._unansweredNudgeText && !loop._spokeThisLoop
+    return replyOwed ? NUDGES.goalNotStartedReplyOwed : NUDGES.goalNotStarted
   }
 
   async function runIterations(loop, byteWarn) {
@@ -4781,6 +4863,11 @@ function maybeWarnByteCap(loop, warned) {
           // say() was already emitted up front — use its pre-filled result so
           // it speaks during the tick without re-emitting or being "ignored".
           if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
+          // The hand-over in this batch is ignored, so its clearGoal is too.
+          if (u.name === 'clearGoal' && toolUses.some(t => isHandOver(t.name))) {
+            results[i] = goalKeptResult(u, CLEAR_KEPT_NO_HANDOVER)
+            continue
+          }
           if (isInlineMetadata(u.name)) {
             try {
               const r = await executeInlineMetadata(loop, u)
@@ -4977,6 +5064,22 @@ function maybeWarnByteCap(loop, warned) {
         // loop below finds their slots filled, so they never enter the
         // _pendingToolUses queue and can never be dropped by an action_tick
         // reclaim, a preempt, or the teardown drain (see MEMORY_METADATA).
+        // 261015: a clearGoal waits for a hand-over in the same batch (see
+        // settleClearAfterHandOver). Its slot gets a placeholder now, so it
+        // is skipped below and never queued.
+        const handOverIds = toolUses.filter((u, i) => !results[i] && isHandOver(u.name)).map(u => u.id)
+        if (handOverIds.length > 0) {
+          const clears = []
+          for (let i = 0; i < toolUses.length; i++) {
+            const u = toolUses[i]
+            if (u.name !== 'clearGoal' || results[i]) continue
+            results[i] = goalKeptResult(u, loop.isTerminal ? CLEAR_KEPT_NO_HANDOVER : CLEAR_WAITS_ON_HANDOVER)
+            clears.push({ index: i, use: u })
+          }
+          if (clears.length > 0 && !loop.isTerminal) {
+            loop._clearAfterHandOver = { ids: new Set(handOverIds), clears, results, ok: true }
+          }
+        }
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (signal.aborted) throw makeAbortError()
@@ -5126,7 +5229,19 @@ function maybeWarnByteCap(loop, warned) {
       // cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
       // cause and the LLM needs the specific instruction.
-      const finalNudgeText = cantReachNudge ?? silenceNudgeText
+      // 261015 (quality pass 8): a turn that only WROTE a goal down started
+      // nothing. setGoal is a memory write, so the turn has no world action
+      // and the loop would end here; the design left the start to the next
+      // idle tick, which in the eval came 8-17 s later or never (a player
+      // line arrived first), while her say() had already told the player she
+      // was on it ("nice, now we just need stone. i'll go find some", then
+      // nothing ran). So a turn whose only work was a NEW goal gets one more
+      // call in the same loop, told the goal starts nothing: she starts its
+      // first step now or ends the turn with end_loop. Once per loop, never
+      // when a foreground action is running (the goal is then the next job),
+      // and never on a duplicate setGoal (not newly added).
+      const goalOnlyNudge = goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop })
+      const finalNudgeText = goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
 
       loop.appendToolResults(results, {
         snapshot: snapshotText(),
@@ -5140,6 +5255,11 @@ function maybeWarnByteCap(loop, warned) {
       // long-runner tool_use) as "keep iterating" — so we honor isTerminal
       // first.
       if (loop.isTerminal) return
+      if (goalOnlyNudge) {
+        loop._goalStartNudged = true
+        logger.info?.(`[sei/orch] goal set with no action started — one more call to start it or end the turn (loop=${loop.id})`)
+        continue
+      }
       if (!continueLoop) return
     }
   }

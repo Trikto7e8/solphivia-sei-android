@@ -71,7 +71,7 @@ export function classifyResultText(text) {
   // none was in range. Checked before no_path ("out of range" in the text).
   if (/lost sight of |^no \S.* within \d+ blocks to attack/.test(s)) return 'target_not_found'
   if (/^stuck\b|cant_reach|can't reach|cannot reach|could ?n[o']t reach|unreachable|out of range|out of reach|too far|no path|nopath|no open spot in reach|no reachable/.test(s)) return 'no_path'
-  if (/^no \S.* in inventory|you only have|ran out of|^no \S.* to (smelt|fuel|deposit)|needs a crafting table|no crafting recipe|not enough|holding nothing|no tool that can|^cannot hold/.test(s)) return 'missing_materials'
+  if (/^no \S.* in (your )?inventory|you only have|ran out of|^no \S.* to (smelt|fuel|deposit)|needs a crafting table|no crafting recipe|not enough|holding nothing|no tool that can|^cannot hold/.test(s)) return 'missing_materials'
   if (/in loaded chunks|not found|no such|no known ids|target gone|^gone$|^no block|no sign there|no container open|no furnace open|no item named|target changed|nothing smelted|chest empty|not a bed|^no_bot$/.test(s)) return 'target_not_found'
   // attackEntity's critical-health stop (261011) refuses or ends the fight.
   if (/^did not attack |, then stopped: you are down to /.test(s)) return 'refused'

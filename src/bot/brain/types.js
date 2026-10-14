@@ -230,6 +230,12 @@
  *   toolUses[i]). May return a one-shot `nudge` appended to the next user
  *   turn (it outranks the brain's silence nudge). Minecraft: the per-loop
  *   goTo cant_reach dedup → cantReachNudge. Default: no nudge.
+ * @property {(name: string, resultText: string) => boolean | null}       [handOverResult]
+ *   For an action that hands items to the player: true when its result says
+ *   the items were handed over, false when not. null for every other action.
+ *   A clearGoal in the same turn as a hand-over runs only after every
+ *   hand-over in that turn returned true (261015). Minecraft: give.
+ *   Default: no hand-over action.
  * @property {() => string}                                                [surfaceBaseline]
  *   The game-surface half of the cached system block [0]. The brain composes
  *   `${UNIVERSAL_BASELINE}\n\n${surfaceBaseline()}`. Default MINECRAFT_BASELINE.

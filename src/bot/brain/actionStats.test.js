@@ -38,6 +38,7 @@ describe('classifyResultText (real behavior result strings)', () => {
     ['shelter UNFINISHED, it has gaps and is not safe yet (walls: built 10 of ~24 needed)', 'partial'],
     ["couldn't place dirt — no open spot in reach. Step somewhere more open", 'no_path'],
     ['no cobblestone in inventory', 'missing_materials'],
+    ['no coal in your inventory, nothing was given', 'missing_materials'],
     ['you only have 3 dirt, and that span needs 9', 'missing_materials'],
     ['built 4 of ~9 needed, then ran out of dirt. Gather more', 'missing_materials'],
     ["can't craft furnace here — it needs a crafting table. Go to a crafting table", 'missing_materials'],

@@ -1,0 +1,117 @@
+// src/bot/adapter/minecraft/behaviors/give.js — `give` action (261015).
+//
+// Quality pass 8: handing something to the player had no verb of its own.
+// The only way was dropItem, a bare "toss N of X where you stand", and the
+// model planned a hand-over as walking over: with 8 coal in her bag and the
+// player 14 blocks away she said "got 8 coal. coming over, catch it" and
+// called goTo, and once next to them she cleared the task ("the coal is
+// yours") without ever dropping it (25/25 in the order probe,
+// scripts/quality-eval/order-probe.mjs). give does the whole hand-over in one
+// call: walk to the player if they are out of tossing range, face them, toss
+// the items, and report how many left her inventory.
+
+import { goTo as realGoTo } from './pathfind.js'
+import { dropItemAction as realDrop } from './drop.js'
+import { resolveOwner } from '../observers/snapshot.js'
+
+/** Within this many blocks a toss lands at their feet. */
+export const HAND_RANGE = 3
+const WALK_RANGE = 2
+const FACE_MS = 800
+
+function countOf(bot, item) {
+  let items = []
+  try { items = bot?.inventory?.items?.() ?? [] } catch { items = [] }
+  return items.filter((i) => i?.name === item).reduce((s, i) => s + (i.count ?? 1), 0)
+}
+
+function distance(a, b) {
+  if (!a || !b) return Infinity
+  const d = Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2 + (a.z - b.z) ** 2)
+  return Number.isFinite(d) ? d : Infinity
+}
+
+async function faceEntity(bot, ent) {
+  const p = ent?.position
+  if (!p || typeof bot?.lookAt !== 'function') return
+  const target = typeof p.offset === 'function' ? p.offset(0, 1.2, 0) : { x: p.x, y: p.y + 1.2, z: p.z }
+  let timer = null
+  try {
+    await Promise.race([
+      Promise.resolve(bot.lookAt(target, false)).catch(() => {}),
+      new Promise((resolve) => { timer = setTimeout(resolve, FACE_MS) }),
+    ])
+  } catch {
+    /* facing is cosmetic; the toss still goes ahead */
+  } finally {
+    if (timer) clearTimeout(timer)
+  }
+}
+
+// The player she plays with goes through resolveOwner, which maps the name she
+// calls them (a preferred name) to their LAN login. It gets the companion
+// roster (config._seiCompanions, the list the snapshot and chat.js use), so
+// its last fallback (the one human online) can never pick a sibling companion
+// while the player is offline. Anyone else must be in the tab list under that
+// name: the fallback would otherwise hand items meant for a named sibling to
+// the player.
+export function resolveRecipient(bot, who, config) {
+  const lc = String(who).toLowerCase()
+  const pins = [config?.player_username, config?.player_display_name].filter(Boolean).map((n) => String(n).toLowerCase())
+  const companions = Array.isArray(config?._seiCompanions) ? config._seiCompanions : []
+  if (pins.includes(lc)) return resolveOwner(bot, config?.player_username ?? who, companions)
+  const players = bot?.players || {}
+  if (players[who]) return { username: who, player: players[who] }
+  for (const [name, p] of Object.entries(players)) {
+    if (name.toLowerCase() === lc) return { username: name, player: p }
+  }
+  return null
+}
+
+/**
+ * @param {{ item: string, count?: number, player?: string }} args
+ * @param {import('mineflayer').Bot} bot
+ * @param {{ signal?: AbortSignal, player_username?: string, pathfinder_timeout_ms?: number }} [config]
+ * @param {{ goTo?: typeof realGoTo, drop?: typeof realDrop }} [_deps]
+ */
+export async function giveAction(args, bot, config, _deps) {
+  const goTo = _deps?.goTo ?? realGoTo
+  const drop = _deps?.drop ?? realDrop
+  const signal = config?.signal
+  if (signal?.aborted) return 'aborted'
+
+  const item = String(args?.item ?? '').trim()
+  const have = countOf(bot, item)
+  if (!item || have === 0) return `no ${item || 'such item'} in your inventory, nothing was given`
+  const count = Math.min(Number.isFinite(args?.count) ? args.count : have, have)
+
+  const who = (typeof args?.player === 'string' && args.player.trim()) || config?.player_username || null
+  const owner = who ? resolveRecipient(bot, who, config) : null
+  const name = who ?? 'the player'
+  let ent = owner?.player?.entity
+  if (!ent?.position) {
+    return `cannot see ${name} nearby, so nothing was given; you still have ${have} ${item}. Walk to them first`
+  }
+
+  if (distance(bot.entity?.position, ent.position) > HAND_RANGE) {
+    const p = ent.position
+    const timeoutMs = config?.pathfinder_timeout_ms ?? 12000
+    const walked = await goTo(bot, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z), WALK_RANGE, timeoutMs, signal)
+    if (signal?.aborted) return 'aborted'
+    ent = owner?.player?.entity ?? ent
+    if (distance(bot.entity?.position, ent?.position) > HAND_RANGE + 0.5) {
+      return `could not get to ${name} (${walked}), so nothing was given; you still have ${have} ${item}`
+    }
+  }
+
+  await faceEntity(bot, ent)
+  if (signal?.aborted) return 'aborted'
+  const res = String(await drop({ item, count }, bot, config))
+  const m = /^dropped (\d+) /.exec(res)
+  if (m) {
+    const left = countOf(bot, item)
+    const tail = res.slice(m[0].length - 1).replace(new RegExp(`^ ${item}`), '')
+    return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left`
+  }
+  return `could not give ${item}: ${res}`
+}

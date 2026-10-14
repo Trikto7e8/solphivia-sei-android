@@ -271,6 +271,9 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false, act
     prefilterToolBatch,
     postProcessToolBatch: (toolUses, results, loopState) =>
       postProcessToolBatch(toolUses, results, loopState, cantReachNudge),
+    // give hands items over; its success line starts "gave N item to ...".
+    handOverResult: (name, resultText) =>
+      name === 'give' ? /^gave \d/.test(String(resultText ?? '')) : null,
     surfaceBaseline: () => MINECRAFT_BASELINE,
     sessionEndClause: () => SESSION_END_CLAUSE,
     stuckNudges: () => ({ vision: ACTION_STUCK_NUDGE_VISION, noVision: ACTION_STUCK_NUDGE_NOVISION }),

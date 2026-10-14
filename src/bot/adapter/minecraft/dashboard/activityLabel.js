@@ -117,6 +117,10 @@ export function activityLabel(name, args) {
       return 'checking a chest...'
     case 'dropItem':
       return 'dropping items...'
+    case 'give': {
+      const item = term(args, ['item'])
+      return item ? `handing over ${item}...` : 'handing something over...'
+    }
     case 'pickup':
       return 'picking up items...'
     case 'readSign':

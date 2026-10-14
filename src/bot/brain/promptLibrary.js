@@ -636,9 +636,12 @@ export const SEED_HEADERS = {
     'Things you said recently. If your next line would repeat OR just reword one of these — especially a question or offer the player has not answered yet — stay SILENT instead. Say nothing rather than ask the same thing again in new words; rephrasing an unanswered line is still spam.',
   // 260921: both sides as ONE chronological exchange (convoMemory
   // formatConversationBlock). Replaces the two lists above in the seed turn
-  // and rides every mid-loop player line.
+  // and rides every mid-loop player line. 261014 (pass 7b): it also holds the
+  // session's "game:" lines (sessionEvents.js), and the recall rule: asked
+  // what the player was scared of, she answered "you hid behind me" from her
+  // own "stay behind me".
   conversation:
-    'Your recent conversation with the player, oldest first. Lines marked "you:" are lines YOU already said out loud; they are not new input. Lines marked "player" are the person you are playing with, with the name they go by in brackets; that name can be the same as yours or the app\'s, and it is still them, never you. Read it as one exchange before you speak: see which of their questions you actually answered and what you told them, and keep your next line consistent with your earlier ones (if you now think an earlier line of yours was wrong, say so plainly instead of quietly giving a different answer). If they asked something and none of your later lines answers it, that question is still open, even if you have talked about other things since. If YOU asked them something and they have not replied, it is waiting on them: do not answer it yourself. If your next line would repeat OR just reword one of your own lines, especially a question or offer they have not answered yet, stay SILENT instead; rephrasing an unanswered line is still spam. When you do reply, answer what they just said and leave out what you already told them above: where you are, what you have, your plan, a joke or bit you already made. A reply does not need a status update tacked on. Say you are doing something, or about to, only if it is running right now (an in_flight line in your snapshot) or you call it in this same turn; a goal or a plan you mentioned is not running until you call its action.',
+    'Your recent conversation with the player, oldest first. Lines marked "you:" are lines YOU already said out loud; they are not new input. Lines marked "player" are the person you are playing with, with the name they go by in brackets; that name can be the same as yours or the app\'s, and it is still them, never you. Lines marked "game:" are things that happened in the game, written down as they happened; nobody said them. When they ask about something from earlier, answer from these lines and say only what they show. A line of yours shows only what you said: if you told them to do something, that does not mean they did it. If what they ask about is not in here, say you are not sure instead of filling in details. Read the transcript as one exchange before you speak: see which of their questions you actually answered and what you told them, and keep your next line consistent with your earlier ones (if you now think an earlier line of yours was wrong, say so plainly instead of quietly giving a different answer). If they asked something and none of your later lines answers it, that question is still open, even if you have talked about other things since. If YOU asked them something and they have not replied, it is waiting on them: do not answer it yourself. If your next line would repeat OR just reword one of your own lines, especially a question or offer they have not answered yet, stay SILENT instead; rephrasing an unanswered line is still spam. When you do reply, answer what they just said and leave out what you already told them above: where you are, what you have, your plan, a joke or bit you already made. A reply does not need a status update tacked on. Say you are doing something, or about to, only if it is running right now (an in_flight line in your snapshot) or you call it in this same turn; a goal or a plan you mentioned is not running until you call its action.',
   memory:
     'Your memory — what you have chosen to remember across sessions:',
 }
@@ -808,7 +811,13 @@ export const NUDGES = {
   // The same rule in the conversation header did not hold on its own: in the
   // scripted-convo eval she told the player "i have a sword and bread" in
   // three replies running. Here it sits right before she answers.
-  replyNoRestate: `Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said.`,
+  // 261014 (pass 7b): plus the recall rule, for the same reason. With it only
+  // in the header she still credited the player with things they never did
+  // or said ("hid behind me" from her own "stay behind me", "you were scared
+  // of creepers" from their question about creepers) in the recall probe
+  // (scripts/quality-eval/recall-probe.mjs): 12/32 invented answers on dev,
+  // 7.5/32 header only, 4/32 with this sentence.
+  replyNoRestate: `Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 
   // 261012: playerInterruptHint for the player's first line when it crossed
   // her first-spawn hello in flight (orchestrator alreadyGreetedNote). The

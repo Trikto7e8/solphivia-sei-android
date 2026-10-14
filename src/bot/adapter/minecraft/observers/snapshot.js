@@ -413,26 +413,53 @@ export function composeSnapshot(bot, opts = {}) {
 // or despawned dropped items ("killed item"). That fed the model fabricated
 // history. Inventory + hp deltas remain diff-based.
 // 261014: which of her own actions can account for an inventory change.
-// Gains: a gather's drop items (or anything, when it did not say which), and
-// whatever a dig, craft, kill, pickup, withdraw or furnace take brings in.
-// Losses: anything used up by an action that places, crafts, eats, drops,
-// stores, smelts, or wears out a tool. Moving and following explain nothing:
-// items the player tosses get picked up while she walks.
-const OWN_GAIN_ACTIONS = new Set(['dig', 'craft', 'attackEntity', 'pickup', 'withdrawItem', 'takeSmelted', 'shelter'])
+// Gains: a gather's drop items, a craft's output (plus the planks, sticks and
+// table craft makes on the way), a pickup / withdraw of the item it names, and
+// whatever a dig, pickup, withdraw, furnace take or shelter brings in, except
+// gear and food (below). Losses: anything used up by an action that places,
+// crafts, eats, drops, stores, smelts, or wears out a tool. Moving and
+// following explain nothing: items the player tosses get picked up while she
+// walks. A fight explains no gain either (261014 follow-up): the player
+// tossing her a sword and bread mid-fight has to raise the banner, and a mob
+// drop is not hers in the sense the quiet line means.
+const OWN_GAIN_ACTIONS = new Set(['dig', 'craft', 'pickup', 'withdrawItem', 'takeSmelted', 'shelter'])
 const OWN_LOSS_ACTIONS = new Set(['gather', 'dig', 'placeBlock', 'build', 'shelter', 'craft', 'consumeItem', 'dropItem', 'depositItem', 'smeltInput', 'addFuel', 'activateItem', 'activateBlock', 'attackEntity'])
 // An action that ended just before the last tick can still have drops landing.
 const OWN_ACTION_SLACK_MS = 2000
+// Parts craft() makes from the bag before the asked-for item (craft.js).
+const CRAFT_PART = /(^|_)planks$|^stick$|^crafting_table$/
+// Tools, weapons and armor: a new one is something to equip, so it reaches
+// the banner unless the action asked for that very item.
+const GEAR = /_(pickaxe|axe|shovel|hoe|sword|helmet|chestplate|leggings|boots)$|^(bow|crossbow|trident|mace|shield|elytra|fishing_rod|shears|flint_and_steel)$/
+// Used only when no registry food list is passed in.
+const FALLBACK_FOODS = new Set([
+  'apple', 'golden_apple', 'enchanted_golden_apple', 'bread', 'cookie', 'cake', 'pumpkin_pie', 'melon_slice',
+  'carrot', 'golden_carrot', 'potato', 'baked_potato', 'poisonous_potato', 'beetroot', 'beetroot_soup',
+  'mushroom_stew', 'rabbit_stew', 'suspicious_stew', 'sweet_berries', 'glow_berries', 'dried_kelp', 'honey_bottle', 'chorus_fruit',
+  'beef', 'cooked_beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken',
+  'rabbit', 'cooked_rabbit', 'cod', 'cooked_cod', 'salmon', 'cooked_salmon', 'tropical_fish', 'pufferfish',
+  'rotten_flesh', 'spider_eye',
+])
+
+/** Is this item something to equip or eat (a gift worth reacting to)? */
+export function isGearOrFood(item, isFood) {
+  if (typeof item !== 'string') return false
+  if (GEAR.test(item)) return true
+  return typeof isFood === 'function' ? !!isFood(item) : FALLBACK_FOODS.has(item)
+}
 
 /**
  * Split inventory deltas into the ones her own actions in the window explain
  * and the rest.
  * @param {Array<{item:string, n:number}>} deltas  signed counts
- * @param {Array<{name:string, startedAt:number, endedAt:number|null, progress?:any}>|null|undefined} actions
+ * @param {Array<{name:string, args?:any, startedAt:number, endedAt:number|null, progress?:any}>|null|undefined} actions
  * @param {number|null} sinceMs  previous snapshot time
  * @param {number} nowMs
+ * @param {{ died?: boolean, isFood?: (item:string) => boolean }} [opts]
+ *   died: she died in the window, so losses are the death's, not an action's.
  * @returns {{ own: Array<{item:string,n:number}>, ownNames: string[], other: Array<{item:string,n:number}> }}
  */
-export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs) {
+export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs, opts = {}) {
   const own = []
   const other = []
   const names = []
@@ -440,15 +467,22 @@ export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs) {
     a && typeof a.name === 'string' &&
     typeof a.startedAt === 'number' && a.startedAt <= nowMs &&
     (a.endedAt == null || sinceMs == null || a.endedAt >= sinceMs - OWN_ACTION_SLACK_MS))
+  const named = (a) => (typeof a.args?.item === 'string' ? a.args.item : null)
+  const ownsGain = (a, item) => {
+    if (a.name === 'gather') {
+      const items = a.progress?.items
+      if (Array.isArray(items) && items.length > 0) return items.includes(item)
+      return !isGearOrFood(item, opts.isFood)
+    }
+    if (a.name === 'craft') return item === named(a) || CRAFT_PART.test(item)
+    if (!OWN_GAIN_ACTIONS.has(a.name)) return false
+    if ((a.name === 'pickup' || a.name === 'withdrawItem') && named(a) === item) return true
+    return !isGearOrFood(item, opts.isFood)
+  }
   for (const d of deltas) {
     const who = inWindow.find(a => {
-      if (d.n > 0) {
-        if (a.name === 'gather') {
-          const items = a.progress?.items
-          return !Array.isArray(items) || items.length === 0 || items.includes(d.item)
-        }
-        return OWN_GAIN_ACTIONS.has(a.name)
-      }
+      if (d.n > 0) return ownsGain(a, d.item)
+      if (opts.died) return false
       return OWN_LOSS_ACTIONS.has(a.name)
     })
     if (who) {
@@ -459,6 +493,20 @@ export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs) {
     }
   }
   return { own, ownNames: names, other }
+}
+
+/**
+ * Does this change look like the whole inventory going at once (a death the
+ * composer did not see, e.g. it was created after it)? Two or more kinds lost
+ * and nothing left.
+ * @param {Record<string, number>|null} prevInv
+ * @param {Record<string, number>} currInv
+ */
+export function looksLikeWholeInventoryLost(prevInv, currInv) {
+  if (!prevInv) return false
+  const kinds = Object.entries(prevInv).filter(([, v]) => v > 0).length
+  const left = Object.values(currInv ?? {}).reduce((sum, v) => sum + (v > 0 ? v : 0), 0)
+  return kinds >= 2 && left === 0
 }
 
 /**
@@ -477,6 +525,15 @@ export function createSnapshotComposer({ bot }) {
   let prevInventory = null
   let prevHp = null
   let prevTickAt = null
+  // 261014 follow-up: a death since the last snapshot. The respawn snapshot
+  // must not blame the dropped inventory on the action that was running.
+  let diedSinceTick = false
+  const onDeath = () => { diedSinceTick = true }
+  try { bot.on('death', onDeath) } catch { /* fake bots in tests */ }
+  const isFood = (item) => {
+    const foods = bot.registry?.foodsByName
+    return foods ? !!foods[item] : FALLBACK_FOODS.has(item)
+  }
   // Session clock anchor: the composer is created once per bot session (right
   // around join), so "now minus this" is minutes-in-world for the `real time`
   // snapshot line.
@@ -534,7 +591,8 @@ export function createSnapshotComposer({ bot }) {
     }
     // 261014: changes her own actions explain (a gather's logs, a craft's
     // planks) are split from the rest, so they are not read as a gift.
-    const { own, ownNames, other: unexplained } = splitOwnInventoryChanges(deltas, recentActions, prevTickAt, now)
+    const died = diedSinceTick || looksLikeWholeInventoryLost(prevInventory, currInv)
+    const { own, ownNames, other: unexplained } = splitOwnInventoryChanges(deltas, recentActions, prevTickAt, now, { died, isFood })
     const cap = 6
     const fmt = (d) => `${d.n > 0 ? '+' : '-'}${Math.abs(d.n)} ${d.item}`
     const capList = (list) => {
@@ -572,6 +630,7 @@ export function createSnapshotComposer({ bot }) {
       prevInventory = currInv
       prevHp = currHp
       prevTickAt = now
+      diedSinceTick = false
       deaths = new Map()   // drain the death buffer for the next window
 
       if (inv.length === 0 && own.length === 0 && other.length === 0) return base
@@ -612,10 +671,12 @@ export function createSnapshotComposer({ bot }) {
       prevInventory = null
       prevHp = null
       prevTickAt = null
+      diedSinceTick = false
       deaths = new Map()
     },
     dispose() {
       try { bot.removeListener('entityDead', onEntityDead) } catch { /* ignore */ }
+      try { bot.removeListener('death', onDeath) } catch { /* ignore */ }
     },
   }
 }

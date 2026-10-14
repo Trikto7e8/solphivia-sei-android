@@ -15,7 +15,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
 import { createInflightTracker, describeArgs, getInFlightLineForSnapshot } from './inflight.js'
-import { createSnapshotComposer, splitOwnInventoryChanges } from '../adapter/minecraft/observers/snapshot.js'
+import { createSnapshotComposer, splitOwnInventoryChanges, isGearOrFood, looksLikeWholeInventoryLost } from '../adapter/minecraft/observers/snapshot.js'
 import { NUDGES, PERSONALITY_TOOL_DESCRIPTIONS } from './promptLibrary.js'
 import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
 
@@ -90,7 +90,7 @@ describe('splitOwnInventoryChanges', () => {
   it('credits a craft with its output and the ingredients it used', () => {
     const r = splitOwnInventoryChanges(
       [{ item: 'oak_planks', n: 4 }, { item: 'oak_log', n: -1 }],
-      [{ name: 'craft', startedAt: 91_000, endedAt: 92_000 }], since, now)
+      [{ name: 'craft', args: { item: 'oak_planks', count: 4 }, startedAt: 91_000, endedAt: 92_000 }], since, now)
     expect(r.own.length).toBe(2)
     expect(r.other).toEqual([])
   })
@@ -109,6 +109,73 @@ describe('splitOwnInventoryChanges', () => {
 
   it('handles no actions', () => {
     expect(splitOwnInventoryChanges([{ item: 'dirt', n: 1 }], undefined, since, now).other.length).toBe(1)
+  })
+})
+
+describe('splitOwnInventoryChanges: gifts and deaths (261014 follow-up)', () => {
+  const now = 100_000
+  const since = 90_000
+  const running = (name, args, progress) => ({ name, args, startedAt: 80_000, endedAt: null, progress })
+
+  it('a fight explains no gain: a sword and bread tossed mid-fight are not hers', () => {
+    const r = splitOwnInventoryChanges(
+      [{ item: 'iron_sword', n: 1 }, { item: 'bread', n: 3 }, { item: 'rotten_flesh', n: 1 }],
+      [running('attackEntity', { target: 'zombie' })], since, now)
+    expect(r.own).toEqual([])
+    expect(r.other.length).toBe(3)
+  })
+
+  it('a craft owns its output and the parts it makes, not a tool or food that arrived alongside', () => {
+    const r = splitOwnInventoryChanges(
+      [{ item: 'stone_pickaxe', n: 1 }, { item: 'stick', n: 2 }, { item: 'oak_planks', n: 1 },
+        { item: 'iron_sword', n: 1 }, { item: 'bread', n: 2 }, { item: 'cobblestone', n: 5 }],
+      [running('craft', { item: 'stone_pickaxe', count: 1 })], since, now)
+    expect(r.own.map(d => d.item)).toEqual(['stone_pickaxe', 'stick', 'oak_planks'])
+    expect(r.other.map(d => d.item)).toEqual(['iron_sword', 'bread', 'cobblestone'])
+  })
+
+  it('dig, pickup and withdraw own plain blocks but not gear or food they did not name', () => {
+    const deltas = [{ item: 'cobblestone', n: 3 }, { item: 'diamond_pickaxe', n: 1 }, { item: 'cooked_beef', n: 4 }]
+    for (const a of [running('dig', { block: 'stone' }), running('pickup', {}), running('withdrawItem', { item: 'cobblestone' })]) {
+      const r = splitOwnInventoryChanges(deltas, [a], since, now)
+      expect(r.own.map(d => d.item)).toEqual(['cobblestone'])
+      expect(r.other.map(d => d.item)).toEqual(['diamond_pickaxe', 'cooked_beef'])
+    }
+  })
+
+  it('a pickup or withdraw that names a tool or food owns it', () => {
+    expect(splitOwnInventoryChanges([{ item: 'iron_sword', n: 1 }], [running('pickup', { item: 'iron_sword' })], since, now).own.length).toBe(1)
+    expect(splitOwnInventoryChanges([{ item: 'bread', n: 5 }], [running('withdrawItem', { item: 'bread', count: 5 })], since, now).own.length).toBe(1)
+  })
+
+  it('a gather that names its drops owns them even when they are food; one that does not, owns no gear or food', () => {
+    expect(splitOwnInventoryChanges([{ item: 'apple', n: 1 }], [running('gather', {}, { items: ['apple'] })], since, now).own.length).toBe(1)
+    const r = splitOwnInventoryChanges([{ item: 'dirt', n: 2 }, { item: 'bread', n: 1 }], [running('gather', {}, null)], since, now)
+    expect(r.own.map(d => d.item)).toEqual(['dirt'])
+    expect(r.other.map(d => d.item)).toEqual(['bread'])
+  })
+
+  it('after a death no loss is blamed on the running action, and a tool breaking still is', () => {
+    const lost = [{ item: 'oak_log', n: -12 }, { item: 'stone_axe', n: -1 }]
+    const dead = splitOwnInventoryChanges(lost, [running('gather', {}, { items: ['oak_log'] })], since, now, { died: true })
+    expect(dead.own).toEqual([])
+    expect(dead.other).toEqual(lost)
+    const worn = splitOwnInventoryChanges([{ item: 'stone_axe', n: -1 }], [running('gather', {}, { items: ['oak_log'] })], since, now)
+    expect(worn.own).toEqual([{ item: 'stone_axe', n: -1 }])
+  })
+
+  it('classifies gear and food, using a registry list when given one', () => {
+    for (const it of ['iron_sword', 'stone_pickaxe', 'diamond_chestplate', 'bow', 'shield', 'bread', 'cooked_beef']) expect(isGearOrFood(it)).toBe(true)
+    for (const it of ['cobblestone', 'oak_log', 'stick', 'coal', 'oak_planks']) expect(isGearOrFood(it)).toBe(false)
+    expect(isGearOrFood('weird_berry', (n) => n === 'weird_berry')).toBe(true)
+    expect(isGearOrFood('bread', () => false)).toBe(false)
+  })
+
+  it('reads a whole inventory gone at once as a death', () => {
+    expect(looksLikeWholeInventoryLost({ oak_log: 12, stone_axe: 1 }, {})).toBe(true)
+    expect(looksLikeWholeInventoryLost({ oak_log: 1 }, {})).toBe(false)
+    expect(looksLikeWholeInventoryLost({ oak_log: 12, stone_axe: 1 }, { stone_axe: 1 })).toBe(false)
+    expect(looksLikeWholeInventoryLost(null, {})).toBe(false)
   })
 })
 
@@ -159,6 +226,47 @@ describe('snapshot composer: her own haul vs. a gift', () => {
     const i = lines.findIndex(l => l.startsWith('inventory ('))
     expect(lines[i + 1]).toMatch(/^since last tick your own gather/)
     expect(lines[i + 2]).toMatch(/^\*\*\* INVENTORY JUST CHANGED/)
+  })
+
+  it('raises the banner for a sword and bread tossed to her mid-fight', () => {
+    const inv = [{ name: 'oak_log', count: 2 }]
+    const c = createSnapshotComposer({ bot: fakeBot(inv) })
+    c.next({})
+    inv.push({ name: 'iron_sword', count: 1 }, { name: 'bread', count: 3 })
+    const now = Date.now()
+    const snap = c.next({ recentActions: [{ name: 'attackEntity', args: { target: 'zombie' }, startedAt: now - 3000, endedAt: null }] })
+    expect(snap).toMatch(/INVENTORY JUST CHANGED \*\*\*: \+1 iron_sword, \+3 bread/)
+    expect(snap).not.toContain('your own attackEntity')
+  })
+
+  it('does not blame a death\'s dropped inventory on the gather that was running', () => {
+    const inv = [{ name: 'oak_log', count: 12 }, { name: 'stone_axe', count: 1 }]
+    const bot = fakeBot(inv)
+    const c = createSnapshotComposer({ bot })
+    c.next({})
+    bot.emit('death')
+    inv.length = 0
+    inv.push({ name: 'oak_log', count: 1 })   // one log picked up again after the respawn
+    const now = Date.now()
+    const gather = { name: 'gather', startedAt: now - 9000, endedAt: now - 500, progress: { items: ['oak_log'], before: 0 } }
+    const snap = c.next({ recentActions: [gather] })
+    expect(snap).not.toMatch(/your own gather changed your inventory: .*-/)
+    expect(snap).toMatch(/INVENTORY JUST CHANGED \*\*\*: -11 oak_log, -1 stone_axe {2}<-/)
+    // The death flag lasts one window: the next tick's gather loss is hers again.
+    inv[0].count = 0
+    const snap2 = c.next({ recentActions: [{ ...gather, endedAt: null }] })
+    expect(snap2).toContain('your own gather changed your inventory: -1 oak_log')
+  })
+
+  it('treats a whole inventory gone at once as a death even without the event', () => {
+    const inv = [{ name: 'oak_log', count: 12 }, { name: 'stone_axe', count: 1 }]
+    const c = createSnapshotComposer({ bot: fakeBot(inv) })
+    c.next({})
+    inv.length = 0
+    const now = Date.now()
+    const snap = c.next({ recentActions: [{ name: 'gather', startedAt: now - 9000, endedAt: null, progress: { items: ['oak_log'], before: 0 } }] })
+    expect(snap).not.toContain('your own gather')
+    expect(snap).toMatch(/INVENTORY JUST CHANGED \*\*\*: -12 oak_log, -1 stone_axe/)
   })
 })
 
@@ -227,6 +335,24 @@ describe('orchestrator: a player line while nothing runs', () => {
     expect(turn).toContain('can you get wood')
     expect(turn).toContain(NUDGES.replyWhileIdle)
     expect(turn).not.toContain('keeps the current action going')
+  })
+
+  it('a fresh loop opened while an earlier loop\'s action still runs says the reply keeps it going', async () => {
+    // The drained batch case: a loop tore down, its leftover gather runs on
+    // with no loop (tracked by the inflight tracker, not loop.inFlight), and
+    // a player line opens a fresh loop.
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([{ text: '', toolUses: [{ id: 's1', name: 'say', input: { text: 'still chopping' } }] }])
+    const orch = createOrchestrator({ adapter: makeAdapter(), config: config(), reenqueue: () => {}, _anthropicOverride: provider })
+    const leftover = orch.inflight.start({ name: 'gather', args: { name: 'oak_log', count: 8 } })
+    expect(orch.currentLoop).toBeNull()
+    await orch.handleDispatch('sei:chat_received', { text: 'how is it going', username: 'Steve', playerSpoke: true, ts: Date.now() })
+    expect(provider.calls.length).toBe(1)
+    const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
+    expect(turn).toContain('how is it going')
+    expect(turn).toContain(NUDGES.replyWhileRunning)
+    expect(turn).not.toContain(NUDGES.replyWhileIdle)
+    orch.inflight.end(leftover)
   })
 
   it('names the running action, not an end_loop from an earlier mid-action turn', async () => {

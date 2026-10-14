@@ -457,6 +457,16 @@ describe('gatherAction — counts what reaches the inventory (261012)', () => {
     expect(digAction).toHaveBeenCalledTimes(4)
   })
 
+  it('progress ticks carry the drop items and the count held at the start (261014)', async () => {
+    const { bot, blocks, give } = stoneWorld(4)
+    give('cobblestone', 5)
+    const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); give('cobblestone'); return 'dug stone' })
+    const ticks = []
+    await gatherAction({ name: 'stone', count: 2 }, bot, { onProgress: (p) => ticks.push({ ...p }) }, { goTo: vi.fn(async () => 'reached'), digAction, sleep: noSleep })
+    expect(ticks[0]).toEqual({ dug: 0, total: 2, items: ['cobblestone'], before: 5 })
+    expect(ticks.at(-1)).toEqual({ dug: 2, total: 2, items: ['cobblestone'], before: 5 })
+  })
+
   it('stops after a bounded number of extra digs and reports only what arrived', async () => {
     const { bot, blocks } = stoneWorld(20)
     const digAction = vi.fn(async ({ x, y, z }) => { blocks.delete(`${x},${y},${z}`); return 'dug stone' })

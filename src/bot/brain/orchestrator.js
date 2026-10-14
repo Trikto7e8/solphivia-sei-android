@@ -2076,6 +2076,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
+        // 261014: lets the composer tell her own haul from a gift.
+        recentActions: inflight.recent(),
         // Player-priority pin: keep the player in `nearby entities` even when
         // six other entities are closer. Without this, busy-area entity
         // congestion (sheep / foxes / traders / llamas) can evict the player
@@ -2144,6 +2146,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // short string suitable for inlining as `prior_task: <…>` in a PLAYER
   // INTERRUPT user turn, or null if nothing worth surfacing.
   function extractPriorTask(loop) {
+    // 261014: the running action when there is one. The last tool call in the
+    // history is often a loop-control call made alongside it: her first-contact
+    // turn was say + setGoal + gather + end_loop, and every mid-action turn
+    // during that gather read "You're currently: end_loop" (23 turns in one
+    // 25-session eval run).
+    if (loop.inFlight?.name) return taskLabel(loop.inFlight.name, loop.inFlight.input)
     const msgs = loop._internal.messages
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i]
@@ -2151,19 +2159,25 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       for (let j = m.content.length - 1; j >= 0; j--) {
         const blk = m.content[j]
         if (!blk || blk.type !== 'tool_use') continue
-        if (blk.name === 'remember' || blk.name === 'forget' || blk.name === 'setGoal' || blk.name === 'clearGoal' || blk.name === 'say') continue
-        // Combined-mode movement action.
-        const a = blk.input ?? {}
-        const parts = []
-        if (typeof a.entity === 'string') parts.push(a.entity)
-        else if (typeof a.target === 'string') parts.push(a.target)
-        else if (typeof a.block === 'string') parts.push(a.block)
-        else if (typeof a.player === 'string') parts.push(a.player)
-        if (typeof a.times === 'number') parts.push(`times=${a.times}`)
-        return `${blk.name}${parts.length ? ' ' + parts.join(' ') : ''}`.slice(0, 120)
+        if (INLINE_METADATA.has(blk.name)) continue
+        return taskLabel(blk.name, blk.input)
       }
     }
     return null
+  }
+
+  function taskLabel(name, input) {
+    // Combined-mode movement action.
+    const a = input ?? {}
+    const parts = []
+    if (typeof a.entity === 'string') parts.push(a.entity)
+    else if (typeof a.target === 'string') parts.push(a.target)
+    else if (typeof a.block === 'string') parts.push(a.block)
+    else if (typeof a.player === 'string') parts.push(a.player)
+    else if (typeof a.item === 'string') parts.push(a.item)
+    else if (typeof a.name === 'string') parts.push(a.name)
+    if (typeof a.times === 'number') parts.push(`times=${a.times}`)
+    return `${name}${parts.length ? ' ' + parts.join(' ') : ''}`.slice(0, 120)
   }
 
   // 260608-tik: the tool that aborts the currently-running action. follow is
@@ -2877,6 +2891,9 @@ function maybeWarnByteCap(loop, warned) {
         eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice
           : crossed ? NUDGES.playerInterruptHintGreetCrossed
           : NUDGES.playerInterruptHint
+        // 261014: say whether anything is running, rather than tell every reply
+        // that its say() keeps "the current action" going.
+        eventAddendum += ' ' + (inflight.current() ? NUDGES.replyWhileRunning : NUDGES.replyWhileIdle)
         const opener = (fromTeammate && speakerName)
           ? (isVoiceLine
             ? `your teammate ${speakerName} just said this on the voice call`

@@ -33,6 +33,24 @@ export function parseSnapshot(s) {
   return snap.pos || snap.hp ? snap : null
 }
 
+// What she sensed on the turn she spoke: her inventory and what was running,
+// from the same prompt dump. The action is reduced to its name, so two builds
+// that word the in_flight line differently read the same to the judge.
+export function parseSensed(s) {
+  const i0 = s.indexOf('snapshot:')
+  if (i0 < 0) return null
+  const body = s.slice(i0)
+  const inv = /\n\s+inventory \(([^\n]+)/.exec(body)?.[1] ?? ''
+  const inventory = inv.replace(/^[^)]*\):\s*/, '').trim()
+  const fl = /\n\s+in_flight: ([A-Za-z_]\w*)\(/.exec(body)?.[1]
+  const idle = /\n\s+idle: ([^\n]+)/.exec(body)?.[1] ?? ''
+  const doing = fl ? `${fl} running`
+    : /following/.test(idle) ? 'no action running, following the player'
+    : 'no action running'
+  if (!inventory && !fl && !idle) return null
+  return { inventory: inventory || 'empty', doing }
+}
+
 // Rate limit: emit when the view changed, at most every 20s, and at least
 // once a minute.
 export function makeSnapshotGate() {
@@ -65,6 +83,27 @@ export function snapshotsFromRawLog(rawPath, refEpoch) {
     for (const d of [-86400000, 86400000]) if (Math.abs(t + d - refEpoch) < Math.abs(t - refEpoch)) t += d
     const snap = parseSnapshot(block)
     if (snap && gate(t, snap)) out.push({ t, kind: 'snapshot', ...snap })
+  }
+  return out
+}
+
+// Backfill for sessions whose llm_turn events carry no `sensed`: the raw log
+// has one `[haiku!]` block per llm_turn event, in the same order, each after
+// the `[haiku?]` prompt it answers. Returns one entry (or null) per block.
+export function sensedFromRawLog(rawPath) {
+  if (!fs.existsSync(rawPath)) return []
+  const raw = fs.readFileSync(rawPath, 'utf8')
+  const out = []
+  let last = null
+  const re = /^\[[\d:.]+\] \[haiku([?!])\] begin$/gm
+  let m
+  while ((m = re.exec(raw))) {
+    if (m[1] === '?') {
+      const end = raw.indexOf('[haiku?] end', m.index)
+      try { last = parseSensed(raw.slice(m.index, end < 0 ? undefined : end)) } catch { last = null }
+    } else {
+      out.push(last)
+    }
   }
   return out
 }

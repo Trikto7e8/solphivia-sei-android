@@ -484,7 +484,7 @@ export const GREETING_HINT =
 
 export const PERSONALITY_TOOL_DESCRIPTIONS = {
   say:
-    `Speak ONE short line to the player - the only thing you produce that reaches them; your text output is a private scratchpad and is never shown. Call at most once per turn, and only when you genuinely have something to say.`,
+    `Speak ONE short line to the player - the only thing you produce that reaches them; your text output is a private scratchpad and is never shown. Call at most once per turn, and only when you genuinely have something to say. When you tell them how many of something you have, use the count on your inventory line this turn; it changes as you gather, craft and use things, so a number from earlier in the conversation may be out of date.`,
 
   remember:
     `Append one line to MEMORY.md in your own voice: an impression, your read on the player, or something they asked you to keep in mind (a plan you made together counts, and a task they gave you also goes in setGoal so you carry it out); never a coordinate dump or transaction log. MEMORY.md loads at the start of every future session and stays small, so save only what you would genuinely need then; routine greetings and ordinary moments do not belong in it. Record your misses too, when you were wrong or failed, so you don't repeat them.`,
@@ -805,7 +805,14 @@ export const NUDGES = {
   // NB: single template literal, not a `+` chain — the LIBRARY-tab editor's
   // parser (scripts/lib/promptLibraryEdit.mjs scanValue) reads one literal per
   // prop; a concatenation hides every prop after this one from the editor.
-  playerInterruptHint: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} One say() without a new action keeps the current action going. The player spoke to you, so answer them with say() — your text output is invisible to them, and ending the loop without a say() leaves them on read. What you say is yours (agree, refuse, deflect, one word — whatever fits your voice), but say something. ${MEMORY_GOAL_CUE}`,
+  playerInterruptHint: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} The player spoke to you, so answer them with say() — your text output is invisible to them, and ending the loop without a say() leaves them on read. What you say is yours (agree, refuse, deflect, one word — whatever fits your voice), but say something. ${MEMORY_GOAL_CUE}`,
+
+  // 261014: follows the player-line hints above, picked by whether an action
+  // is running. The running sentence used to sit in every hint, so an idle
+  // reply was told its say() "keeps the current action going" and she said
+  // "still mining stone for you" with nothing running.
+  replyWhileRunning: `One say() without a new action keeps the current action going.`,
+  replyWhileIdle: `No action is running right now, so a reply on its own starts nothing. If you tell them you are doing something, start it with its action in this same turn.`,
 
   // 261012: closes the reply text of a player line (idle and mid-action).
   // The same rule in the conversation header did not hold on its own: in the
@@ -833,7 +840,7 @@ export const NUDGES = {
   // line may belong to a teammate, so the mandatory-reply sentence is wrong
   // here: silence is a sanctioned outcome. Silence means end_loop with NO
   // say(); the reasoning behind it stays in the private text output.
-  playerInterruptHintGroupVoice: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} One say() without a new action keeps the current action going. If the line is yours to answer, reply with say(). If it clearly belongs to a teammate, end the turn with end_loop and no say(): that silence is correct, and your reasoning stays in your private text output. Never put your reasoning or your decision to stay quiet into say(); say() is only for words meant for the player's ears. ${MEMORY_GOAL_CUE}`,
+  playerInterruptHintGroupVoice: `\n\nIf they want you to stop what you are doing, call stop. To switch tasks, call the new action. ${SESSION_END_CLAUSE} If the line is yours to answer, reply with say(). If it clearly belongs to a teammate, end the turn with end_loop and no say(): that silence is correct, and your reasoning stays in your private text output. Never put your reasoning or your decision to stay quiet into say(); say() is only for words meant for the player's ears. ${MEMORY_GOAL_CUE}`,
 
   // 261011: a hit (or a reflex / defend / survival heads-up) that lands while
   // an action runs is delivered without aborting it. This follows the attack

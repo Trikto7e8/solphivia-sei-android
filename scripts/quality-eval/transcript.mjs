@@ -7,7 +7,7 @@
 //         appeared within 20s (actionStats.UNANSWERED_MS)
 import fs from 'node:fs'
 import path from 'node:path'
-import { snapshotsFromRawLog } from './snapshot.mjs'
+import { snapshotsFromRawLog, sensedFromRawLog } from './snapshot.mjs'
 
 export const SILENCE_MS = 20000
 // Calls the player cannot see (memory and planning tools). Shown to the judge
@@ -33,6 +33,13 @@ export function loadSession(sessDir) {
     comp.push(...snapshotsFromRawLog(path.join(sessDir, 'companion.raw.log'), start))
     comp.sort((a, b) => a.t - b.t)
   }
+  // 261014: older runs have no per-turn `sensed`; rebuild it from the raw log
+  // when its [haiku!] blocks line up one to one with the llm_turn events.
+  const turns = comp.filter((e) => e.kind === 'llm_turn')
+  if (turns.length && !turns.some((e) => e.sensed)) {
+    const back = sensedFromRawLog(path.join(sessDir, 'companion.raw.log'))
+    if (back.length === turns.length) turns.forEach((e, i) => { if (back[i]) e.sensed = back[i] })
+  }
   const end = player.find((e) => e.kind === 'session_end')?.t ?? Infinity
   const companion = meta.companion || 'Sui'
   const playerName = meta.player || 'Alex'
@@ -44,6 +51,18 @@ export function loadSession(sessDir) {
 
   // Companion side.
   const openActions = []   // FIFO of A items awaiting a result
+  // 261014: an action started before session_start (her first-contact turn
+  // starts a gather while the script is still setting up) was dropped, and the
+  // judge then read "on it" and the logs that came in as made up. One still
+  // running at the start is shown at the start.
+  const preStart = []
+  const showPreStart = (it) => {
+    it.t = start
+    it.preStart = true
+    items.push(it)
+    push({ t: start, kind: 'action', id: it.id, item: it })
+  }
+  let lastSensedKey = null
   let lastStats = null
   let prevCounters = null
   const usage = { input_tokens: 0, output_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, turns: 0, web_search_requests: 0 }
@@ -54,6 +73,15 @@ export function loadSession(sessDir) {
       usage.web_search_requests += u.server_tool_use?.web_search_requests || 0
       usage.turns++
       if (e.t < start || e.t > end) continue
+      // What her prompt showed on the turn she spoke, when it changed since
+      // the last line.
+      if (e.sensed && (e.calls || []).some((c) => c.name === 'say')) {
+        const key = `${e.sensed.inventory}|${e.sensed.doing}`
+        if (key !== lastSensedKey) {
+          lastSensedKey = key
+          push({ t: e.t - 1, kind: 'sensed', text: `inventory ${e.sensed.inventory}; ${e.sensed.doing}` })
+        }
+      }
       for (const c of e.calls || []) {
         if (c.name === 'say') {
           const text = typeof c.input === 'object' ? c.input?.text : c.input
@@ -65,12 +93,20 @@ export function loadSession(sessDir) {
         }
       }
     } else if (e.kind === 'action_call' && e.name && !NOT_ACTIONS.has(e.name)) {
-      if (e.t < start || e.t > end) continue
+      if (e.t > end) continue
       const it = { id: `A${++nA}`, type: 'action', t: e.t, name: e.name, args: e.args, result: null, t_result: null }
+      if (e.t < start) { preStart.push(it); continue }
       items.push(it)
       openActions.push(it)
       push({ t: e.t, kind: 'action', id: it.id, item: it })
     } else if (e.kind === 'action_result') {
+      const p = preStart.findIndex((a) => a.name === e.action)
+      if (p >= 0) {
+        const it = preStart.splice(p, 1)[0]
+        if (e.t < start) continue
+        showPreStart(it)
+        openActions.push(it)
+      }
       const i = openActions.findIndex((a) => a.name === e.action)
       if (i >= 0) {
         const it = openActions.splice(i, 1)[0]
@@ -100,6 +136,7 @@ export function loadSession(sessDir) {
       push({ t: e.t, kind: 'event', text: `companion crashed: ${e.data.error} ${clip(e.data.message, 160)}` })
     }
   }
+  for (const it of preStart) { showPreStart(it); openActions.push(it) }
   for (const it of openActions) it.result = '(still running or no result when the session ended)'
 
   // Player side.
@@ -184,11 +221,12 @@ export function renderTimeline(sess) {
         break
       }
       case 'chat_out': if (!e.folded) out.push(`${ts} ${companion} chat (not from say): ${e.text}`); break
-      case 'action': out.push(`${ts} [${e.id}] ${companion} action: ${e.item.name}(${clip(JSON.stringify(e.item.args ?? {}), 160)})`); break
+      case 'action': out.push(`${ts} [${e.id}] ${companion} action: ${e.item.name}(${clip(JSON.stringify(e.item.args ?? {}), 160)})${e.item.preStart ? '   (started just before the session began, still running)' : ''}`); break
       case 'result': out.push(`${ts}   result of ${e.text}`); break
       case 'silence': out.push(`${ts} [${e.id}] SILENCE: ${e.text}`); break
       case 'private': out.push(`${ts}   (${companion} private note, player cannot see: ${e.text})`); break
       case 'snapshot': out.push(`${ts}   (${companion}'s sensors: ${e.text})`); break
+      case 'sensed': out.push(`${ts}   (what ${companion}'s sensors showed her as she spoke: ${e.text})`); break
       case 'world': out.push(`${ts}   (world: ${e.text})`); break
       case 'event': out.push(`${ts}   (event: ${e.text})`); break
       default: break

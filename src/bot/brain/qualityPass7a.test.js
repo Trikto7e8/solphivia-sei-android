@@ -206,7 +206,7 @@ describe('orchestrator: a player line while nothing runs', () => {
       createSnapshotComposer: () => ({ next: () => 'SNAPSHOT' }),
       chat: vi.fn(),
       closeAnySessions: async () => {},
-      executeAction: (name) => (name === 'follow' ? new Promise(() => {}) : Promise.resolve('done')),
+      executeAction: (name) => (name === 'follow' || name === 'gather' ? new Promise(() => {}) : Promise.resolve('done')),
     }
   }
   const config = () => ({
@@ -227,5 +227,28 @@ describe('orchestrator: a player line while nothing runs', () => {
     expect(turn).toContain('can you get wood')
     expect(turn).toContain(NUDGES.replyWhileIdle)
     expect(turn).not.toContain('keeps the current action going')
+  })
+
+  it('names the running action, not an end_loop from an earlier mid-action turn', async () => {
+    // Shape of pass6b errands-02-A: the gather starts, a "hey" is answered
+    // with end_loop alone (the gather keeps running), and the next player
+    // line used to read "You're currently: end_loop".
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'g1', name: 'gather', input: { name: 'oak_log' } }] },
+      { text: '', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
+      { text: '', toolUses: [{ id: 's2', name: 'say', input: { text: 'chopping' } }] },
+    ])
+    const orch = createOrchestrator({ adapter: makeAdapter(), config: config(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', { text: 'can you get wood', username: 'Steve', playerSpoke: true, ts: Date.now() })
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+    await orch.handleDispatch('sei:chat_received', { text: 'hey', username: 'Steve', playerSpoke: true, ts: Date.now() })
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+    await orch.handleDispatch('sei:chat_received', { text: 'what are you doing', username: 'Steve', playerSpoke: true, ts: Date.now() })
+    expect(provider.calls.length).toBe(3)
+    const turn = JSON.stringify(provider.calls[2].messages ?? provider.calls[2])
+    expect(turn).toContain('what are you doing')
+    expect(turn).toContain("You're currently: gather oak_log")
+    expect(turn).not.toContain("You're currently: end_loop")
   })
 })

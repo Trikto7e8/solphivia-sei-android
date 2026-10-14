@@ -25,6 +25,7 @@ import { attackEntityAction } from './behaviors/attack.js'
 import { consumeItemAction } from './behaviors/consume.js'
 import { visualizeAction } from './behaviors/visualize.js'
 import { dropItemAction } from './behaviors/drop.js'
+import { giveAction } from './behaviors/give.js'
 import { pickupAction } from './behaviors/pickup.js'
 import { activateItemAction } from './behaviors/activate.js'
 import { activateBlockAction } from './behaviors/activateBlock.js'
@@ -545,6 +546,19 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       count: z.number().int().min(1).max(64).default(1),
     }),
     dropItemAction
+  )
+
+  // 261015 (quality pass 8): hand items to the player in one call (walk into
+  // tossing range, face them, toss). Without it a hand-over was planned as a
+  // goTo and the items never left her inventory. See behaviors/give.js.
+  registry.register(
+    'give',
+    z.object({
+      item: z.string(),
+      count: z.number().int().min(1).max(64).optional(),
+      player: z.string().optional(),
+    }),
+    giveAction
   )
 
   // 261011: walk onto dropped items so they get collected (gear after a

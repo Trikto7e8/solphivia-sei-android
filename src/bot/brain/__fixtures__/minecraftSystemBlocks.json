@@ -64,7 +64,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -85,7 +85,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -721,7 +721,7 @@
       },
       {
         "name": "dropItem",
-        "description": "",
+        "description": "Drop `count` of an item on the ground where you stand. To hand something to the player, use give instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -733,6 +733,30 @@
               "minimum": 1,
               "maximum": 64,
               "default": 1
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "give",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "player": {
+              "type": "string"
             }
           },
           "required": [
@@ -1088,7 +1112,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1109,7 +1133,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1745,7 +1769,7 @@
       },
       {
         "name": "dropItem",
-        "description": "",
+        "description": "Drop `count` of an item on the ground where you stand. To hand something to the player, use give instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1757,6 +1781,30 @@
               "minimum": 1,
               "maximum": 64,
               "default": 1
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "give",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "player": {
+              "type": "string"
             }
           },
           "required": [
@@ -2111,7 +2159,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2132,7 +2180,7 @@
       },
       {
         "name": "clearGoal",
-        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.",
+        "description": "Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2736,7 +2784,7 @@
       },
       {
         "name": "dropItem",
-        "description": "",
+        "description": "Drop `count` of an item on the ground where you stand. To hand something to the player, use give instead.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2748,6 +2796,30 @@
               "minimum": 1,
               "maximum": 64,
               "default": 1
+            }
+          },
+          "required": [
+            "item"
+          ],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "give",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "input_schema": {
+          "type": "object",
+          "properties": {
+            "item": {
+              "type": "string"
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 64
+            },
+            "player": {
+              "type": "string"
             }
           },
           "required": [

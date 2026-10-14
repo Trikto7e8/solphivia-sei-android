@@ -296,6 +296,12 @@ export const ACTION_DESCRIPTIONS = {
   takeSmelted:
     'Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.',
 
+  dropItem:
+    'Drop `count` of an item on the ground where you stand. To hand something to the player, use give instead.',
+
+  give:
+    'Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.',
+
   pickup:
     'Walk over dropped items near you so they land in your inventory: `{item?:"<id>", maxDistance?:1-32}` (default 16). Without `item` it collects every drop in range, closest first. The result lists what actually reached your inventory. Use it to get your things back after you die or to collect mob drops.',
 
@@ -499,10 +505,10 @@ export const PERSONALITY_TOOL_DESCRIPTIONS = {
     'Cancel the action you are running now, when the player asks you to stop or it is no longer the right thing to do. To switch to a different task, call the new action instead; it replaces the current one.',
 
   setGoal:
-    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Feelings and facts about the player go in remember() instead.',
+    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when you are starting on it now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.',
 
   clearGoal:
-    'Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped.',
+    'Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.',
 }
 
 // 260731: the CURIOSITY mandate, appended to every gameplay proactiveness
@@ -790,7 +796,7 @@ export const MEMORY_GOAL_CUE = `When they state a preference, correction, or fac
 // sentence is what the model weighs most; the full cue alone, buried
 // mid-paragraph, measured 0-1 out of 4 compliance in the live replay probe
 // (260708). Both ride together: the cue explains, the tail reminds last.
-export const MEMORY_GOAL_TAIL = ` Last check before you end the turn, about THEIR line: if it gave you a job with more than one part (going back to them or handing something over counts as a part), a number to reach, anything you will get to after what you are doing now, or anything that outlasts the action you start now, or committed you to a plan, call setGoal with all of it (for_player true) in this same turn; if it changed or called off a goal in your heartbeat, or said that goal is already done, call clearGoal on it in this same turn; if it told you something they expect you to still know later, call remember() with it in this same turn. Promising it out loud stores nothing; only those calls persist, and they ride alongside your say() and your running action without stopping either. If their line did neither, record nothing this turn.`
+export const MEMORY_GOAL_TAIL = ` Last check before you end the turn, about THEIR line: if it gave you a job with more than one part (going back to them or handing something over counts as a part), a number to reach, anything you will get to after what you are doing now, or anything that outlasts the action you start now, or committed you to a plan, call setGoal with all of it (for_player true) in this same turn; if it changed or called off a goal in your heartbeat, or said that goal is already done, call clearGoal on it in this same turn; if it told you something they expect you to still know later, call remember() with it in this same turn. Promising it out loud stores nothing; only those calls persist, and they ride alongside your say() and your running action without stopping either. setGoal only writes the task down, so if you are doing it now, also call its first action in this same turn. Anything you are handing over reaches them only through give, so a task that ends that way is done once give has run. If their line did neither, record nothing this turn.`
 
 // The mid-action check-in's "path is not working" instruction (NUDGES.actionTurn),
 // with and without a look tool. Distinct from IDLE_STUCK_NUDGE_* (the idle
@@ -813,6 +819,12 @@ export const NUDGES = {
   // "still mining stone for you" with nothing running.
   replyWhileRunning: `One say() without a new action keeps the current action going.`,
   replyWhileIdle: `No action is running right now, so a reply on its own starts nothing. If you tell them you are doing something, start it with its action in this same turn.`,
+
+  // 261015 (quality pass 8): the one extra call after a turn whose only work
+  // was a new setGoal (orchestrator goalNotStartedNudgeFor). setGoal is a
+  // memory write, so that turn started nothing while her say() often said
+  // she was on it.
+  goalNotStarted: `Your goal is written down, but writing it down does not start any work. If you are starting on it now, call the action for its first step. If it waits until later, call end_loop. Call say() only if you have something new to tell them.`,
 
   // 261012: closes the reply text of a player line (idle and mid-action).
   // The same rule in the conversation header did not hold on its own: in the

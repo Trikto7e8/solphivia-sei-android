@@ -4410,6 +4410,16 @@ function maybeWarnByteCap(loop, warned) {
     return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
   }
 
+  // 261015 (quality pass 8): the one-shot "your goal starts nothing" nudge
+  // for a turn whose only work was writing a NEW goal (see the call site in
+  // runIterations). Returns the nudge text or null.
+  function goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop }) {
+    if (continueLoop || hasEndLoop || hasStop || loop.isTerminal || loop._goalStartNudged) return null
+    if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return null
+    const newGoal = toolUses.some((u, i) => u.name === 'setGoal' && results[i]?.content === 'goal set')
+    return newGoal ? NUDGES.goalNotStarted : null
+  }
+
   async function runIterations(loop, byteWarn) {
     const cap = config.memory.iteration_cap
     // 260909: the web budget is per LOOP, not per iteration: a fresh
@@ -5126,7 +5136,19 @@ function maybeWarnByteCap(loop, warned) {
       // cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
       // cause and the LLM needs the specific instruction.
-      const finalNudgeText = cantReachNudge ?? silenceNudgeText
+      // 261015 (quality pass 8): a turn that only WROTE a goal down started
+      // nothing. setGoal is a memory write, so the turn has no world action
+      // and the loop would end here; the design left the start to the next
+      // idle tick, which in the eval came 8-17 s later or never (a player
+      // line arrived first), while her say() had already told the player she
+      // was on it ("nice, now we just need stone. i'll go find some", then
+      // nothing ran). So a turn whose only work was a NEW goal gets one more
+      // call in the same loop, told the goal starts nothing: she starts its
+      // first step now or ends the turn with end_loop. Once per loop, never
+      // when a foreground action is running (the goal is then the next job),
+      // and never on a duplicate setGoal (not newly added).
+      const goalOnlyNudge = goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop })
+      const finalNudgeText = goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
 
       loop.appendToolResults(results, {
         snapshot: snapshotText(),
@@ -5140,6 +5162,11 @@ function maybeWarnByteCap(loop, warned) {
       // long-runner tool_use) as "keep iterating" — so we honor isTerminal
       // first.
       if (loop.isTerminal) return
+      if (goalOnlyNudge) {
+        loop._goalStartNudged = true
+        logger.info?.(`[sei/orch] goal set with no action started — one more call to start it or end the turn (loop=${loop.id})`)
+        continue
+      }
       if (!continueLoop) return
     }
   }

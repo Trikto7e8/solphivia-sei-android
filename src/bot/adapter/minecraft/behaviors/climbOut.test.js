@@ -112,6 +112,13 @@ describe('climbOut', () => {
     expect(scaffoldUp).not.toHaveBeenCalled()
   })
 
+  it('leaves a flooded shaft to the pathfinder (she swims up)', async () => {
+    const bot = shaftBot(4, { items: [{ name: 'dirt', count: 4 }] })
+    bot.entity.isInWater = true
+    expect((await climbOut(bot, { x: 5, y: 71, z: 0 })).status).toBe('not_in_pit')
+    expect(scaffoldUp).not.toHaveBeenCalled()
+  })
+
   it('says honestly that she is stuck when there are no blocks and no digging', async () => {
     const bot = shaftBot(6)
     const r = await climbOut(bot, { x: 5, y: 71, z: 0 }, { canDig: false })

@@ -238,6 +238,8 @@ export async function climbOut(bot, target, opts = {}) {
   const { signal, budgetMs = 20000, keepItems = [], canDig = true } = opts
   if (!bot?.entity?.position) return { status: 'not_in_pit' }
   if (signal?.aborted) return { status: 'aborted' }
+  // A flooded shaft is swum up, not climbed; the pathfinder handles water.
+  if (bot.entity.isInWater) return { status: 'not_in_pit' }
   await waitOnGround(bot, 1000)
   const pit = pitInfo(bot)
   // No open rim (roofed over, or deeper than we look) is left to the

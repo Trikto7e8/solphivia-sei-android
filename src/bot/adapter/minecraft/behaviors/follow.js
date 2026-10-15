@@ -181,7 +181,7 @@ export function startFollow(bot, config) {
       return
     }
     // 261015: in a 1x1 shaft with the target above the rim, climb out first.
-    if (!yielding && ent.position.y >= me.position.y + MIN_PIT_DEPTH && me.onGround !== false &&
+    if (!yielding && ent.position.y >= me.position.y + MIN_PIT_DEPTH && me.onGround !== false && !me.isInWater &&
         Date.now() - _climbFailedAt >= CLIMB_RETRY_MS) {
       const pit = pitInfo(bot)
       if (pit && pit.rimY != null && pit.depth >= MIN_PIT_DEPTH) {
@@ -189,7 +189,10 @@ export function startFollow(bot, config) {
         _climb = ctl
         try { bot.pathfinder.setGoal(null) } catch {}
         climbOut(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS })
-          .then((r) => { if (r?.status === 'failed') _climbFailedAt = Date.now() })
+          // Anything but a climb (failed, or climbOut judged it no pit after
+          // all) backs off, so the tick does not restart it every second and
+          // starve GoalFollow.
+          .then((r) => { if (r?.status !== 'climbed' && r?.status !== 'aborted') _climbFailedAt = Date.now() })
           .catch(() => {})
           .finally(() => {
             if (_climb === ctl) _climb = null

@@ -64,7 +64,7 @@ describe('follow climbs out of a shaft (261015)', () => {
 
     const deep = makeBot(63, 71)
     pitInfo.mockReturnValue({ feetY: 63, rimY: 71, depth: 8 })
-    climbOut.mockResolvedValue({ status: 'failed', line: 'stuck in a hole' })
+    climbOut.mockResolvedValueOnce({ status: 'not_in_pit' })
     startFollow(deep, {})
     setFollowTarget({ kind: 'player', username: 'Alex' })
     await vi.advanceTimersByTimeAsync(1000)
@@ -72,5 +72,18 @@ describe('follow climbs out of a shaft (261015)', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(climbOut).toHaveBeenCalledTimes(1) // no retry storm
     expect(deep.pathfinder.setGoal.mock.calls.some(([g]) => g && g.entity)).toBe(true)
+  })
+
+  it('backs off after a climb that failed too', async () => {
+    vi.useFakeTimers()
+    const deep = makeBot(63, 71)
+    pitInfo.mockReturnValue({ feetY: 63, rimY: 71, depth: 8 })
+    climbOut.mockResolvedValue({ status: 'failed', line: 'stuck in a hole' })
+    startFollow(deep, {})
+    setFollowTarget({ kind: 'player', username: 'Alex' })
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(climbOut).toHaveBeenCalledTimes(1)
+    await vi.advanceTimersByTimeAsync(30000)
+    expect(climbOut).toHaveBeenCalledTimes(2) // tries again after the back-off
   })
 })

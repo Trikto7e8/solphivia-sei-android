@@ -2394,10 +2394,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const abortController = new AbortController()
     const opts = _buildExecOpts(name, args, { ...execOpts, signal: abortController.signal }, handle)
     const promise = (async () => {
+      // 261015: the tracker keeps how it ended for the snapshot's idle line.
+      let outcome = null
       try {
-        return await registry.execute(name, args, null /* adapter owns bot */, opts)
+        const r = await registry.execute(name, args, null /* adapter owns bot */, opts)
+        try { outcome = { result: formatToolResult(name, r), aborted: abortController.signal.aborted } } catch { outcome = null }
+        return r
+      } catch (err) {
+        const aborted = abortController.signal.aborted || err?.name === 'AbortError'
+        outcome = { result: aborted ? `aborted: ${name}` : `error: ${errLine(err)}`, aborted }
+        throw err
       } finally {
-        inflight.end(handle)
+        inflight.end(handle, outcome)
       }
     })()
     return { promise, abortController, handle, startedAt: handle.startedAt }
@@ -3072,7 +3080,7 @@ function maybeWarnByteCap(loop, warned) {
     // tear it down now.
     if (loop._terminated) {
       await teardownLoop(loop)
-    } else if (loop.inFlight) {
+    } else if (loop.inFlight || loopAwaitsSettle(loop)) {
       // Loop is suspended waiting for sei:action_complete. handleDispatch
       // returns; the FSM is free to dispatch other events (P1/P0).
       return
@@ -3163,16 +3171,20 @@ function maybeWarnByteCap(loop, warned) {
           if (controller.signal.aborted || gamePaused) { cutFrom = i; break }
           const entry = worldTools[i]
           const handle = inflight.start({ name: entry.use.name, args: entry.use.input })
+          let outcome = null
           try {
             const r = await registry.execute(entry.use.name, entry.use.input, null, {
               ...config, signal: controller.signal,
             })
             try { logActionResult(entry.use.name, r) } catch {}
             noteActionEvent(entry.use.name, r)
+            try { outcome = { result: formatToolResult(entry.use.name, r), aborted: controller.signal.aborted } } catch { outcome = null }
           } catch (err) {
             logger.warn?.(`[sei/orch] post-teardown drain ${entry.use.name} failed: ${err?.message ?? err}`)
+            const aborted = controller.signal.aborted || err?.name === 'AbortError'
+            outcome = { result: aborted ? `aborted: ${entry.use.name}` : `error: ${errLine(err)}`, aborted }
           } finally {
-            inflight.end(handle)
+            inflight.end(handle, outcome)
           }
           // Aborted mid-tool: this one was cut short, drop it and the rest.
           if (controller.signal.aborted) { cutFrom = i; break }
@@ -3670,6 +3682,28 @@ function maybeWarnByteCap(loop, warned) {
    * here on settle iff it's still the live entry (guards against a stale
    * settle racing with a fresh in_flight from queue-drain).
    */
+  // 261015 (quality pass 9): a tick-claimed action that finishes on its own
+  // owes the loop one more turn: its sei:action_complete is queued and
+  // handleActionCompleteTickClaimed tells the model what it produced. When it
+  // finished DURING a model call (a mid-action reply, a check-in), that
+  // call's say-only or end_loop answer used to end the loop, so the queued
+  // completion found no loop and was dropped. In the 2026-10-15 scorecard
+  // this happened on 23 of 133 mid-action turns; in errands-02/-03 the coal
+  // was mined during "how's it going", the completion was dropped, and the
+  // next idle turn walked off to her own furnace instead of bringing it back.
+  // The loop now stays up until that completion has run (see the tails that
+  // check loopAwaitsSettle). A stopped or replaced action owes nothing.
+  function noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed }) {
+    if (aborted || !tickClaimed || !loop || loop._terminated || loop.isTerminal) return
+    if (loop.inFlight !== inflightEntry) return
+    if (caps.backgroundActions[inflightEntry.name]) return
+    loop._settleOwed = inflightEntry.name ?? true
+  }
+
+  function loopAwaitsSettle(loop) {
+    return !!loop && !loop.inFlight && !!loop._settleOwed && !loop._terminated && !loop.isTerminal
+  }
+
   function attachSettleHandler(loop, runner, use, inflightEntry) {
     runner.promise
       .then(r => {
@@ -3680,6 +3714,7 @@ function maybeWarnByteCap(loop, warned) {
         // 260517-fix: capture _tickClaimed BEFORE clearing/nulling, so the
         // dispatcher knows the tool_use was already paired via tick.
         const tickClaimed = !!inflightEntry._tickClaimed
+        noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed })
         // 260516-0yw: clear the 10s action-tick BEFORE detaching the
         // in-flight reference. `loop` is in scope here (closure over the
         // dispatch call), so clearActionTick(loop.inFlight) is the right form.
@@ -3706,6 +3741,7 @@ function maybeWarnByteCap(loop, warned) {
         const result = aborted ? `aborted: ${use.name}` : `error: ${errLine(err)}`
         try { logActionResult(use.name, `error: ${errLine(err)}`) } catch {}
         const tickClaimed = !!inflightEntry._tickClaimed
+        noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed })
         // 260516-0yw: clear the 10s action-tick BEFORE detaching the in-flight.
         clearActionTick(loop.inFlight)
         if (loop.inFlight === inflightEntry) loop.inFlight = null
@@ -3779,6 +3815,7 @@ function maybeWarnByteCap(loop, warned) {
       _tickHandle: null,  // 260516-0yw: filled below
     }
     loop.inFlight = inflightEntry
+    loop._settleOwed = null
     loop._pendingActionUse = { id: use.id, name: use.name, input: use.input }
     loop._pendingResults = results
     loop._pendingByteWarn = byteWarn
@@ -4057,7 +4094,7 @@ function maybeWarnByteCap(loop, warned) {
       // Same post-condition handling as the initial fresh-loop call site.
       if (loop._terminated) {
         // Already terminal (case 2 stop, case 3 reseed) — tear down now.
-      } else if (loop.inFlight) {
+      } else if (loop.inFlight || loopAwaitsSettle(loop)) {
         // Loop is suspended waiting for the next action_complete.
         return
       } else {
@@ -4106,6 +4143,7 @@ function maybeWarnByteCap(loop, warned) {
     // The tool_use was already paired by the tick, so a clearGoal waiting on
     // this hand-over runs (or is kept) without touching that turn's results.
     await settleClearAfterHandOver(loop, data, null)
+    loop._settleOwed = null
     const interrupting = !!(data?.aborted && pendingInterrupt)
     if (data?.aborted && !interrupting) {
       // Genuine stale/terminal abort. P0 attack (terminateLoop) and R3/R4
@@ -4178,6 +4216,15 @@ function maybeWarnByteCap(loop, warned) {
       const resultStr = visualizeText ?? String(data?.result ?? 'done')
       eventText = `previous action completed: ${data?.name ?? 'action'} -> ${resultStr}`
       loop._currentIterationTrigger = 'sei:action_complete'
+      // 261015: a player line that landed while the loop waited for this
+      // completion (no action running, so it could not ride an action tick)
+      // is answered in the same turn as the result.
+      if (pendingInterrupt && !pendingAttack) {
+        eventText = `${eventText}\n\n${interruptTurnText(loop, pendingInterrupt.chatText, pendingInterrupt.who, pendingInterrupt.teammate === true)}`
+        if (pendingInterrupt.seiChat === true) loop._seiChatFolded = true
+        pendingInterrupt = null
+        loop._currentIterationTrigger = 'sei:chat_received'
+      }
     }
     try {
       loop.appendUserTurn([
@@ -4198,7 +4245,7 @@ function maybeWarnByteCap(loop, warned) {
       await runIterations(loop, byteWarn)
       if (loop._terminated) {
         // R3/R4 — teardown below.
-      } else if (loop.inFlight) {
+      } else if (loop.inFlight || loopAwaitsSettle(loop)) {
         // R2 dispatched a new long-runner; loop healthy.
         return
       } else {
@@ -4412,6 +4459,11 @@ function maybeWarnByteCap(loop, warned) {
         // live (R1 text-only kept the loop), or a new long-runner replaced
         // it (R2). Either way, return — no teardown.
         return
+      } else if (loopAwaitsSettle(loop)) {
+        // 261015: the action finished during this call; its queued
+        // completion drives the next turn (noteOwedSettle).
+        logger.info?.(`[sei/orch] action finished during the mid-action turn — loop waits for its completion (loop=${loop.id}, action=${loop._settleOwed})`)
+        return
       } else {
         // No in_flight AND not terminated — should be rare on a tick, but
         // treat as natural terminal.
@@ -4486,6 +4538,7 @@ function maybeWarnByteCap(loop, warned) {
     if (continueLoop || hasEndLoop || hasStop || loop.isTerminal || loop._goalStartNudged) return null
     if (!loop._playerDirected) return null
     if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return null
+    if (loopAwaitsSettle(loop)) return null
     const newGoal = toolUses.some((u, i) => u.name === 'setGoal' && results[i]?.content === 'goal set')
     if (!newGoal) return null
     const replyOwed = !!loop._unansweredNudgeText && !loop._spokeThisLoop
@@ -4910,7 +4963,7 @@ function maybeWarnByteCap(loop, warned) {
           }
         }
         terminateLoop(loop, 'R3-stop')
-      } else if (hasEndLoop && newSuspendingTools.length === 0 && inFlightIsForeground &&
+      } else if (hasEndLoop && newSuspendingTools.length === 0 && (inFlightIsForeground || loopAwaitsSettle(loop)) &&
                  !(_p1Trigger && isBareStopLine(loop._lastPlayerLine?.text))) {
         // (A bare "stop" from the player answered with end_loop instead of
         // stop falls through to R3 below and cancels the action as end_loop
@@ -4921,13 +4974,17 @@ function maybeWarnByteCap(loop, warned) {
         // build / dig carries on, exactly like a text-only keep-alive turn.
         // Fill every slot (say is pre-filled, memory writes run), record the
         // turn, and leave the loop suspended on its in_flight.
-        logger.debug?.(`[sei/orch] R1 end_loop with foreground in_flight=${loop.inFlight.name}: action keeps running (loop=${loop.id})`)
+        // 261015: also when that action finished during this call (its
+        // completion is queued, see noteOwedSettle): the model ended the turn
+        // believing it was still running, and its result comes next.
+        const runningName = loop.inFlight?.name ?? null
+        logger.debug?.(`[sei/orch] R1 end_loop with foreground in_flight=${runningName ?? `(finished: ${loop._settleOwed})`}: action keeps running (loop=${loop.id})`)
         const results = new Array(toolUses.length)
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
           if (u.name === 'end_loop') {
-            results[i] = { type: 'tool_result', tool_use_id: u.id, content: `turn ended; ${loop.inFlight.name} keeps running`, is_error: false }
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: runningName ? `turn ended; ${runningName} keeps running` : 'turn ended', is_error: false }
             continue
           }
           try {

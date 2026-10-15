@@ -1,0 +1,257 @@
+#!/usr/bin/env node
+// scripts/quality-eval/pathing-repro.mjs: direct-mode (no LLM) pathing
+// reproductions on the eval server, for the self-dug-hole and unreachable-
+// target failures (quality pass 10, 261015). Each trial rebuilds the arena,
+// boots a fresh companion in direct mode from --repo, sets up the case, calls
+// the actions straight and records the result plus server/probe ground truth.
+//
+//   node scripts/quality-eval/pathing-repro.mjs --repo <bot repo> [--cases a,b] [--reps N] [--out file.jsonl]
+//
+// Cases:
+//   shaft4_goto     dig own 1x1 shaft 4 deep, then goTo the player on the surface
+//   shaft8_goto     same, 8 deep (keeps only the dug blocks as scaffolding)
+//   shaft8_noblocks 8 deep, then the dug blocks are cleared: no scaffolding at all
+//   shaft6_follow   6 deep, then follow the player for 30s
+//   shaft8_bare     8 deep, then no blocks and no pickaxe: wants a quick,
+//                   honest "stuck in a hole" answer, not a 12s timeout
+//   buried_coal     a coal ore buried 7 down is nearer than one on the
+//                   surface (the errands-02 trap): find + goTo + dig, then
+//                   back to the player
+//   cliff_log_find  a tree on a sheer 6-high mesa (nearest) plus one on the
+//                   ground: find oak_log + goTo it, twice, the way the brain did
+//   cliff_log_gather gather 3 oak_log with the same layout
+//
+// Shaft and follow cases only count as success on the SURFACE next to the
+// player: tunnelling along under the player's feet is not "reached".
+//
+// Owns the server for its run (reset, start, stop), like scorecard.mjs: book
+// it in ~/suisei/eval/QUEUE.md first.
+import fs from 'node:fs'
+import path from 'node:path'
+import { serverCtl, cmds, itemCount } from './lib/server.mjs'
+import { connectPlayer, distTo, entityOf } from './lib/player.mjs'
+import { startCompanion, companionName, PLAYER } from './lib/companionProc.mjs'
+import { WORLD_RULES, arenaReset, playersReset, tp, tree, S, P, Y } from './bench/arena.mjs'
+
+const argv = process.argv.slice(2)
+const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d }
+const REPO = path.resolve(opt('repo', process.cwd()))
+const REPS = Number(opt('reps', 3))
+const OUT = opt('out', null)
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const log = (...a) => console.log(`[repro ${new Date().toISOString().slice(11, 19)}]`, ...a)
+
+// A sheer stone mesa with a tree on top, nearer to S than the ground tree.
+const MESA = { x0: 182, x1: 186, z0: 4, z1: 8, top: Y + 5 }
+// tree() is built at Y; rebuild the same shape on the mesa top by hand.
+function treeAt(x, y, z, h = 5) {
+  const top = y + h - 1
+  return [
+    `fill ${x - 2} ${top - 2} ${z - 2} ${x + 2} ${top - 1} ${z + 2} oak_leaves[persistent=true]`,
+    `fill ${x - 1} ${top} ${z - 1} ${x + 1} ${top + 1} ${z + 1} oak_leaves[persistent=true]`,
+    `fill ${x} ${y} ${z} ${x} ${top} ${z} oak_log`,
+  ]
+}
+const CLIFF_WORLD = [
+  `fill ${MESA.x0} ${Y} ${MESA.z0} ${MESA.x1} ${MESA.top} ${MESA.z1} stone`,
+  ...treeAt(184, MESA.top + 1, 6),
+  ...tree(166, -10),
+]
+
+async function digShaft(ctx, depth) {
+  // Stand on the column at S and dig straight down (Y-1 .. Y-depth).
+  return ctx.exec('dig', { x: S.x, y: Y - 1, z: S.z, to: { x: S.x, y: Y - depth, z: S.z } }, { timeoutMs: 90000 })
+}
+
+// Out of the hole and next to the player. Distance alone is not enough: a
+// bot that tunnels under the player's feet is "4.5m away" four blocks down.
+const onSurfaceNear = (pos, d) => d <= 4.5 && Number(pos?.y) >= Y - 0.5
+
+async function gotoPlayer(ctx) {
+  const t0 = Date.now()
+  const r = await ctx.exec('goTo', { x: P.x, y: Y, z: P.z, range: 2 }, { timeoutMs: 60000 })
+  const pr = await ctx.comp.probe()
+  const d = distTo(ctx.pbot, ctx.bot)
+  return { result: r.result, ms: Date.now() - t0, pos: pr?.pos, dist: Number(d.toFixed(1)), success: onSurfaceNear(pr?.pos, d) }
+}
+
+const CASES = {
+  shaft4_goto: {
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const dug = await digShaft(ctx, 4)
+      await sleep(800)
+      const g = await gotoPlayer(ctx)
+      return { dug: dug.result, ...g }
+    },
+  },
+  shaft8_goto: {
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const dug = await digShaft(ctx, 8)
+      await sleep(800)
+      const g = await gotoPlayer(ctx)
+      return { dug: dug.result, ...g }
+    },
+  },
+  shaft8_noblocks: {
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const dug = await digShaft(ctx, 8)
+      await cmds([`clear ${ctx.bot} cobblestone`, `clear ${ctx.bot} dirt`])
+      await sleep(800)
+      const g = await gotoPlayer(ctx)
+      return { dug: dug.result, ...g }
+    },
+  },
+  shaft6_follow: {
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const dug = await digShaft(ctx, 6)
+      await sleep(800)
+      const t0 = Date.now()
+      const h = ctx.comp.execStart('follow', { player: PLAYER })
+      let reachedMs = null
+      while (Date.now() - t0 < 30000) {
+        await sleep(500)
+        const e = entityOf(ctx.pbot, ctx.bot)
+        if (e && onSurfaceNear(e.position, distTo(ctx.pbot, ctx.bot))) { reachedMs = Date.now() - t0; break }
+      }
+      ctx.comp.abort(h.id)
+      await h.done
+      const d = distTo(ctx.pbot, ctx.bot)
+      const pr = await ctx.comp.probe()
+      return { dug: dug.result, result: reachedMs != null ? 'reached' : 'not reached in 30s', ms: reachedMs ?? 30000, pos: pr?.pos, dist: Number(d.toFixed(1)), success: reachedMs != null }
+    },
+  },
+  shaft8_bare: {
+    // No blocks and no pickaxe in a stone shaft: there is no way out in a
+    // reasonable time. Success is an honest, quick answer that says so.
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const dug = await digShaft(ctx, 8)
+      await cmds([`clear ${ctx.bot}`])
+      await sleep(800)
+      const g = await gotoPlayer(ctx)
+      return { dug: dug.result, ...g, success: /^stuck in a hole/.test(g.result) && g.ms < 30000 }
+    },
+  },
+  buried_coal: {
+    // A coal ore buried in the arena's stone 7 blocks down and nearer than an
+    // exposed one on the surface (the errands-02 setup). find + goTo + dig,
+    // up to twice; success = coal in hand and back on the surface.
+    world: [`setblock ${S.x} ${Y - 7} ${S.z + 3} coal_ore`, `setblock 190 ${Y} 6 coal_ore`],
+    give: ['stone_pickaxe'],
+    async run(ctx) {
+      const steps = []
+      const t0 = Date.now()
+      let got = false
+      for (let i = 0; i < 2 && !got; i++) {
+        const f = await ctx.exec('find', { name: 'coal_ore' })
+        let pos = null
+        try { pos = JSON.parse(f.result).pos } catch {}
+        if (!pos) { steps.push({ find: f.result }); break }
+        const g = await ctx.exec('goTo', { x: pos.x, y: pos.y, z: pos.z, range: 2 }, { timeoutMs: 60000 })
+        const d = await ctx.exec('dig', { x: pos.x, y: pos.y, z: pos.z }, { timeoutMs: 30000 })
+        steps.push({ find: `${pos.x},${pos.y},${pos.z}`, goTo: g.result, dig: d.result })
+        await sleep(1500)
+        got = (await itemCount(ctx.bot, 'coal')) > 0
+      }
+      // Then come back to the player, as the errands script asks.
+      const back = await gotoPlayer(ctx)
+      steps.push({ back: back.result })
+      return { steps, result: got ? 'got coal' : 'no coal', ms: Date.now() - t0, pos: back.pos, success: got && back.success }
+    },
+  },
+  cliff_log_find: {
+    world: CLIFF_WORLD,
+    give: [],
+    async run(ctx) {
+      const steps = []
+      let got = false
+      const t0 = Date.now()
+      for (let i = 0; i < 3 && !got; i++) {
+        const f = await ctx.exec('find', { name: 'oak_log' })
+        let pos = null
+        try { pos = JSON.parse(f.result).pos } catch {}
+        if (!pos) { steps.push({ find: f.result }); break }
+        const g = await ctx.exec('goTo', { x: pos.x, y: pos.y, z: pos.z, range: 2 }, { timeoutMs: 60000 })
+        const d = await ctx.exec('dig', { x: pos.x, y: pos.y, z: pos.z }, { timeoutMs: 30000 })
+        steps.push({ find: `${pos.x},${pos.y},${pos.z}`, goTo: g.result, dig: d.result })
+        await sleep(1500)
+        got = (await itemCount(ctx.bot, '#minecraft:logs')) > 0
+      }
+      return { steps, result: got ? 'got a log' : 'no log', ms: Date.now() - t0, success: got }
+    },
+  },
+  cliff_log_gather: {
+    world: CLIFF_WORLD,
+    give: [],
+    async run(ctx) {
+      const t0 = Date.now()
+      const r = await ctx.exec('gather', { name: 'oak_log', count: 3 }, { timeoutMs: 150000 })
+      await sleep(1500)
+      const n = await itemCount(ctx.bot, '#minecraft:logs')
+      return { result: r.result, ms: Date.now() - t0, logs: n, success: n >= 3 }
+    },
+  },
+}
+
+async function main() {
+  const which = (opt('cases', null) || Object.keys(CASES).join(',')).split(',').filter(Boolean)
+  const bot = companionName()
+  log(`repo ${REPO}, cases ${which.join(',')}, reps ${REPS}`)
+  serverCtl('reset')
+  serverCtl('start')
+  const rows = []
+  let pbot
+  try {
+    pbot = await connectPlayer()
+    await cmds(WORLD_RULES)
+    for (let rep = 1; rep <= REPS; rep++) {
+      for (const id of which) {
+        const c = CASES[id]
+        if (!c) throw new Error(`unknown case ${id}`)
+        // The shaft cases dig below the 8-layer arena floor into seed
+        // terrain; restore the whole column region each trial.
+        await cmds([...arenaReset(), ...(c.world || [])])
+        const sessDir = path.join('/tmp', `qe-repro-${id}-${rep}`)
+        let comp
+        try {
+          comp = await startCompanion({ sessDir, mode: 'direct', botRepo: REPO, tag: `qe-repro-${id}` })
+        } catch (e) { rows.push({ id, rep, success: false, error: `boot: ${e.message}` }); continue }
+        let row
+        try {
+          await cmds([...playersReset([PLAYER, bot]), tp(bot, S, P), tp(PLAYER, P, S), ...(c.give || []).map((g) => `give ${bot} ${g}`)])
+          await sleep(1500)
+          const ctx = {
+            bot, pbot, comp,
+            exec: (name, args, o) => comp.exec(name, args, o),
+          }
+          row = { id, rep, ...(await c.run(ctx)) }
+        } catch (e) {
+          row = { id, rep, success: false, error: String(e?.message || e) }
+        } finally {
+          try { pbot.pathfinder.setGoal(null) } catch {}
+          await comp.stop().catch(() => {})
+        }
+        rows.push(row)
+        log(JSON.stringify(row))
+        if (OUT) fs.appendFileSync(OUT, JSON.stringify({ repo: REPO, ...row }) + '\n')
+      }
+    }
+  } finally {
+    try { pbot?.quit() } catch {}
+    try { serverCtl('stop') } catch {}
+  }
+  const by = {}
+  for (const r of rows) { (by[r.id] ??= []).push(r) }
+  for (const [id, rs] of Object.entries(by)) {
+    const ok = rs.filter((r) => r.success).length
+    const ms = rs.filter((r) => r.success).map((r) => r.ms)
+    log(`${id}: ${ok}/${rs.length} success${ms.length ? `, median ${Math.round(ms.sort((a, b) => a - b)[Math.floor(ms.length / 2)] / 100) / 10}s` : ''}`)
+  }
+  process.exit(0)
+}
+
+main().catch((e) => { console.error(e); try { serverCtl('stop') } catch {}; process.exit(1) })

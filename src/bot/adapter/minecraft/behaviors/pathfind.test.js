@@ -224,3 +224,45 @@ describe('pursuitMovements (attack chase)', () => {
     expect(m.maxDropDown).toBe(4)
   })
 })
+
+// 261015 quality pass 10: mineflayer-pathfinder's goto() resolves when a
+// re-plan returns an empty path, which is also "no path from here". goTo used
+// to call that 'reached' (cliff repro: "reached" a log 6 up a sheer mesa).
+describe('goTo checks it actually ended at the goal (261015)', () => {
+  it('turns a resolved goto that left the bot far from the goal into cant_reach', async () => {
+    const bot = makeBot()
+    bot.entity.position = { x: 180.5, y: 71, z: 6.5 }
+    bot.pathfinder.goto = vi.fn(async () => {})
+    const r = await goTo(bot, 184, 77, 6, 2, 1000)
+    expect(r).toMatch(/^cant_reach \(closest=7\.0m to target 184,77,6\) — unreachable — try build to Y=77$/)
+  })
+
+  it('still reports reached at the goal, and within a block of the range', async () => {
+    const bot = makeBot()
+    bot.pathfinder.goto = vi.fn(async () => {})
+    bot.entity.position = { x: 182.5, y: 71, z: 6.5 }
+    expect(await goTo(bot, 184, 71, 6, 2, 1000)).toBe('reached')
+    bot.entity.position = { x: 181.2, y: 71, z: 6.5 }
+    expect(await goTo(bot, 184, 71, 6, 2, 1000)).toBe('reached')
+  })
+
+  it('measures a dig-reach walk from the eyes', async () => {
+    const bot = makeBot()
+    bot.pathfinder.goto = vi.fn(async () => {})
+    bot.entity.position = { x: 1.5, y: 64, z: 0.5 }
+    expect(await goTo(bot, 0, 68, 0, 3, 1000, undefined, { reach: 4.2 })).toBe('reached')
+    bot.entity.position = { x: 9.5, y: 64, z: 0.5 }
+    expect(await goTo(bot, 0, 68, 0, 3, 1000, undefined, { reach: 4.2 })).toMatch(/^cant_reach/)
+  })
+})
+
+describe('companionMovements scaffolding (261015)', () => {
+  it('may tower and bridge with common junk blocks, not only dirt and cobblestone', () => {
+    const m = companionMovements(makeBot())
+    for (const n of ['dirt', 'cobblestone', 'cobbled_deepslate', 'andesite', 'netherrack']) {
+      expect(m.scafoldingBlocks).toContain(mcData.itemsByName[n].id)
+    }
+    expect(m.scafoldingBlocks).not.toContain(mcData.itemsByName.oak_planks.id)
+    expect(m.scafoldingBlocks).not.toContain(mcData.itemsByName.sand.id)
+  })
+})

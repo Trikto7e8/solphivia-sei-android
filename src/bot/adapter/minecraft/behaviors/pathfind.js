@@ -12,6 +12,18 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export const STUCK_RESETS_TO_GIVE_UP = 2
 
 /**
+ * Blocks a walk may spend as scaffolding (towers, bridges, climbOut pillars):
+ * common, cheap, full, and not affected by gravity. 261015: the pathfinder's
+ * own set is only dirt and cobblestone, so a bot carrying 20 andesite or
+ * cobbled deepslate counted as having nothing to climb with.
+ */
+export const JUNK_SCAFFOLD = [
+  'dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'andesite', 'diorite',
+  'granite', 'tuff', 'coarse_dirt', 'rooted_dirt', 'stone', 'deepslate',
+  'blackstone', 'basalt', 'calcite', 'sandstone', 'end_stone', 'mud', 'packed_mud',
+]
+
+/**
  * The Movements every companion walk uses (goTo, follow, attack pursuit).
  *
  * 261011 quality pass 2: sprinting is OFF. The pathfinder's sprint-jump
@@ -46,6 +58,13 @@ export function companionMovements(bot, opts = {}) {
   m.maxDropDown = 4
   if (opts.canDig === false) m.canDig = false
   // (mineflayer-pathfinder spells the field `scafoldingBlocks`.)
+  const items = bot?.registry?.itemsByName
+  if (Array.isArray(m.scafoldingBlocks) && items) {
+    for (const name of JUNK_SCAFFOLD) {
+      const id = items[name]?.id
+      if (id != null && !m.scafoldingBlocks.includes(id)) m.scafoldingBlocks.push(id)
+    }
+  }
   if (opts.canPlace === false) {
     m.scafoldingBlocks = []
     m.allow1by1towers = false
@@ -319,7 +338,36 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
     try { signal.removeEventListener('abort', abortListener) } catch {}
   }
   if (result !== 'reached') stopPathfinderDig(bot)
+  // 261015: mineflayer-pathfinder's goto() RESOLVES when a re-plan comes back
+  // with an empty path, which is also what "no path from here" looks like
+  // once the bot stands at the closest reachable spot. goTo reported that as
+  // 'reached': on the cliff repro she "reached" a log 6 blocks up a sheer
+  // mesa, the dig said out of range, and the brain tried the same log again.
+  // Check the body actually ended at the goal.
+  if (result === 'reached' && !endedAtGoal(bot, goal, x, y, z, range, opts)) {
+    return composeVerticalHint(bot, x, y, z, cantReachWithDistance())
+  }
   return composeVerticalHint(bot, x, y, z, result)
+}
+
+/**
+ * Did the walk end where the goal wanted? Lenient on purpose (the
+ * pathfinder's own check also accepts the cell above the feet, and a bot
+ * standing on a slab or mid-step reads half a block off): only a clear miss
+ * counts as not reached.
+ */
+function endedAtGoal(bot, goal, x, y, z, range, opts) {
+  const p = bot?.entity?.position
+  if (!p || ![p.x, p.y, p.z].every(Number.isFinite)) return true
+  const cell = { x: Math.floor(p.x), y: Math.floor(p.y + 0.01), z: Math.floor(p.z) }
+  try {
+    if (goal.isEnd(cell) || goal.isEnd({ ...cell, y: cell.y + 1 })) return true
+  } catch { return true }
+  if (Number.isFinite(opts?.reach)) {
+    const eye = Number.isFinite(bot.entity?.eyeHeight) ? bot.entity.eyeHeight : 1.62
+    return Math.hypot(x + 0.5 - p.x, y + 0.5 - (p.y + eye), z + 0.5 - p.z) <= opts.reach + 0.5
+  }
+  return Math.hypot(x - p.x, y - p.y, z - p.z) <= range + 1
 }
 
 export const PathfindResult = /** @type {const} */ ({

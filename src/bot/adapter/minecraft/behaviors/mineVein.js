@@ -38,6 +38,7 @@ import mcDataLib from 'minecraft-data'
 import { resolveTerm } from '../loose-terms.js'
 import { goTo as realGoTo, waitForReflexClear, dropWalkOpts } from './pathfind.js'
 import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.js'
+import { isUnreachable, noteUnreachable } from './unreachable.js'
 import { inventoryCounts, gained } from './pickup.js'
 import { droppedItemName } from '../observers/entities.js'
 
@@ -225,6 +226,7 @@ export async function gatherAction(args, bot, config, _deps) {
   // can never be re-anchored — that is the no-infinite-loop guarantee.
   const visited = new Set()
   const key = (x, y, z) => `${x},${y},${z}`
+  let skippedUnreachable = 0
 
   // Resolve the next anchor: nearest matching block whose component we have
   // not already swept. findBlocks returns closest-first, so the first
@@ -243,7 +245,11 @@ export async function gatherAction(args, bot, config, _deps) {
       point,
     })
     for (const h of hits ?? []) {
-      if (!visited.has(key(h.x, h.y, h.z))) return new Vec3(h.x, h.y, h.z)
+      if (visited.has(key(h.x, h.y, h.z))) continue
+      // 261015: blocks an earlier walk or dig could not reach (this call or
+      // a recent one) are not worth a 6s walk again; take the next one.
+      if (isUnreachable(bot, h)) { skippedUnreachable++; visited.add(key(h.x, h.y, h.z)); continue }
+      return new Vec3(h.x, h.y, h.z)
     }
     return null
   }
@@ -355,6 +361,9 @@ export async function gatherAction(args, bot, config, _deps) {
           return dug
         }
       } else if (typeof r === 'string' && r.startsWith('out of range')) {
+        // The walk above ran and still could not get in reach: remember the
+        // block, so the next gather or find does not walk at it again.
+        noteUnreachable(bot, np, 'out of reach')
         outOfRangeRun++
         if (outOfRangeRun >= 2) {
           // Unreachable tail — mark the whole remainder done and move on to
@@ -387,6 +396,9 @@ export async function gatherAction(args, bot, config, _deps) {
     if (!anchor && wideMatching) {
       matching = wideMatching
       anchor = nextAnchor()
+    }
+    if (!anchor && skippedUnreachable) {
+      return `gathered 0/${want} ${args.name}: every ${args.name} nearby (${skippedUnreachable}) is one you could not reach in the last few minutes. Explore to find others, or build or dig your way to one`
     }
     if (!anchor) return `no ${args.name} in loaded chunks`
   }
@@ -497,7 +509,9 @@ export async function gatherAction(args, bot, config, _deps) {
   if (progress.noHarvest) {
     note = ` (stopped: ${blockName} drops nothing unless you hold the right tool, and you have none that can harvest it. Craft the right pickaxe first)`
   } else if (exhausted && have < want) {
-    note = ` (no more ${blockName} reachable nearby)`
+    note = skippedUnreachable
+      ? ` (no more ${blockName} reachable nearby; skipped ${skippedUnreachable} you could not reach recently)`
+      : ` (no more ${blockName} reachable nearby)`
   } else if (coordMode && attempted < want && have < want) {
     note = ` (that vein had only ${attempted})`
   }

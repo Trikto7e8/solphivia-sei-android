@@ -16,6 +16,9 @@ import { resolveOwner } from '../observers/snapshot.js'
 
 /** Within this many blocks a toss lands at their feet. */
 export const HAND_RANGE = 3
+/** After a walk that reached them, a toss from this far still lands close. */
+export const TOSS_RANGE = 4
+const APPROACH_TRIES = 2
 const WALK_RANGE = 2
 const FACE_MS = 800
 
@@ -93,14 +96,30 @@ export async function giveAction(args, bot, config, _deps) {
     return `cannot see ${name} nearby, so nothing was given; you still have ${have} ${item}. Walk to them first`
   }
 
-  if (distance(bot.entity?.position, ent.position) > HAND_RANGE) {
+  // 261015 (pass 10): the walk aims at where the player stood when it
+  // started, and GoalNear measures block cells, not positions. A player who
+  // kept walking, or plain cell rounding, left her "reached" but just past
+  // HAND_RANGE + 0.5, and give answered "could not get to Alex (reached)"
+  // (pass 9 compare errands-03-B; scorecard gather_craft-02, where the same
+  // give a few seconds later worked). Now: after a walk that reached, a toss
+  // from up to TOSS_RANGE still goes ahead, and a miss walks once more to
+  // where the player is NOW.
+  let walked = null
+  for (let attempt = 0; attempt < APPROACH_TRIES; attempt++) {
+    const d = distance(bot.entity?.position, ent?.position)
+    if (d <= HAND_RANGE) break
+    if (walked != null && String(walked).startsWith('reached') && d <= TOSS_RANGE) break
     const p = ent.position
     const timeoutMs = config?.pathfinder_timeout_ms ?? 12000
-    const walked = await goTo(bot, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z), WALK_RANGE, timeoutMs, signal)
-    if (signal?.aborted) return 'aborted'
+    walked = await goTo(bot, Math.floor(p.x), Math.floor(p.y), Math.floor(p.z), WALK_RANGE, timeoutMs, signal)
+    if (signal?.aborted || String(walked).startsWith('aborted')) return 'aborted'
     ent = owner?.player?.entity ?? ent
-    if (distance(bot.entity?.position, ent?.position) > HAND_RANGE + 0.5) {
-      return `could not get to ${name} (${walked}), so nothing was given; you still have ${have} ${item}`
+    const after = distance(bot.entity?.position, ent?.position)
+    if (after <= HAND_RANGE || (String(walked).startsWith('reached') && after <= TOSS_RANGE)) break
+    // A walk that did not reach will not do better a second time.
+    if (!String(walked).startsWith('reached') || attempt === APPROACH_TRIES - 1) {
+      const gap = Number.isFinite(after) ? `, ${after.toFixed(1)}m away` : ''
+      return `could not get to ${name} (${walked}${gap}), so nothing was given; you still have ${have} ${item}`
     }
   }
 

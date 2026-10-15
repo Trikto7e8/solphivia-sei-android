@@ -7,8 +7,11 @@
 
 import { z } from 'zod'
 import mcDataLib from 'minecraft-data'
+import { Vec3 } from 'vec3'
 import { createRegistry } from '../../registry.js'
 import { goTo } from './behaviors/pathfind.js'
+import { climbOut, escapeUp, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
+import { noteUnreachable, isUnreachable, isUnreachableResult } from './behaviors/unreachable.js'
 import { resolveTerm } from './loose-terms.js'
 import { gatherAction } from './behaviors/mineVein.js'
 import { getHealedPos } from './observers/posHealer.js'
@@ -165,6 +168,57 @@ function findEntity(bot, name, maxDistance) {
   }
 }
 
+// 261015 (pass 10): find looks at this many hits, nearest first.
+const FIND_CANDIDATES = 24
+// A buried block (no open face) counts as this much farther than it is: the
+// walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
+const BURIED_PENALTY_M = 12
+// Each block more than DEPTH_FREE_M below her adds this much.
+const DEPTH_FREE_M = 3
+const DEPTH_PENALTY_PER_M = 1.5
+// An out-of-range dig from within this distance means she stood by the block
+// and still could not reach it.
+const UNREACHABLE_NEAR_M = 8
+// A dig out of range with the block within this horizontal distance means
+// she stands under it: walking closer would not have helped.
+const DIG_UNDER_H = 2
+
+const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
+function isExposed(bot, p) {
+  for (const [dx, dy, dz] of FACES) {
+    try {
+      const b = bot.blockAt(new Vec3(p.x + dx, p.y + dy, p.z + dz))
+      if (b && isPassable(b)) return true
+    } catch {}
+  }
+  return false
+}
+
+/**
+ * A goTo aimed at a BLOCK (a log, an ore, a table: the cell is not air) that
+ * failed to get there marks the block unreachable for a few minutes. A walk to
+ * a spot or a player is not a block target. A timeout far from the block is
+ * not evidence either (a long walk simply ran out of time).
+ */
+/** goTo's result when its climb out of a hole was cut off. */
+function climbAborted(r) {
+  if (r?.why === 'paused') return 'aborted (paused while climbing out of a hole)'
+  if (r?.why === 'yielded') return 'aborted (a reflex took over while climbing out of a hole)'
+  return 'aborted'
+}
+
+function noteUnreachableTarget(bot, args, result) {
+  try {
+    if (!isUnreachableResult(result)) return
+    const blk = bot.blockAt?.(new Vec3(Math.floor(args.x), Math.floor(args.y), Math.floor(args.z)))
+    if (!blk || isPassable(blk)) return
+    const p = bot.entity?.position
+    const far = p ? Math.hypot(p.x - args.x, p.y - args.y, p.z - args.z) : Infinity
+    if (String(result).startsWith('timeout') && far > UNREACHABLE_NEAR_M) return
+    noteUnreachable(bot, args, String(result).split(' ')[0])
+  } catch {}
+}
+
 export function createDefaultRegistry({ visionEnabled = false } = {}) {
   const registry = createRegistry()
 
@@ -221,14 +275,60 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       if (range <= 1 && isCoordsAtKnownPlayer(bot, args.x, args.y, args.z)) {
         range = 2
       }
+      // 261015: out of a self-dug shaft first. The pathfinder's tower climbs
+      // about a block per 5s (see climbOut.js), so from a 1x1 shaft a 12s
+      // walk to the surface timed out every time.
+      const climb = await climbOut(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal })
+      if (climb.status === 'aborted') return climbAborted(climb)
+      if (climb.status === 'failed') return climb.line
       // 260513-wkd: pass through config.signal so loop-level abort halts the
       // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
       // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
-      return goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+      let r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+      let up = climb
+      // 261015: the walk failed and the target is well above her: she is in
+      // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
+      // Climb by hand and walk once more.
+      const feetY = bot.entity?.position?.y
+      if (climb.status !== 'climbed' && isUnreachableResult(r) && Number.isFinite(feetY) && args.y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH) {
+        const esc = await escapeUp(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal, goTo })
+        if (esc.status === 'aborted') return climbAborted(esc)
+        if (esc.status === 'failed') return esc.line
+        if (esc.status === 'climbed') {
+          up = esc
+          r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+        }
+      }
+      noteUnreachableTarget(bot, args, r)
+      if (up.status === 'climbed') {
+        const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
+        return up === climb
+          ? `${r} (first ${how} out of the ${up.depth}-deep hole you were in)`
+          : `${r} (the first walk failed, so you ${how} ${up.depth} blocks up out of the hole and walked again)`
+      }
+      return r
     }
   )
 
-  registry.register('dig', DigSchema, digAction)
+  // 261015: a dig that is out of reach while she stands right by the block
+  // (a log up a cliff, ore behind a ledge) marks it unreachable, so the next
+  // find or gather picks another one. dig never walks, so "out of range" on
+  // its own only means she did not walk there first. 261016 review: mark it
+  // only when standing next to it could not have helped: she is roughly under
+  // the block, or it is more than 2 blocks above her feet.
+  registry.register('dig', DigSchema, async (args, bot, config) => {
+    const r = await digAction(args, bot, config)
+    if (args?.to == null && typeof r === 'string' && r.startsWith('out of range')) {
+      const m = r.match(/^out of range \(([\d.]+)m.*@(-?\d+),(-?\d+),(-?\d+)/)
+      const p = bot.entity?.position
+      if (m && p && Number(m[1]) <= UNREACHABLE_NEAR_M) {
+        const pos = { x: Number(m[2]), y: Number(m[3]), z: Number(m[4]) }
+        const horiz = Math.hypot(pos.x + 0.5 - p.x, pos.z + 0.5 - p.z)
+        if (horiz <= DIG_UNDER_H || pos.y > Math.floor(p.y + 0.01) + 2) noteUnreachable(bot, pos, 'out of reach')
+      }
+    }
+    return r
+  })
 
   // `explore`: short directional hop to load new terrain when a target is
   // unreachable or there's nothing nearby. Walks `blocks` (default 16) in a
@@ -297,21 +397,46 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       }
       const healed = getHealedPos(bot) ?? bot.entity?.position
       const point = healed && Number.isFinite(healed.x) ? healed : undefined
-      const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: 1, point })
-      if (!hits || !hits.length) {
+      // 261015: look at more than the single nearest hit. Skip blocks a walk
+      // or dig just failed to reach (behaviors/unreachable.js), so a retry
+      // gets a different block instead of the same cliff log, and prefer a
+      // block with an open face over one buried in rock: the nearest coal in
+      // the errands eval was 17 blocks down inside the stone, the walk dug a
+      // shaft after it, and she spent the rest of the session in the hole.
+      const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_CANDIDATES, point }) ?? []
+      if (!hits.length) {
         return { found: false, reason: `no ${args.name} in loaded chunks within ${args.maxDistance}m` }
       }
-      const h = hits[0]
+      const fresh = hits.filter((h) => !isUnreachable(bot, h))
+      const skipped = hits.length - fresh.length
+      if (!fresh.length) {
+        return {
+          found: false,
+          reason: `every ${args.name} found nearby (${skipped}) is one you could not reach in the last few minutes. Explore to find others, or build or dig your way to one`,
+        }
+      }
+      const distOf = (h) => (point && typeof h.distanceTo === 'function' ? h.distanceTo(point) : 0)
+      // Depth below her counts extra: the walk down is a shaft she has to
+      // come back up. An "exposed" ore 17 blocks down is usually on a cave
+      // wall the walk cannot reach without digging (pass 10 compare,
+      // errands-02-B: coal at y54 beat the surface coal 3 blocks farther).
+      const depthOf = (h) => (point ? Math.max(0, point.y - h.y - DEPTH_FREE_M) : 0)
+      let h = fresh[0]
+      let best = Infinity
+      for (const c of fresh) {
+        const score = distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
+        if (score < best) { best = score; h = c }
+      }
       const blk = bot.blockAt(h)
-      const d = point && typeof h.distanceTo === 'function'
-        ? Number(h.distanceTo(point).toFixed(1))
-        : 0
-      return {
+      const d = Number(distOf(h).toFixed(1))
+      const out = {
         found: true,
         id: blk?.name ?? 'unknown',
         pos: { x: h.x, y: h.y, z: h.z },
         distance: d,
       }
+      if (skipped) out.note = `skipped ${skipped} you could not reach recently`
+      return out
     }
   )
 

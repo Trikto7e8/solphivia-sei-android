@@ -12,6 +12,48 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 export const STUCK_RESETS_TO_GIVE_UP = 2
 
 /**
+ * Blocks a walk may spend as scaffolding (towers, bridges, climbOut pillars):
+ * common, cheap, full, and not affected by gravity. 261015: the pathfinder's
+ * own set is only dirt and cobblestone, so a bot carrying 20 andesite or
+ * cobbled deepslate counted as having nothing to climb with. Listed in the
+ * order climbOut spends them: true junk first, cobblestone (furnaces, stone
+ * tools, and often the very thing the player asked for) last.
+ */
+export const JUNK_SCAFFOLD = [
+  'dirt', 'coarse_dirt', 'rooted_dirt', 'netherrack', 'andesite', 'diorite', 'granite',
+  'tuff', 'cobbled_deepslate', 'basalt', 'blackstone', 'calcite', 'mud', 'packed_mud',
+  'end_stone', 'sandstone', 'stone', 'deepslate', 'cobblestone',
+]
+
+/**
+ * Blocks a walk never breaks on its way (261016 review). The pathfinder digs
+ * through whatever is diggable when a route needs it, so a walk out of a
+ * closed room, or to the player standing on its roof, cut through planks,
+ * doors and glass. A dig the player asks for (dig.js) is not affected.
+ */
+export const BUILT_BLOCK = new RegExp('(' + [
+  '_planks', '_door', '_trapdoor', '_fence', '_fence_gate', 'glass', '_pane', '_bed', 'chest', 'barrel',
+  'shulker_box', 'crafting_table', 'furnace', 'smoker', 'anvil', 'enchanting_table', 'bookshelf',
+  '_wool', '_carpet', 'bricks', '_brick_.*', '_concrete', 'glazed_terracotta', '_slab', '_stairs', '_wall',
+  '_sign', '_banner', 'lantern', 'ladder', 'hay_block', 'polished_.*', 'smooth_stone', 'cut_.*', 'chiseled_.*',
+  'quartz_block', 'smooth_quartz', 'quartz_pillar', 'quartz_bricks', 'quartz_slab', 'quartz_stairs', 'lectern', 'loom', 'cartography_table', 'fletching_table', 'smithing_table', 'stonecutter',
+  'grindstone', 'composter', 'beehive', 'jukebox', 'note_block', 'brewing_stand', 'cauldron', 'beacon',
+  'lever', '_button', '_pressure_plate', 'repeater', 'comparator', 'piston', 'observer', 'dispenser',
+  'dropper', 'hopper', 'rail', 'redstone_lamp', 'target', 'respawn_anchor', 'lodestone', 'campfire',
+  '_bars', 'chain', 'scaffolding', 'flower_pot',
+].join('|') + ')$')
+
+/** Add every built block to a Movements' never-break set. */
+export function protectBuiltBlocks(bot, m) {
+  const blocks = bot?.registry?.blocksArray
+  if (!m?.blocksCantBreak || !Array.isArray(blocks)) return m
+  for (const b of blocks) {
+    if (b?.name && BUILT_BLOCK.test(b.name)) m.blocksCantBreak.add(b.id)
+  }
+  return m
+}
+
+/**
  * The Movements every companion walk uses (goTo, follow, attack pursuit).
  *
  * 261011 quality pass 2: sprinting is OFF. The pathfinder's sprint-jump
@@ -44,8 +86,16 @@ export function companionMovements(bot, opts = {}) {
   m.allowSprinting = false
   m.digCost = 8
   m.maxDropDown = 4
+  protectBuiltBlocks(bot, m)
   if (opts.canDig === false) m.canDig = false
   // (mineflayer-pathfinder spells the field `scafoldingBlocks`.)
+  const items = bot?.registry?.itemsByName
+  if (Array.isArray(m.scafoldingBlocks) && items) {
+    for (const name of JUNK_SCAFFOLD) {
+      const id = items[name]?.id
+      if (id != null && !m.scafoldingBlocks.includes(id)) m.scafoldingBlocks.push(id)
+    }
+  }
   if (opts.canPlace === false) {
     m.scafoldingBlocks = []
     m.allow1by1towers = false
@@ -319,7 +369,36 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
     try { signal.removeEventListener('abort', abortListener) } catch {}
   }
   if (result !== 'reached') stopPathfinderDig(bot)
+  // 261015: mineflayer-pathfinder's goto() RESOLVES when a re-plan comes back
+  // with an empty path, which is also what "no path from here" looks like
+  // once the bot stands at the closest reachable spot. goTo reported that as
+  // 'reached': on the cliff repro she "reached" a log 6 blocks up a sheer
+  // mesa, the dig said out of range, and the brain tried the same log again.
+  // Check the body actually ended at the goal.
+  if (result === 'reached' && !endedAtGoal(bot, goal, x, y, z, range, opts)) {
+    return composeVerticalHint(bot, x, y, z, cantReachWithDistance())
+  }
   return composeVerticalHint(bot, x, y, z, result)
+}
+
+/**
+ * Did the walk end where the goal wanted? Lenient on purpose (the
+ * pathfinder's own check also accepts the cell above the feet, and a bot
+ * standing on a slab or mid-step reads half a block off): only a clear miss
+ * counts as not reached.
+ */
+function endedAtGoal(bot, goal, x, y, z, range, opts) {
+  const p = bot?.entity?.position
+  if (!p || ![p.x, p.y, p.z].every(Number.isFinite)) return true
+  const cell = { x: Math.floor(p.x), y: Math.floor(p.y + 0.01), z: Math.floor(p.z) }
+  try {
+    if (goal.isEnd(cell) || goal.isEnd({ ...cell, y: cell.y + 1 })) return true
+  } catch { return true }
+  if (Number.isFinite(opts?.reach)) {
+    const eye = Number.isFinite(bot.entity?.eyeHeight) ? bot.entity.eyeHeight : 1.62
+    return Math.hypot(x + 0.5 - p.x, y + 0.5 - (p.y + eye), z + 0.5 - p.z) <= opts.reach + 0.5
+  }
+  return Math.hypot(x - p.x, y - p.y, z - p.z) <= range + 1
 }
 
 export const PathfindResult = /** @type {const} */ ({

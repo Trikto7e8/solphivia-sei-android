@@ -1,5 +1,7 @@
 import pkg from 'mineflayer-pathfinder'
 import { sessionActionStats } from '../../../brain/actionStats.js'
+import { climbOut, escapeUp, pitInfo, MIN_PIT_DEPTH } from './climbOut.js'
+import { goTo, protectBuiltBlocks } from './pathfind.js'
 const { pathfinder, Movements, goals } = pkg
 
 /**
@@ -12,6 +14,8 @@ const { pathfinder, Movements, goals } = pkg
 export function followMovements(bot) {
   const m = new Movements(bot)
   m.allowSprinting = false
+  // 261016: the trail tunnels after the player, but not through a build.
+  protectBuiltBlocks(bot, m)
   return m
 }
 
@@ -49,12 +53,35 @@ let _lastPos = null
 let _lastProgressAt = 0
 let _stuck = null // null | { stuckSec, dist, targetY, deltaY }
 
+// 261015: the trail's own climb out of a 1x1 shaft (see climbOut.js). GoalFollow
+// from the bottom of a shaft towered a block per ~5s or tunnelled along under
+// the player (errands eval: 30s of follow, still 6 blocks down). The tick
+// runs climbOut once instead, then resumes the trail from the rim.
+let _climb = null // null | AbortController of the climb in progress
+const CLIMB_BUDGET_MS = 20000
+// After a climb that failed (no blocks, walls she cannot dig), leave the hole
+// to GoalFollow for a while instead of re-running the same climb every tick.
+const CLIMB_RETRY_MS = 30000
+let _climbFailedAt = 0
+
+function cancelClimb() {
+  if (_climb) { try { _climb.abort() } catch {} }
+  _climb = null
+}
+
+/** The follow tick is climbing out of a hole right now. */
+export function isFollowClimbing() {
+  return _climb != null
+}
+
 export function setFollowTarget(t) {
   // Reset the progress clock on every (re)assignment so a fresh follow never
   // inherits a stale stuck state.
   _stuck = null
   _lastPos = null
   _lastProgressAt = Date.now()
+  cancelClimb()
+  _climbFailedAt = 0
   if (t == null) { _target = null; return }
   if (t.kind === 'player' && typeof t.username === 'string') {
     _target = { kind: 'player', username: t.username }
@@ -128,7 +155,9 @@ export function startFollow(bot, config) {
     // goal or judge progress. `_target` is KEPT — the player pressing play
     // resumes trailing where it left off. The progress clock is held at "now"
     // so a long pause never surfaces as a bogus stuck report on resume.
-    if (bot._seiPaused) { _stuck = null; _lastPos = null; _lastProgressAt = Date.now(); return }
+    // A climb out of a hole stops too (261016 review): left running, its
+    // staircase kept digging and its scaffold kept jumping through the pause.
+    if (bot._seiPaused) { cancelClimb(); _stuck = null; _lastPos = null; _lastProgressAt = Date.now(); return }
     if (!_target) { _stuck = null; _lastPos = null; return }
     const ent = resolveTargetEntity()
     const me = bot?.entity
@@ -149,10 +178,50 @@ export function startFollow(bot, config) {
     // stagger is meant to let play out. The window is ~350ms; the next tick resumes.
     const staggering = bot._seiStaggerUntil != null && Date.now() < bot._seiStaggerUntil
     const holding = bot._seiHoldPosition > 0
-    if (
-      !bot.pathfinder.isMoving() && !bot._seiReflexActive &&
-      !bot._seiSurvivalActive && !bot._seiCriticalRetreat && !holding && !staggering
-    ) {
+    const yielding = bot._seiReflexActive || bot._seiSurvivalActive || bot._seiCriticalRetreat || holding || staggering
+    if (_climb) {
+      // A reflex or survival takeover owns the body: drop the climb, the
+      // next tick starts a fresh one if she is still in the hole.
+      if (yielding) cancelClimb()
+      return
+    }
+    // 261015: in a 1x1 shaft with the target above the rim, climb out first.
+    if (!yielding && ent.position.y >= me.position.y + MIN_PIT_DEPTH && me.onGround !== false && !me.isInWater &&
+        Date.now() - _climbFailedAt >= CLIMB_RETRY_MS) {
+      const pit = pitInfo(bot)
+      const inPit = pit && pit.rimY != null && pit.depth >= MIN_PIT_DEPTH
+      // Any other hole: only once the trail has stalled (the stuck clock
+      // below), since GoalFollow may still be on its way out.
+      const stalled = _stuck && ent.position.y >= me.position.y + MIN_PIT_DEPTH + 1
+      if (inPit || stalled) {
+        const ctl = new AbortController()
+        _climb = ctl
+        try { bot.pathfinder.setGoal(null) } catch {}
+        const climb = inPit
+          ? climbOut(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS })
+          : escapeUp(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS, goTo })
+        climb
+          // Anything but a climb (failed, or climbOut judged it no pit after
+          // all) backs off, so the tick does not restart it every second and
+          // starve GoalFollow.
+          .then((r) => { if (r?.status !== 'climbed' && r?.status !== 'aborted') _climbFailedAt = Date.now() })
+          .catch(() => {})
+          .finally(() => {
+            if (_climb === ctl) _climb = null
+            _lastProgressAt = Date.now()
+            _stuck = null
+            // escapeUp's walk to the open column swaps in no-dig, no-place
+            // goTo movements on the shared pathfinder. Put the trail's own
+            // back while the trail still owns the body (not after a goTo or
+            // unfollow took over, nor under a reflex flee).
+            const owned = _target && _bot === bot &&
+              !bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat
+            if (owned) { try { bot.pathfinder.setMovements(followMovements(bot)) } catch {} }
+          })
+        return
+      }
+    }
+    if (!bot.pathfinder.isMoving() && !yielding) {
       bot.pathfinder.setGoal(new goals.GoalFollow(ent, _config.follow_range), true)
     }
     // No-progress tracking: stuck = not moving AND still far from the target
@@ -185,6 +254,7 @@ export function startFollow(bot, config) {
 }
 
 export function stopFollow() {
+  cancelClimb()
   clearInterval(_interval)
   _interval = null
   _target = null

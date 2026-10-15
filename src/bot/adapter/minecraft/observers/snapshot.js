@@ -15,7 +15,7 @@ import { nextMilestone, readProgressionState, recipeNote, pickaxeLine, furnaceLi
 // 260513-wkd: centralised in_flight line rendering. Helper preserves the
 // em-dash + y=<currentY> channels byte-stable; only the elapsed
 // trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
-import { getInFlightLineForSnapshot } from '../../../brain/inflight.js'
+import { getInFlightLineForSnapshot, idleLineForSnapshot } from '../../../brain/inflight.js'
 import { tallyAggro, aggroLine, AGGRO_PAIR_RANGE } from './aggro.js'
 import { liveInventoryItems } from './liveInventory.js'
 
@@ -214,12 +214,12 @@ export function composeSnapshot(bot, opts = {}) {
   // getting you that cobble" four times with no action running at all.
   // A follow is a background action with no in_flight line, so say that it
   // is still on rather than call her idle while she trails the player.
+  // 261015: and name the last action and how it ended (finished or stopped),
+  // so a stopped gather is not still "in progress" in her head.
   else {
     let following = null
     try { following = getFollowTargetLabel() } catch { following = null }
-    lines.push(following
-      ? `idle: no action is running, but you are still following ${following}`
-      : 'idle: no action is running')
+    lines.push(idleLineForSnapshot({ recentActions: opts.recentActions, following }))
   }
 
   // Inventory — append `(K/36 slots)` so the LLM can't confabulate "inventory

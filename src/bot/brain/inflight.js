@@ -18,7 +18,7 @@ export function createInflightTracker() {
   // 261014: the last few finished actions, so the snapshot can tell her own
   // haul (a gather's logs, a craft's output) apart from a gift. An action that
   // starts and ends between two snapshots never shows up in current().
-  /** @type {Array<{ name:string, args:any, startedAt:number, endedAt:number, progress:any }>} */
+  /** @type {Array<{ name:string, args:any, startedAt:number, endedAt:number, progress:any, result:string|null, aborted:boolean }>} */
   const history = []
   const HISTORY_CAP = 8
 
@@ -28,10 +28,16 @@ export function createInflightTracker() {
     return handle
   }
 
-  function end(handle) {
+  // 261015: `outcome` ({ result, aborted }) is how it ended, so the idle
+  // snapshot line can say that the last action finished or was stopped.
+  function end(handle, outcome = null) {
     if (!handle) return
     if (!history.some(h => h.id === handle.id)) {
-      history.push({ id: handle.id, name: handle.name, args: handle.args, startedAt: handle.startedAt, endedAt: Date.now(), progress: handle.progress })
+      history.push({
+        id: handle.id, name: handle.name, args: handle.args, startedAt: handle.startedAt, endedAt: Date.now(), progress: handle.progress,
+        result: typeof outcome?.result === 'string' ? outcome.result : null,
+        aborted: !!outcome?.aborted,
+      })
       if (history.length > HISTORY_CAP) history.shift()
     }
     if (entry && entry.id === handle.id) entry = null
@@ -151,4 +157,45 @@ function heldGatherSuffix(p, inventory) {
   const left = Math.max(0, p.total - picked)
   const label = p.items.length === 1 ? p.items[0] : p.items.join(' or ')
   return ` — picked up ${picked} of the ${p.total} ${label} asked for so far, ${left} to go; you hold ${held} ${label} right now`
+}
+
+// Actions too brief or too passive to be "what she was doing". A look or an
+// equip after a stopped gather must not hide the gather.
+const IDLE_LINE_SKIP = new Set([
+  'look', 'find', 'readSign', 'equip', 'setPvp', 'openContainer', 'openFurnace',
+  'visualize', 'follow', 'unfollow', 'stop', 'activateItem',
+])
+const IDLE_RESULT_MAX = 140
+const IDLE_LAST_ACTION_MAX_MS = 10 * 60_000
+
+/**
+ * 261015: the snapshot's line when no action is running. It names the last
+ * real action and how it ended. The bare "idle: no action is running" left
+ * her own earlier line ("still hauling your logs") as the newest word on the
+ * subject after a gather was stopped, and she repeated it to the player.
+ *
+ * @param {{ recentActions?: Array<any>, following?: string|null, now?: number }} [opts]
+ * @returns {string}
+ */
+export function idleLineForSnapshot({ recentActions = [], following = null, now = Date.now() } = {}) {
+  const head = following
+    ? `idle: no action is running, but you are still following ${following}`
+    : 'idle: no action is running'
+  const list = Array.isArray(recentActions) ? recentActions : []
+  let last = null
+  for (let i = list.length - 1; i >= 0; i--) {
+    const a = list[i]
+    if (!a || typeof a.name !== 'string' || a.endedAt == null) continue
+    if (IDLE_LINE_SKIP.has(a.name)) continue
+    last = a
+    break
+  }
+  if (!last || now - last.endedAt > IDLE_LAST_ACTION_MAX_MS) return head
+  const ago = Math.max(0, Math.round((now - last.endedAt) / 1000))
+  const blurb = describeArgs(last.name, last.args)
+  const label = blurb ? `${last.name} ${blurb}` : last.name
+  let result = typeof last.result === 'string' ? last.result.replace(/\s+/g, ' ').trim() : ''
+  if (result.length > IDLE_RESULT_MAX) result = result.slice(0, IDLE_RESULT_MAX - 3).trimEnd() + '...'
+  const how = last.aborted ? 'was stopped' : 'ended'
+  return `${head}. Your last action (${label}) ${how} ${ago}s ago${result ? `: ${result}` : ''}. It is not running now.`
 }

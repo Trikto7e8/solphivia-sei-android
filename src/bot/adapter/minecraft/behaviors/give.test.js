@@ -5,7 +5,7 @@
 
 import { describe, it, expect } from 'vitest'
 import { Vec3 } from 'vec3'
-import { giveAction, resolveRecipient, HAND_RANGE } from './give.js'
+import { giveAction, resolveRecipient, HAND_RANGE, TOSS_RANGE } from './give.js'
 
 function makeBot({ at = new Vec3(0, 64, 0), player = new Vec3(2, 64, 0), inv = [{ name: 'coal', count: 8 }], players } = {}) {
   const items = inv.map((i) => ({ ...i }))
@@ -78,7 +78,46 @@ describe('giveAction', () => {
     const d = deps(bot, items, { walkTo: null })
     const r = await giveAction({ item: 'coal' }, bot, cfg, d)
     expect(d.dropped).toEqual([])
-    expect(r).toBe('could not get to Alex (cant_reach), so nothing was given; you still have 8 coal')
+    expect(r).toBe('could not get to Alex (cant_reach, 13.0m away), so nothing was given; you still have 8 coal')
+    expect(d.walked.length).toBe(1) // a walk that did not reach is not retried
+  })
+
+  // 261015 pass 10: "could not get to Alex (reached)".
+  it('tosses after a walk that reached, even a little past hand range', async () => {
+    const { bot, items } = makeBot({ player: new Vec3(14, 64, 0) })
+    const d = deps(bot, items, { walkTo: new Vec3(14 - 3.8, 64, 0) })
+    const r = await giveAction({ item: 'coal' }, bot, cfg, d)
+    expect(d.walked.length).toBe(1)
+    expect(r).toContain('gave 8 coal to Alex')
+  })
+
+  it('walks again to where the player is now when they moved on during the walk', async () => {
+    const player = new Vec3(14, 64, 0)
+    const { bot, items } = makeBot({ player })
+    const d = deps(bot, items)
+    const goTo = d.goTo
+    let n = 0
+    d.goTo = async (...a) => {
+      const r = await goTo(...a)
+      if (++n === 1) player.x = 24 // they kept walking
+      return r
+    }
+    const r = await giveAction({ item: 'coal' }, bot, cfg, d)
+    expect(d.walked).toEqual([[14, 64, 0], [24, 64, 0]])
+    expect(r).toContain('gave 8 coal to Alex')
+  })
+
+  it('gives up after the second walk still leaves them out of range', async () => {
+    const player = new Vec3(14, 64, 0)
+    const { bot, items } = makeBot({ player })
+    const d = deps(bot, items)
+    const goTo = d.goTo
+    d.goTo = async (...a) => { const r = await goTo(...a); player.x += 10; return r }
+    const r = await giveAction({ item: 'coal' }, bot, cfg, d)
+    expect(d.walked.length).toBe(2)
+    expect(d.dropped).toEqual([])
+    expect(r).toMatch(/^could not get to Alex \(reached, \d+\.\dm away\), so nothing was given; you still have 8 coal$/)
+    expect(TOSS_RANGE).toBeGreaterThan(HAND_RANGE)
   })
 
   it('refuses when she has none of the item or cannot see the player', async () => {

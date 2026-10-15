@@ -24,6 +24,15 @@
 //            cleared = clearGoal ran in that turn.
 //   order    an errand order on an idle turn. Scored: recorded = setGoal
 //            with for_player ran in that turn.
+//   stop     (pass 9c) the player says "actually stop" while her own action
+//            runs, or just as it finishes during the reply (the race).
+//            Scored: stopOk = the action is not left running AND no new
+//            world action ran afterwards (unfollow aside), across the reply
+//            and any completion turn that follows it.
+//   neworder (pass 9c) the player gives a new order while her own action
+//            runs; the action then finishes (after the reply, or during it).
+//            Scored: orderFirst = her first world action works the order
+//            (wood); ownFirst = it works something else.
 //
 // Earlier lines of the session are replayed without a model call (stub
 // turns), so every arm sees the same history. A history turn can hold its
@@ -155,6 +164,14 @@ const NIGHT_HISTORY = [
   { player: 'stop moving', say: 'ok ok stopping. holding still', act: { name: 'unfollow', input: {} }, releasePrev: 'follow Alex interrupted' },
   { player: 'do you actually like playing with me', say: "yeah. you're the only one who yells at me to kill zombies and then says nice job" },
 ]
+// Pass 9c (stop and new orders mid-action). Her own project is running.
+const STONE_RESULT = 'gathered 8/8 cobblestone (mined from stone)'
+const OWN_STONE = { player: 'what r u doing', say: 'mining cobble for our stone pickaxe', act: { name: 'gather', input: { name: 'stone', count: 8 } }, hold: true }
+const STOP_WORLD = { ...WOOD_WORLD, inv: [['wooden_pickaxe', 1], ['oak_log', 9], ['stick', 2], ['cobblestone', 3]] }
+const FURNACE_RACE = "can't craft furnace: it needs a crafting table, and the walk to the one at 186,71,-4 did not get there (reached 180,70,-2)"
+const WOOD_ORDER = 'go get more wood, like 10 more'
+const isWoodOrder = (t) => !!t && ['gather', 'dig', 'find'].includes(t.name) && /log|wood|oak|tree/i.test(JSON.stringify(t.input ?? {}))
+
 // Errands (errands-02/-03): her own goal from the greeting, then the coal
 // errand. The coal is mined; the loop that did it has ended.
 const COAL_ORDER = 'can u grab me some coal from that ore over there and bring it back here? i need torches'
@@ -208,6 +225,23 @@ export const SITUATIONS = {
     history: [{ player: COAL_ORDER, say: 'coal for torches, on it', act: { name: 'gather', input: { name: 'coal_ore', count: 8 } }, hold: true, raceResult: 'gathered 8/8 coal (mined from coal_ore)' }],
     world: ERRAND_WORLD(8), order: chat('hows it going'),
     errand: ['give', 'dropItem', 'goTo', 'follow', 'come'],
+  },
+  // work_session-06-B U11: she is mining for her own pickaxe, the player
+  // says stop.
+  stop_mid: { kind: 'stop', selfGoal: OWN_GOAL, hops: 3, history: [OWN_STONE], world: STOP_WORLD, order: chat('actually stop') },
+  // work_session-01-B U11: the craft settles while she answers "actually stop".
+  stop_race: {
+    kind: 'stop', selfGoal: OWN_GOAL, race: true, hops: 3,
+    history: [{ player: 'can u make a furnace', say: 'furnace, on it', act: { name: 'craft', input: { item: 'furnace', count: 1 } }, hold: true, raceResult: FURNACE_RACE }],
+    world: { ...STOP_WORLD, inv: [['wooden_pickaxe', 1], ['cobblestone', 14], ['stick', 2]] }, order: chat('actually stop'),
+  },
+  // A new order while her own gather runs; the gather finishes after her
+  // reply (order_mid) or during it (order_race). A quiet tick follows if
+  // nothing has been started by then.
+  order_mid: { kind: 'neworder', selfGoal: OWN_GOAL, hops: 3, release: STONE_RESULT, idleAfter: true, history: [OWN_STONE], world: STOP_WORLD, order: chat(WOOD_ORDER) },
+  order_race: {
+    kind: 'neworder', selfGoal: OWN_GOAL, hops: 3, race: true, idleAfter: true,
+    history: [{ ...OWN_STONE, raceResult: STONE_RESULT }], world: STOP_WORLD, order: chat(WOOD_ORDER),
   },
   coal_order: {
     kind: 'order', selfGoal: OWN_GOAL, history: [],
@@ -270,7 +304,7 @@ async function runOne({ sid, ch, rep }) {
           const finish = (text) => { if (!entry.done) { entry.done = true; resolve(text) } }
           entry.finish = finish
           held.push(entry)
-          opts.signal?.addEventListener?.('abort', () => finish(entry.abortText ?? h.abortResult ?? `aborted: ${name}`), { once: true })
+          opts.signal?.addEventListener?.('abort', () => { if (!entry.done) entry.aborted = true; finish(entry.abortText ?? h.abortResult ?? `aborted: ${name}`) }, { once: true })
         })
       }
       if (phase === 'history') {
@@ -395,6 +429,12 @@ async function runOne({ sid, ch, rep }) {
       await orch.handleDispatch(sit.order.event, sit.order.data, new AbortController().signal)
     }
     await drain()
+    // The held action finishes after the reply (neworder without the race).
+    if (sit.release) {
+      for (const e of held) if (!e.done) e.finish(sit.release)
+      await sleep(30)
+      await drain()
+    }
     const actedYet = () => calls.some((c) => c.tools.some((t) => !BRAIN.has(t.name)))
     if (sit.idleAfter && hopsLeft > 0 && !actedYet()) {
       await sleep(100)
@@ -402,6 +442,8 @@ async function runOne({ sid, ch, rep }) {
       await drain()
     }
   } catch (err) { error = String(err?.stack ?? err).slice(0, 400) }
+  const heldLive = held.filter((e) => !e.done).map((e) => e.name)
+  const heldAborted = held.filter((e) => e.aborted).map((e) => e.name)
   for (const e of held) { try { e.finish('released') } catch {} }
   for (const r of measuredHolds) { try { r() } catch {} }
   try { orch.dispose?.() } catch {}
@@ -422,6 +464,19 @@ async function runOne({ sid, ch, rep }) {
     row.firstWorld = first
     row.errandFirst = !!first && sit.errand.includes(first)
     row.ownFirst = !!first && !sit.errand.includes(first)
+  }
+  if (sit.kind === 'stop') {
+    const after = worldCalls.filter((n) => n !== 'unfollow')
+    row.heldLive = heldLive
+    row.heldAborted = heldAborted
+    row.newWorld = after
+    row.stopOk = heldLive.length === 0 && after.length === 0
+  }
+  if (sit.kind === 'neworder') {
+    const first = calls.flatMap((c) => c.tools).find((t) => !BRAIN.has(t.name)) ?? null
+    row.firstWorld = first?.name ?? null
+    row.orderFirst = isWoodOrder(first)
+    row.ownFirst = !!first && !isWoodOrder(first)
   }
   if (sit.kind === 'cancel') row.cleared = called.includes('clearGoal')
   if (sit.kind === 'order') {
@@ -462,10 +517,19 @@ function summarize(rows) {
     const rs = ok.filter((r) => r.kind === k)
     if (rs.length) row(`**all ${k}**`, k, rs)
   }
+  const st = ok.filter((r) => r.kind === 'stop' || r.kind === 'neworder')
+  if (st.length) {
+    lines.push('', '| situation | runs | stop honored | action left running | new world action | order first | own project first | nothing |', '|---|---:|---:|---:|---:|---:|---:|---:|')
+    for (const s of [...new Set(st.map((r) => r.situation))]) {
+      const rs = st.filter((r) => r.situation === s)
+      const isStop = rs[0].kind === 'stop'
+      lines.push(`| ${s} | ${rs.length} | ${isStop ? pct(rs.filter((r) => r.stopOk).length, rs.length) : '-'} | ${isStop ? pct(rs.filter((r) => r.heldLive?.length).length, rs.length) : '-'} | ${isStop ? pct(rs.filter((r) => r.newWorld?.length).length, rs.length) : '-'} | ${isStop ? '-' : pct(rs.filter((r) => r.orderFirst).length, rs.length)} | ${isStop ? '-' : pct(rs.filter((r) => r.ownFirst).length, rs.length)} | ${isStop ? '-' : pct(rs.filter((r) => !r.firstWorld).length, rs.length)} |`)
+    }
+  }
   lines.push('', '## Claim lines with nothing running', '')
   for (const r of ok.filter((r) => r.stillClaim)) lines.push(`- ${r.situation}/${r.char}/${r.rep}: ${r.claimLines.map((s) => `"${s.slice(0, 140)}"`).join(' / ')}`)
   lines.push('', '## Errand turns', '')
-  for (const r of ok.filter((r) => r.kind === 'errand' || r.kind === 'cancel' || r.kind === 'order')) {
+  for (const r of ok.filter((r) => ['errand', 'cancel', 'order', 'stop', 'neworder'].includes(r.kind))) {
     lines.push(`- ${r.situation}/${r.char}/${r.rep}: ${r.calls.map((c) => c.tools.map((t) => t.name === 'say' ? `say("${String(t.input?.text ?? '').slice(0, 90)}")` : t.name).join(' + ') || '(text only)').join(' -> ')}`)
   }
   return lines.join('\n') + '\n'

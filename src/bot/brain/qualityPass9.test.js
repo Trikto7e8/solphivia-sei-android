@@ -260,3 +260,122 @@ describe('orchestrator: an action that finishes during a mid-action turn', () =>
     expect(provider.calls.length).toBe(2)
   })
 })
+
+// ─── pass 9c: the player's stop wins, a new order outranks the owed turn ──
+
+// Starts a gather for "get wood", then the player's `midLine` arrives while it
+// runs. `reply` answers that line; `settleDuringCall` finishes the gather
+// while the call is out (the race window).
+async function midSetup(midLine, reply, { settleDuringCall = false, after = [] } = {}) {
+  _setTickIntervalForTests(10_000_000)
+  const executed = []
+  const running = {}
+  const queue = []
+  const aborted = []
+  const provider = makeProvider([
+    turn(say('s1', 'on it'), { id: 'a1', name: 'gather', input: { name: 'oak_log' } }),
+    async () => {
+      if (settleDuringCall) { running.gather('gathered 8/8 oak_log'); await flush() }
+      return reply
+    },
+    ...after,
+  ])
+  const adapter = makeAdapter(executed, running)
+  const exec = adapter.executeAction
+  adapter.executeAction = (name, args, opts = {}) => {
+    opts.signal?.addEventListener?.('abort', () => aborted.push(name), { once: true })
+    return exec(name, args, opts)
+  }
+  const orch = createOrchestrator({ adapter, config: config(), reenqueue: (event, data) => queue.push({ event, data }), _anthropicOverride: provider })
+  await orch.handleDispatch('sei:chat_received', line('get wood'))
+  expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  await orch.handleDispatch('sei:chat_received', line(midLine))
+  await flush()
+  const drain = async () => {
+    for (let guard = 0; queue.length && guard < 20; guard++) {
+      const next = queue.shift()
+      if (DRAINED.has(next.event)) await orch.handleDispatch(next.event, next.data)
+    }
+  }
+  return { orch, provider, executed, aborted, running, queue, drain }
+}
+
+describe('orchestrator: a player stop always wins', () => {
+  it('cancels the running action when "actually stop" is answered with words only', async () => {
+    const { orch, provider, aborted, drain } = await midSetup('actually stop', turn(say('s2', 'ok ok stopping')), { after: [turn(say('s9', 'unreachable'))] })
+    await drain()
+    expect(aborted).toEqual(['gather'])
+    expect(orch.currentLoop).toBeNull()
+    expect(provider.calls.length).toBe(2)
+  })
+
+  it('owes no completion turn when the action finished during that reply', async () => {
+    const { orch, provider, executed, drain } = await midSetup('actually stop', turn(say('s2', 'stopping, furnace is done anyway')), {
+      settleDuringCall: true,
+      after: [turn(say('s3', 'back to the table'), { id: 'a2', name: 'goTo', input: {} })],
+    })
+    await drain()
+    expect(orch.currentLoop).toBeNull()
+    expect(provider.calls.length).toBe(2)
+    expect(executed).toEqual(['gather'])
+  })
+
+  it('still cancels when the reply is end_loop', async () => {
+    const { orch, provider, aborted, drain } = await midSetup('ok stop', turn(say('s2', 'fine'), { id: 'e1', name: 'end_loop', input: {} }))
+    await drain()
+    expect(aborted).toEqual(['gather'])
+    expect(orch.currentLoop).toBeNull()
+    expect(provider.calls.length).toBe(2)
+  })
+
+  it('leaves a non-stop line answered with words to the running action', async () => {
+    const { orch, aborted } = await midSetup('nice, how many so far', turn(say('s2', 'like 3')))
+    expect(aborted).toEqual([])
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
+
+  it('lets a reply that starts a new action decide for itself', async () => {
+    const { orch, executed } = await midSetup('stop', turn(say('s2', 'ok, coming'), { id: 'a2', name: 'dig', input: {} }))
+    expect(executed).toEqual(['gather', 'dig'])
+    expect(orch.currentLoop?.inFlight?.name).toBe('dig')
+  })
+})
+
+describe('orchestrator: a new order during an action', () => {
+  it('brings the order back in the completion turn when the reply started nothing', async () => {
+    const { provider, running, queue, drain } = await midSetup('go get more wood, like 10 more', turn(say('s2', 'on it after this')), {
+      after: [turn(say('s3', 'more wood'), { id: 'a2', name: 'dig', input: {} })],
+    })
+    running.gather('gathered 8/8 oak_log')
+    await flush()
+    expect(queue.some((q) => q.event === 'sei:action_complete')).toBe(true)
+    await drain()
+    const text = lastUserText(provider.calls[2])
+    expect(text).toContain('previous action completed: gather')
+    expect(text).toContain('go get more wood, like 10 more')
+    expect(text).toContain('start it now, before your own plan')
+  })
+
+  it('brings it back when the action finished during the reply', async () => {
+    const { provider, drain } = await midSetup('go get more wood, like 10 more', turn(say('s2', 'yep after this')), {
+      settleDuringCall: true,
+      after: [turn(say('s3', 'more wood'), { id: 'a2', name: 'dig', input: {} })],
+    })
+    await drain()
+    expect(provider.calls.length).toBeGreaterThanOrEqual(3)
+    const text = lastUserText(provider.calls[2])
+    expect(text).toContain('previous action completed: gather')
+    expect(text).toContain('start it now, before your own plan')
+  })
+
+  it('does not repeat the order once the reply started an action for it', async () => {
+    const { orch, provider, running, drain } = await midSetup('dig here instead', turn(say('s2', 'ok'), { id: 'a2', name: 'dig', input: {} }), {
+      after: [turn(say('s3', 'done'))],
+    })
+    expect(orch.currentLoop?._replyDeferred ?? null).toBeNull()
+    running.dig('dug 1')
+    await flush()
+    await drain()
+    for (const c of provider.calls.slice(2)) expect(lastUserText(c)).not.toContain('before your own plan')
+  })
+})

@@ -820,6 +820,12 @@ export const NUDGES = {
   replyWhileRunning: `One say() without a new action keeps the current action going.`,
   replyWhileIdle: `No action is running right now, so a reply on its own starts nothing. If you tell them you are doing something, start it with its action in this same turn.`,
 
+  // 261016 (quality pass 9c): appended to the completion turn of an action
+  // during which she answered a player line without starting anything. In
+  // the pass 9 rerun she told "go get more wood, like 10 more" "on it, after
+  // this stone batch", and the completion turn crafted a furnace instead.
+  deferredReply: (line) => `While it ran, the player said "${String(line).trim().slice(0, 200)}" and you answered without starting anything. If they asked you to do something you have not started, start it now, before your own plan.`,
+
   // 261015 (quality pass 8): the one extra call after a turn whose only work
   // was a new setGoal (orchestrator goalNotStartedNudgeFor). setGoal is a
   // memory write, so that turn started nothing while her say() often said

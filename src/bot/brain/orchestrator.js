@@ -4144,6 +4144,9 @@ function maybeWarnByteCap(loop, warned) {
     // this hand-over runs (or is kept) without touching that turn's results.
     await settleClearAfterHandOver(loop, data, null)
     loop._settleOwed = null
+    // Consumed below (non-aborted settle) or moot (aborted / dropped).
+    const replyDeferred = loop._replyDeferred
+    loop._replyDeferred = null
     const interrupting = !!(data?.aborted && pendingInterrupt)
     if (data?.aborted && !interrupting) {
       // Genuine stale/terminal abort. P0 attack (terminateLoop) and R3/R4
@@ -4216,6 +4219,10 @@ function maybeWarnByteCap(loop, warned) {
       const resultStr = visualizeText ?? String(data?.result ?? 'done')
       eventText = `previous action completed: ${data?.name ?? 'action'} -> ${resultStr}`
       loop._currentIterationTrigger = 'sei:action_complete'
+      // 261016 (pass 9c): she answered a player line while this ran without
+      // starting anything ("on it, after this stone batch"); bring that line
+      // back now, so a new order is not lost behind her own next step.
+      if (replyDeferred) eventText = `${eventText}\n\n${NUDGES.deferredReply(replyDeferred)}`
       // 261015: a player line that landed while the loop waited for this
       // completion (no action running, so it could not ride an action tick)
       // is answered in the same turn as the result.
@@ -4945,7 +4952,23 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
 
-      if (hasStop && newSuspendingTools.length === 0) {
+      // 261016 (pass 9c): a bare stop line from the player ("actually stop",
+      // "ok stop") answered with only words ("ok ok stopping") is a stop
+      // too, like the end_loop backstop below. Measured: the furnace craft
+      // finished while she answered "actually stop" with say() alone, and
+      // the completion turn that followed walked her back to the table
+      // ("the stop was about the wood"). The player's stop wins: the running
+      // action is cancelled and no completion turn is owed after it.
+      const unheededPlayerStop = !hasStop && !hasEndLoop && newSuspendingTools.length === 0 &&
+        _p1Trigger && isBareStopLine(loop._lastPlayerLine?.text)
+      if (unheededPlayerStop) logger.info?.(`[sei/orch] player said stop and the reply started nothing: treating it as stop (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? loop._settleOwed ?? 'none'})`)
+      // 261016: a reply that started nothing while an action runs (or just
+      // finished during the call) leaves the player's line for the
+      // completion turn to come back to (see NUDGES.deferredReply).
+      if (newSuspendingTools.length > 0 || hasStop || unheededPlayerStop) loop._replyDeferred = null
+      else if (_p1Trigger && loop._lastPlayerLine?.text && (loop.inFlight || loopAwaitsSettle(loop))) loop._replyDeferred = loop._lastPlayerLine.text
+
+      if ((hasStop || unheededPlayerStop) && newSuspendingTools.length === 0) {
         // 261011 R3-stop — stop with no new action: cancel the running action
         // and end the loop (what end_loop alone used to do). A background
         // action (follow) is not ended by aborting its in_flight entry, so

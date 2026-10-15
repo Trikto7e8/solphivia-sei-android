@@ -6,7 +6,7 @@ import { Vec3 } from 'vec3'
 const scaffoldUp = vi.fn()
 vi.mock('./build.js', () => ({ scaffoldUp: (...a) => scaffoldUp(...a) }))
 
-const { pitInfo, climbOut, junkBlocks, isPassable, escapeUp, findOpenColumn } = await import('./climbOut.js')
+const { pitInfo, climbOut, junkBlocks, isPassable, escapeUp, findOpenColumn, isNaturalBlock, isFallingBlock } = await import('./climbOut.js')
 const { noteUnreachable, isUnreachable, isUnreachableResult, clearUnreachable, UNREACHABLE_TTL_MS } = await import('./unreachable.js')
 
 // Voxel world: solid stone everywhere at or below `ground`, air above, minus
@@ -153,6 +153,57 @@ describe('climbOut', () => {
     expect(bot.dig).not.toHaveBeenCalled()
   })
 
+  it('refuses to cut through blocks that are not natural ground (a closed room)', async () => {
+    const bot = shaftBot(4)
+    const world = bot.blockAt
+    bot.blockAt = (p) => {
+      const b = world(p)
+      return b.name === 'stone' && p.y >= 67 ? { ...b, name: 'oak_planks' } : b
+    }
+    bot.canDigBlock = () => true
+    bot.digTime = () => 300 // planks with an axe
+    bot.dig = vi.fn()
+    const r = await climbOut(bot, { x: 5, y: 71, z: 0 })
+    expect(r.status).toBe('failed')
+    expect(r.line).toMatch(/not natural: oak_planks/)
+    expect(r.line).toMatch(/looks built, so you did not dig it/)
+    expect(bot.dig).not.toHaveBeenCalled()
+    expect(isNaturalBlock('glass')).toBe(false)
+    expect(isNaturalBlock('chest')).toBe(false)
+    expect(isNaturalBlock('cobblestone')).toBe(false)
+    expect(isNaturalBlock('deepslate_iron_ore')).toBe(true)
+    expect(isNaturalBlock('orange_terracotta')).toBe(true)
+    expect(isNaturalBlock('orange_glazed_terracotta')).toBe(false)
+  })
+
+  it('will not dig a cell with sand or gravel resting on it', async () => {
+    // Pocket under solid rock: every staircase starts by clearing the head
+    // room over her, and gravel sits on that cell.
+    const bot = pocketBot()
+    const world = bot.blockAt
+    bot.blockAt = (p) => (p.x === 2 && p.y === 67 && p.z === 0) ? { name: 'gravel', boundingBox: 'block', position: p } : world(p)
+    bot.canDigBlock = () => true
+    bot.digTime = () => 400
+    bot.dig = vi.fn()
+    const r = await escapeUp(bot, { x: 8, y: 71, z: 0 })
+    expect(r.status).toBe('failed')
+    expect(r.line).toMatch(/gravel above 2,66,0 would fall in/)
+    expect(bot.dig).not.toHaveBeenCalled()
+    expect(isFallingBlock('red_concrete_powder')).toBe(true)
+  })
+
+  it('gives the body back when the player pauses or a reflex takes over', async () => {
+    for (const [flag, why] of [['_seiPaused', 'paused'], ['_seiReflexActive', 'yielded']]) {
+      const bot = shaftBot(4, { items: [{ name: 'dirt', count: 4 }] })
+      scaffoldUp.mockImplementationOnce(async (b, name, targetY, cfg) => {
+        b[flag] = true
+        while (!cfg.signal.aborted) await new Promise((r) => setTimeout(r, 20))
+        return 'aborted'
+      })
+      expect(await climbOut(bot, { x: 5, y: 71, z: 0 })).toEqual({ status: 'aborted', why })
+    }
+  })
+
   it('returns aborted when the signal fires', async () => {
     const bot = shaftBot(4, { items: [{ name: 'dirt', count: 4 }] })
     const ctl = new AbortController()
@@ -210,7 +261,7 @@ describe('escapeUp (any hole, after a failed walk)', () => {
     scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
     const r = await escapeUp(bot, { x: -6, y: 71, z: 0 }, { goTo })
     expect(r).toMatchObject({ status: 'climbed', how: 'pillar' })
-    expect(goTo).toHaveBeenCalledWith(bot, 0, 64, 0, 0, expect.any(Number), undefined, { canDig: false, canPlace: false })
+    expect(goTo).toHaveBeenCalledWith(bot, 0, 64, 0, 0, expect.any(Number), expect.any(AbortSignal), { canDig: false, canPlace: false })
     expect(scaffoldUp).toHaveBeenCalledWith(bot, 'dirt', 72, expect.anything())
   })
 

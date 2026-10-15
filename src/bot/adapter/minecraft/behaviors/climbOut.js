@@ -35,6 +35,69 @@ export const MIN_PIT_DEPTH = 2
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 const MAX_STEP_DIG_MS = 2500
 
+// 261016 review: the staircase only cuts NATURAL ground. A closed room (shut
+// door, player upstairs) reads as a hole too, and with an axe planks, doors,
+// chests and beds all break under the 2.5s step limit (glass by hand).
+// Anything not on this list is refused as built, and the climb says so.
+const NATURAL_BLOCKS = new Set([
+  'stone', 'granite', 'diorite', 'andesite', 'deepslate', 'tuff', 'calcite',
+  'dripstone_block', 'smooth_basalt', 'basalt', 'blackstone', 'netherrack', 'end_stone',
+  'dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium', 'mud', 'moss_block',
+  'clay', 'gravel', 'sand', 'red_sand', 'sandstone', 'red_sandstone', 'soul_sand', 'soul_soil',
+  'terracotta', 'snow_block', 'packed_ice',
+])
+const TERRACOTTA_COLORS = new Set(['white', 'orange', 'yellow', 'red', 'brown', 'light_gray'])
+
+/** Ground the world generated, which a staircase may cut through. */
+export function isNaturalBlock(name) {
+  if (!name) return false
+  if (NATURAL_BLOCKS.has(name)) return true
+  if (name.endsWith('_ore') || name === 'ancient_debris') return true
+  // Badlands bands; glazed terracotta is always player-made.
+  if (name.endsWith('_terracotta') && !name.includes('glazed')) return TERRACOTTA_COLORS.has(name.slice(0, -'_terracotta'.length))
+  return false
+}
+
+/** Blocks that fall when the block under them is dug out. */
+export function isFallingBlock(name) {
+  if (!name) return false
+  return name === 'sand' || name === 'red_sand' || name === 'gravel' ||
+    name === 'suspicious_sand' || name === 'suspicious_gravel' ||
+    name.endsWith('_concrete_powder') || name.endsWith('anvil') ||
+    name === 'dragon_egg' || name === 'pointed_dripstone' || name === 'scaffolding'
+}
+
+// The climb gives the body back the moment something else needs it: the
+// player pressed pause (pause.js), or a reflex (creeper flee) or a survival
+// takeover (drowning, critical HP) started. Checked on a short poll and folded
+// into the climb's own abort signal, so scaffoldUp and a running dig stop too.
+const GUARD_MS = 100
+
+function guardSignal(bot, outer) {
+  const ctl = new AbortController()
+  let reason = null
+  const stop = (why) => { if (!ctl.signal.aborted) { reason = why; ctl.abort() } }
+  const onOuter = () => stop('aborted')
+  const check = () => {
+    if (bot._seiPaused) stop('paused')
+    else if (bot._seiReflexActive || bot._seiSurvivalActive || bot._seiCriticalRetreat) stop('yielded')
+  }
+  if (outer?.aborted) stop('aborted')
+  else outer?.addEventListener?.('abort', onOuter, { once: true })
+  check()
+  const timer = setInterval(check, GUARD_MS)
+  return {
+    signal: ctl.signal,
+    reason: () => reason,
+    dispose() { clearInterval(timer); outer?.removeEventListener?.('abort', onOuter) },
+  }
+}
+
+function abortedResult(guard) {
+  const why = guard.reason()
+  return why && why !== 'aborted' ? { status: 'aborted', why } : { status: 'aborted' }
+}
+
 function isAirName(name) {
   return name === 'air' || name === 'cave_air' || name === 'void_air'
 }
@@ -124,6 +187,11 @@ async function digCell(bot, x, y, z, signal) {
   const blk = at(bot, x, y, z)
   if (isPassable(blk)) return 'ok'
   if (!blk || isLiquid(blk)) return 'liquid'
+  if (!isNaturalBlock(blk.name)) return `not natural: ${blk.name} at ${x},${y},${z}`
+  // Sand, gravel or concrete powder resting on this cell would drop into it,
+  // and for the head room cell that is her own cell: she suffocates.
+  const above = at(bot, x, y + 1, z)
+  if (above && isFallingBlock(above.name)) return `${above.name} above ${x},${y},${z} would fall in`
   // Never open a wall onto water or lava.
   for (const [dx, dy, dz] of [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, 0, 1], [0, 0, -1]]) {
     if (isLiquid(at(bot, x + dx, y + dy, z + dz))) return 'liquid'
@@ -173,8 +241,12 @@ async function stepUpTo(bot, x, y, z, signal) {
       await new Promise((r) => setTimeout(r, 50))
     }
   } finally {
-    bot.setControlState('forward', false)
-    bot.setControlState('jump', false)
+    // A reflex or survival takeover that cut the step short drives the body
+    // now; clearing its controls would stall a creeper flee.
+    if (!bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat) {
+      bot.setControlState('forward', false)
+      bot.setControlState('jump', false)
+    }
   }
   await waitOnGround(bot, 800)
   const p = bot.entity.position
@@ -194,7 +266,12 @@ async function stairTo(bot, rimY, toward, signal, deadline) {
     return da - db
   })
   let lastWhy = 'no direction to dig'
+  const startY = Math.floor(p0.y + 0.01)
   for (const [dx, dz] of order) {
+    // Only the first step may try another wall. Once she has climbed out of
+    // the shaft's own wall, turning to cut a new direction would tunnel into
+    // whatever is beside the hole (261016 review).
+    if (Math.floor(bot.entity.position.y + 0.01) > startY) break
     let ok = true
     while (Math.floor(bot.entity.position.y + 0.01) < rimY) {
       if (signal?.aborted) return 'aborted'
@@ -203,7 +280,12 @@ async function stairTo(bot, rimY, toward, signal, deadline) {
       const x = Math.floor(p.x), y = Math.floor(p.y + 0.01), z = Math.floor(p.z)
       const nx = x + dx, nz = z + dz
       const step = at(bot, nx, y, nz)
-      if (!isSolid(step)) { lastWhy = 'no wall to step on'; ok = false; break }
+      if (!isSolid(step)) {
+        // Keep a more telling reason from another wall (a refusal) over this one.
+        if (lastWhy === 'no direction to dig') lastWhy = 'no wall to step on'
+        ok = false
+        break
+      }
       // Head room to jump from here, then the two cells of the next step.
       for (const [cx, cy, cz] of [[x, y + 2, z], [nx, y + 1, nz], [nx, y + 2, nz]]) {
         let r = await digCell(bot, cx, cy, cz, signal)
@@ -220,7 +302,9 @@ async function stairTo(bot, rimY, toward, signal, deadline) {
     }
     if (Math.floor(bot.entity.position.y + 0.01) >= rimY) return 'ok'
     // A failed first step leaves the bot where it was; try the next wall.
-    // A failure higher up keeps going from the new cell in the next direction.
+    // Any natural-ground refusal ends the staircase: the next wall is likely
+    // part of the same build.
+    if (String(lastWhy).startsWith('not natural')) break
   }
   return lastWhy
 }
@@ -237,6 +321,29 @@ async function stairTo(bot, rimY, toward, signal, deadline) {
  *   "stuck in a hole", so callers can return it as is.
  */
 export async function climbOut(bot, target, opts = {}) {
+  return guarded(bot, opts, (signal) => climbOutInner(bot, target, { ...opts, signal }))
+}
+
+async function guarded(bot, opts, run) {
+  if (!bot?.entity?.position) return { status: 'not_in_pit' }
+  const guard = guardSignal(bot, opts?.signal)
+  try {
+    const r = await run(guard.signal)
+    return r?.status === 'aborted' ? abortedResult(guard) : r
+  } finally {
+    guard.dispose()
+  }
+}
+
+/** The closing advice of a failed climb, matched to why it failed. */
+function failAdvice(why) {
+  const m = String(why).match(/not natural: ([a-z_]+)/)
+  if (m) return `The wall is ${m[1]}, which looks built, so you did not dig it. Leave by a door or stairs, or ask the player`
+  if (/would fall in/.test(String(why))) return 'Sand or gravel above would fall on you if you dug. Get dirt or cobblestone to pillar up with'
+  return 'Get dirt or cobblestone to pillar up with, or dig a staircase up the wall'
+}
+
+async function climbOutInner(bot, target, opts = {}) {
   const { signal, budgetMs = 20000, keepItems = [], canDig = true } = opts
   if (!bot?.entity?.position) return { status: 'not_in_pit' }
   if (signal?.aborted) return { status: 'aborted' }
@@ -274,7 +381,7 @@ export async function climbOut(bot, target, opts = {}) {
     depth: pit.depth,
     line: `stuck in a hole at ${here}: could not climb out of the ${pit.depth}-deep shaft (now y=${now}, rim y=${pit.rimY}, ` +
       `${blocks} scaffold blocks left; ${why || 'no blocks to pillar with and digging is off'}). ` +
-      'Get dirt or cobblestone to pillar up with, or dig a staircase up the wall',
+      failAdvice(why),
   }
 }
 
@@ -401,6 +508,10 @@ async function stepTo(bot, cell, signal, goToFn) {
  * @param {{ signal?: AbortSignal, budgetMs?: number, keepItems?: string[], canDig?: boolean, goTo?: Function }} [opts]
  */
 export async function escapeUp(bot, target, opts = {}) {
+  return guarded(bot, opts, (signal) => escapeUpInner(bot, target, { ...opts, signal }))
+}
+
+async function escapeUpInner(bot, target, opts = {}) {
   const { signal, budgetMs = 25000, keepItems = [], canDig = true, goTo: goToFn } = opts
   if (!bot?.entity?.position) return { status: 'not_in_pit' }
   if (signal?.aborted) return { status: 'aborted' }
@@ -453,6 +564,6 @@ export async function escapeUp(bot, target, opts = {}) {
     depth: targetY - startY,
     line: `stuck in a hole at ${here}: ${targetY - startY} blocks below where you are going and could not climb up (now y=${feet()}, ` +
       `${blocks} scaffold blocks; ${why || 'no blocks to pillar with and digging is off'}). ` +
-      'Get dirt or cobblestone to pillar up with, or dig a staircase up the wall',
+      failAdvice(why),
   }
 }

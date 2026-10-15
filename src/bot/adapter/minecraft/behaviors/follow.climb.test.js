@@ -12,7 +12,7 @@ vi.mock('./climbOut.js', () => ({
   pitInfo: (...a) => pitInfo(...a),
   MIN_PIT_DEPTH: 2,
 }))
-vi.mock('./pathfind.js', () => ({ goTo: vi.fn(async () => 'reached') }))
+vi.mock('./pathfind.js', () => ({ goTo: vi.fn(async () => 'reached'), protectBuiltBlocks: (b, m) => m }))
 vi.mock('mineflayer-pathfinder', () => {
   class GoalFollow { constructor(entity, range) { this.entity = entity; this.range = range } }
   class Movements { constructor() { this.allowSprinting = true } }
@@ -75,6 +75,37 @@ describe('follow climbs out of a shaft (261015)', () => {
     await vi.advanceTimersByTimeAsync(5000)
     expect(climbOut).toHaveBeenCalledTimes(1) // no retry storm
     expect(deep.pathfinder.setGoal.mock.calls.some(([g]) => g && g.entity)).toBe(true)
+  })
+
+  it('pausing stops a climb in progress, and no new one starts while paused', async () => {
+    vi.useFakeTimers()
+    const bot = makeBot(63, 71)
+    pitInfo.mockReturnValue({ feetY: 63, rimY: 71, depth: 8 })
+    let signal = null
+    climbOut.mockImplementation((b, target, opts) => { signal = opts.signal; return new Promise(() => {}) })
+    startFollow(bot, {})
+    setFollowTarget({ kind: 'player', username: 'Alex' })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(isFollowClimbing()).toBe(true)
+    bot._seiPaused = true
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(signal.aborted).toBe(true)
+    expect(isFollowClimbing()).toBe(false)
+    await vi.advanceTimersByTimeAsync(3000)
+    expect(climbOut).toHaveBeenCalledTimes(1)
+  })
+
+  it('puts the trail movements back after a climb (escapeUp walked with no-dig goTo movements)', async () => {
+    vi.useFakeTimers()
+    const bot = makeBot(63, 71)
+    pitInfo.mockReturnValue({ feetY: 63, rimY: 71, depth: 8 })
+    climbOut.mockResolvedValue({ status: 'climbed', depth: 8, how: 'stairs' })
+    startFollow(bot, {})
+    setFollowTarget({ kind: 'player', username: 'Alex' })
+    bot.pathfinder.setMovements.mockClear()
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(bot.pathfinder.setMovements).toHaveBeenCalledTimes(1)
+    expect(bot.pathfinder.setMovements.mock.calls[0][0].allowSprinting).toBe(false)
   })
 
   it('backs off after a climb that failed too', async () => {

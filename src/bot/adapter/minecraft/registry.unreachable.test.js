@@ -133,6 +133,33 @@ describe('goTo and dig mark unreachable blocks (261015)', () => {
     await reg.execute('dig', { x: 30, y: 65, z: 0 }, bot, {})
     expect(isUnreachable(bot, { x: 30, y: 65, z: 0 })).toBe(false)
   })
+
+  it('an out-of-range dig 5-8m off at her own level does not mark it (dig never walked there)', async () => {
+    const reg = createDefaultRegistry()
+    const { bot } = makeBot([[6, 65, 0, 'coal_ore'], [0, 66, 7, 'oak_log']])
+    digMock.mockResolvedValueOnce('out of range (5.6m, need ≤4.5) for coal_ore @6,65,0')
+    await reg.execute('dig', { block: 'coal_ore' }, bot, {})
+    expect(isUnreachable(bot, { x: 6, y: 65, z: 0 })).toBe(false)
+    digMock.mockResolvedValueOnce('out of range (7.4m, need ≤4.5) for oak_log @0,66,7')
+    await reg.execute('dig', { x: 0, y: 66, z: 7 }, bot, {})
+    expect(isUnreachable(bot, { x: 0, y: 66, z: 7 })).toBe(false)
+    // Under the block (a log on the ledge right above her) still marks it.
+    digMock.mockResolvedValueOnce('out of range (5.1m, need ≤4.5) for oak_log @1,67,0 — unreachable — try build to Y=67')
+    await reg.execute('dig', { block: 'oak_log' }, bot, {})
+    expect(isUnreachable(bot, { x: 1, y: 67, z: 0 })).toBe(true)
+  })
+
+  it('a respawn or a dimension change forgets every unreachable block', async () => {
+    const handlers = {}
+    const bot = { game: { dimension: 'overworld' }, on: (ev, fn) => { handlers[ev] = fn } }
+    noteUnreachable(bot, { x: 4, y: 71, z: 0 }, 'cant_reach')
+    expect(isUnreachable(bot, { x: 4, y: 71, z: 0 })).toBe(true)
+    bot.game.dimension = 'the_nether'
+    expect(isUnreachable(bot, { x: 4, y: 71, z: 0 })).toBe(false)
+    bot.game.dimension = 'overworld'
+    handlers.respawn()
+    expect(isUnreachable(bot, { x: 4, y: 71, z: 0 })).toBe(false)
+  })
 })
 
 describe('gather skips blocks it could not reach recently (261015)', () => {

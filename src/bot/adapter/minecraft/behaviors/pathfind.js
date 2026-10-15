@@ -26,6 +26,34 @@ export const JUNK_SCAFFOLD = [
 ]
 
 /**
+ * Blocks a walk never breaks on its way (261016 review). The pathfinder digs
+ * through whatever is diggable when a route needs it, so a walk out of a
+ * closed room, or to the player standing on its roof, cut through planks,
+ * doors and glass. A dig the player asks for (dig.js) is not affected.
+ */
+export const BUILT_BLOCK = new RegExp('(' + [
+  '_planks', '_door', '_trapdoor', '_fence', '_fence_gate', 'glass', '_pane', '_bed', 'chest', 'barrel',
+  'shulker_box', 'crafting_table', 'furnace', 'smoker', 'anvil', 'enchanting_table', 'bookshelf',
+  '_wool', '_carpet', 'bricks', '_brick_.*', '_concrete', 'glazed_terracotta', '_slab', '_stairs', '_wall',
+  '_sign', '_banner', 'lantern', 'ladder', 'hay_block', 'polished_.*', 'smooth_stone', 'cut_.*', 'chiseled_.*',
+  'quartz_block', 'smooth_quartz', 'quartz_pillar', 'quartz_bricks', 'quartz_slab', 'quartz_stairs', 'lectern', 'loom', 'cartography_table', 'fletching_table', 'smithing_table', 'stonecutter',
+  'grindstone', 'composter', 'beehive', 'jukebox', 'note_block', 'brewing_stand', 'cauldron', 'beacon',
+  'lever', '_button', '_pressure_plate', 'repeater', 'comparator', 'piston', 'observer', 'dispenser',
+  'dropper', 'hopper', 'rail', 'redstone_lamp', 'target', 'respawn_anchor', 'lodestone', 'campfire',
+  '_bars', 'chain', 'scaffolding', 'flower_pot',
+].join('|') + ')$')
+
+/** Add every built block to a Movements' never-break set. */
+export function protectBuiltBlocks(bot, m) {
+  const blocks = bot?.registry?.blocksArray
+  if (!m?.blocksCantBreak || !Array.isArray(blocks)) return m
+  for (const b of blocks) {
+    if (b?.name && BUILT_BLOCK.test(b.name)) m.blocksCantBreak.add(b.id)
+  }
+  return m
+}
+
+/**
  * The Movements every companion walk uses (goTo, follow, attack pursuit).
  *
  * 261011 quality pass 2: sprinting is OFF. The pathfinder's sprint-jump
@@ -58,6 +86,7 @@ export function companionMovements(bot, opts = {}) {
   m.allowSprinting = false
   m.digCost = 8
   m.maxDropDown = 4
+  protectBuiltBlocks(bot, m)
   if (opts.canDig === false) m.canDig = false
   // (mineflayer-pathfinder spells the field `scafoldingBlocks`.)
   const items = bot?.registry?.itemsByName

@@ -1,7 +1,7 @@
 import pkg from 'mineflayer-pathfinder'
 import { sessionActionStats } from '../../../brain/actionStats.js'
 import { climbOut, escapeUp, pitInfo, MIN_PIT_DEPTH } from './climbOut.js'
-import { goTo } from './pathfind.js'
+import { goTo, protectBuiltBlocks } from './pathfind.js'
 const { pathfinder, Movements, goals } = pkg
 
 /**
@@ -14,6 +14,8 @@ const { pathfinder, Movements, goals } = pkg
 export function followMovements(bot) {
   const m = new Movements(bot)
   m.allowSprinting = false
+  // 261016: the trail tunnels after the player, but not through a build.
+  protectBuiltBlocks(bot, m)
   return m
 }
 
@@ -153,7 +155,9 @@ export function startFollow(bot, config) {
     // goal or judge progress. `_target` is KEPT — the player pressing play
     // resumes trailing where it left off. The progress clock is held at "now"
     // so a long pause never surfaces as a bogus stuck report on resume.
-    if (bot._seiPaused) { _stuck = null; _lastPos = null; _lastProgressAt = Date.now(); return }
+    // A climb out of a hole stops too (261016 review): left running, its
+    // staircase kept digging and its scaffold kept jumping through the pause.
+    if (bot._seiPaused) { cancelClimb(); _stuck = null; _lastPos = null; _lastProgressAt = Date.now(); return }
     if (!_target) { _stuck = null; _lastPos = null; return }
     const ent = resolveTargetEntity()
     const me = bot?.entity
@@ -206,6 +210,13 @@ export function startFollow(bot, config) {
             if (_climb === ctl) _climb = null
             _lastProgressAt = Date.now()
             _stuck = null
+            // escapeUp's walk to the open column swaps in no-dig, no-place
+            // goTo movements on the shared pathfinder. Put the trail's own
+            // back while the trail still owns the body (not after a goTo or
+            // unfollow took over, nor under a reflex flee).
+            const owned = _target && _bot === bot &&
+              !bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat
+            if (owned) { try { bot.pathfinder.setMovements(followMovements(bot)) } catch {} }
           })
         return
       }

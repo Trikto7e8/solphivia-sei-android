@@ -23,6 +23,10 @@
 //   cliff_log_find  a tree on a sheer 6-high mesa (nearest) plus one on the
 //                   ground: find oak_log + goTo it, twice, the way the brain did
 //   cliff_log_gather gather 3 oak_log with the same layout
+//   plank_room      she stands in a corner of a closed 3x3x3 oak-plank room
+//                   (2-thick shell), axe + pickaxe, the player on its roof:
+//                   goTo the player must NOT break a single plank, and must
+//                   say it could not get there (261016 review)
 //
 // Shaft and follow cases only count as success on the SURFACE next to the
 // player: tunnelling along under the player's feet is not "reached".
@@ -34,6 +38,7 @@ import path from 'node:path'
 import { serverCtl, cmds, itemCount } from './lib/server.mjs'
 import { connectPlayer, distTo, entityOf } from './lib/player.mjs'
 import { startCompanion, companionName, PLAYER } from './lib/companionProc.mjs'
+import { Vec3 } from 'vec3'
 import { WORLD_RULES, arenaReset, playersReset, tp, tree, S, P, Y } from './bench/arena.mjs'
 
 const argv = process.argv.slice(2)
@@ -227,6 +232,44 @@ const CASES = {
       const n = await itemCount(ctx.bot, '#minecraft:logs')
       return { result: r.result, ms: Date.now() - t0, logs: n, success: n >= 3 }
     },
+  },
+}
+
+// A closed oak-plank room around S: shell x/z ±2, y Y..Y+4, hollow ±1 and
+// Y..Y+2, so the roof is two planks thick and its top is at Y+4.
+const ROOM = { x0: S.x - 2, x1: S.x + 2, y0: Y, y1: Y + 4, z0: S.z - 2, z1: S.z + 2 }
+function roomPlanks(pbot) {
+  let n = 0
+  for (let x = ROOM.x0; x <= ROOM.x1; x++) {
+    for (let y = ROOM.y0; y <= ROOM.y1; y++) {
+      for (let z = ROOM.z0; z <= ROOM.z1; z++) {
+        if (pbot.blockAt(new Vec3(x, y, z))?.name === 'oak_planks') n++
+      }
+    }
+  }
+  return n
+}
+CASES.plank_room = {
+  world: [
+    `fill ${ROOM.x0} ${ROOM.y0} ${ROOM.z0} ${ROOM.x1} ${ROOM.y1} ${ROOM.z1} oak_planks`,
+    `fill ${S.x - 1} ${Y} ${S.z - 1} ${S.x + 1} ${Y + 2} ${S.z + 1} air`,
+  ],
+  give: ['iron_axe', 'stone_pickaxe'],
+  async run(ctx) {
+    await cmds([
+      `tp ${PLAYER} ${S.x + 0.5} ${ROOM.y1 + 1} ${S.z + 0.5}`,
+      `tp ${ctx.bot} ${S.x - 0.5} ${Y} ${S.z - 0.5}`,
+    ])
+    await sleep(2000)
+    const before = roomPlanks(ctx.pbot)
+    const t0 = Date.now()
+    const r = await ctx.exec('goTo', { x: S.x, y: ROOM.y1 + 1, z: S.z, range: 2 }, { timeoutMs: 90000 })
+    const ms = Date.now() - t0
+    await sleep(1000)
+    const after = roomPlanks(ctx.pbot)
+    const pr = await ctx.comp.probe()
+    const honest = !/^reached/.test(String(r.result))
+    return { result: r.result, ms, pos: pr?.pos, planks: `${before}->${after}`, success: before === 98 && after === before && honest }
   },
 }
 

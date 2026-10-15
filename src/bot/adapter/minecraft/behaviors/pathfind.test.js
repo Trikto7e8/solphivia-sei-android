@@ -130,6 +130,19 @@ describe('companionMovements (261011)', () => {
     expect(keep.scafoldingBlocks.length).toBe(base.scafoldingBlocks.length - 1)
   })
 
+  // 261016 review: a walk out of a closed room cut through its planks.
+  it('never breaks built blocks on the way, but still digs natural ground', () => {
+    const bot = makeBot()
+    const m = companionMovements(bot)
+    const id = (n) => bot.registry.blocksByName[n].id
+    for (const n of ['oak_planks', 'oak_door', 'glass', 'white_bed', 'chest', 'crafting_table', 'stone_bricks', 'oak_stairs', 'furnace']) {
+      expect(m.blocksCantBreak.has(id(n)), n).toBe(true)
+    }
+    for (const n of ['stone', 'dirt', 'cobblestone', 'oak_log', 'oak_leaves', 'coal_ore', 'nether_quartz_ore', 'sand', 'deepslate']) {
+      expect(m.blocksCantBreak.has(id(n)), n).toBe(false)
+    }
+  })
+
   it('goTo installs the no-sprint movements', async () => {
     const bot = makeBot()
     let installed = null

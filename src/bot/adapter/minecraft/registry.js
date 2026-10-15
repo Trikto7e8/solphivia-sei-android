@@ -179,6 +179,9 @@ const DEPTH_PENALTY_PER_M = 1.5
 // An out-of-range dig from within this distance means she stood by the block
 // and still could not reach it.
 const UNREACHABLE_NEAR_M = 8
+// A dig out of range with the block within this horizontal distance means
+// she stands under it: walking closer would not have helped.
+const DIG_UNDER_H = 2
 
 const FACES = [[1, 0, 0], [-1, 0, 0], [0, 1, 0], [0, -1, 0], [0, 0, 1], [0, 0, -1]]
 function isExposed(bot, p) {
@@ -197,6 +200,13 @@ function isExposed(bot, p) {
  * a spot or a player is not a block target. A timeout far from the block is
  * not evidence either (a long walk simply ran out of time).
  */
+/** goTo's result when its climb out of a hole was cut off. */
+function climbAborted(r) {
+  if (r?.why === 'paused') return 'aborted (paused while climbing out of a hole)'
+  if (r?.why === 'yielded') return 'aborted (a reflex took over while climbing out of a hole)'
+  return 'aborted'
+}
+
 function noteUnreachableTarget(bot, args, result) {
   try {
     if (!isUnreachableResult(result)) return
@@ -269,7 +279,7 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // about a block per 5s (see climbOut.js), so from a 1x1 shaft a 12s
       // walk to the surface timed out every time.
       const climb = await climbOut(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal })
-      if (climb.status === 'aborted') return 'aborted'
+      if (climb.status === 'aborted') return climbAborted(climb)
       if (climb.status === 'failed') return climb.line
       // 260513-wkd: pass through config.signal so loop-level abort halts the
       // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
@@ -282,7 +292,7 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       const feetY = bot.entity?.position?.y
       if (climb.status !== 'climbed' && isUnreachableResult(r) && Number.isFinite(feetY) && args.y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH) {
         const esc = await escapeUp(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal, goTo })
-        if (esc.status === 'aborted') return 'aborted'
+        if (esc.status === 'aborted') return climbAborted(esc)
         if (esc.status === 'failed') return esc.line
         if (esc.status === 'climbed') {
           up = esc
@@ -302,13 +312,20 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
 
   // 261015: a dig that is out of reach while she stands right by the block
   // (a log up a cliff, ore behind a ledge) marks it unreachable, so the next
-  // find or gather picks another one. Far-away "out of range" digs only mean
-  // she did not walk there first, and say nothing about the block.
+  // find or gather picks another one. dig never walks, so "out of range" on
+  // its own only means she did not walk there first. 261016 review: mark it
+  // only when standing next to it could not have helped: she is roughly under
+  // the block, or it is more than 2 blocks above her feet.
   registry.register('dig', DigSchema, async (args, bot, config) => {
     const r = await digAction(args, bot, config)
     if (args?.to == null && typeof r === 'string' && r.startsWith('out of range')) {
-      const m = r.match(/^out of range \(([\d.]+)m/)
-      if (m && Number(m[1]) <= UNREACHABLE_NEAR_M) noteUnreachable(bot, args, 'out of reach')
+      const m = r.match(/^out of range \(([\d.]+)m.*@(-?\d+),(-?\d+),(-?\d+)/)
+      const p = bot.entity?.position
+      if (m && p && Number(m[1]) <= UNREACHABLE_NEAR_M) {
+        const pos = { x: Number(m[2]), y: Number(m[3]), z: Number(m[4]) }
+        const horiz = Math.hypot(pos.x + 0.5 - p.x, pos.z + 0.5 - p.z)
+        if (horiz <= DIG_UNDER_H || pos.y > Math.floor(p.y + 0.01) + 2) noteUnreachable(bot, pos, 'out of reach')
+      }
     }
     return r
   })

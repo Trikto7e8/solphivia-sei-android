@@ -28,8 +28,17 @@ const MAX_ENTRIES = 64
 function store(bot) {
   if (!bot) return null
   if (!Array.isArray(bot._seiUnreachable)) bot._seiUnreachable = []
+  // 261016 review: coordinates mean nothing after a death or a portal. A
+  // respawn (death, or a dimension change: mineflayer emits 'respawn' for
+  // both) clears the memory.
+  if (!bot._seiUnreachableHooked && typeof bot.on === 'function') {
+    bot._seiUnreachableHooked = true
+    try { bot.on('respawn', () => clearUnreachable(bot)) } catch {}
+  }
   return bot._seiUnreachable
 }
+
+const dimensionOf = (bot) => bot?.game?.dimension ?? null
 
 function prune(list, now) {
   for (let i = list.length - 1; i >= 0; i--) {
@@ -49,9 +58,10 @@ export function noteUnreachable(bot, pos, why = '', now = Date.now()) {
   if (!list || !pos || ![pos.x, pos.y, pos.z].every(Number.isFinite)) return
   prune(list, now)
   const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z)
-  const same = list.find((e) => e.x === x && e.y === y && e.z === z)
+  const dim = dimensionOf(bot)
+  const same = list.find((e) => e.x === x && e.y === y && e.z === z && e.dim === dim)
   if (same) { same.until = now + UNREACHABLE_TTL_MS; same.why = why || same.why; return }
-  list.push({ x, y, z, why, until: now + UNREACHABLE_TTL_MS })
+  list.push({ x, y, z, dim, why, until: now + UNREACHABLE_TTL_MS })
   if (list.length > MAX_ENTRIES) list.splice(0, list.length - MAX_ENTRIES)
 }
 
@@ -61,7 +71,9 @@ export function isUnreachable(bot, pos, now = Date.now()) {
   if (!Array.isArray(list) || !list.length || !pos) return false
   prune(list, now)
   const x = Math.floor(pos.x), y = Math.floor(pos.y), z = Math.floor(pos.z)
-  return list.some((e) => Math.abs(e.x - x) <= COVER_H && Math.abs(e.z - z) <= COVER_H &&
+  // Also by dimension, in case a respawn event was missed.
+  const dim = dimensionOf(bot)
+  return list.some((e) => e.dim === dim && Math.abs(e.x - x) <= COVER_H && Math.abs(e.z - z) <= COVER_H &&
     y - e.y <= COVER_UP && e.y - y <= COVER_DOWN)
 }
 

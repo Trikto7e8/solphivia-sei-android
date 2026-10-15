@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { EVENT_GUIDANCE } from './promptLibrary.js'
 import { createInflightTracker, idleLineForSnapshot } from './inflight.js'
-import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
+import { createOrchestrator, _setTickIntervalForTests, isBareStopLine } from './orchestrator.js'
 
 describe('inflight: how the last action ended', () => {
   it('keeps the result and the aborted flag in recent()', () => {
@@ -266,7 +266,7 @@ describe('orchestrator: an action that finishes during a mid-action turn', () =>
 // Starts a gather for "get wood", then the player's `midLine` arrives while it
 // runs. `reply` answers that line; `settleDuringCall` finishes the gather
 // while the call is out (the race window).
-async function midSetup(midLine, reply, { settleDuringCall = false, after = [] } = {}) {
+async function midSetup(midLine, reply, { settleDuringCall = false, after = [], group = false } = {}) {
   _setTickIntervalForTests(10_000_000)
   const executed = []
   const running = {}
@@ -287,9 +287,10 @@ async function midSetup(midLine, reply, { settleDuringCall = false, after = [] }
     return exec(name, args, opts)
   }
   const orch = createOrchestrator({ adapter, config: config(), reenqueue: (event, data) => queue.push({ event, data }), _anthropicOverride: provider })
+  if (group) { orch.setVoiceCall(true); orch.setCompanions(['Lyra']) }
   await orch.handleDispatch('sei:chat_received', line('get wood'))
   expect(orch.currentLoop?.inFlight?.name).toBe('gather')
-  await orch.handleDispatch('sei:chat_received', line(midLine))
+  await orch.handleDispatch('sei:chat_received', group ? { ...line(midLine), voice: true } : line(midLine))
   await flush()
   const drain = async () => {
     for (let guard = 0; queue.length && guard < 20; guard++) {
@@ -377,5 +378,57 @@ describe('orchestrator: a new order during an action', () => {
     await flush()
     await drain()
     for (const c of provider.calls.slice(2)) expect(lastUserText(c)).not.toContain('before your own plan')
+  })
+})
+
+describe('isBareStopLine (pass 9c review)', () => {
+  it('still matches real stop orders', () => {
+    for (const t of ['stop', 'actually stop', 'ok stop', 'STOP!', 'sui stop', 'wait stop', 'ok stop it', 'stop now pls', 'cancel']) {
+      expect(isBareStopLine(t)).toBe(true)
+      expect(isBareStopLine(t, { wordsOnly: true })).toBe(true)
+    }
+  })
+  it('does not match negations, questions or complaints', () => {
+    for (const t of ['cant stop', "can't stop", 'wont stop', "won't stop", 'doesnt stop', "doesn't stop", 'didnt stop', "didn't stop", 'why stop?', 'why stop', 'stop?', 'sui stop?', 'ok stop ?']) {
+      expect(isBareStopLine(t)).toBe(false)
+    }
+  })
+  it('keeps nevermind for the end_loop backstop, not for a words-only reply', () => {
+    for (const t of ['nevermind', 'ok nevermind', 'never mind']) {
+      expect(isBareStopLine(t)).toBe(true)
+      expect(isBareStopLine(t, { wordsOnly: true })).toBe(false)
+    }
+  })
+})
+
+describe('orchestrator: a group-call line to someone else (pass 9c review)', () => {
+  it('"lyra stop" answered with silence leaves her own action running', async () => {
+    const { orch, aborted } = await midSetup('lyra stop', turn(), { group: true })
+    expect(aborted).toEqual([])
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
+  it('"lyra stop" answered with end_loop leaves it running too', async () => {
+    const { orch, aborted } = await midSetup('lyra stop', turn({ id: 'e1', name: 'end_loop', input: {} }), { group: true })
+    expect(aborted).toEqual([])
+    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
+  })
+  it('"lyra go get wood" is not carried into her completion turn', async () => {
+    const { provider, running, drain } = await midSetup('lyra go get wood', turn(say('s2', 'go lyra')), {
+      group: true, after: [turn(say('s3', 'done'))],
+    })
+    running.gather('gathered 8/8 oak_log')
+    await flush()
+    await drain()
+    for (const c of provider.calls.slice(2)) expect(lastUserText(c)).not.toContain('before your own plan')
+  })
+})
+
+describe('orchestrator: the deferred order is kept until a player turn settles it', () => {
+  it('is not carried when the reply said nothing', async () => {
+    const { provider, running, drain } = await midSetup('go get more wood, like 10 more', turn(), { after: [turn(say('s3', 'ok'))] })
+    running.gather('gathered 8/8 oak_log')
+    await flush()
+    await drain()
+    for (const c of provider.calls.slice(2)) expect(lastUserText(c)).not.toContain('you answered without starting anything')
   })
 })

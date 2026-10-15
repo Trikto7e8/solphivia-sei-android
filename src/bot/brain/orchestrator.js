@@ -494,11 +494,18 @@ const BRAIN_PERSONALITY_NAMES = new Set(['remember', 'forget', 'setGoal', 'clear
 // 261011: a player line that is only a stop order ("stop", "sui stop", "wait
 // stop!", "ok stop it", "nevermind"). Mirrors the Minecraft chat fast path's
 // STOP_VERBS with one leading word allowed (a name, "wait", "ok") and not a
-// negation ("dont stop"). Used as the end_loop backstop in runIterations.
-const STOP_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not)\b)[\w']+[,\s]+)?(?:stop|halt|cancel|nevermind|never mind)(?:\s+(?:it|that|now|pls|please)){0,2}$/
-export function isBareStopLine(text) {
-  const t = String(text ?? '').toLowerCase().replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t)
+// negation ("dont stop", "cant stop", "why stop"). Used as the end_loop
+// backstop in runIterations. A question ("stop?") is not an order.
+// 261016 (pass 9c): `wordsOnly` is the stricter test for a reply that started
+// nothing (unheededPlayerStop): "nevermind" there is too often about the last
+// thing SAID, not the running action.
+const STOP_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not|cant|can't|wont|won't|why|didnt|didn't|doesnt|doesn't)\b)[\w']+[,\s]+)?(?:stop|halt|cancel|nevermind|never mind)(?:\s+(?:it|that|now|pls|please)){0,2}$/
+export function isBareStopLine(text, { wordsOnly = false } = {}) {
+  const raw = String(text ?? '').toLowerCase().trim()
+  if (/\?[\s!~.]*$/.test(raw)) return false
+  const t = raw.replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!(t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t))) return false
+  return !(wordsOnly && /\bnever ?mind\b/.test(t))
 }
 // 261012 (pass 5): the player's line asks her to stop or wait (not "don't
 // stop"). Gates the idle hold, so her OWN stop() while switching to a new
@@ -4143,10 +4150,6 @@ function maybeWarnByteCap(loop, warned) {
     // The tool_use was already paired by the tick, so a clearGoal waiting on
     // this hand-over runs (or is kept) without touching that turn's results.
     await settleClearAfterHandOver(loop, data, null)
-    loop._settleOwed = null
-    // Consumed below (non-aborted settle) or moot (aborted / dropped).
-    const replyDeferred = loop._replyDeferred
-    loop._replyDeferred = null
     const interrupting = !!(data?.aborted && pendingInterrupt)
     if (data?.aborted && !interrupting) {
       // Genuine stale/terminal abort. P0 attack (terminateLoop) and R3/R4
@@ -4181,6 +4184,12 @@ function maybeWarnByteCap(loop, warned) {
       logger.debug?.(`[sei/orch] action_complete tick-claimed but loop is mid-batch on a new action (pending=${loop._pendingActionUse?.name ?? 'results'}) — drop stale settle (loop=${loop.id}, stale=${data?.name})`)
       return
     }
+    // Reset only once this settle is the one the loop is waiting on: a stale
+    // settle dropped above must not wipe the current action's state.
+    loop._settleOwed = null
+    // Consumed below (non-aborted settle) or moot (interrupting).
+    const replyDeferred = loop._replyDeferred
+    loop._replyDeferred = null
 
     // VIS-02/VIS-07: a render result (look / explore auto-look) that somehow
     // settled via the tick-claimed path (would require the render to outlive a
@@ -4959,14 +4968,20 @@ function maybeWarnByteCap(loop, warned) {
       // the completion turn that followed walked her back to the table
       // ("the stop was about the wood"). The player's stop wins: the running
       // action is cancelled and no completion turn is owed after it.
+      // Not on a group call's line to someone else ("lyra stop"): that turn
+      // is often silent on purpose (_groupVoiceLine, as the unanswered retry).
       const unheededPlayerStop = !hasStop && !hasEndLoop && newSuspendingTools.length === 0 &&
-        _p1Trigger && isBareStopLine(loop._lastPlayerLine?.text)
+        _p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text, { wordsOnly: true })
       if (unheededPlayerStop) logger.info?.(`[sei/orch] player said stop and the reply started nothing: treating it as stop (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? loop._settleOwed ?? 'none'})`)
       // 261016: a reply that started nothing while an action runs (or just
       // finished during the call) leaves the player's line for the
       // completion turn to come back to (see NUDGES.deferredReply).
-      if (newSuspendingTools.length > 0 || hasStop || unheededPlayerStop) loop._replyDeferred = null
-      else if (_p1Trigger && loop._lastPlayerLine?.text && (loop.inFlight || loopAwaitsSettle(loop))) loop._replyDeferred = loop._lastPlayerLine.text
+      // Only a player-triggered turn settles it: an attackEntity in a fight
+      // does not answer the player's pending order. Nothing said = the
+      // unanswered-line nudge covers it, so no "you answered" claim here.
+      if (_p1Trigger && (newSuspendingTools.length > 0 || hasStop || unheededPlayerStop)) loop._replyDeferred = null
+      else if (_p1Trigger && !loop._groupVoiceLine && loop._spokeThisLoop && loop._lastPlayerLine?.text &&
+               (loop.inFlight || loopAwaitsSettle(loop))) loop._replyDeferred = loop._lastPlayerLine.text
 
       if ((hasStop || unheededPlayerStop) && newSuspendingTools.length === 0) {
         // 261011 R3-stop — stop with no new action: cancel the running action
@@ -4987,11 +5002,12 @@ function maybeWarnByteCap(loop, warned) {
         }
         terminateLoop(loop, 'R3-stop')
       } else if (hasEndLoop && newSuspendingTools.length === 0 && (inFlightIsForeground || loopAwaitsSettle(loop)) &&
-                 !(_p1Trigger && isBareStopLine(loop._lastPlayerLine?.text))) {
+                 !(_p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text))) {
         // (A bare "stop" from the player answered with end_loop instead of
         // stop falls through to R3 below and cancels the action as end_loop
         // did before the split, so a model that misses the stop tool cannot
-        // keep working against the player.)
+        // keep working against the player. Not on a group call, where
+        // end_loop is how she yields "lyra stop" to Lyra.)
         // 261011 R1-end — end_loop while a foreground action runs ends the
         // TURN, not the action: the model is done talking and the gather /
         // build / dig carries on, exactly like a text-only keep-alive turn.

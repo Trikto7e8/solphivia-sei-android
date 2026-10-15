@@ -10,7 +10,7 @@ import mcDataLib from 'minecraft-data'
 import { Vec3 } from 'vec3'
 import { createRegistry } from '../../registry.js'
 import { goTo } from './behaviors/pathfind.js'
-import { climbOut, isPassable } from './behaviors/climbOut.js'
+import { climbOut, escapeUp, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
 import { noteUnreachable, isUnreachable, isUnreachableResult } from './behaviors/unreachable.js'
 import { resolveTerm } from './loose-terms.js'
 import { gatherAction } from './behaviors/mineVein.js'
@@ -173,6 +173,9 @@ const FIND_CANDIDATES = 24
 // A buried block (no open face) counts as this much farther than it is: the
 // walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
 const BURIED_PENALTY_M = 12
+// Each block more than DEPTH_FREE_M below her adds this much.
+const DEPTH_FREE_M = 3
+const DEPTH_PENALTY_PER_M = 1.5
 // An out-of-range dig from within this distance means she stood by the block
 // and still could not reach it.
 const UNREACHABLE_NEAR_M = 8
@@ -271,11 +274,27 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // 260513-wkd: pass through config.signal so loop-level abort halts the
       // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
       // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
-      const r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+      let r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+      let up = climb
+      // 261015: the walk failed and the target is well above her: she is in
+      // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
+      // Climb by hand and walk once more.
+      const feetY = bot.entity?.position?.y
+      if (climb.status !== 'climbed' && isUnreachableResult(r) && Number.isFinite(feetY) && args.y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH) {
+        const esc = await escapeUp(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal, goTo })
+        if (esc.status === 'aborted') return 'aborted'
+        if (esc.status === 'failed') return esc.line
+        if (esc.status === 'climbed') {
+          up = esc
+          r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
+        }
+      }
       noteUnreachableTarget(bot, args, r)
-      if (climb.status === 'climbed') {
-        const how = climb.how === 'pillar' ? 'pillared' : 'dug a staircase'
-        return `${r} (first ${how} out of the ${climb.depth}-deep hole you were in)`
+      if (up.status === 'climbed') {
+        const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
+        return up === climb
+          ? `${r} (first ${how} out of the ${up.depth}-deep hole you were in)`
+          : `${r} (the first walk failed, so you ${how} ${up.depth} blocks up out of the hole and walked again)`
       }
       return r
     }
@@ -380,10 +399,15 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
         }
       }
       const distOf = (h) => (point && typeof h.distanceTo === 'function' ? h.distanceTo(point) : 0)
+      // Depth below her counts extra: the walk down is a shaft she has to
+      // come back up. An "exposed" ore 17 blocks down is usually on a cave
+      // wall the walk cannot reach without digging (pass 10 compare,
+      // errands-02-B: coal at y54 beat the surface coal 3 blocks farther).
+      const depthOf = (h) => (point ? Math.max(0, point.y - h.y - DEPTH_FREE_M) : 0)
       let h = fresh[0]
       let best = Infinity
       for (const c of fresh) {
-        const score = distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M)
+        const score = distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
         if (score < best) { best = score; h = c }
       }
       const blk = bot.blockAt(h)

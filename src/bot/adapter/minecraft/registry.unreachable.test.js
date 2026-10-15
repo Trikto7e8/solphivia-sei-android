@@ -64,6 +64,14 @@ describe('find (261015)', () => {
     expect(r).toMatchObject({ found: true, id: 'coal_ore', pos: { x: 14, y: 65, z: 3 } })
   })
 
+  it('prefers a surface ore over a slightly nearer exposed one deep below (cave wall)', async () => {
+    const reg = createDefaultRegistry()
+    // A cave pocket around the deep ore makes it "exposed".
+    const { bot } = makeBot([[4, 48, 10, 'coal_ore'], [4, 48, 11, 'air'], [22, 65, 10, 'coal_ore']])
+    const r = await reg.execute('find', { name: 'coal_ore' }, bot, {})
+    expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
+  })
+
   it('still finds the buried one when it is much nearer', async () => {
     const reg = createDefaultRegistry()
     const { bot } = makeBot([[0, 62, 1, 'coal_ore'], [40, 65, 3, 'coal_ore']])

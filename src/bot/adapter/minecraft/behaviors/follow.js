@@ -1,6 +1,7 @@
 import pkg from 'mineflayer-pathfinder'
 import { sessionActionStats } from '../../../brain/actionStats.js'
-import { climbOut, pitInfo, MIN_PIT_DEPTH } from './climbOut.js'
+import { climbOut, escapeUp, pitInfo, MIN_PIT_DEPTH } from './climbOut.js'
+import { goTo } from './pathfind.js'
 const { pathfinder, Movements, goals } = pkg
 
 /**
@@ -184,11 +185,18 @@ export function startFollow(bot, config) {
     if (!yielding && ent.position.y >= me.position.y + MIN_PIT_DEPTH && me.onGround !== false && !me.isInWater &&
         Date.now() - _climbFailedAt >= CLIMB_RETRY_MS) {
       const pit = pitInfo(bot)
-      if (pit && pit.rimY != null && pit.depth >= MIN_PIT_DEPTH) {
+      const inPit = pit && pit.rimY != null && pit.depth >= MIN_PIT_DEPTH
+      // Any other hole: only once the trail has stalled (the stuck clock
+      // below), since GoalFollow may still be on its way out.
+      const stalled = _stuck && ent.position.y >= me.position.y + MIN_PIT_DEPTH + 1
+      if (inPit || stalled) {
         const ctl = new AbortController()
         _climb = ctl
         try { bot.pathfinder.setGoal(null) } catch {}
-        climbOut(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS })
+        const climb = inPit
+          ? climbOut(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS })
+          : escapeUp(bot, ent.position, { signal: ctl.signal, budgetMs: CLIMB_BUDGET_MS, goTo })
+        climb
           // Anything but a climb (failed, or climbOut judged it no pit after
           // all) backs off, so the tick does not restart it every second and
           // starve GoalFollow.
@@ -197,6 +205,7 @@ export function startFollow(bot, config) {
           .finally(() => {
             if (_climb === ctl) _climb = null
             _lastProgressAt = Date.now()
+            _stuck = null
           })
         return
       }

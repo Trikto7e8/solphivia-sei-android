@@ -5,11 +5,14 @@ import { Vec3 } from 'vec3'
 
 const climbOut = vi.fn()
 const pitInfo = vi.fn()
+const escapeUp = vi.fn(async () => ({ status: 'not_in_pit' }))
 vi.mock('./climbOut.js', () => ({
   climbOut: (...a) => climbOut(...a),
+  escapeUp: (...a) => escapeUp(...a),
   pitInfo: (...a) => pitInfo(...a),
   MIN_PIT_DEPTH: 2,
 }))
+vi.mock('./pathfind.js', () => ({ goTo: vi.fn(async () => 'reached') }))
 vi.mock('mineflayer-pathfinder', () => {
   class GoalFollow { constructor(entity, range) { this.entity = entity; this.range = range } }
   class Movements { constructor() { this.allowSprinting = true } }

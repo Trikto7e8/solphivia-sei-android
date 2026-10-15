@@ -277,3 +277,182 @@ export async function climbOut(bot, target, opts = {}) {
       'Get dirt or cobblestone to pillar up with, or dig a staircase up the wall',
   }
 }
+
+// ── escapeUp: any hole, after a walk up out of it failed ───────────────────
+//
+// 261015 compare (pass 10 B side): the 1x1 check above misses the holes she
+// actually ends up in during errands. The pathfinder digs down toward buried
+// ore, she mines the ore out of the shaft wall, and now the bottom is an
+// irregular pocket: a side cell is open, so pitInfo says "not a pit", and the
+// walk back up still times out ("timeout — unreachable — try build to Y=71",
+// errands-02-B and 04-B). escapeUp is the general fallback, run when a walk to
+// a target well above her has failed: find a nearby column that is open above
+// (her own shaft, usually a step or two away), stand in its center, and
+// pillar up it; with no open column or no blocks, cut a staircase toward the
+// target. The caller then walks again.
+
+const OPEN_SEARCH_NODES = 80
+const OPEN_SEARCH_RADIUS = 6
+
+/** The body can stand at (x,y,z): feet and head free, a full block below. */
+function standable(bot, x, y, z) {
+  return isPassable(at(bot, x, y, z)) && isPassable(at(bot, x, y + 1, z)) && isSolid(at(bot, x, y - 1, z))
+}
+
+/**
+ * How far up the column above a standing cell is open. `toTarget` is true when
+ * it is open all the way to `targetY` (the body could pillar straight up to
+ * the target's height); otherwise `rimY` is the first level at least 2 up
+ * where a side cell opens, or null.
+ */
+export function columnOpening(bot, x, feetY, z, targetY, maxDepth = MAX_PIT_DEPTH) {
+  let rimY = null
+  for (let y = feetY + 1; y <= feetY + maxDepth; y++) {
+    if (!isPassable(at(bot, x, y + 1, z))) return { toTarget: false, rimY }
+    if (y >= targetY) return { toTarget: true, rimY }
+    if (rimY == null && y >= feetY + MIN_PIT_DEPTH) {
+      for (const [dx, dz] of DIRS) {
+        if (isPassable(at(bot, x + dx, y, z + dz)) && isPassable(at(bot, x + dx, y + 1, z + dz))) { rimY = y; break }
+      }
+    }
+  }
+  return { toTarget: false, rimY }
+}
+
+/**
+ * Nearest cell she can walk to without digging whose column leads up: open to
+ * the target's height first, else the one with the highest rim. Breadth-first
+ * over standable cells (same level, or one step up or down) within a few
+ * blocks. `open` is true when the walkable area around her is NOT a hole
+ * (the search ran into its node or radius limit): on open ground or at the
+ * foot of a cliff a failed walk is not something climbing fixes.
+ *
+ * @returns {{ column: null | { x:number, y:number, z:number, steps:number, toTarget:boolean, rimY:number|null }, open: boolean }}
+ */
+export function findOpenColumn(bot, targetY) {
+  const p = bot?.entity?.position
+  if (!p) return { column: null, open: false }
+  const sx = Math.floor(p.x), sy = Math.floor(p.y + 0.01), sz = Math.floor(p.z)
+  const seen = new Set()
+  const queue = []
+  let open = false
+  const push = (x, y, z, steps) => {
+    const k = `${x},${y},${z}`
+    if (seen.has(k)) return
+    if (seen.size >= OPEN_SEARCH_NODES) { open = true; return }
+    seen.add(k)
+    queue.push({ x, y, z, steps })
+  }
+  // The start cell may not be standable by the strict test (she can be held
+  // up by the edge of the next block); seed it and walk on from there.
+  push(sx, sy, sz, 0)
+  let toTarget = null
+  let best = null
+  while (queue.length) {
+    const c = queue.shift()
+    if (standable(bot, c.x, c.y, c.z)) {
+      const o = columnOpening(bot, c.x, c.y, c.z, targetY)
+      if (o.toTarget && !toTarget) toTarget = { ...c, ...o }
+      else if (o.rimY != null && (!best || o.rimY > best.rimY)) best = { ...c, ...o }
+    }
+    for (const [dx, dz] of DIRS) {
+      const nx = c.x + dx, nz = c.z + dz
+      if (Math.abs(nx - sx) > OPEN_SEARCH_RADIUS || Math.abs(nz - sz) > OPEN_SEARCH_RADIUS) {
+        if (standable(bot, nx, c.y, nz)) open = true
+        continue
+      }
+      for (const dy of [0, 1, -1]) {
+        const ny = c.y + dy
+        // A step up needs head room above the cell she steps from.
+        if (dy === 1 && !isPassable(at(bot, c.x, c.y + 2, c.z))) continue
+        if (standable(bot, nx, ny, nz)) { push(nx, ny, nz, c.steps + 1); break }
+      }
+    }
+  }
+  return { column: toTarget ?? best, open }
+}
+
+/** Walk to the center of a standable cell nearby (no digging, no placing). */
+async function stepTo(bot, cell, signal, goToFn) {
+  const p = bot.entity.position
+  const centered = Math.floor(p.x) === cell.x && Math.floor(p.z) === cell.z && Math.floor(p.y + 0.01) === cell.y &&
+    Math.abs(p.x - (cell.x + 0.5)) < 0.3 && Math.abs(p.z - (cell.z + 0.5)) < 0.3
+  if (centered) return true
+  if (cell.steps === 0 || (Math.floor(p.x) === cell.x && Math.floor(p.z) === cell.z)) {
+    // Same cell, off center: shuffle onto the middle so the block under the
+    // feet column is the floor (scaffold: "no solid floor below").
+    const ok = await stepUpTo(bot, cell.x, cell.y, cell.z, signal)
+    return ok
+  }
+  if (!goToFn) return false
+  const r = await goToFn(bot, cell.x, cell.y, cell.z, 0, 6000, signal, { canDig: false, canPlace: false })
+  if (signal?.aborted) return false
+  const q = bot.entity.position
+  return String(r).startsWith('reached') || (Math.floor(q.x) === cell.x && Math.floor(q.z) === cell.z)
+}
+
+/**
+ * Get up toward `target` from wherever she is underground. Meant for the
+ * case where a walk to a target at least MIN_PIT_DEPTH above her already
+ * failed. Same result shape as climbOut.
+ *
+ * @param {object} bot
+ * @param {{x:number,y:number,z:number}} target
+ * @param {{ signal?: AbortSignal, budgetMs?: number, keepItems?: string[], canDig?: boolean, goTo?: Function }} [opts]
+ */
+export async function escapeUp(bot, target, opts = {}) {
+  const { signal, budgetMs = 25000, keepItems = [], canDig = true, goTo: goToFn } = opts
+  if (!bot?.entity?.position) return { status: 'not_in_pit' }
+  if (signal?.aborted) return { status: 'aborted' }
+  if (bot.entity.isInWater) return { status: 'not_in_pit' }
+  await waitOnGround(bot, 1000)
+  const startY = Math.floor(bot.entity.position.y + 0.01)
+  const targetY = Math.floor(Number(target?.y))
+  if (!Number.isFinite(targetY) || targetY < startY + MIN_PIT_DEPTH) return { status: 'not_in_pit' }
+  const here = `${Math.floor(bot.entity.position.x)},${startY},${Math.floor(bot.entity.position.z)}`
+  const deadline = Date.now() + budgetMs
+  const feet = () => Math.floor(bot.entity.position.y + 0.01)
+  const done = () => feet() >= targetY - 1
+  let why = ''
+  let how = null
+
+  const found = findOpenColumn(bot, targetY)
+  // Open ground or a cliff foot: the walk failed for another reason, and
+  // pillaring or tunnelling here is not what the player expects.
+  if (found.open) return { status: 'not_in_pit' }
+  const col = found.column
+  if (col && junkBlocks(bot, keepItems).length) {
+    if (await stepTo(bot, col, signal, goToFn)) {
+      if (signal?.aborted) return { status: 'aborted' }
+      const top = col.toTarget ? targetY : col.rimY
+      const r = await pillarTo(bot, top, signal, keepItems)
+      if (r === 'aborted') return { status: 'aborted' }
+      if (r === 'ok') how = 'pillar'
+      else why = `pillar: ${r}`
+    } else {
+      if (signal?.aborted) return { status: 'aborted' }
+      why = 'pillar: could not get to the open shaft'
+    }
+  } else {
+    why = col ? 'pillar: no dirt, cobblestone or similar blocks' : 'pillar: nothing open above nearby'
+  }
+  if (how && done()) return { status: 'climbed', depth: targetY - startY, how }
+  if (canDig && !done() && Date.now() < deadline) {
+    await waitOnGround(bot, 1000)
+    const r = await stairTo(bot, targetY, target, signal, deadline)
+    if (r === 'aborted') return { status: 'aborted' }
+    if (r === 'ok') return { status: 'climbed', depth: targetY - startY, how: how ? 'pillar' : 'stairs' }
+    why = why ? `${why}; staircase: ${r}` : `staircase: ${r}`
+  }
+  // Partway up still counts when it got her out of the shaft she was in: the
+  // next walk gets a fresh start.
+  if (how || feet() >= startY + MIN_PIT_DEPTH) return { status: 'climbed', depth: feet() - startY, how: how ?? 'stairs' }
+  const blocks = junkBlocks(bot, keepItems).reduce((n, b) => n + b.count, 0)
+  return {
+    status: 'failed',
+    depth: targetY - startY,
+    line: `stuck in a hole at ${here}: ${targetY - startY} blocks below where you are going and could not climb up (now y=${feet()}, ` +
+      `${blocks} scaffold blocks; ${why || 'no blocks to pillar with and digging is off'}). ` +
+      'Get dirt or cobblestone to pillar up with, or dig a staircase up the wall',
+  }
+}

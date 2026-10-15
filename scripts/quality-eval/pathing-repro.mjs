@@ -14,6 +14,9 @@
 //   shaft6_follow   6 deep, then follow the player for 30s
 //   shaft8_bare     8 deep, then no blocks and no pickaxe: wants a quick,
 //                   honest "stuck in a hole" answer, not a 12s timeout
+//   pocket_goto     7-deep shaft with an ore pocket off its bottom, she stands
+//                   in the pocket (not a 1x1 shaft), goTo the player
+//   pocket_nopick   same, no blocks, wooden pickaxe only (staircase)
 //   buried_coal     a coal ore buried 7 down is nearer than one on the
 //                   surface (the errands-02 trap): find + goTo + dig, then
 //                   back to the player
@@ -134,6 +137,36 @@ const CASES = {
       await sleep(800)
       const g = await gotoPlayer(ctx)
       return { dug: dug.result, ...g, success: /^stuck in a hole/.test(g.result) && g.ms < 30000 }
+    },
+  },
+  pocket_goto: {
+    // The errands-02-B / 04-B hole: a 7-deep shaft with an ore pocket mined
+    // out of the bottom wall, she stands in the pocket under solid rock (not
+    // a clean 1x1 shaft), then goTo the player on the surface.
+    give: ['stone_pickaxe', 'cobblestone 8'],
+    async run(ctx) {
+      await cmds([
+        `fill ${S.x} ${Y - 7} ${S.z} ${S.x} ${Y - 1} ${S.z} air`,
+        `fill ${S.x + 1} ${Y - 7} ${S.z} ${S.x + 2} ${Y - 6} ${S.z} air`,
+        `tp ${ctx.bot} ${S.x + 2.5} ${Y - 7} ${S.z + 0.5}`,
+      ])
+      await sleep(1500)
+      const g = await gotoPlayer(ctx)
+      return g
+    },
+  },
+  pocket_nopick: {
+    // Same pocket, no blocks and only a wooden pickaxe: the staircase.
+    give: ['wooden_pickaxe'],
+    async run(ctx) {
+      await cmds([
+        `fill ${S.x} ${Y - 7} ${S.z} ${S.x} ${Y - 1} ${S.z} air`,
+        `fill ${S.x + 1} ${Y - 7} ${S.z} ${S.x + 2} ${Y - 6} ${S.z} air`,
+        `tp ${ctx.bot} ${S.x + 2.5} ${Y - 7} ${S.z + 0.5}`,
+      ])
+      await sleep(1500)
+      const g = await gotoPlayer(ctx)
+      return g
     },
   },
   buried_coal: {

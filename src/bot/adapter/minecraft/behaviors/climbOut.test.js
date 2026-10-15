@@ -6,7 +6,7 @@ import { Vec3 } from 'vec3'
 const scaffoldUp = vi.fn()
 vi.mock('./build.js', () => ({ scaffoldUp: (...a) => scaffoldUp(...a) }))
 
-const { pitInfo, climbOut, junkBlocks, isPassable } = await import('./climbOut.js')
+const { pitInfo, climbOut, junkBlocks, isPassable, escapeUp, findOpenColumn } = await import('./climbOut.js')
 const { noteUnreachable, isUnreachable, isUnreachableResult, clearUnreachable, UNREACHABLE_TTL_MS } = await import('./unreachable.js')
 
 // Voxel world: solid stone everywhere at or below `ground`, air above, minus
@@ -183,5 +183,48 @@ describe('unreachable target memory', () => {
     expect(isUnreachableResult('reached')).toBe(false)
     expect(isUnreachableResult('aborted')).toBe(false)
     expect(isUnreachableResult('stuck in a hole at 0,65,0: could not climb out')).toBe(false)
+  })
+})
+
+// The errands hole: a 7-deep shaft at (0,0) with an ore pocket mined out of
+// its bottom wall, the bot standing in the pocket under solid rock.
+function pocketBot({ items = [] } = {}) {
+  const air = [[1, 64, 0], [1, 65, 0], [2, 64, 0], [2, 65, 0]]
+  for (let y = 70; y >= 64; y--) air.push([0, y, 0])
+  return {
+    entity: { position: new Vec3(2.5, 64, 0.5), onGround: true },
+    blockAt: makeWorld({ ground: 70, air }),
+    inventory: { items: () => items },
+    setControlState: vi.fn(),
+  }
+}
+
+describe('escapeUp (any hole, after a failed walk)', () => {
+  it('finds the open shaft next to the pocket, walks into it and pillars up', async () => {
+    const bot = pocketBot({ items: [{ name: 'dirt', count: 8 }] })
+    expect(pitInfo(bot)).toBeNull() // not a clean 1x1 shaft
+    const found = findOpenColumn(bot, 71)
+    expect(found.open).toBe(false)
+    expect(found.column).toMatchObject({ x: 0, y: 64, z: 0, toTarget: true })
+    const goTo = vi.fn(async (b, x, y, z) => { b.entity.position = new Vec3(x + 0.5, y, z + 0.5); return 'reached' })
+    scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
+    const r = await escapeUp(bot, { x: -6, y: 71, z: 0 }, { goTo })
+    expect(r).toMatchObject({ status: 'climbed', how: 'pillar' })
+    expect(goTo).toHaveBeenCalledWith(bot, 0, 64, 0, 0, expect.any(Number), undefined, { canDig: false, canPlace: false })
+    expect(scaffoldUp).toHaveBeenCalledWith(bot, 'dirt', 72, expect.anything())
+  })
+
+  it('leaves open ground and cliff feet alone', async () => {
+    const bot = { entity: { position: new Vec3(0.5, 71, 0.5), onGround: true }, blockAt: makeWorld(), inventory: { items: () => [{ name: 'dirt', count: 9 }] } }
+    expect(findOpenColumn(bot, 77).open).toBe(true)
+    expect((await escapeUp(bot, { x: 3, y: 77, z: 0 })).status).toBe('not_in_pit')
+    expect(scaffoldUp).not.toHaveBeenCalled()
+  })
+
+  it('says she is stuck when there is nothing to pillar with and digging is off', async () => {
+    const bot = pocketBot()
+    const r = await escapeUp(bot, { x: -6, y: 71, z: 0 }, { canDig: false })
+    expect(r.status).toBe('failed')
+    expect(r.line).toMatch(/^stuck in a hole at 2,64,0: 7 blocks below where you are going/)
   })
 })

@@ -15,12 +15,14 @@ export const STUCK_RESETS_TO_GIVE_UP = 2
  * Blocks a walk may spend as scaffolding (towers, bridges, climbOut pillars):
  * common, cheap, full, and not affected by gravity. 261015: the pathfinder's
  * own set is only dirt and cobblestone, so a bot carrying 20 andesite or
- * cobbled deepslate counted as having nothing to climb with.
+ * cobbled deepslate counted as having nothing to climb with. Listed in the
+ * order climbOut spends them: true junk first, cobblestone (furnaces, stone
+ * tools, and often the very thing the player asked for) last.
  */
 export const JUNK_SCAFFOLD = [
-  'dirt', 'cobblestone', 'cobbled_deepslate', 'netherrack', 'andesite', 'diorite',
-  'granite', 'tuff', 'coarse_dirt', 'rooted_dirt', 'stone', 'deepslate',
-  'blackstone', 'basalt', 'calcite', 'sandstone', 'end_stone', 'mud', 'packed_mud',
+  'dirt', 'coarse_dirt', 'rooted_dirt', 'netherrack', 'andesite', 'diorite', 'granite',
+  'tuff', 'cobbled_deepslate', 'basalt', 'blackstone', 'calcite', 'mud', 'packed_mud',
+  'end_stone', 'sandstone', 'stone', 'deepslate', 'cobblestone',
 ]
 
 /**

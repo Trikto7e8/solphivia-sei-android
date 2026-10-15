@@ -87,7 +87,7 @@ export function pitInfo(bot, maxDepth = MAX_PIT_DEPTH) {
   return { feetY, rimY: null, depth: null }
 }
 
-/** Junk scaffold blocks in the inventory, most plentiful first. */
+/** Junk scaffold blocks in the inventory, in JUNK_SCAFFOLD's spending order. */
 export function junkBlocks(bot, keepItems = []) {
   const keep = new Set(keepItems)
   const counts = new Map()
@@ -95,7 +95,9 @@ export function junkBlocks(bot, keepItems = []) {
     if (!JUNK_SCAFFOLD.includes(it.name) || keep.has(it.name)) continue
     counts.set(it.name, (counts.get(it.name) ?? 0) + it.count)
   }
-  return [...counts.entries()].sort((a, b) => b[1] - a[1]).map(([name, count]) => ({ name, count }))
+  return [...counts.entries()]
+    .sort((a, b) => JUNK_SCAFFOLD.indexOf(a[0]) - JUNK_SCAFFOLD.indexOf(b[0]))
+    .map(([name, count]) => ({ name, count }))
 }
 
 async function waitOnGround(bot, maxMs = 1500) {

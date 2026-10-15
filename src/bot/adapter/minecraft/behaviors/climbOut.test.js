@@ -71,13 +71,13 @@ describe('pitInfo', () => {
 })
 
 describe('junkBlocks', () => {
-  it('lists cheap scaffold blocks, most plentiful first, minus kept items', () => {
+  it('lists cheap scaffold blocks, true junk first and cobblestone last, minus kept items', () => {
     const bot = { inventory: { items: () => [
       { name: 'dirt', count: 3 }, { name: 'andesite', count: 9 }, { name: 'oak_planks', count: 20 },
       { name: 'cobblestone', count: 5 }, { name: 'diamond', count: 2 },
     ] } }
-    expect(junkBlocks(bot).map((b) => b.name)).toEqual(['andesite', 'cobblestone', 'dirt'])
-    expect(junkBlocks(bot, ['andesite']).map((b) => b.name)).toEqual(['cobblestone', 'dirt'])
+    expect(junkBlocks(bot).map((b) => b.name)).toEqual(['dirt', 'andesite', 'cobblestone'])
+    expect(junkBlocks(bot, ['andesite']).map((b) => b.name)).toEqual(['dirt', 'cobblestone'])
   })
 })
 

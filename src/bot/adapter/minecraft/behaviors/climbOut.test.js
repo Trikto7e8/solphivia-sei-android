@@ -272,6 +272,31 @@ describe('escapeUp (any hole, after a failed walk)', () => {
     expect(scaffoldUp).not.toHaveBeenCalled()
   })
 
+  it('inside a closed room says it is a built roof, not a hole to dig out of', async () => {
+    // A 3x3x3 hollow under a plank roof at y=67, planks all around.
+    const air = []
+    for (let x = -1; x <= 1; x++) for (let y = 64; y <= 66; y++) for (let z = -1; z <= 1; z++) air.push([x, y, z])
+    const world = makeWorld({ ground: 70, air })
+    const bot = {
+      entity: { position: new Vec3(0.5, 64, 0.5), onGround: true },
+      blockAt: (p) => {
+        const b = world(p)
+        return b.name === 'stone' && p.y >= 64 && Math.abs(p.x) <= 2 && Math.abs(p.z) <= 2 ? { ...b, name: 'oak_planks' } : b
+      },
+      inventory: { items: () => [] },
+      setControlState: vi.fn(),
+      canDigBlock: () => true,
+      digTime: () => 300,
+      dig: vi.fn(),
+    }
+    const r = await escapeUp(bot, { x: 0, y: 71, z: 0 })
+    expect(r.status).toBe('failed')
+    expect(r.line).toMatch(/^stuck under a built roof at 0,64,0 \(oak_planks at 0,67,0\)/)
+    expect(r.line).toMatch(/do not dig through builds/)
+    expect(isUnreachableResult(r.line)).toBe(false)
+    expect(bot.dig).not.toHaveBeenCalled()
+  })
+
   it('says she is stuck when there is nothing to pillar with and digging is off', async () => {
     const bot = pocketBot()
     const r = await escapeUp(bot, { x: -6, y: 71, z: 0 }, { canDig: false })

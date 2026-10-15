@@ -479,6 +479,21 @@ export function findOpenColumn(bot, targetY) {
   return { column: toTarget ?? best, open }
 }
 
+/**
+ * The first solid block over her head, when it is not natural ground (a room
+ * she is inside). Null under open sky or under rock.
+ */
+function builtRoof(bot, targetY) {
+  const p = bot.entity.position
+  const x = Math.floor(p.x), z = Math.floor(p.z)
+  for (let y = Math.floor(p.y + 0.01) + 2; y <= Math.max(targetY, Math.floor(p.y) + 2) + 1; y++) {
+    const b = at(bot, x, y, z)
+    if (isPassable(b)) continue
+    return b && !isLiquid(b) && !isNaturalBlock(b.name) ? { name: b.name, x, y, z } : null
+  }
+  return null
+}
+
 /** Walk to the center of a standable cell nearby (no digging, no placing). */
 async function stepTo(bot, cell, signal, goToFn) {
   const p = bot.entity.position
@@ -558,6 +573,15 @@ async function escapeUpInner(bot, target, opts = {}) {
   // Partway up still counts when it got her out of the shaft she was in: the
   // next walk gets a fresh start.
   if (how || feet() >= startY + MIN_PIT_DEPTH) return { status: 'climbed', depth: feet() - startY, how: how ?? 'stairs' }
+  const roof = builtRoof(bot, targetY)
+  if (roof) {
+    return {
+      status: 'failed',
+      depth: targetY - startY,
+      line: `stuck under a built roof at ${here} (${roof.name} at ${roof.x},${roof.y},${roof.z}), ${targetY - startY} blocks below where you are going. ` +
+        'You do not dig through builds: leave by a door or stairs, or ask the player',
+    }
+  }
   const blocks = junkBlocks(bot, keepItems).reduce((n, b) => n + b.count, 0)
   return {
     status: 'failed',

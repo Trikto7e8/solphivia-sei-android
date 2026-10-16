@@ -86,6 +86,20 @@ describe('describeSurroundings (via world().surroundings)', () => {
     expect(world(makeBot({ sky })).surroundings).toBe('outside')
   })
 
+  // 261017 (pass 12): the errands eval snapshot said "outside" at the bottom
+  // of a 13-deep self-dug shaft (sky light in it still read 0).
+  it('open column but walled in above head height on every side (dark shaft) → pit', () => {
+    const solid = new Set()
+    for (let y = 64; y <= 76; y++) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) solid.add(`${dx},${y},${dz}`)
+    expect(world(makeBot({ sky: { default: 0 }, solid })).surroundings).toBe('pit')
+  })
+
+  it('walls only at feet and head height (2-deep trench) stay outside', () => {
+    const solid = new Set()
+    for (let y = 64; y <= 65; y++) for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) solid.add(`${dx},${y},${dz}`)
+    expect(world(makeBot({ sky: { default: 0 }, solid })).surroundings).toBe('outside')
+  })
+
   it('respects the dimension build height from bot.game', () => {
     // Roof above the dimension top must not count: minY 0 + height 80 → scan
     // stops at y=80, the block at y=90 is never seen → open column → outside.

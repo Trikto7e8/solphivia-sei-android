@@ -10,7 +10,7 @@ import mcDataLib from 'minecraft-data'
 import { Vec3 } from 'vec3'
 import { createRegistry } from '../../registry.js'
 import { goTo } from './behaviors/pathfind.js'
-import { climbOut, escapeUp, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
+import { climbOut, escapeUp, findOpenColumn, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
 import { noteUnreachable, isUnreachable, isUnreachableResult } from './behaviors/unreachable.js'
 import { resolveTerm } from './loose-terms.js'
 import { gatherAction } from './behaviors/mineVein.js'
@@ -194,6 +194,40 @@ function isExposed(bot, p) {
   return false
 }
 
+/** Her feet are at least MIN_PIT_DEPTH below `y`. */
+function wellBelow(bot, y) {
+  const feetY = bot.entity?.position?.y
+  return Number.isFinite(feetY) && Number.isFinite(y) && y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH
+}
+
+/** Drop pathfind's "— unreachable — try build to Y=N" tail. */
+function stripVerticalHint(r) {
+  return String(r).replace(/ — unreachable — try build to Y=-?\d+(\.\d+)?$/, '')
+}
+
+/** "you are still in the hole at x,y,z, N blocks below where you are going" */
+function stillInHole(bot, y) {
+  const p = bot.entity.position
+  const feetY = Math.floor(p.y + 0.01)
+  return `you are still down in the hole at ${Math.floor(p.x)},${feetY},${Math.floor(p.z)}, ` +
+    `${Math.floor(y) - feetY} blocks below where you are going, so you are not on your way yet`
+}
+
+/** What the climbs did, for a result that did not get her out. */
+function climbSummary(climb, esc) {
+  const parts = []
+  const how = (c) => (c.how === 'pillar' ? 'pillared' : 'dug a staircase')
+  if (climb?.status === 'climbed') {
+    parts.push(climb.exit === false
+      ? `You ${how(climb)} up ${climb.depth} blocks to an opening in the wall, but it was a dead-end pocket, not the way out`
+      : `You ${how(climb)} up ${climb.depth} blocks first`)
+  }
+  if (esc?.status === 'climbed') {
+    parts.push(parts.length ? `then ${how(esc)} ${esc.depth} more and walked again` : `You ${how(esc)} up ${esc.depth} blocks and walked again`)
+  }
+  return parts.length ? `${parts.join(', ')}. ` : ''
+}
+
 /**
  * A goTo aimed at a BLOCK (a log, an ore, a table: the cell is not air) that
  * failed to get there marks the block unreachable for a few minutes. A walk to
@@ -286,20 +320,33 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
       let r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
       let up = climb
+      let esc = null
       // 261015: the walk failed and the target is well above her: she is in
       // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
       // Climb by hand and walk once more.
-      const feetY = bot.entity?.position?.y
-      if (climb.status !== 'climbed' && isUnreachableResult(r) && Number.isFinite(feetY) && args.y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH) {
-        const esc = await escapeUp(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal, goTo })
+      // 261017 (pass 12): also after climbOut "climbed". In the 261016
+      // errands eval it climbed two blocks to a mined-out pocket in the wall,
+      // the walk timed out 13 blocks down, and this fallback never ran.
+      const target = { x: args.x, y: args.y, z: args.z }
+      if (isUnreachableResult(r) && wellBelow(bot, args.y)) {
+        esc = await escapeUp(bot, target, { signal: config?.signal, goTo })
         if (esc.status === 'aborted') return climbAborted(esc)
-        if (esc.status === 'failed') return esc.line
+        if (esc.status === 'failed') return `${esc.line}. ${climbSummary(climb, null)}`.trim()
         if (esc.status === 'climbed') {
           up = esc
           r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
         }
       }
       noteUnreachableTarget(bot, args, r)
+      // 261017: say plainly when she is still down in the hole. The old line
+      // was "timeout — unreachable — try build to Y=71 (first pillared out of
+      // the 2-deep hole you were in)" while she stood 13 blocks underground,
+      // and she told the player "almost there".
+      // Only when she really is shut in: on open ground below a cliff a failed
+      // walk is not a hole.
+      if (isUnreachableResult(r) && wellBelow(bot, args.y) && !findOpenColumn(bot, args.y, target).open) {
+        return `${stripVerticalHint(r)}: ${stillInHole(bot, args.y)}. ${climbSummary(climb, esc).trim()}`
+      }
       if (up.status === 'climbed') {
         const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
         return up === climb

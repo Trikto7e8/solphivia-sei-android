@@ -6,7 +6,7 @@ import { Vec3 } from 'vec3'
 const scaffoldUp = vi.fn()
 vi.mock('./build.js', () => ({ scaffoldUp: (...a) => scaffoldUp(...a) }))
 
-const { pitInfo, climbOut, junkBlocks, isPassable, escapeUp, findOpenColumn, isNaturalBlock, isFallingBlock } = await import('./climbOut.js')
+const { pitInfo, climbOut, junkBlocks, isPassable, escapeUp, findOpenColumn, columnOpening, isNaturalBlock, isFallingBlock } = await import('./climbOut.js')
 const { noteUnreachable, isUnreachable, isUnreachableResult, clearUnreachable, UNREACHABLE_TTL_MS } = await import('./unreachable.js')
 
 // Voxel world: solid stone everywhere at or below `ground`, air above, minus
@@ -70,6 +70,78 @@ describe('pitInfo', () => {
   })
 })
 
+// 261017 (pass 12), errands eval: a 14-deep shaft with two coal blocks mined
+// out of its wall 2 above the bottom. The pocket is the first side opening,
+// but it leads nowhere; the way out is the surface.
+function pocketShaftBot({ items = [] } = {}) {
+  const air = [[1, 59, 0], [1, 60, 0]]
+  for (let y = 70; y >= 57; y--) air.push([0, y, 0])
+  return {
+    entity: { position: new Vec3(0.5, 57, 0.5), onGround: true },
+    blockAt: makeWorld({ ground: 70, air }),
+    inventory: { items: () => items },
+    setControlState: vi.fn(),
+  }
+}
+
+describe('pitInfo exit (a pocket in the wall is not the way out)', () => {
+  it('reports the pocket as the rim but the surface as the exit', () => {
+    expect(pitInfo(pocketShaftBot())).toMatchObject({ feetY: 57, rimY: 59, depth: 2, exitY: 71, exitDepth: 14 })
+  })
+
+  it('a clean shaft exits at its rim', () => {
+    expect(pitInfo(shaftBot(4))).toMatchObject({ rimY: 71, exitY: 71 })
+  })
+
+  it('a side opening onto a tunnel is an exit', () => {
+    const bot = pocketShaftBot()
+    const world = bot.blockAt
+    // A tunnel running east from the pocket.
+    bot.blockAt = (p) => (p.z === 0 && p.x >= 1 && p.x <= 9 && (p.y === 59 || p.y === 60)) ? { name: 'air', boundingBox: 'empty' } : world(p)
+    expect(pitInfo(bot)).toMatchObject({ rimY: 59, exitY: 59 })
+  })
+
+  it('a pocket that reaches the target counts as the way there', () => {
+    const bot = pocketShaftBot()
+    expect(pitInfo(bot, 24, { x: 2, y: 59, z: 0 })).toMatchObject({ rimY: 59, exitY: 59 })
+  })
+
+  it('a pocket under a capped column has no exit', () => {
+    const bot = pocketShaftBot()
+    const world = bot.blockAt
+    bot.blockAt = (p) => (p.x === 0 && p.z === 0 && p.y === 64) ? { name: 'stone', boundingBox: 'block' } : world(p)
+    expect(pitInfo(bot)).toMatchObject({ rimY: 59, exitY: null, ceilingY: 64 })
+  })
+})
+
+describe('columnOpening exit', () => {
+  it('skips a dead-end pocket and gives the surface as the rim', () => {
+    const bot = pocketShaftBot()
+    expect(columnOpening(bot, 0, 57, 0, 80)).toEqual({ toTarget: false, rimY: 71, exit: true })
+    expect(columnOpening(bot, 0, 57, 0, 71)).toMatchObject({ toTarget: true })
+  })
+})
+
+describe('climbOut past a dead-end pocket', () => {
+  it('pillars all the way to the surface, not to the pocket', async () => {
+    const bot = pocketShaftBot({ items: [{ name: 'cobblestone', count: 16 }] })
+    scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
+    const r = await climbOut(bot, { x: 5, y: 71, z: 0 })
+    expect(r).toEqual({ status: 'climbed', depth: 14, how: 'pillar', exit: true })
+    expect(scaffoldUp).toHaveBeenCalledWith(bot, 'cobblestone', 72, expect.anything())
+    expect(bot.entity.position.y).toBe(71)
+  })
+
+  it('with the column capped, climbs to the pocket and says it is not an exit', async () => {
+    const bot = pocketShaftBot({ items: [{ name: 'cobblestone', count: 16 }] })
+    const world = bot.blockAt
+    bot.blockAt = (p) => (p.x === 0 && p.z === 0 && p.y === 64) ? { name: 'stone', boundingBox: 'block' } : world(p)
+    scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
+    const r = await climbOut(bot, { x: 5, y: 71, z: 0 })
+    expect(r).toEqual({ status: 'climbed', depth: 2, how: 'pillar', exit: false })
+  })
+})
+
 describe('junkBlocks', () => {
   it('lists cheap scaffold blocks, true junk first and cobblestone last, minus kept items', () => {
     const bot = { inventory: { items: () => [
@@ -89,7 +161,7 @@ describe('climbOut', () => {
       return 'ok'
     })
     const r = await climbOut(bot, { x: 5, y: 71, z: 0 })
-    expect(r).toEqual({ status: 'climbed', depth: 4, how: 'pillar' })
+    expect(r).toEqual({ status: 'climbed', depth: 4, how: 'pillar', exit: true })
     expect(scaffoldUp).toHaveBeenCalledWith(bot, 'cobblestone', 72, expect.anything())
     expect(bot.entity.position.y).toBe(71)
   })

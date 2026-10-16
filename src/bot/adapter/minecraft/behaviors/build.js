@@ -254,6 +254,54 @@ async function waitForLanding(bot, maxMs) {
   }
 }
 
+const MAX_SHUFFLES = 2
+const SHUFFLE_MS = 1200
+const HALF_WIDTH = 0.3 // player hitbox half-width
+
+/**
+ * 261017. The block holding her up when the one under her feet column is
+ * not solid: another cell her hitbox overlaps, with a solid top at the same
+ * level and room to stand in. Null when there is none.
+ */
+export function supportCell(bot, cellY) {
+  const p = bot.entity?.position
+  if (!p) return null
+  const fx = Math.floor(p.x), fz = Math.floor(p.z)
+  let best = null
+  for (const dx of [-HALF_WIDTH, 0, HALF_WIDTH]) {
+    for (const dz of [-HALF_WIDTH, 0, HALF_WIDTH]) {
+      const x = Math.floor(p.x + dx), z = Math.floor(p.z + dz)
+      if (x === fx && z === fz) continue
+      if (!isSolid(bot.blockAt(new Vec3(x, cellY - 1, z)))) continue
+      if (isSolid(bot.blockAt(new Vec3(x, cellY, z))) || isSolid(bot.blockAt(new Vec3(x, cellY + 1, z)))) continue
+      const d = Math.hypot(x + 0.5 - p.x, z + 0.5 - p.z)
+      if (!best || d < best.d) best = { x, z, d }
+    }
+  }
+  return best && { x: best.x, z: best.z }
+}
+
+/** Walk (no jump) onto the centre of cell (x, cellY, z) next to her. */
+async function shuffleTo(bot, cell, cellY) {
+  const cx = cell.x + 0.5, cz = cell.z + 0.5
+  const t0 = Date.now()
+  bot._seiGazeHold = (bot._seiGazeHold ?? 0) + 1
+  try {
+    while (Date.now() - t0 < SHUFFLE_MS) {
+      const p = bot.entity.position
+      if (Math.abs(p.x - cx) < 0.2 && Math.abs(p.z - cz) < 0.2) break
+      try { await bot.lookAt?.(new Vec3(cx, p.y + 1.6, cz), true) } catch {}
+      bot.setControlState?.('forward', true)
+      await new Promise(r => setTimeout(r, 50))
+    }
+  } finally {
+    bot.setControlState?.('forward', false)
+    bot._seiGazeHold = Math.max(0, (bot._seiGazeHold ?? 1) - 1)
+  }
+  await waitForLanding(bot, LANDING_MAX_MS)
+  return Math.floor(bot.entity.position.x) === cell.x && Math.floor(bot.entity.position.z) === cell.z && Math.floor(bot.entity.position.y) === cellY
+}
+
 /**
  * D-04: hand-rolled jump+place. Builds a column of `blockName` under the bot
  * until bot.entity.position.y ≥ targetY - 1 (so feet are at targetY-1 and the
@@ -268,6 +316,7 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
   // session. Success is now a solid block, each pass yields a tick, and passes
   // that do not raise the feet count toward the attempt limit.
   let stalled = 0
+  let shuffles = 0
   while (Math.floor(bot.entity.position.y) < targetY - 1) {
     if (config?.signal?.aborted) return 'aborted'
     await new Promise(r => setTimeout(r, 0))
@@ -283,11 +332,35 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
     let placed = false
     for (let attempt = 0; attempt < SCAFFOLD_ATTEMPTS && !placed; attempt++) {
       if (config?.signal?.aborted) return 'aborted'
+      // Mid-air (still falling into the cell, or the last jump not landed):
+      // the floor and head room read below would be off by a block.
+      if (bot.entity?.onGround === false) await waitForLanding(bot, LANDING_MAX_MS)
       const pos = bot.entity.position
       const cellY = Math.floor(pos.y)               // cell the feet rest in / vacate on jump
       const col = { x: Math.floor(pos.x), z: Math.floor(pos.z) }
       const refBlock = bot.blockAt(new Vec3(col.x, cellY - 1, col.z))
-      if (!isSolid(refBlock)) return 'scaffold failed: no solid floor below'
+      if (!isSolid(refBlock)) {
+        // 261017 (pass 12): she can stand on the EDGE of a block with her
+        // feet column over a gap (errands eval: centre over her own shaft,
+        // held up by the block beside it), and the column under floor(x,z)
+        // is then air. Step onto the block that is actually holding her up
+        // and pillar from its centre.
+        const support = shuffles < MAX_SHUFFLES ? supportCell(bot, cellY) : null
+        if (!support) return 'scaffold failed: no solid floor below'
+        shuffles++
+        await shuffleTo(bot, support, cellY)
+        attempt--
+        continue
+      }
+      // 261017: a jump needs two blocks of air over her feet. With a block
+      // right above her head the jump goes nowhere and the place can never
+      // land, which used to come back as a bare "could not place block under
+      // feet" after four wasted jumps.
+      const roof = bot.blockAt(new Vec3(col.x, cellY + 2, col.z))
+      if (isSolid(roof)) {
+        return `scaffold failed: no head room. There is ${roof.name} at ${col.x},${cellY + 2},${col.z} right above your head, ` +
+          'so you cannot jump to put a block under you. Dig that block out first, or move to a spot with open space above'
+      }
 
       // Hold the gaze controller (behaviors/gaze.js) off the head for this
       // aim + jump-place step so it doesn't fight the forced look-down.
@@ -354,9 +427,12 @@ export async function buildAction(args, bot, config, deps = {}) {
     const rose = endY - startY
     if (r === 'aborted') return `aborted after pillaring up ${rose} of ${n}`
     if (r !== 'ok') {
+      // 261017: say where she is, so a failed pillar is not read as progress.
+      const p = bot.entity?.position
+      const at = p ? `${Math.floor(p.x)},${endY},${Math.floor(p.z)}` : `y=${endY}`
       return rose > 0
-        ? `pillared up ${rose} of ${n}, then stopped: ${r}`
-        : `could not pillar up: ${r}`
+        ? `pillared up ${rose} of ${n}, then stopped (now at ${at}): ${r}`
+        : `could not pillar up, you did not rise and are still at ${at}: ${r}`
     }
     return `pillared up ${rose} block${rose === 1 ? '' : 's'} (standing at y=${endY})`
   }

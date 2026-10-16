@@ -51,6 +51,21 @@ function resolveBiomeName(bot, p) {
  */
 const RING = [[5, 0], [-5, 0], [0, 5], [0, -5], [4, 4], [-4, -4], [4, -4], [-4, 4]]
 
+const SIDES = [[1, 0], [-1, 0], [0, 1], [0, -1]]
+
+/** At least 3 of the 4 side cells are solid at both py+2 and py+3. */
+function walledIn(bot, px, py, pz) {
+  let walls = 0
+  try {
+    for (const [dx, dz] of SIDES) {
+      const a = bot.blockAt?.(new Vec3(px + dx, py + 2, pz + dz))
+      const b = bot.blockAt?.(new Vec3(px + dx, py + 3, pz + dz))
+      if (a?.boundingBox === 'block' && b?.boundingBox === 'block') walls++
+    }
+  } catch { return false }
+  return walls >= 3
+}
+
 function describeSurroundings(bot, p) {
   const px = Math.floor(p.x), py = Math.floor(p.y), pz = Math.floor(p.z)
   const headY = py + 1
@@ -88,7 +103,13 @@ function describeSurroundings(bot, p) {
       if (blk && blk.boundingBox === 'block') { covered = true; break }
     }
   } catch { return 'unknown' }
-  if (!covered) return 'outside'
+  // 261017 (pass 12): open overhead but walled in on (nearly) every side
+  // above head height is a shaft, not open ground. Sky light inside a shaft
+  // she dug herself often still reads 0 (the light update lags), so the
+  // check above missed it, and the snapshot told her "outside" at the
+  // bottom of a 13-deep hole in the 261016 errands eval. Two levels up so a
+  // 2-deep surface trench stays 'outside'.
+  if (!covered) return walledIn(bot, px, py, pz) ? 'pit' : 'outside'
 
   // Roofed. With no light data we can only say it is covered; otherwise probe
   // the ring for daylight — an overhang / cave mouth with a way out

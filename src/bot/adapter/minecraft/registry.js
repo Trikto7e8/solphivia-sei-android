@@ -10,7 +10,7 @@ import mcDataLib from 'minecraft-data'
 import { Vec3 } from 'vec3'
 import { createRegistry } from '../../registry.js'
 import { goTo } from './behaviors/pathfind.js'
-import { climbOut, escapeUp, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
+import { climbOut, escapeUp, findOpenColumn, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
 import { noteUnreachable, isUnreachable, isUnreachableResult } from './behaviors/unreachable.js'
 import { resolveTerm } from './loose-terms.js'
 import { gatherAction } from './behaviors/mineVein.js'
@@ -170,6 +170,10 @@ function findEntity(bot, name, maxDistance) {
 
 // 261015 (pass 10): find looks at this many hits, nearest first.
 const FIND_CANDIDATES = 24
+// 261017 (pass 12): when the best of those is buried or deep, also look for
+// the nearest few exposed ones, no farther than this (see the find handler).
+const FIND_EXPOSED = 8
+const FIND_EXPOSED_MAX_M = 32
 // A buried block (no open face) counts as this much farther than it is: the
 // walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
 const BURIED_PENALTY_M = 12
@@ -192,6 +196,42 @@ function isExposed(bot, p) {
     } catch {}
   }
   return false
+}
+
+/** Her feet are at least MIN_PIT_DEPTH below `y`. */
+function wellBelow(bot, y) {
+  const feetY = bot.entity?.position?.y
+  return Number.isFinite(feetY) && Number.isFinite(y) && y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH
+}
+
+/** Drop pathfind's "— unreachable — try build to Y=N" tail. */
+function stripVerticalHint(r) {
+  return String(r).replace(/ — unreachable — try build to Y=-?\d+(\.\d+)?$/, '')
+}
+
+/** "you are still in the hole at x,y,z, N blocks below where you are going" */
+function stillInHole(bot, y) {
+  const p = bot.entity.position
+  const feetY = Math.floor(p.y + 0.01)
+  return `you are still down in the hole at ${Math.floor(p.x)},${feetY},${Math.floor(p.z)}, ` +
+    `${Math.floor(y) - feetY} blocks below where you are going, so you are not on your way yet`
+}
+
+const HOLE_NEXT_STEP = 'Walking again from here will fail the same way. To get out, pillar up with build (direction below) using dirt or cobblestone, or dig a staircase up the wall, or ask the player for help.'
+
+/** What the climbs did, for a result that did not get her out. */
+function climbSummary(climb, esc) {
+  const parts = []
+  const how = (c) => (c.how === 'pillar' ? 'pillared' : 'dug a staircase')
+  if (climb?.status === 'climbed') {
+    parts.push(climb.exit === false
+      ? `You ${how(climb)} up ${climb.depth} blocks to an opening in the wall, but it was a dead-end pocket, not the way out`
+      : `You ${how(climb)} up ${climb.depth} blocks first`)
+  }
+  if (esc?.status === 'climbed') {
+    parts.push(parts.length ? `then ${how(esc)} ${esc.depth} more and walked again` : `You ${how(esc)} up ${esc.depth} blocks and walked again`)
+  }
+  return parts.length ? `${parts.join(', ')}. ` : ''
 }
 
 /**
@@ -286,20 +326,36 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
       let r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
       let up = climb
+      let esc = null
       // 261015: the walk failed and the target is well above her: she is in
       // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
       // Climb by hand and walk once more.
-      const feetY = bot.entity?.position?.y
-      if (climb.status !== 'climbed' && isUnreachableResult(r) && Number.isFinite(feetY) && args.y >= Math.floor(feetY + 0.01) + MIN_PIT_DEPTH) {
-        const esc = await escapeUp(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal, goTo })
+      // 261017 (pass 12): also after climbOut "climbed". In the 261016
+      // errands eval it climbed two blocks to a mined-out pocket in the wall,
+      // the walk timed out 13 blocks down, and this fallback never ran.
+      const target = { x: args.x, y: args.y, z: args.z }
+      if (isUnreachableResult(r) && wellBelow(bot, args.y)) {
+        esc = await escapeUp(bot, target, { signal: config?.signal, goTo })
         if (esc.status === 'aborted') return climbAborted(esc)
-        if (esc.status === 'failed') return esc.line
+        if (esc.status === 'failed') return [`${esc.line}.`, climbSummary(climb, null).trim()].filter(Boolean).join(' ')
         if (esc.status === 'climbed') {
           up = esc
           r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
         }
       }
       noteUnreachableTarget(bot, args, r)
+      // 261017: say plainly when she is still down in the hole. The old line
+      // was "timeout — unreachable — try build to Y=71 (first pillared out of
+      // the 2-deep hole you were in)" while she stood 13 blocks underground,
+      // and she told the player "almost there".
+      // Only when she really is shut in: on open ground below a cliff a failed
+      // walk is not a hole.
+      if (isUnreachableResult(r) && wellBelow(bot, args.y) && !findOpenColumn(bot, args.y, target).open) {
+        // Review: end with what to do, so she does not just call goTo again
+        // (each try costs up to ~50s of climbing and walking).
+        return [`${stripVerticalHint(r)}: ${stillInHole(bot, args.y)}.`, climbSummary(climb, esc).trim(), HOLE_NEXT_STEP]
+          .filter(Boolean).join(' ')
+      }
       if (up.status === 'climbed') {
         const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
         return up === climb
@@ -421,11 +477,35 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // wall the walk cannot reach without digging (pass 10 compare,
       // errands-02-B: coal at y54 beat the surface coal 3 blocks farther).
       const depthOf = (h) => (point ? Math.max(0, point.y - h.y - DEPTH_FREE_M) : 0)
+      const scoreOf = (c) => distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
       let h = fresh[0]
       let best = Infinity
       for (const c of fresh) {
-        const score = distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
+        const score = scoreOf(c)
         if (score < best) { best = score; h = c }
+      }
+      // 261017 (pass 12): the nearest 24 can all be buried. In the 261016
+      // errands eval a seed coal vein 16 blocks down filled the whole list,
+      // so the exposed coal on the surface 3 blocks farther was never
+      // scored, and she dug a shaft after the buried one (the eval arena has
+      // ~135 coal nearer than its surface coal, so no fixed count is enough).
+      // When the winner carries a penalty, ask for the nearest exposed ones
+      // too (mineflayer applies a function useExtraInfo on top of
+      // `matching`). Bounded: an exposed-only search reads every block of
+      // every section in range until it has its count, so it is capped at
+      // FIND_EXPOSED_MAX_M, and at the winner's score, since nothing farther
+      // than that can beat it.
+      if (point && best > distOf(h) + 0.5) {
+        const reach = Math.min(args.maxDistance, FIND_EXPOSED_MAX_M, Math.ceil(best))
+        let open = []
+        try {
+          open = bot.findBlocks({ matching, maxDistance: reach, count: FIND_EXPOSED, point, useExtraInfo: (b) => !!b?.position && isExposed(bot, b.position) }) ?? []
+        } catch {}
+        for (const c of open) {
+          if (isUnreachable(bot, c)) continue
+          const score = scoreOf(c)
+          if (score < best) { best = score; h = c }
+        }
       }
       const blk = bot.blockAt(h)
       const d = Number(distOf(h).toFixed(1))

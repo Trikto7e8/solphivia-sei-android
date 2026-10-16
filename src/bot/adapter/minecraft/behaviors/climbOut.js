@@ -25,6 +25,7 @@
 import { Vec3 } from 'vec3'
 import { scaffoldUp } from './build.js'
 import { JUNK_SCAFFOLD } from './pathfind.js'
+import { isNaturalBlock } from './naturalBlocks.js'
 
 export { JUNK_SCAFFOLD }
 
@@ -35,28 +36,7 @@ export const MIN_PIT_DEPTH = 2
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 const MAX_STEP_DIG_MS = 2500
 
-// 261016 review: the staircase only cuts NATURAL ground. A closed room (shut
-// door, player upstairs) reads as a hole too, and with an axe planks, doors,
-// chests and beds all break under the 2.5s step limit (glass by hand).
-// Anything not on this list is refused as built, and the climb says so.
-const NATURAL_BLOCKS = new Set([
-  'stone', 'granite', 'diorite', 'andesite', 'deepslate', 'tuff', 'calcite',
-  'dripstone_block', 'smooth_basalt', 'basalt', 'blackstone', 'netherrack', 'end_stone',
-  'dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium', 'mud', 'moss_block',
-  'clay', 'gravel', 'sand', 'red_sand', 'sandstone', 'red_sandstone', 'soul_sand', 'soul_soil',
-  'terracotta', 'snow_block', 'packed_ice',
-])
-const TERRACOTTA_COLORS = new Set(['white', 'orange', 'yellow', 'red', 'brown', 'light_gray'])
-
-/** Ground the world generated, which a staircase may cut through. */
-export function isNaturalBlock(name) {
-  if (!name) return false
-  if (NATURAL_BLOCKS.has(name)) return true
-  if (name.endsWith('_ore') || name === 'ancient_debris') return true
-  // Badlands bands; glazed terracotta is always player-made.
-  if (name.endsWith('_terracotta') && !name.includes('glazed')) return TERRACOTTA_COLORS.has(name.slice(0, -'_terracotta'.length))
-  return false
-}
+export { isNaturalBlock }
 
 /** Blocks that fall when the block under them is dug out. */
 export function isFallingBlock(name) {
@@ -127,27 +107,90 @@ const at = (bot, x, y, z) => bot.blockAt(new Vec3(x, y, z))
  * level with such a side cell. Returns null when the bot is not enclosed (the
  * pathfinder can walk out on its own).
  *
- * @returns {null | { feetY:number, rimY:number|null, depth:number|null, ceilingY?:number, dir?:[number,number] }}
+ * 261017 (pass 12): the rim is not always the way out. In the 261016 errands
+ * eval she mined two coal blocks out of the shaft wall two blocks above the
+ * bottom, so the first side opening was a dead-end pocket. climbOut pillared
+ * two blocks to it, called that "out of the hole", and the walk from there
+ * timed out 13 blocks underground. `exitY` is the first open side level that
+ * actually leads somewhere (see sideLeadsOut); climbOut pillars to it. It is
+ * null when the open column ends (or runs past maxDepth) before any such level.
+ *
+ * @param {object} bot
+ * @param {number} [maxDepth]
+ * @param {{x:number,y:number,z:number}|null} [target] where she is headed; a
+ *   side opening that leads toward it counts as an exit
+ * @returns {null | { feetY:number, rimY:number|null, depth:number|null, exitY?:number|null, exitDepth?:number|null, ceilingY?:number, dir?:[number,number] }}
  */
-export function pitInfo(bot, maxDepth = MAX_PIT_DEPTH) {
+export function pitInfo(bot, maxDepth = MAX_PIT_DEPTH, target = null) {
   const p = bot?.entity?.position
   if (!p || typeof bot.blockAt !== 'function') return null
   const x = Math.floor(p.x), z = Math.floor(p.z)
   const feetY = Math.floor(p.y + 0.01)
-  const openSide = (y) => {
+  const openSides = (y) => {
+    const out = []
     for (const [dx, dz] of DIRS) {
-      if (isPassable(at(bot, x + dx, y, z + dz)) && isPassable(at(bot, x + dx, y + 1, z + dz))) return [dx, dz]
+      if (isPassable(at(bot, x + dx, y, z + dz)) && isPassable(at(bot, x + dx, y + 1, z + dz))) out.push([dx, dz])
     }
-    return null
+    return out
   }
-  if (openSide(feetY)) return null
+  if (openSides(feetY).length) return null
+  let rim = null
   for (let y = feetY + 1; y <= feetY + maxDepth; y++) {
     // The column above must be open for the body to rise through it.
-    if (!isPassable(at(bot, x, y + 1, z))) return { feetY, rimY: null, depth: null, ceilingY: y + 1 }
-    const dir = openSide(y)
-    if (dir) return { feetY, rimY: y, depth: y - feetY, dir }
+    if (!isPassable(at(bot, x, y + 1, z))) {
+      return rim
+        ? { ...rim, exitY: null, exitDepth: null, ceilingY: y + 1 }
+        : { feetY, rimY: null, depth: null, ceilingY: y + 1 }
+    }
+    const sides = openSides(y)
+    if (!sides.length) continue
+    if (!rim) rim = { feetY, rimY: y, depth: y - feetY, dir: sides[0] }
+    if (sides.some(([dx, dz]) => sideLeadsOut(bot, x, z, x + dx, y, z + dz, target))) {
+      return { ...rim, exitY: y, exitDepth: y - feetY }
+    }
   }
-  return { feetY, rimY: null, depth: null }
+  return rim ? { ...rim, exitY: null, exitDepth: null } : { feetY, rimY: null, depth: null }
+}
+
+const EXIT_SEARCH_NODES = 40
+const EXIT_SEARCH_RADIUS = 5
+
+/**
+ * Does the side cell (sx, y, sz) off her shaft lead anywhere? Floods the cells
+ * she could walk to from it (same level, one up or down; her own column left
+ * out) and says yes when the flood runs past a few dozen cells or a few blocks
+ * out (open ground, a cave, a tunnel), or reaches the target's height near the
+ * target. A pocket a couple of mined ores big floods out at once: no.
+ */
+export function sideLeadsOut(bot, shaftX, shaftZ, sx, y, sz, target = null) {
+  const tx = Number(target?.x), ty = Number(target?.y), tz = Number(target?.z)
+  const hasTarget = [tx, ty, tz].every(Number.isFinite)
+  const seen = new Set()
+  const queue = [{ x: sx, y, z: sz }]
+  seen.add(`${sx},${y},${sz}`)
+  while (queue.length) {
+    const c = queue.shift()
+    if (hasTarget && c.y >= Math.floor(ty) - 1 && Math.hypot(c.x - tx, c.z - tz) <= 3) return true
+    for (const [dx, dz] of DIRS) {
+      const nx = c.x + dx, nz = c.z + dz
+      if (nx === shaftX && nz === shaftZ) continue
+      if (Math.abs(nx - sx) > EXIT_SEARCH_RADIUS || Math.abs(nz - sz) > EXIT_SEARCH_RADIUS) return true
+      for (const dy of [0, 1, -1]) {
+        const ny = c.y + dy
+        if (dy === 1 && !isPassable(at(bot, c.x, c.y + 2, c.z))) continue
+        // Walkable: feet and head free. A missing floor is fine (she drops
+        // onto whatever is below, which the next step's own test covers).
+        if (!(isPassable(at(bot, nx, ny, nz)) && isPassable(at(bot, nx, ny + 1, nz)))) continue
+        const k = `${nx},${ny},${nz}`
+        if (seen.has(k)) break
+        if (seen.size >= EXIT_SEARCH_NODES) return true
+        seen.add(k)
+        queue.push({ x: nx, y: ny, z: nz })
+        break
+      }
+    }
+  }
+  return false
 }
 
 /** Junk scaffold blocks in the inventory, in JUNK_SCAFFOLD's spending order. */
@@ -316,8 +359,9 @@ async function stairTo(bot, rimY, toward, signal, deadline) {
  * @param {object} bot
  * @param {{x:number,y:number,z:number}|null} target where the caller is headed
  * @param {{ signal?: AbortSignal, budgetMs?: number, keepItems?: string[], canDig?: boolean }} [opts]
- * @returns {Promise<{ status: 'not_in_pit'|'climbed'|'aborted'|'failed', depth?: number, how?: 'pillar'|'stairs', line?: string }>}
- *   `line` (on 'failed') is an honest result line that starts with
+ * @returns {Promise<{ status: 'not_in_pit'|'climbed'|'aborted'|'failed', depth?: number, how?: 'pillar'|'stairs', exit?: boolean, line?: string }>}
+ *   `exit` (on 'climbed') is false when she only reached a side pocket, not
+ *   an opening that leads out. `line` (on 'failed') is an honest result line that starts with
  *   "stuck in a hole", so callers can return it as is.
  */
 export async function climbOut(bot, target, opts = {}) {
@@ -350,36 +394,43 @@ async function climbOutInner(bot, target, opts = {}) {
   // A flooded shaft is swum up, not climbed; the pathfinder handles water.
   if (bot.entity.isInWater) return { status: 'not_in_pit' }
   await waitOnGround(bot, 1000)
-  const pit = pitInfo(bot)
+  const pit = pitInfo(bot, MAX_PIT_DEPTH, target)
   // No open rim (roofed over, or deeper than we look) is left to the
   // pathfinder's own digging, like a pit that is not a pit.
   if (!pit || pit.rimY == null || pit.depth < MIN_PIT_DEPTH) return { status: 'not_in_pit' }
   const ty = Number(target?.y)
   if (Number.isFinite(ty) && ty < pit.feetY + MIN_PIT_DEPTH) return { status: 'not_in_pit' }
   const here = `${Math.floor(bot.entity.position.x)},${pit.feetY},${Math.floor(bot.entity.position.z)}`
+  // 261017: climb to the first opening that leads out, not to the first
+  // pocket in the wall. With no such opening in reach (the column closes over
+  // a pocket), fall back to the rim and say so in `exit`, so the caller does
+  // not report her out of the hole on the strength of it.
+  const exit = pit.exitY != null
+  const topY = exit ? pit.exitY : pit.rimY
+  const depth = topY - pit.feetY
 
   const deadline = Date.now() + budgetMs
   let why = ''
   if (junkBlocks(bot, keepItems).length) {
-    const r = await pillarTo(bot, pit.rimY, signal, keepItems)
+    const r = await pillarTo(bot, topY, signal, keepItems)
     if (r === 'aborted') return { status: 'aborted' }
-    if (r === 'ok') return { status: 'climbed', depth: pit.depth, how: 'pillar' }
+    if (r === 'ok') return { status: 'climbed', depth, how: 'pillar', exit }
     why = `pillar: ${r}`
   }
-  if (canDig && Math.floor(bot.entity.position.y + 0.01) < pit.rimY) {
+  if (canDig && Math.floor(bot.entity.position.y + 0.01) < topY) {
     await waitOnGround(bot, 1000)
-    const r = await stairTo(bot, pit.rimY, target, signal, deadline)
+    const r = await stairTo(bot, topY, target, signal, deadline)
     if (r === 'aborted') return { status: 'aborted' }
-    if (r === 'ok') return { status: 'climbed', depth: pit.depth, how: 'stairs' }
+    if (r === 'ok') return { status: 'climbed', depth, how: 'stairs', exit }
     why = why ? `${why}; staircase: ${r}` : `staircase: ${r}`
   }
-  if (Math.floor(bot.entity.position.y + 0.01) >= pit.rimY) return { status: 'climbed', depth: pit.depth, how: 'stairs' }
+  if (Math.floor(bot.entity.position.y + 0.01) >= topY) return { status: 'climbed', depth, how: 'stairs', exit }
   const now = Math.floor(bot.entity.position.y + 0.01)
   const blocks = junkBlocks(bot, keepItems).reduce((n, b) => n + b.count, 0)
   return {
     status: 'failed',
-    depth: pit.depth,
-    line: `stuck in a hole at ${here}: could not climb out of the ${pit.depth}-deep shaft (now y=${now}, rim y=${pit.rimY}, ` +
+    depth,
+    line: `stuck in a hole at ${here}: could not climb out of the ${depth}-deep shaft (now y=${now}, ${exit ? 'way out at' : 'first opening at'} y=${topY}, ` +
       `${blocks} scaffold blocks left; ${why || 'no blocks to pillar with and digging is off'}). ` +
       failAdvice(why),
   }
@@ -407,23 +458,32 @@ function standable(bot, x, y, z) {
 }
 
 /**
- * How far up the column above a standing cell is open. `toTarget` is true when
- * it is open all the way to `targetY` (the body could pillar straight up to
- * the target's height); otherwise `rimY` is the first level at least 2 up
- * where a side cell opens, or null.
+ * How far up the column above a standing cell is open, scanning up from her
+ * feet and stopping at the first of:
+ *   - a level at least 2 up whose side cell opens onto somewhere
+ *     (sideLeadsOut): `{ toTarget: false, rimY: that level, exit: true }`.
+ *     In an open-sky shaft this is the ground level, so a target higher than
+ *     the ground (on a hill) gives toTarget false: the way out is the rim.
+ *   - the target's height, the column open all the way:
+ *     `{ toTarget: true, exit: true }` (rimY is a pocket level or null).
+ *   - a solid block over the column, or maxDepth: `{ toTarget: false,
+ *     rimY: first pocket level or null, exit: false }`.
  */
-export function columnOpening(bot, x, feetY, z, targetY, maxDepth = MAX_PIT_DEPTH) {
-  let rimY = null
+export function columnOpening(bot, x, feetY, z, targetY, maxDepth = MAX_PIT_DEPTH, target = null) {
+  let pocketY = null
+  const result = (toTarget) => ({ toTarget, rimY: pocketY, exit: false })
   for (let y = feetY + 1; y <= feetY + maxDepth; y++) {
-    if (!isPassable(at(bot, x, y + 1, z))) return { toTarget: false, rimY }
-    if (y >= targetY) return { toTarget: true, rimY }
-    if (rimY == null && y >= feetY + MIN_PIT_DEPTH) {
+    if (!isPassable(at(bot, x, y + 1, z))) return result(false)
+    if (y >= targetY) return { ...result(true), exit: true }
+    if (y >= feetY + MIN_PIT_DEPTH) {
       for (const [dx, dz] of DIRS) {
-        if (isPassable(at(bot, x + dx, y, z + dz)) && isPassable(at(bot, x + dx, y + 1, z + dz))) { rimY = y; break }
+        if (!(isPassable(at(bot, x + dx, y, z + dz)) && isPassable(at(bot, x + dx, y + 1, z + dz)))) continue
+        if (pocketY == null) pocketY = y
+        if (sideLeadsOut(bot, x, z, x + dx, y, z + dz, target)) return { toTarget: false, rimY: y, exit: true }
       }
     }
   }
-  return { toTarget: false, rimY }
+  return result(false)
 }
 
 /**
@@ -436,7 +496,7 @@ export function columnOpening(bot, x, feetY, z, targetY, maxDepth = MAX_PIT_DEPT
  *
  * @returns {{ column: null | { x:number, y:number, z:number, steps:number, toTarget:boolean, rimY:number|null }, open: boolean }}
  */
-export function findOpenColumn(bot, targetY) {
+export function findOpenColumn(bot, targetY, target = null) {
   const p = bot?.entity?.position
   if (!p) return { column: null, open: false }
   const sx = Math.floor(p.x), sy = Math.floor(p.y + 0.01), sz = Math.floor(p.z)
@@ -458,9 +518,10 @@ export function findOpenColumn(bot, targetY) {
   while (queue.length) {
     const c = queue.shift()
     if (standable(bot, c.x, c.y, c.z)) {
-      const o = columnOpening(bot, c.x, c.y, c.z, targetY)
+      const o = columnOpening(bot, c.x, c.y, c.z, targetY, MAX_PIT_DEPTH, target)
       if (o.toTarget && !toTarget) toTarget = { ...c, ...o }
-      else if (o.rimY != null && (!best || o.rimY > best.rimY)) best = { ...c, ...o }
+      // A column that leads out beats one that only reaches a pocket.
+      else if (o.rimY != null && (!best || (o.exit && !best.exit) || (o.exit === best.exit && o.rimY > best.rimY))) best = { ...c, ...o }
     }
     for (const [dx, dz] of DIRS) {
       const nx = c.x + dx, nz = c.z + dz
@@ -542,7 +603,7 @@ async function escapeUpInner(bot, target, opts = {}) {
   let why = ''
   let how = null
 
-  const found = findOpenColumn(bot, targetY)
+  const found = findOpenColumn(bot, targetY, target)
   // Open ground or a cliff foot: the walk failed for another reason, and
   // pillaring or tunnelling here is not what the player expects.
   if (found.open) return { status: 'not_in_pit' }
@@ -562,12 +623,19 @@ async function escapeUpInner(bot, target, opts = {}) {
   } else {
     why = col ? 'pillar: no dirt, cobblestone or similar blocks' : 'pillar: nothing open above nearby'
   }
-  if (how && done()) return { status: 'climbed', depth: targetY - startY, how }
-  if (canDig && !done() && Date.now() < deadline) {
+  // Review (261017): a column that opens onto the surface below the target's
+  // height (a shaft up to the ground, the target on a hill) is done at that
+  // opening. Climbing on toward targetY from there would cut a staircase
+  // into the hillside; the walk takes over instead.
+  const exitY = col && !col.toTarget && col.exit && col.rimY != null ? col.rimY : null
+  const atExit = () => exitY != null && feet() >= exitY
+  const top = exitY ?? targetY
+  if (how && (done() || atExit())) return { status: 'climbed', depth: feet() - startY, how }
+  if (canDig && !done() && !atExit() && Date.now() < deadline) {
     await waitOnGround(bot, 1000)
-    const r = await stairTo(bot, targetY, target, signal, deadline)
+    const r = await stairTo(bot, top, target, signal, deadline)
     if (r === 'aborted') return { status: 'aborted' }
-    if (r === 'ok') return { status: 'climbed', depth: targetY - startY, how: how ? 'pillar' : 'stairs' }
+    if (r === 'ok') return { status: 'climbed', depth: feet() - startY, how: how ? 'pillar' : 'stairs' }
     why = why ? `${why}; staircase: ${r}` : `staircase: ${r}`
   }
   // Partway up still counts when it got her out of the shaft she was in: the

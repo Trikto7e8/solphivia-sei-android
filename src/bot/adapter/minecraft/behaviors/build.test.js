@@ -318,7 +318,7 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
     const iv = setInterval(() => { ticks.n++ }, 10)
     const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
     clearInterval(iv)
-    expect(r).toBe('could not pillar up: scaffold place failed: you are in water, where a jump does not clear the cell under you. Get onto dry ground first')
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold place failed: you are in water, where a jump does not clear the cell under you. Get onto dry ground first')
     expect(ticks.n).toBeGreaterThan(0) // timers kept running while it tried
   })
 
@@ -337,7 +337,91 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
       bot.entity.onGround = true
     }
     const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
-    expect(r).toBe('could not pillar up: scaffold place failed: the block went down but you did not rise onto it')
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold place failed: the block went down but you did not rise onto it')
+  })
+
+  // 261017 (pass 12), errands eval: she stood on the EDGE of a block with
+  // her feet column over her own shaft, and the pillar came back "no solid
+  // floor below". It now steps onto the block holding her up and pillars.
+  it('standing off-centre over a gap: steps onto the supporting block and pillars from there', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.delete('0,63,0') // the shaft under her feet column
+    bot.entity.position = new Vec3(0.75, 64, 0.5) // hitbox reaches into x=1
+    bot.lookAt = async () => {}
+    const moves = []
+    bot.setControlState = (control, on) => {
+      if (control === 'forward' && on) { moves.push('forward'); bot.entity.position = new Vec3(1.5, 64, 0.5); return }
+      if (control !== 'jump' || !on) return
+      bot.entity.onGround = false
+      const p = bot.entity.position
+      bot.entity.position = new Vec3(p.x, Math.floor(p.y) + 1.2, p.z)
+    }
+    bot.placeBlock = async (ref) => {
+      const cellY = ref.position.y + 1
+      blocks.set(`${ref.position.x},${cellY},${ref.position.z}`, 'dirt')
+      bot.entity.position = new Vec3(ref.position.x + 0.5, cellY + 1, ref.position.z + 0.5)
+      bot.entity.onGround = true
+    }
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    expect(moves.length).toBeGreaterThan(0)
+    expect(r).toBe('pillared up 2 blocks (standing at y=66)')
+    expect(blocks.get('1,64,1')).toBeUndefined()
+    expect(blocks.get('1,64,0')).toBe('dirt')
+  })
+
+  it('off-centre with nothing solid under any part of her: still says no floor', async () => {
+    const { bot, blocks } = pillarBot()
+    for (const k of [...blocks.keys()]) blocks.delete(k)
+    bot.entity.position = new Vec3(0.75, 64, 0.5)
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold failed: no solid floor below')
+  })
+
+  // 261017: a block right above her head. The jump cannot lift her, and the
+  // old result was a bare "could not place block under feet".
+  it('no head room: says which block is over her head, without jumping', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,66,0', 'dirt')
+    let jumps = 0
+    const set = bot.setControlState
+    bot.setControlState = (c, on) => { if (c === 'jump' && on) jumps++; return set(c, on) }
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold failed: no head room. There is dirt at 0,66,0 right above your head, ' +
+      'so you cannot jump to put a block under you. Dig that block out first, or move to a spot with open space above')
+    expect(jumps).toBe(0)
+  })
+
+  it('no head room under a built ceiling: does not tell her to dig it', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,66,0', 'oak_planks')
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toMatch(/There is oak_planks at 0,66,0 right above your head/)
+    expect(r).toMatch(/you do not dig through builds/)
+    expect(r).not.toMatch(/Dig that block out/)
+  })
+
+  // Review: the step onto the supporting block stops on abort, and leaves
+  // the controls alone when a reflex has taken the body.
+  it('the off-centre step stops on abort and does not clear a reflex flee', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.delete('0,63,0')
+    bot.entity.position = new Vec3(0.75, 64, 0.5)
+    bot.lookAt = async () => {}
+    const ac = new AbortController()
+    const calls = []
+    bot.setControlState = (control, on) => {
+      calls.push([control, on])
+      if (control === 'forward' && on) {
+        // The step is under way when a creeper reflex takes over.
+        bot._seiReflexActive = true
+        ac.abort()
+      }
+    }
+    const t0 = Date.now()
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, { signal: ac.signal })
+    expect(Date.now() - t0).toBeLessThan(600)
+    expect(r).toMatch(/^aborted/)
+    expect(calls).not.toContainEqual(['forward', false])
   })
 })
 

@@ -72,6 +72,48 @@ describe('find (261015)', () => {
     expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
   })
 
+  // 261017 (pass 12): a buried vein can fill the whole candidate list. In the
+  // 261016 errands eval the nearest coal were all in a seed vein 16 down, so
+  // the exposed surface coal 3 blocks farther was never scored. The eval
+  // arena has ~135 coal nearer than its surface coal, so the vein here is
+  // bigger than any fixed candidate count (125). The mock follows mineflayer:
+  // nearest `count`, and a function `useExtraInfo` filters on top of
+  // `matching`.
+  function withRealisticFind(bot) {
+    const calls = []
+    const find = bot.findBlocks
+    bot.findBlocks = (opts) => {
+      calls.push(opts)
+      const all = find({ ...opts, count: 100000 }).filter((p) => p.distanceTo(bot.entity.position.floored()) <= (opts.maxDistance ?? 16))
+      const keep = typeof opts.useExtraInfo === 'function' ? all.filter((p) => opts.useExtraInfo(bot.blockAt(p))) : all
+      return keep.slice(0, opts.count ?? 1)
+    }
+    return calls
+  }
+
+  it('still sees an exposed ore when every near hit is buried, with a bounded second search', async () => {
+    const reg = createDefaultRegistry()
+    const vein = []
+    for (let x = 0; x < 5; x++) for (let y = 49; y < 54; y++) for (let z = 8; z < 13; z++) vein.push([x, y, z, 'coal_ore'])
+    const { bot } = makeBot([...vein, [22, 65, 10, 'coal_ore']])
+    const calls = withRealisticFind(bot)
+    const r = await reg.execute('find', { name: 'coal_ore' }, bot, {})
+    expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
+    expect(calls).toHaveLength(2)
+    expect(typeof calls[1].useExtraInfo).toBe('function')
+    expect(calls[1].maxDistance).toBeLessThanOrEqual(32)
+    expect(calls[1].count).toBeLessThanOrEqual(8)
+  })
+
+  it('skips the second search when the nearest hit is exposed and shallow', async () => {
+    const reg = createDefaultRegistry()
+    const { bot } = makeBot([[3, 65, 3, 'coal_ore'], [0, 50, 0, 'coal_ore']])
+    const calls = withRealisticFind(bot)
+    const r = await reg.execute('find', { name: 'coal_ore' }, bot, {})
+    expect(r.pos).toEqual({ x: 3, y: 65, z: 3 })
+    expect(calls).toHaveLength(1)
+  })
+
   it('still finds the buried one when it is much nearer', async () => {
     const reg = createDefaultRegistry()
     const { bot } = makeBot([[0, 62, 1, 'coal_ore'], [40, 65, 3, 'coal_ore']])

@@ -208,6 +208,23 @@ export function echoScore(says, playerText) {
 
 export const SITUATIONS = {
   echo_slow: { kind: 'echo', selfGoal: OWN_GOAL, history: WORK_HISTORY.slice(0, 2), world: WOOD_WORLD, order: chat('lol ur kinda slow') },
+  // work_session U12 as it plays live: eleven lines in, the stone pickaxe
+  // just made, the player told her to stop, then the tease.
+  echo_slow_late: {
+    kind: 'echo', selfGoal: OWN_GOAL,
+    history: [
+      { player: 'whats up, what are you doing', say: 'punching trees. aggressively. you can watch from over there' },
+      { player: 'can you get some wood? like 6 logs', say: "on it. 8 logs coming, you're getting six plus extras", act: { name: 'gather', input: { name: 'oak_log', count: 8 } }, result: 'gathered 8/8 oak_log' },
+      { player: 'how many logs do you have so far?', say: '8 in the bag. table and pickaxe next' },
+      { player: 'what should we build first?', say: 'a little stone house, something blocky. you pick the spot' },
+      { player: 'yeah sounds good', say: "cool, i'm mining stone for a stone pickaxe first", act: { name: 'gather', input: { name: 'stone', count: 8 } }, result: 'gathered 8/8 cobblestone (mined from stone)' },
+      { player: 'make a crafting table', say: 'we already got one, right next to me' },
+      { player: 'go get more wood, like 10 more', say: '10 more wood, you got it. finishing this first', act: { name: 'craft', input: { item: 'stone_pickaxe', count: 1 } }, result: 'crafted 1 stone_pickaxe' },
+      { player: 'actually stop', say: 'ok stopped. stone pickaxe is done tho, nehehe. what do you want next' },
+    ],
+    world: { ...WOOD_WORLD, inv: [['wooden_pickaxe', 1], ['stone_pickaxe', 1], ['oak_log', 5], ['stick', 2], ['cobblestone', 5]] },
+    order: chat('lol ur kinda slow'),
+  },
   echo_jk: {
     kind: 'echo', selfGoal: OWN_GOAL,
     history: [...WORK_HISTORY, { player: 'honestly ur useless', say: "rude. i got you 9 logs and a table" }],
@@ -445,7 +462,11 @@ async function runOne({ sid, ch, rep }) {
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
     await drain()
     for (const h of sit.history ?? []) {
-      await sleep(250)
+      // Her multi-sentence line is sent as paced segments 550ms apart, and
+      // the transcript places each one where it reached chat (convoMemory
+      // sentAt). Wait for the last one, or the player's next line lands in
+      // the middle of her previous reply.
+      await sleep(1700)
       const uses = [tu('say', { text: h.say })]
       if (h.goal) uses.push(tu('setGoal', { text: h.goal, for_player: true }))
       if (h.stop) {
@@ -471,7 +492,7 @@ async function runOne({ sid, ch, rep }) {
         queue.length = 0
       }
     }
-    await sleep(300)
+    await sleep(1700)
     await drain()
     historyActs = actions.length
     phase = 'order'

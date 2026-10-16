@@ -333,6 +333,31 @@ describe('createChatgptProvider', () => {
     await expect(p.call(callArgs({ timeoutMs: 30 }))).rejects.toMatchObject({ name: 'AbortError', isTimeout: true })
     p.dispose()
   })
+
+  it('writes the same [haiku?]/[haiku!]/[haiku✗] turn log as anthropicClient', async () => {
+    const logged = []
+    const spy = vi.spyOn(console, 'log').mockImplementation((s) => { logged.push(String(s)) })
+    try {
+      const ok = createChatgptProvider(config(), { fetchImpl: vi.fn(async () => okStream(sayAndDig)) })
+      await ok.call(callArgs())
+      ok.dispose()
+      const limited = createChatgptProvider(config(), {
+        fetchImpl: vi.fn(async () => errResp(429, { error: { code: 'subscription_sharing_usage_limit_exceeded', message: 'limit' } })),
+      })
+      await limited.call(callArgs()).catch(() => {})
+      limited.dispose()
+    } finally {
+      spy.mockRestore()
+    }
+    const block = (tag) => logged.find((s) => s.includes(`${tag} begin`)) ?? ''
+    expect(block('[haiku?]')).not.toBe('')
+    const done = block('[haiku!]')
+    expect(done).toContain('say({"text":"on it"})')
+    expect(done).toContain('dig({"x":1})')
+    const usage = JSON.parse(done.match(/usage: (.*)/)[1])
+    expect(usage).toMatchObject({ input_tokens: 10, output_tokens: 3 })
+    expect(block('[haiku✗]')).toContain('CHATGPT_USAGE_LIMIT')
+  })
 })
 
 describe('collapseSay', () => {

@@ -29,6 +29,7 @@
 
 import { buildResponsesBody, requestRejectedError, retried401Error, streamResponses } from './responsesWire.js'
 import { onChatgptToken, requestChatgptToken } from './chatgptTokenBridge.js'
+import { logHaikuError, logHaikuQuery, logHaikuResponse } from '../log.js'
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses'
 // Ask main for a fresh token this long before the current one expires.
@@ -75,7 +76,12 @@ export function createChatgptProvider(config, { fetchImpl = globalThis.fetch, ur
     return token
   }
 
-  async function call({ systemBlocks, tools, messages, signal, timeoutMs, onSay, spokenSay }) {
+  async function call({ systemBlocks, tools, messages, signal, timeoutMs, onSay, spokenSay, namedUserBlocks }) {
+    // Same [haiku?]/[haiku!]/[haiku✗] turn log as anthropicClient, so the
+    // LogsBar, the quality-eval harness (snapshots, usage, scratchpad) and
+    // post-mortems read a ChatGPT session the same way.
+    logHaikuQuery({ messages, tools, systemBlocks, namedUserBlocks })
+    const startedAt = now()
     const budgetMs = timeoutMs ?? defaultTimeoutMs
     const ctrl = new AbortController()
     let timedOut = false
@@ -133,14 +139,19 @@ export function createChatgptProvider(config, { fetchImpl = globalThis.fetch, ur
       anyAccepted = true
       if (carriesToolResult) toolRoundTripAccepted = true
       if (spokenSay) resp = collapseSay(resp, spokenSay)
+      logHaikuResponse({ text: resp.text, toolUses: resp.toolUses, usage: resp.usage, stopReason: resp.stopReason, elapsedMs: now() - startedAt })
       return resp
     } catch (err) {
+      const elapsedMs = now() - startedAt
       if (timedOut && !signal?.aborted) {
+        logHaikuError({ elapsedMs, name: 'TimeoutError', message: `exceeded ${budgetMs}ms call budget` })
         const e = new Error(`chatgpt call exceeded ${budgetMs}ms budget`)
         e.name = 'AbortError'
         e.isTimeout = true
         throw e
       }
+      if (signal?.aborted) logHaikuError({ elapsedMs, name: 'AbortError', message: 'aborted (preempt)' })
+      else logHaikuError({ elapsedMs, name: err?.code || err?.name || 'Error', message: err?.message ?? String(err), status: err?.httpStatus })
       throw err
     } finally {
       if (timer) clearTimeout(timer)

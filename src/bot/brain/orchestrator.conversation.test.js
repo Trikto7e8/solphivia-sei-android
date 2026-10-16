@@ -618,7 +618,7 @@ describe('a re-asked question is dropped sentence by sentence', () => {
 
 // 261017 (quality pass 11): with realistic typing her line is decided seconds
 // before the player can read it. The transcript now places it where the
-// player saw it, and the idle cadence waits for it to land.
+// player saw it.
 describe('her paced line sits in the transcript where the player saw it', () => {
   it('a player line typed while hers was still being typed renders before it', () => {
     vi.useFakeTimers()
@@ -662,7 +662,6 @@ describe('her paced line sits in the transcript where the player saw it', () => 
     })
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
     expect(adapter.chat).not.toHaveBeenCalled()
-    expect(orch.chatPendingMs()).toBeGreaterThan(0)
     orch.recordIncomingChat('newb', 'hey')
     await orch.handleDispatch('sei:chat_received', chat('hey'))
     const convo = blockText(provider.calls[1], 'recent_conversation')
@@ -670,18 +669,19 @@ describe('her paced line sits in the transcript where the player saw it', () => 
     expect(convo.indexOf('] player (newb): hey')).toBeLessThan(convo.indexOf('] you: heyyy newb'))
     expect(JSON.stringify(provider.calls[1].messages ?? provider.calls[1])).toContain('it comes right after their line')
     await vi.runAllTimersAsync()
-    expect(orch.chatPendingMs()).toBe(0)
+    expect(adapter.chat).toHaveBeenCalled()
   })
 })
 
 describe('the player line in the seed turn (261017)', () => {
-  it('is shown as a transcript line, not a bare quoted string, with the no-echo sentence', async () => {
+  it('comes after the instructions as a transcript line, not a bare quoted string, with the no-echo sentence', async () => {
     _setTickIntervalForTests(10_000_000)
     const { orch, provider } = makeOrch({ script: [{ text: '', toolUses: [say('t1', 'nice')] }] })
     orch.recordIncomingChat('newb', 'cool')
     await orch.handleDispatch('sei:chat_received', chat('cool'))
     const msg = blockText(provider.calls[0], 'player_message')
-    expect(msg).toContain('\nplayer (newb): cool\n')
+    // After the instructions, labelled as in the transcript, never quoted.
+    expect(msg.endsWith('\n\nTheir line, player (newb): cool')).toBe(true)
     expect(msg).not.toContain('"cool"')
     expect(msg).toContain('do not repeat it back to them')
   })

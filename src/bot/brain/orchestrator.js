@@ -2916,15 +2916,20 @@ function maybeWarnByteCap(loop, warned) {
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
         loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
-        // 261017 (quality pass 11): the line is shown the way the transcript
-        // shows it ("player (Alex): cool"), not as a bare quoted string. She
-        // opened her reply with their words ("cool. now torches", "lol ur
-        // kinda slow. i'm just..."), which chat shows as its own message right
-        // under theirs. In the echo probe (claims-probe.mjs echo_*) this
-        // layout plus the replyNoRestate sentence took that from 48 to 29 of
-        // 111 replies.
+        // 261017 (quality pass 11): their line comes after the instructions,
+        // labelled the way the transcript labels it ("Their line, player
+        // (Alex): cool"), instead of as a bare quoted string right under the
+        // header. Right under the header it was the first thing her reply
+        // picked up, and she opened by saying it back ("cool. now torches",
+        // "lol ur kinda slow?? i just..."), which chat shows as its own
+        // message right under theirs. claims-probe echo_* (5 characters, 75
+        // replies an arm): replies opening with their whole line 27 -> 15,
+        // first sentence equal to it 22 -> 8. Pointing at the transcript
+        // instead of repeating the line cut echoes further but she answered
+        // the line before it ("ok, stopping" to a tease after "actually stop").
         const lineSpeaker = fromTeammate ? (speakerName || 'your teammate') : playerLabel(speakerName)
-        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to THIS, not to the scene around you.'}\n${lineSpeaker}: ${String(data?.text ?? '').trim()}\n` +
+        const lineText = String(data?.text ?? '').trim()
+        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to their line, not to the scene around you.'}\n` +
           (groupVoice
             ? voiceGroupGuidance(companions).trim() + ' Your text output is a private scratchpad the player can NEVER see; a reply that exists only in your text is silence to them; only say() reaches them.'
             : teammateVoice
@@ -2938,7 +2943,8 @@ function maybeWarnByteCap(loop, warned) {
               // check; a line that starts a fresh loop did not, and errands
               // given while she was idle ("grab coal then come back") were
               // never recorded (0/18 in the goals harness).
-              (fromTeammate ? '' : MEMORY_GOAL_TAIL))
+              (fromTeammate ? '' : MEMORY_GOAL_TAIL)) +
+          `\n\nTheir line, ${lineSpeaker}: ${lineText}`
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
@@ -5840,15 +5846,6 @@ function maybeWarnByteCap(loop, warned) {
     // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
     // "ok holding still alex"): the 5s cadence is for resuming work, and with
     // no work to resume an idle turn has nothing new to say.
-    // 261017 (quality pass 11): how long until her last paced line reaches
-    // chat (0 when it has). brain/index.js adds it to the idle cadence, so the
-    // quiet an idle tick waits for starts when her words land, not when the
-    // turn that wrote them ended. With realistic typing a long line lands up
-    // to ~7s after it was decided, and the agentic 5s tick fired before her
-    // question had reached the player: errands-03 (261016 scorecard) asked
-    // "got 8 cobble ... you know where trees are?" and an idle turn composed
-    // 0.8s before that line finished sending asked it again.
-    chatPendingMs: () => Math.max(0, _lastChatSendDeadline - Date.now()),
     replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,

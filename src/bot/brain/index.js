@@ -40,20 +40,6 @@ const REQUIRED_ADAPTER_MEMBERS = [
  * speaker flushes the pending wake first so ordering holds. Exported for
  * testing.
  */
-/**
- * 261017 (quality pass 11): the idle delay the FSM re-arms with. The tier
- * cadence counts from when her last paced line reaches the chat, not from
- * when the turn that wrote it ended. With realistic typing a line lands 2-6s
- * after its turn, so at the 5s agentic cadence the idle turn ran before the
- * player had even seen the line, and with nothing new to go on she said the
- * same thing again ("got 8 cobble ... you know where trees are?" twice,
- * errands-03 in the 261016 scorecard). Never sooner than the reply window.
- * @param {{ cadenceMs: number, chatPendingMs?: number, replyWindowMs?: number }} p
- */
-export function idleFallbackFor({ cadenceMs, chatPendingMs = 0, replyWindowMs = 0 }) {
-  return Math.max(cadenceMs + Math.max(0, chatPendingMs || 0), replyWindowMs || 0)
-}
-
 export function createObserveWakeCoalescer(fire, debounceMs = 700) {
   let pending = null
   const flush = () => {
@@ -242,13 +228,10 @@ export async function start({ config, adapter, logger = console, onTerminalError
     // be answered (orchestrator REPLY_WINDOW_MS). Slower tiers already clear it.
     // 260924: Stardew only (REPLY_WINDOW_GAMES); the orchestrator returns 0 for
     // Minecraft and DST so their idle cadence is what it was.
-    // 261017: the cadence counts from when her last paced line reaches chat
-    // (orchestrator chatPendingMs), not from when the turn that wrote it ended.
-    idleFallbackMs: () => idleFallbackFor({
-      cadenceMs: config.llm?.idle_fallback_ms ?? idleCadenceMs(config.persona?.proactiveness),
-      chatPendingMs: orchestrator.chatPendingMs?.() ?? 0,
-      replyWindowMs: orchestrator.replyWindowRemainingMs?.() ?? 0,
-    }),
+    idleFallbackMs: () => Math.max(
+      config.llm?.idle_fallback_ms ?? idleCadenceMs(config.persona?.proactiveness),
+      orchestrator.replyWindowRemainingMs?.() ?? 0,
+    ),
     logger,
   })
 

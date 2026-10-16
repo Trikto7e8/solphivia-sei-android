@@ -110,14 +110,3 @@ describe('brain/index.js records game events', () => {
     }
   })
 })
-
-describe('idleFallbackFor (261017)', () => {
-  it('counts the cadence from when her paced line reaches chat', async () => {
-    const { idleFallbackFor } = await import('./index.js')
-    expect(idleFallbackFor({ cadenceMs: 5000 })).toBe(5000)
-    expect(idleFallbackFor({ cadenceMs: 5000, chatPendingMs: 3200 })).toBe(8200)
-    expect(idleFallbackFor({ cadenceMs: 5000, chatPendingMs: -10 })).toBe(5000)
-    // The reply window still wins when it is longer.
-    expect(idleFallbackFor({ cadenceMs: 5000, chatPendingMs: 3000, replyWindowMs: 20_000 })).toBe(20_000)
-  })
-})

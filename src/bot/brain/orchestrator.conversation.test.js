@@ -25,7 +25,6 @@ import {
   _setTickIntervalForTests,
   replyWindowRemainingMs,
   replyWindowApplies,
-  asksPlayer,
   isExactRepeatSincePlayerSpoke,
   splitRepeatedSegments,
   joinSegments,
@@ -188,22 +187,6 @@ describe('the reply window: always in Stardew, after a talk-only loop everywhere
 
   it('does not hold it in Minecraft after a loop that did world work, so the agentic cadence resumes the goal', async () => {
     expect(await holdAfter('Minecraft', talkAndWork)).toBe(0)
-  })
-
-  it('holds it in Minecraft after world work when her last line asked them something (261017)', async () => {
-    const askAndWork = [
-      { text: '', toolUses: [say('t1', 'got 8 cobble. you know where trees are?'), { id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
-      { text: '', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
-    ]
-    expect(await holdAfter('Minecraft', askAndWork)).toBeGreaterThan(REPLY_WINDOW_MS - 5000)
-  })
-
-  it('asksPlayer reads only a line that ends on its question', () => {
-    expect(asksPlayer('you know where trees are?')).toBe(true)
-    expect(asksPlayer('torches now or the dock first?! ')).toBe(true)
-    expect(asksPlayer('trees? lol')).toBe(false)
-    expect(asksPlayer('on it')).toBe(false)
-    expect(asksPlayer(undefined)).toBe(false)
   })
 })
 

@@ -416,18 +416,6 @@ export function replyWindowApplies(adapter) {
 }
 
 /**
- * 261017: true when her line ends on a question to the player ("you know
- * where trees are?"). A question with more words after it ("trees? lol")
- * does not count.
- * Read only to time the next idle turn (the reply window); the line itself is
- * never changed.
- * @param {unknown} text
- */
-export function asksPlayer(text) {
-  return typeof text === 'string' && /\?[\s!.~)]*$/.test(text)
-}
-
-/**
  * Remaining floor-hold, in ms (0 = none). Pure; the orchestrator feeds it.
  *
  * @param {Object} args
@@ -5861,12 +5849,7 @@ function maybeWarnByteCap(loop, warned) {
     // "got 8 cobble ... you know where trees are?" and an idle turn composed
     // 0.8s before that line finished sending asked it again.
     chatPendingMs: () => Math.max(0, _lastChatSendDeadline - Date.now()),
-    // 261017: and in every game when her last line asked the player
-    // something. errands-03 above: the loop had dug and picked up, so the
-    // talk-only hold did not apply, and the next idle turn re-asked the same
-    // question 7s later with nothing new to go on. Waiting on an answer is
-    // the reply window's whole point; it ends the moment the player speaks.
-    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly || asksPlayer(convoMemory.recentChat.lastSelf?.()?.text)) ? 0 : replyWindowRemainingMs({
+    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,
       sendDeadline: _lastChatSendDeadline,

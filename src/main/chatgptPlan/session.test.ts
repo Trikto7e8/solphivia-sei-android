@@ -83,6 +83,13 @@ describe('sign-in', () => {
     expect(mem.read()).toEqual(before);
   });
 
+  it('binds the loopback listener to the state it sends in the authorize URL', async () => {
+    const { srv, session } = setup();
+    await session.signIn();
+    expect(srv.listenerStates).toHaveLength(1);
+    expect(srv.listenerStates[0]).toBe(srv.authorizeSeen[0].params.state);
+  });
+
   it('a decline, a forged state and a missing issued client never write anything', async () => {
     for (const [mode, reason] of [['deny', 'denied'], ['forge_state', 'state_mismatch'], ['omit_client', 'registration_incomplete']] as const) {
       const { srv, mem, session } = setup();
@@ -248,6 +255,110 @@ describe('sign-out', () => {
     const r = await session.signOut();
     expect(r.revoked).toBe(false);
     expect(mem.read().accounts[0].refresh_token).toBeNull();
+  });
+});
+
+describe('sign-out during a refresh (race)', () => {
+  it('a refresh on the wire during sign-out never writes tokens back or pushes them; both tokens are revoked', async () => {
+    const clock = { t: 1_000_000_000_000 };
+    const { srv, mem, session } = setup({ clock });
+    await session.signIn();
+    const used = mem.read().accounts[0].refresh_token;
+    const pushed: (AccessToken | null)[] = [];
+    session.onToken((t) => pushed.push(t));
+    srv.knobs.refreshDelayMs = 30;
+    clock.t += 3600_000 + 1; // expired: the next call refreshes
+    const inflight = session.getAccessToken().then((t) => t, (e) => e);
+    await new Promise((r) => setTimeout(r, 5)); // the refresh is now on the wire
+    const out = await session.signOut();
+    expect(out.ok).toBe(true);
+    const refreshResult = await inflight;
+    expect(refreshResult).toMatchObject({ code: 'CHATGPT_SIGNED_OUT' });
+    const acc = mem.read().accounts[0];
+    expect(acc.access_token).toBeNull();
+    expect(acc.refresh_token).toBeNull();
+    // No token was pushed to the bots after (or instead of) the sign-out null.
+    expect(pushed).toEqual([null]);
+    // The token signOut cleared AND the rotation the server handed the stale
+    // refresh are both revoked, so no live refresh token outlives sign-out.
+    const rotated = [...srv.refreshTokens.entries()].find(([k, v]) => k !== used && !v.used)?.[0];
+    expect(rotated).toBeTruthy();
+    expect(srv.revoked).toEqual(expect.arrayContaining([used, rotated]));
+    await expect(session.getAccessToken()).rejects.toMatchObject({ code: 'CHATGPT_SIGNED_OUT' });
+  });
+
+  it('a refresh that commits just before sign-out: sign-out revokes the NEWEST refresh token', async () => {
+    const clock = { t: 1_000_000_000_000 };
+    const { srv, mem, session } = setup({ clock });
+    await session.signIn();
+    clock.t += 3600_000 + 1;
+    await session.getAccessToken();
+    const newest = mem.read().accounts[0].refresh_token;
+    await session.signOut();
+    expect(srv.revoked).toEqual([newest]);
+  });
+
+  it('a stale terminal refresh error does not clear a token set a re-sign-in stored meanwhile', async () => {
+    const clock = { t: 1_000_000_000_000 };
+    const { srv, mem, session } = setup({ clock });
+    await session.signIn();
+    clock.t += 3600_000 + 1;
+    srv.knobs.refreshDelayMs = 30;
+    srv.knobs.nextRefreshError = { status: 400, error: 'refresh_token_expired' };
+    const inflight = session.getAccessToken().catch((e) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    srv.knobs.refreshDelayMs = 0;
+    const id = (await session.status()).activeId;
+    expect(await session.signIn({ accountId: id })).toMatchObject({ ok: true });
+    await inflight;
+    expect(mem.read().accounts[0].refresh_token).toBeTruthy();
+    expect((await session.status()).accounts[0].signedIn).toBe(true);
+  });
+});
+
+describe('vault writes are copy-on-write', () => {
+  it('a failed save leaves the in-memory session exactly as on disk (still signed in after a failed sign-out write)', async () => {
+    const { mem, session } = setup();
+    await session.signIn();
+    mem.vault.fail = true;
+    await expect(session.signOut()).rejects.toThrow('KEYCHAIN_UNAVAILABLE');
+    mem.vault.fail = false;
+    // Memory did not move ahead of the disk: both still hold the sign-in.
+    expect(mem.read().accounts[0].refresh_token).toBeTruthy();
+    expect((await session.status()).accounts[0].signedIn).toBe(true);
+  });
+
+  it('a failed welcome dismissal does not mark it seen in memory', async () => {
+    const { mem, session } = setup();
+    await session.signIn();
+    mem.vault.fail = true;
+    await expect(session.dismissWelcome()).rejects.toThrow();
+    expect((await session.status()).welcomeSeen).toBe(false);
+  });
+});
+
+describe('auth / request rejections latch', () => {
+  for (const code of ['CHATGPT_AUTH_REJECTED', 'CHATGPT_REQUEST_REJECTED']) {
+    it(`${code} latches, fails fast, and clears on sign-in or clearBlock`, async () => {
+      const { session } = setup();
+      await session.signIn();
+      session.reportError({ code });
+      expect((await session.status()).blockedCode).toBe(code);
+      expect(() => session.assertUsable()).toThrow(code);
+      await session.clearBlock();
+      expect(() => session.assertUsable()).not.toThrow();
+      session.reportError({ code });
+      const id = (await session.status()).activeId;
+      await session.signIn({ accountId: id });
+      expect((await session.status()).blockedCode).toBeNull();
+    });
+  }
+
+  it('AUTH_REJECTED tells the player to sign in again', async () => {
+    const { session } = setup();
+    await session.signIn();
+    session.reportError({ code: 'CHATGPT_AUTH_REJECTED' });
+    expect(() => session.assertUsable()).toThrow(/Sign in with ChatGPT again/);
   });
 });
 

@@ -92,6 +92,11 @@ export type ErrorClass =
   | 'CHATGPT_USAGE_LIMIT'
   | 'CHATGPT_NOT_ELIGIBLE'
   | 'CHATGPT_FORBIDDEN'
+  // AUTH_REJECTED: a 401 again right after a forced token refresh (the
+  // sign-in itself is refused; re-sign-in dialog). REQUEST_REJECTED: a 400 on
+  // the first request or first tool round trip (Sei's request shape).
+  | 'CHATGPT_AUTH_REJECTED'
+  | 'CHATGPT_REQUEST_REJECTED'
   | 'CHATGPT_UNSUPPORTED'
   | 'CHATGPT_SIGNED_OUT'
   | 'CHATGPT_PLAN_DISABLED';
@@ -140,6 +145,8 @@ export const ALL_ERROR_CLASSES: readonly ErrorClass[] = Object.freeze([
   'CHATGPT_USAGE_LIMIT',
   'CHATGPT_NOT_ELIGIBLE',
   'CHATGPT_FORBIDDEN',
+  'CHATGPT_AUTH_REJECTED',
+  'CHATGPT_REQUEST_REJECTED',
   'CHATGPT_UNSUPPORTED',
   'CHATGPT_SIGNED_OUT',
   'CHATGPT_PLAN_DISABLED',

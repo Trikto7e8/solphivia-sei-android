@@ -2078,10 +2078,14 @@ function blockedReason(errorClass: string): string {
       return "the player's ChatGPT plan usage limit is reached; they can check Manage usage in ChatGPT or pick another AI option in Settings";
     case 'CHATGPT_SIGNED_OUT':
     case 'CHATGPT_PLAN_DISABLED':
+    case 'CHATGPT_AUTH_REJECTED':
       return 'the ChatGPT sign-in needs attention; the player needs to sign in with ChatGPT again in Settings';
     case 'CHATGPT_NOT_ELIGIBLE':
-    case 'CHATGPT_FORBIDDEN':
       return "this ChatGPT account can't be used here; the player needs another account or AI option in Settings";
+    case 'CHATGPT_FORBIDDEN':
+      return "ChatGPT plan use isn't available here right now, likely a region or plan restriction; the player needs another AI option in Settings";
+    case 'CHATGPT_REQUEST_REJECTED':
+      return "ChatGPT did not accept the request; the player can try again or pick another AI option in Settings";
     case 'FORGE_HOST_BLOCKED':
       return "the world is running Forge or NeoForge, which you can't join; the player needs to open the Sei profile in the Minecraft Launcher and host the world from there";
     default:

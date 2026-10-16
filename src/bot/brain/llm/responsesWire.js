@@ -491,6 +491,14 @@ export function finalizeResponses(acc) {
  *   CHATGPT_UNSUPPORTED   400 subscription_sharing_unsupported_capability, route_not_supported
  *   CHATGPT_SIGNED_OUT    the token set is gone (terminal refresh error / revoked)
  *   CHATGPT_PLAN_DISABLED signed in, but plan usage (chatgpt.tokens.use.direct) not granted
+ *   CHATGPT_AUTH_REJECTED a 401 again right after a forced token refresh: the
+ *                         sign-in itself is not accepted, so retrying every
+ *                         turn would only loop (authRejectedError)
+ *   CHATGPT_REQUEST_REJECTED a 400 before any request (or tool round trip) of
+ *                         the session succeeded: the request SHAPE is refused
+ *                         (preview API change), so every turn would fail the
+ *                         same way and the companion would go mute
+ *                         (requestRejectedError)
  * Recoverable:
  *   CHATGPT_AUTH          401: refresh the access token once, then retry once
  *   CHATGPT_UNAVAILABLE   503 usage/user unavailable or direct routing down: bounded backoff
@@ -499,7 +507,7 @@ export function finalizeResponses(acc) {
  */
 export const TERMINAL_CHATGPT_CODES = Object.freeze([
   'CHATGPT_USAGE_LIMIT', 'CHATGPT_NOT_ELIGIBLE', 'CHATGPT_FORBIDDEN', 'CHATGPT_UNSUPPORTED', 'CHATGPT_SIGNED_OUT',
-  'CHATGPT_PLAN_DISABLED',
+  'CHATGPT_PLAN_DISABLED', 'CHATGPT_AUTH_REJECTED', 'CHATGPT_REQUEST_REJECTED',
 ])
 
 const API_CODE_MAP = {
@@ -524,6 +532,36 @@ const COPY = {
   CHATGPT_UNAVAILABLE: 'ChatGPT plan usage is temporarily unavailable',
   CHATGPT_RATE_LIMITED: 'too many requests to the ChatGPT plan right now',
   CHATGPT_HTTP_ERROR: 'the ChatGPT plan request failed',
+  CHATGPT_AUTH_REJECTED: 'ChatGPT did not accept the sign-in, even after a fresh token',
+  CHATGPT_REQUEST_REJECTED: "ChatGPT rejected Sei's request format",
+}
+
+/** Re-type a terminal answer from the cause, keeping its diagnostics. */
+function terminalFrom(cause, code) {
+  const e = new Error(`${code}: ${COPY[code]}${cause?.message ? ` (${String(cause.message).slice(0, 300)})` : ''}`)
+  e.code = code
+  e.apiCode = cause?.apiCode ?? null
+  e.param = cause?.param ?? null
+  e.requestId = cause?.requestId ?? null
+  e.phase = cause?.phase ?? 'http'
+  e.httpStatus = cause?.httpStatus ?? null
+  e.terminal = true
+  e.retryable = false
+  return e
+}
+
+/**
+ * A 401 on the retry that already used a force-refreshed token. Terminal
+ * (no `status`), so neither layer asks again on the next turn; main latches
+ * it and asks the player to sign in again.
+ */
+export function authRejectedError(cause) {
+  return terminalFrom(cause, 'CHATGPT_AUTH_REJECTED')
+}
+
+/** A 400 that says the request shape itself is refused (see the code list). */
+export function requestRejectedError(cause) {
+  return terminalFrom(cause, 'CHATGPT_REQUEST_REJECTED')
 }
 
 /**
@@ -637,6 +675,14 @@ export async function streamResponses({ fetchImpl, url, token, body, signal, onC
       if (done) break
       onChunk?.()
       await handle(parser.push(decoder.decode(value, { stream: true })))
+      // A caller cut (stop sequence, length cap, cancel) ends the read even
+      // when the body source does not observe the signal itself.
+      if (signal?.aborted) {
+        try { reader.cancel().catch(() => {}) } catch { /* already closed */ }
+        const e = new Error('The operation was aborted')
+        e.name = 'AbortError'
+        throw e
+      }
     }
   }
   await handle(parser.flush())

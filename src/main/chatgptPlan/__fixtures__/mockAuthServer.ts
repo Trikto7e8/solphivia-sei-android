@@ -185,22 +185,31 @@ export function createMockAuthServer(opts: { now?: () => number } = {}) {
     return json(404, { error: 'not_found' });
   };
 
-  /** The fake loopback listener (no socket). */
-  const startListener = async (): Promise<CallbackListener> => ({
-    port: 1455,
-    redirectUri: 'http://127.0.0.1:1455/auth/callback',
-    wait(_timeoutMs, signal) {
-      return new Promise((resolve, reject) => {
-        listenerResolve = resolve;
-        listenerReject = reject;
-        signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-      });
-    },
-    close() {
-      listenerResolve = null;
-      listenerReject = null;
-    },
-  });
+  /**
+   * The fake loopback listener (no socket). It records the state it was
+   * bound to but stays permissive, so validateCallback's own state check is
+   * still exercised by the forge_state mode; the real listener's filter is
+   * tested against a real socket in oauth.test.ts.
+   */
+  const listenerStates: string[] = [];
+  const startListener = async (expectedState: string): Promise<CallbackListener> => {
+    listenerStates.push(expectedState);
+    return {
+      port: 1455,
+      redirectUri: 'http://127.0.0.1:1455/auth/callback',
+      wait(_timeoutMs, signal) {
+        return new Promise((resolve, reject) => {
+          listenerResolve = resolve;
+          listenerReject = reject;
+          signal.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
+        });
+      },
+      close() {
+        listenerResolve = null;
+        listenerReject = null;
+      },
+    };
+  };
 
   /** The fake browser + user. */
   const openExternal = async (raw: string): Promise<void> => {
@@ -241,6 +250,7 @@ export function createMockAuthServer(opts: { now?: () => number } = {}) {
     knobs,
     fetchImpl: fetchImpl as typeof fetch,
     startListener,
+    listenerStates,
     openExternal,
     signer,
     authorizeSeen,

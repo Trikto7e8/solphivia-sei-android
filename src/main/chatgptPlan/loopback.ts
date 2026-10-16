@@ -8,9 +8,13 @@
  * second Sei attempt) an OS-chosen port is used.
  *
  * Binds 127.0.0.1 only, never all interfaces (same rule as
- * src/main/auth/loopbackPkce.ts). One-shot: the first /auth/callback hit is
- * the answer; later hits (prefetch, back/forward) get a plain page.
+ * src/main/auth/loopbackPkce.ts). One-shot: the first /auth/callback hit
+ * that carries THIS attempt's state is the answer; later hits (prefetch,
+ * back/forward) get a plain page. A hit with any other state (a stale tab
+ * from an earlier attempt, or a local page probing 127.0.0.1) gets a 400 and
+ * is ignored, so it can neither end nor lock out the real sign-in.
  */
+import { timingSafeEqual } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import { CHATGPT_CALLBACK_PATH, CHATGPT_PREFERRED_PORT } from '../../shared/chatgptPlan';
 import { callbackUri } from './oauth';
@@ -46,7 +50,18 @@ function listen(server: Server, port: number): Promise<number> {
   });
 }
 
-export async function startCallbackListener(preferredPort: number = CHATGPT_PREFERRED_PORT): Promise<CallbackListener> {
+function sameState(got: string | null, expected: string): boolean {
+  if (!got) return false;
+  const a = Buffer.from(got);
+  const b = Buffer.from(expected);
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
+export async function startCallbackListener(
+  expectedState: string,
+  preferredPort: number = CHATGPT_PREFERRED_PORT,
+): Promise<CallbackListener> {
+  if (!expectedState) throw new Error('expected state required');
   let server = createServer();
   let port: number;
   try {
@@ -64,6 +79,11 @@ export async function startCallbackListener(preferredPort: number = CHATGPT_PREF
     if (url.pathname !== CHATGPT_CALLBACK_PATH) {
       res.writeHead(404, { 'content-type': 'text/plain' });
       res.end('Not Found');
+      return;
+    }
+    if (!sameState(url.searchParams.get('state'), expectedState)) {
+      res.writeHead(400, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(PAGE('This sign-in link is out of date.', 'Return to Sei and use the newest sign-in window.'));
       return;
     }
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });

@@ -12,7 +12,8 @@
  * `limitDialog` (the "Usage limit reached" dialog App.tsx renders when a
  * request comes back limited), and `signOutUnconfirmed` (Settings shows the
  * "disconnect Sei in ChatGPT settings" notice when revocation could not be
- * confirmed).
+ * confirmed), and `blockDialog` (the re-sign-in / rejected-request dialog,
+ * opened when main latches CHATGPT_AUTH_REJECTED or CHATGPT_REQUEST_REJECTED).
  */
 import { create } from 'zustand';
 import type { ChatgptSignInFailure, ChatgptSignInResult, ChatgptStatus } from '@shared/chatgptPlan';
@@ -26,6 +27,8 @@ interface ChatgptState {
   signOutUnconfirmed: boolean;
   /** The usage-limit dialog is open (opened when a latch turns on). */
   limitDialog: boolean;
+  /** The latched code whose dialog is open (see DIALOG_BLOCKS), or null. */
+  blockDialog: string | null;
   epoch: number;
   load: () => Promise<void>;
   /** Wire the main push once (App.tsx). Returns the unsubscribe. */
@@ -37,6 +40,7 @@ interface ChatgptState {
   dismissWelcome: () => Promise<void>;
   clearLimit: () => Promise<void>;
   closeLimitDialog: () => void;
+  closeBlockDialog: () => void;
   reset: () => void;
 }
 
@@ -46,19 +50,31 @@ export function chatgptReady(s: ChatgptStatus | null): boolean {
   return !!a && a.signedIn && a.planEnabled;
 }
 
+/** Latched codes that open a dialog of their own (ChatgptPlanHost). */
+export const DIALOG_BLOCKS: ReadonlySet<string> = new Set(['CHATGPT_AUTH_REJECTED', 'CHATGPT_REQUEST_REJECTED']);
+
 export const useChatgptStore = create<ChatgptState>((set, get) => {
   const apply = (next: ChatgptStatus): void => {
     const prev = get().status;
     // Open the dialog on the transition into a paused plan, not on every push
     // while it stays paused (a dismissed dialog stays dismissed).
     const opened = next.usageLimited && !prev?.usageLimited;
-    set({ status: next, ...(opened ? { limitDialog: true } : {}), ...(next.usageLimited ? {} : { limitDialog: false }) });
+    const block = next.blockedCode && DIALOG_BLOCKS.has(next.blockedCode) ? next.blockedCode : null;
+    const blockOpened = !!block && block !== prev?.blockedCode;
+    set({
+      status: next,
+      ...(opened ? { limitDialog: true } : {}),
+      ...(next.usageLimited ? {} : { limitDialog: false }),
+      ...(blockOpened ? { blockDialog: block } : {}),
+      ...(block ? {} : { blockDialog: null }),
+    });
   };
   return {
     status: null,
     signInError: null,
     signOutUnconfirmed: false,
     limitDialog: false,
+    blockDialog: null,
     epoch: 0,
     load: async () => {
       const epoch = get().epoch;
@@ -109,7 +125,7 @@ export const useChatgptStore = create<ChatgptState>((set, get) => {
       }
     },
     clearLimit: async () => {
-      set({ limitDialog: false });
+      set({ limitDialog: false, blockDialog: null });
       try {
         apply(await sei.chatgptClearLimit());
       } catch {
@@ -117,8 +133,16 @@ export const useChatgptStore = create<ChatgptState>((set, get) => {
       }
     },
     closeLimitDialog: () => set({ limitDialog: false }),
+    closeBlockDialog: () => set({ blockDialog: null }),
     reset: () => {
-      set((s) => ({ status: null, signInError: null, signOutUnconfirmed: false, limitDialog: false, epoch: s.epoch + 1 }));
+      set((s) => ({
+        status: null,
+        signInError: null,
+        signOutUnconfirmed: false,
+        limitDialog: false,
+        blockDialog: null,
+        epoch: s.epoch + 1,
+      }));
       void get().load();
     },
   };

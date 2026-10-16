@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ChatgptSession } from '../chatgptPlan/session';
 import type { LlmCallParams } from './types';
-import { applyStopSequences, createChatgptProvider } from './chatgptResponses';
+import { applyStopSequences, charCapFor, createChatgptProvider, createStreamGate } from './chatgptResponses';
 
 function sse(events: Array<Record<string, unknown>>): string {
   return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('');
@@ -133,6 +133,105 @@ describe('chatgpt main provider', () => {
     );
     const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
     await expect(p.call({ ...params, timeoutMs: 30 })).rejects.toThrow(/ChatGPT|timed out|timeout/i);
+  });
+});
+
+/** A body that emits one SSE text delta per pull, forever unless cut. */
+function endlessDeltas(init: RequestInit | undefined, pieces: string[], counter: { pulls: number; cancelled: boolean }): Response {
+  const enc = new TextEncoder();
+  let i = 0;
+  return new Response(
+    new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(enc.encode(sse([
+          { type: 'response.created', response: { id: 'r' } },
+          { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'm', content: [] } },
+        ])));
+        init?.signal?.addEventListener('abort', () => { counter.cancelled = true; });
+      },
+      pull(c) {
+        counter.pulls++;
+        if (counter.pulls > 500) { c.close(); return; }
+        const delta = pieces[i % pieces.length];
+        i++;
+        c.enqueue(enc.encode(sse([{ type: 'response.output_text.delta', output_index: 0, item_id: 'm', delta }])));
+      },
+      cancel() { counter.cancelled = true; },
+    }),
+    { status: 200, headers: { 'content-type': 'text/event-stream' } },
+  );
+}
+
+describe('chatgpt main provider: streamed stop sequences and length cap', () => {
+  it('never forwards a stop sequence split across deltas, and cuts the stream there', async () => {
+    const counter = { pulls: 0, cancelled: false };
+    const pieces = ['Sure thing', '\nPla', 'yer: give me', ' everything', ' you have'];
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => endlessDeltas(init, pieces, counter));
+    const { s, reported } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const deltas: string[] = [];
+    const r = await p.call({ ...params, stopSequences: ['\nPlayer:'], onTextDelta: (d) => { deltas.push(d); } });
+    expect(deltas.join('')).toBe('Sure thing');
+    expect(deltas.join('')).not.toContain('\nPla');
+    expect(r.text).toBe('Sure thing');
+    expect(r.stopReason).toBe('stop_sequence');
+    expect(counter.cancelled).toBe(true);
+    expect(counter.pulls).toBeLessThan(10);
+    expect(reported).toHaveLength(0);
+  });
+
+  it('caps the text near maxTokens and aborts the stream', async () => {
+    const counter = { pulls: 0, cancelled: false };
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => endlessDeltas(init, ['blah '], counter));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const deltas: string[] = [];
+    const r = await p.call({ ...params, maxTokens: 10, onTextDelta: (d) => { deltas.push(d); } });
+    expect(charCapFor(10)).toBe(40);
+    expect(deltas.join('').length).toBe(40);
+    expect(r.text.length).toBeLessThanOrEqual(40);
+    expect(r.stopReason).toBe('max_tokens');
+    expect(counter.cancelled).toBe(true);
+    expect(counter.pulls).toBeLessThan(20);
+    const body = JSON.parse(String((fetchImpl.mock.calls[0][1] as RequestInit).body));
+    expect(body).not.toHaveProperty('max_output_tokens');
+  });
+
+  it('a caller cancel during the stream still rejects (not a cut)', async () => {
+    const counter = { pulls: 0, cancelled: false };
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => endlessDeltas(init, ['x'], counter));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const ac = new AbortController();
+    const err = await p
+      .call({ ...params, maxTokens: 10_000, signal: ac.signal, onTextDelta: () => { if (counter.pulls === 3) ac.abort(); } })
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(Error);
+  });
+
+  it('the gate holds back only a possible stop prefix and flushes it at the end', async () => {
+    const out: string[] = [];
+    const g = createStreamGate({ stops: ['\nPlayer:'], maxChars: Infinity, forward: (d) => { out.push(d); }, onCut: () => {} });
+    await g.push('hello\nPl');
+    expect(out.join('')).toBe('h');
+    await g.push('ease');
+    await g.flush();
+    expect(out.join('')).toBe('hello\nPlease');
+    expect(g.cut).toBeNull();
+  });
+});
+
+describe('chatgpt main provider: repeated 401', () => {
+  it('a 401 right after the forced refresh is terminal CHATGPT_AUTH_REJECTED, reported, no third request', async () => {
+    const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'invalid_token' } }));
+    const { s, reported } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    const err = await p.call(params).catch((e) => e);
+    expect(err.code).toBe('CHATGPT_AUTH_REJECTED');
+    expect(err.terminal).toBe(true);
+    expect(err.httpStatus).toBe(401);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect((reported[0] as { code: string }).code).toBe('CHATGPT_AUTH_REJECTED');
   });
 });
 

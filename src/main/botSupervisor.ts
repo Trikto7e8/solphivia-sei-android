@@ -1142,7 +1142,13 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           const code = err instanceof ChatgptSummonError ? err.code : 'NETWORK_OFFLINE';
           const message = err instanceof Error ? err.message : String(err);
           logger.warn(`[sei/sup] summon blocked: ${code}: ${message}`);
-          if (code === 'CHATGPT_USAGE_LIMIT' || code === 'CHATGPT_NOT_ELIGIBLE' || code === 'CHATGPT_FORBIDDEN') {
+          if (
+            code === 'CHATGPT_USAGE_LIMIT' ||
+            code === 'CHATGPT_NOT_ELIGIBLE' ||
+            code === 'CHATGPT_FORBIDDEN' ||
+            code === 'CHATGPT_AUTH_REJECTED' ||
+            code === 'CHATGPT_REQUEST_REJECTED'
+          ) {
             chatgptSession().reportError(err instanceof ChatgptSummonError ? { code } : err);
           }
           sendStatus({ kind: 'error', error: code as ErrorClass, message, characterId });

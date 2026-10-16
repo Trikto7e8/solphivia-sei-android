@@ -357,8 +357,12 @@ export const ZH_MISC: Record<string, string> = {
     '你已达到 ChatGPT 套餐的用量上限。在 ChatGPT 的「管理用量」中查看何时重置，或在设置中换用其他 AI 选项。',
   "This ChatGPT account can't use its plan in Sei. Sign in with a different account, or pick another AI option in Settings.":
     '这个 ChatGPT 账户无法在 Sei 中使用其套餐。请换一个账户登录，或在设置中选择其他 AI 选项。',
-  'ChatGPT refused this request for your account. Sign in again in Settings, or pick another AI option.':
-    'ChatGPT 拒绝了你账户的这次请求。请在设置中重新登录，或选择其他 AI 选项。',
+  "ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan. Pick another AI option in Settings.":
+    '目前无法在这里使用 ChatGPT 套餐，可能受你所在地区或套餐的限制。请在设置中选择其他 AI 选项。',
+  "ChatGPT didn't accept Sei's sign-in, even after renewing it. Continue with ChatGPT in Settings to sign in again.":
+    'ChatGPT 不接受 Sei 的登录，即使已经续期也一样。请在设置中点击 Continue with ChatGPT 重新登录。',
+  "ChatGPT didn't accept the request Sei sent, so your companion stopped. Try again, or pick another AI option in Settings.":
+    'ChatGPT 不接受 Sei 发送的请求，所以你的伙伴已停下。请重试，或在设置中选择其他 AI 选项。',
   "The ChatGPT model picked in Settings can't handle this request. Pick another model in Settings and try again.":
     '设置中选择的 ChatGPT 模型无法处理这个请求。请在设置中换一个模型后重试。',
   'Your ChatGPT sign-in ended. Continue with ChatGPT in Settings to sign in again.':

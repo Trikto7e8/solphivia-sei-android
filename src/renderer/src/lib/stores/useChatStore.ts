@@ -160,11 +160,12 @@ export function isOllamaSetupError(err: unknown): boolean {
 
 /**
  * 261017 (issue #46): a ChatGPT-plan answer a retry cannot change (usage
- * limit, signed out, plan use off, account not eligible). Main also raises
+ * limit, signed out, plan use off, account not eligible, sign-in or request
+ * rejected). Main also raises
  * the usage-limit dialog off the session status; the chat line just says it.
  */
 export function isChatgptPlanError(err: unknown): boolean {
-  return /CHATGPT_(USAGE_LIMIT|SIGNED_OUT|PLAN_DISABLED|NOT_ELIGIBLE|FORBIDDEN)/.test(
+  return /CHATGPT_(USAGE_LIMIT|SIGNED_OUT|PLAN_DISABLED|NOT_ELIGIBLE|FORBIDDEN|AUTH_REJECTED|REQUEST_REJECTED)/.test(
     String((err as { message?: string })?.message ?? err),
   );
 }
@@ -189,11 +190,17 @@ export function chatFailureLine(err: unknown): string {
   if (/CHATGPT_USAGE_LIMIT/.test(msg)) {
     return "i can't reply: your ChatGPT plan's usage limit is reached. check Manage usage in ChatGPT, or pick another AI option in Settings.";
   }
-  if (/CHATGPT_SIGNED_OUT|CHATGPT_PLAN_DISABLED/.test(msg)) {
+  if (/CHATGPT_SIGNED_OUT|CHATGPT_PLAN_DISABLED|CHATGPT_AUTH_REJECTED/.test(msg)) {
     return "i can't reply: your ChatGPT sign-in needs attention. continue with ChatGPT in Settings to fix it.";
   }
-  if (/CHATGPT_NOT_ELIGIBLE|CHATGPT_FORBIDDEN/.test(msg)) {
+  if (/CHATGPT_NOT_ELIGIBLE/.test(msg)) {
     return "i can't reply: this ChatGPT account can't be used here. try another account or AI option in Settings.";
+  }
+  if (/CHATGPT_FORBIDDEN/.test(msg)) {
+    return "i can't reply: ChatGPT plan use isn't available here right now, maybe because of your region or plan. pick another AI option in Settings.";
+  }
+  if (/CHATGPT_REQUEST_REJECTED/.test(msg)) {
+    return "i can't reply: ChatGPT didn't accept the request. try again, or pick another AI option in Settings.";
   }
   return "sorry, i couldn't reply just now. try again in a moment?";
 }

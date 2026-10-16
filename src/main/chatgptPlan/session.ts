@@ -160,6 +160,24 @@ export function chatgptError(code: string, detail: string, terminal: boolean): E
   return e;
 }
 
+/**
+ * Terminal answers latched per account until a sign-in, an account switch or
+ * clearBlock(): asking again would only fail the same way (or, for a
+ * rejected sign-in, loop a refresh + 401 on every turn).
+ */
+const LATCHED_BLOCKS = new Set([
+  'CHATGPT_NOT_ELIGIBLE',
+  'CHATGPT_FORBIDDEN',
+  'CHATGPT_AUTH_REJECTED',
+  'CHATGPT_REQUEST_REJECTED',
+]);
+
+const BLOCKED_DETAIL: Record<string, string> = {
+  CHATGPT_AUTH_REJECTED: 'ChatGPT did not accept the sign-in. Sign in with ChatGPT again in Settings',
+  CHATGPT_REQUEST_REJECTED: "ChatGPT rejected Sei's request. Try again, or pick another AI option",
+  default: 'ChatGPT plan usage is not available for this account right now',
+};
+
 // ─── Deps + tuning ────────────────────────────────────────────────────────
 
 export interface ChatgptSessionDeps {
@@ -167,7 +185,8 @@ export interface ChatgptSessionDeps {
   hostId: () => Promise<string>;
   fetchImpl: FetchLike;
   openExternal: (url: string) => Promise<void>;
-  startListener: () => Promise<CallbackListener>;
+  /** Bound to this attempt's state: other callbacks are ignored. */
+  startListener: (expectedState: string) => Promise<CallbackListener>;
   now?: () => number;
   log?: (line: string) => void;
   /** Override the JWKS source (tests sign with their own key). */
@@ -222,6 +241,14 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
   let cache: { key: string; data: VaultData } | null = null;
   let writeChain: Promise<void> = Promise.resolve();
   const refreshing = new Map<string, Promise<AccessToken>>();
+  // Per-account token generation. Sign-in and sign-out bump it; a refresh
+  // that started under an older generation never commits its result (the
+  // sign-out/refresh race would otherwise write tokens back after sign-out).
+  const epochs = new Map<string, number>();
+  const epochOf = (id: string): number => epochs.get(id) ?? 0;
+  const bump = (id: string): void => {
+    epochs.set(id, epochOf(id) + 1);
+  };
   let attempt: AbortController | null = null;
   let usageLimitedUntil = 0;
   let usageLimitedAccount: string | null = null;
@@ -246,12 +273,19 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     return cache.data;
   }
 
-  /** Serialized read-modify-write of the vault. */
+  /**
+   * Serialized read-modify-write of the vault. `fn` edits a COPY, which
+   * becomes the cached state only once it is saved: a failed save (keychain
+   * unavailable) leaves memory exactly as it was on disk.
+   */
   function mutate<T>(fn: (d: VaultData) => T): Promise<T> {
     const run = writeChain.then(async () => {
       const d = await data();
-      const out = fn(d);
-      await deps.vault.save(d);
+      const key = cache!.key;
+      const next = structuredClone(d);
+      const out = fn(next);
+      await deps.vault.save(next);
+      if (cache && cache.key === key) cache.data = next;
       return out;
     });
     writeChain = run.then(
@@ -341,12 +375,12 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       if (opts.accountId && !target) return fail('exchange_failed', 'unknown account');
       const hostId = await deps.hostId();
       const endpoints = await discover();
+      const state = randomToken();
       try {
-        listener = await deps.startListener();
+        listener = await deps.startListener(state);
       } catch (err) {
         return fail('port_unavailable', (err as Error).message);
       }
-      const state = randomToken();
       const nonce = randomToken();
       const pkce = createPkce();
       const pending = {
@@ -419,6 +453,9 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       const id = accountIdOf(outcome.clientId, claims.sub);
       const email = typeof claims.email === 'string' && claims.email ? claims.email : null;
       let enabled = false;
+      // A refresh still in flight for this account must not overwrite the
+      // tokens this sign-in is about to store.
+      bump(id);
       try {
         await mutate((v) => {
           let rec = v.accounts.find((a) => a.id === id);
@@ -481,30 +518,37 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     const d = await data();
     const id = accountId ?? d.activeId;
     const rec = id ? d.accounts.find((a) => a.id === id) : undefined;
-    if (!rec || !rec.refresh_token) {
-      if (rec) await mutate((v) => {
-        const r = v.accounts.find((a) => a.id === rec.id);
-        if (r) clearTokens(r, { keepIdToken: false });
-      });
-      return { ok: true, revoked: true, status: await status() };
-    }
-    // Stop requests first: drop the token everywhere before the network call.
-    const refreshToken = rec.refresh_token;
+    if (!rec) return { ok: true, revoked: true, status: await status() };
+    // New generation first: a refresh already on the wire can no longer
+    // commit, and it revokes the token it was handed (doRefresh).
+    bump(rec.id);
     const clientId = rec.client_id;
-    await mutate((v) => {
+    // Stop requests first: drop the token everywhere before the network call.
+    // The token to revoke is read inside the serialized write, so it is the
+    // NEWEST one even if a refresh committed a rotation a moment ago.
+    const refreshToken = await mutate((v) => {
       const r = v.accounts.find((a) => a.id === rec.id);
+      const newest = r?.refresh_token ?? null;
       // Account/client mapping, email and host id are KEPT for a later sign-in.
       if (r) clearTokens(r, { keepIdToken: false });
+      return newest;
     });
     if (d.activeId === rec.id) emitToken(null);
-    const endpoints = await discover();
-    const revoked = await revokeRefreshToken(deps.fetchImpl, {
-      revocationEndpoint: endpoints.revocation_endpoint,
-      clientId,
-      refreshToken,
-      backoffMs: deps.revokeBackoffMs,
-    });
-    log(`[chatgpt] signed out (${revoked ? 'revoked' : 'revocation not confirmed'})`);
+    // Let an in-flight refresh settle (it discards its result and revokes
+    // its rotated token) so nothing outlives the sign-out.
+    const inflight = refreshing.get(rec.id);
+    if (inflight) await inflight.catch(() => undefined);
+    let revoked = true;
+    if (refreshToken) {
+      const endpoints = await discover();
+      revoked = await revokeRefreshToken(deps.fetchImpl, {
+        revocationEndpoint: endpoints.revocation_endpoint,
+        clientId,
+        refreshToken,
+        backoffMs: deps.revokeBackoffMs,
+      });
+      log(`[chatgpt] signed out (${revoked ? 'revoked' : 'revocation not confirmed'})`);
+    }
     models.delete(rec.id);
     void emitStatus();
     return { ok: true, revoked, status: await status() };
@@ -545,50 +589,77 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       );
     }
     if (blocked && blocked.accountId === id) {
-      throw chatgptError(blocked.code, 'ChatGPT plan usage is not available for this account right now', true);
+      throw chatgptError(blocked.code, BLOCKED_DETAIL[blocked.code] ?? BLOCKED_DETAIL.default, true);
     }
   }
 
   async function doRefresh(rec: StoredAccount): Promise<AccessToken> {
+    const epoch = epochOf(rec.id);
+    const used = rec.refresh_token!;
     const endpoints = await discover();
     let t: TokenResponse;
     try {
       t = await refreshTokens(deps.fetchImpl, {
         tokenEndpoint: endpoints.token_endpoint,
         clientId: rec.client_id,
-        refreshToken: rec.refresh_token!,
+        refreshToken: used,
       });
     } catch (err) {
       if (isTerminalRefreshError(err)) {
-        log(`[chatgpt] refresh rejected (${(err as OAuthError).oauthError}); token set cleared`);
-        await mutate((v) => {
+        // Clear only the token set this refresh was about: a sign-in that
+        // landed meanwhile stored a new, good one.
+        const cleared = await mutate((v) => {
           const r = v.accounts.find((a) => a.id === rec.id);
+          if (!r || r.refresh_token !== used) return false;
           // Keep the id_token: it is the id_token_hint for the re-auth.
-          if (r) clearTokens(r, { keepIdToken: true });
+          clearTokens(r, { keepIdToken: true });
+          return true;
         });
-        emitToken(null);
-        void emitStatus();
+        log(`[chatgpt] refresh rejected (${(err as OAuthError).oauthError})${cleared ? '; token set cleared' : ''}`);
+        if (cleared) {
+          emitToken(null);
+          void emitStatus();
+        }
         throw signedOut('the ChatGPT session expired');
       }
       if (err instanceof OAuthError && err.oauthError === 'invalid_client') {
         throw signedOut('the ChatGPT app registration was not accepted (invalid_client)');
       }
       // Temporary failure: credentials stay; an unexpired token still works.
-      if (rec.access_token && rec.expires_at && rec.expires_at > now()) {
+      if (epochOf(rec.id) === epoch && rec.access_token && rec.expires_at && rec.expires_at > now()) {
         return { token: rec.access_token, expiresAt: rec.expires_at, accountId: rec.id };
       }
       throw chatgptError('CHATGPT_UNAVAILABLE', 'could not refresh the ChatGPT sign-in, try again shortly', false);
     }
-    let out: AccessToken | null = null;
-    await mutate((v) => {
+    // Commit only if nothing replaced or cleared this token set while the
+    // request was on the wire (sign-out, a re-sign-in).
+    const result = await mutate((v): { kind: 'ok'; tok: AccessToken } | { kind: 'stale'; current: AccessToken | null } | null => {
       const r = v.accounts.find((a) => a.id === rec.id);
-      if (!r) return;
+      if (!r) return null;
+      if (epochOf(rec.id) !== epoch || r.refresh_token !== used) {
+        const current = isSignedIn(r) ? { token: r.access_token!, expiresAt: r.expires_at, accountId: r.id } : null;
+        return { kind: 'stale', current };
+      }
       applyTokens(r, t);
-      out = { token: r.access_token!, expiresAt: r.expires_at, accountId: r.id };
+      return { kind: 'ok', tok: { token: r.access_token!, expiresAt: r.expires_at, accountId: r.id } };
     });
-    if (!out) throw signedOut('the ChatGPT account was removed');
-    const fresh = out as AccessToken;
-    if ((await data()).activeId === rec.id) emitToken(fresh);
+    if (!result || result.kind === 'stale') {
+      // The rotated token is live at the server but belongs to nobody now.
+      if (t.refresh_token) {
+        await revokeRefreshToken(deps.fetchImpl, {
+          revocationEndpoint: endpoints.revocation_endpoint,
+          clientId: rec.client_id,
+          refreshToken: t.refresh_token,
+          backoffMs: deps.revokeBackoffMs,
+        }).catch(() => false);
+      }
+      log('[chatgpt] refresh result discarded (signed out or re-signed in meanwhile)');
+      if (result?.current) return result.current;
+      throw signedOut(result ? 'the ChatGPT sign-in ended' : 'the ChatGPT account was removed');
+    }
+    const fresh = result.tok;
+    // Same tick as the generation check: a sign-out cannot slip in between.
+    if (epochOf(rec.id) === epoch && cache?.data.activeId === rec.id) emitToken(fresh);
     return fresh;
   }
 
@@ -638,7 +709,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
         log('[chatgpt] usage limit reached; plan requests paused');
         void emitStatus();
       }
-    } else if (code === 'CHATGPT_NOT_ELIGIBLE' || code === 'CHATGPT_FORBIDDEN') {
+    } else if (typeof code === 'string' && LATCHED_BLOCKS.has(code)) {
       if (!blocked || blocked.code !== code || blocked.accountId !== id) {
         blocked = { code, accountId: id };
         void emitStatus();

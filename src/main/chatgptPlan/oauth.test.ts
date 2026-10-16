@@ -144,7 +144,7 @@ describe('discovery', () => {
 describe('token endpoint', () => {
   async function codeFor(srv: ReturnType<typeof createMockAuthServer>, pkce = createPkce()) {
     const url = buildAuthorizeUrl({ issuedClientId: null, hostId: 'h', redirectUri: callbackUri(1455), state: 'st', nonce: 'nn', codeChallenge: pkce.challenge });
-    const listener = await srv.startListener();
+    const listener = await srv.startListener('st');
     const wait = listener.wait(1000, new AbortController().signal);
     await srv.openExternal(url);
     const q = await wait;
@@ -275,7 +275,7 @@ describe('verifyIdToken', () => {
 
 describe('loopback listener', () => {
   it('binds 127.0.0.1, answers the first /auth/callback and ignores later hits', async () => {
-    const l = await startCallbackListener(0);
+    const l = await startCallbackListener('s', 0);
     try {
       expect(l.redirectUri).toBe(`http://127.0.0.1:${l.port}/auth/callback`);
       const wait = l.wait(5000, new AbortController().signal);
@@ -292,9 +292,34 @@ describe('loopback listener', () => {
     }
   });
 
+  it('ignores a callback with another state (400, no settle) and still accepts the real one', async () => {
+    const l = await startCallbackListener('real-state', 0);
+    try {
+      const wait = l.wait(5000, new AbortController().signal);
+      let settled = false;
+      void wait.then(() => { settled = true; });
+      const forged = await fetch(`http://127.0.0.1:${l.port}/auth/callback?state=forged&code=evil`);
+      expect(forged.status).toBe(400);
+      const stateless = await fetch(`http://127.0.0.1:${l.port}/auth/callback?error=access_denied`);
+      expect(stateless.status).toBe(400);
+      await new Promise((r) => setTimeout(r, 20));
+      expect(settled).toBe(false);
+      const hit = await fetch(`http://127.0.0.1:${l.port}/auth/callback?state=real-state&code=good`);
+      expect(hit.status).toBe(200);
+      const q = await wait;
+      expect(q.get('code')).toBe('good');
+    } finally {
+      l.close();
+    }
+  });
+
+  it('refuses to start without an expected state', async () => {
+    await expect(startCallbackListener('', 0)).rejects.toThrow(/state/);
+  });
+
   it('falls back to an OS port when the preferred one is taken', async () => {
-    const a = await startCallbackListener(0);
-    const b = await startCallbackListener(a.port);
+    const a = await startCallbackListener('s', 0);
+    const b = await startCallbackListener('s', a.port);
     try {
       expect(b.port).not.toBe(a.port);
     } finally {
@@ -304,7 +329,7 @@ describe('loopback listener', () => {
   });
 
   it('rejects on timeout and on abort', async () => {
-    const l = await startCallbackListener(0);
+    const l = await startCallbackListener('s', 0);
     try {
       await expect(l.wait(20, new AbortController().signal)).rejects.toThrow('timeout');
       const ctrl = new AbortController();

@@ -16,8 +16,11 @@
  *      and pushes the status the renderer turns into the usage-limit dialog.
  *
  * Fields the route rejects are never sent, so `maxTokens` (max_output_tokens)
- * and `stopSequences` are not on the wire: stop sequences are applied to the
- * finished text instead, and length is left to the model and the prompt.
+ * and `stopSequences` are not on the wire. Both are enforced on OUR side,
+ * inside the stream (createStreamGate): text deltas are forwarded only up to
+ * the first stop sequence (a held-back tail covers a stop split across
+ * deltas), so a fabricated "\nPlayer:" line is never shown or spoken, and the
+ * stream is cut once the text passes a character cap derived from maxTokens.
  *
  * Timeout: an idle timer armed at `timeoutMs` and re-armed on every received
  * chunk (the Responses stream opens with response.created at once, so this is
@@ -27,7 +30,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { CHATGPT_RESPONSES_URL } from '../../shared/chatgptPlan';
 import type { VisionVerdict } from '../../shared/llmCatalog';
 // The shared wire format (plain JS, imported like other bot helpers).
-import { buildResponsesBody, streamResponses } from '../../bot/brain/llm/responsesWire.js';
+import { authRejectedError, buildResponsesBody, streamResponses } from '../../bot/brain/llm/responsesWire.js';
 import type { ChatgptSession } from '../chatgptPlan/session';
 import { parseToolJsonFallback, synthesizeContent } from './messageMappers';
 import { requestDeadline, timeoutOr } from './timeout';
@@ -45,6 +48,70 @@ export function applyStopSequences(text: string, stops: readonly string[] | unde
     if (i >= 0 && (cut < 0 || i < cut)) cut = i;
   }
   return cut < 0 ? { text, stopped: false } : { text: text.slice(0, cut), stopped: true };
+}
+
+/** Rough chars-per-token for the client-side length cap (English-ish text). */
+export const CHARS_PER_TOKEN = 4;
+
+/** The text cap mirroring `maxTokens` (the route has no max_output_tokens). */
+export function charCapFor(maxTokens: number | undefined): number {
+  return typeof maxTokens === 'number' && maxTokens > 0 ? Math.max(4, Math.ceil(maxTokens * CHARS_PER_TOKEN)) : Infinity;
+}
+
+/**
+ * Streaming gate for stop sequences and the length cap. `push` takes each
+ * text delta; text is forwarded only once it cannot be the start of a stop
+ * sequence, and never past the first stop or the cap. On a cut, `onCut`
+ * fires once (the caller aborts the stream) and later deltas are ignored.
+ * `flush` forwards the held-back tail when the stream ended without a cut.
+ */
+export function createStreamGate(opts: {
+  stops?: readonly string[];
+  maxChars: number;
+  forward?: (d: string) => unknown;
+  onCut: () => void;
+}): {
+  push: (d: string) => Promise<void>;
+  flush: () => Promise<void>;
+  readonly text: string;
+  readonly cut: null | 'stop' | 'length';
+} {
+  const stops = (opts.stops ?? []).filter((x) => !!x);
+  const holdBack = stops.reduce((m, x) => Math.max(m, x.length - 1), 0);
+  let text = '';
+  let forwarded = 0;
+  let cut: null | 'stop' | 'length' = null;
+  const send = async (upTo: number): Promise<void> => {
+    if (upTo <= forwarded) return;
+    const piece = text.slice(forwarded, upTo);
+    forwarded = upTo;
+    if (opts.forward) await opts.forward(piece);
+  };
+  const finish = async (kind: 'stop' | 'length', at: number): Promise<void> => {
+    cut = kind;
+    text = text.slice(0, at);
+    await send(text.length);
+    opts.onCut();
+  };
+  return {
+    async push(d: string) {
+      if (cut) return;
+      text += d;
+      const s = applyStopSequences(text, stops);
+      if (s.stopped) return finish('stop', s.text.length);
+      if (text.length >= opts.maxChars) return finish('length', opts.maxChars);
+      await send(text.length - holdBack);
+    },
+    async flush() {
+      if (!cut) await send(text.length);
+    },
+    get text() {
+      return text;
+    },
+    get cut() {
+      return cut;
+    },
+  };
 }
 
 export function createChatgptProvider(opts: {
@@ -68,23 +135,54 @@ export function createChatgptProvider(opts: {
       toolChoice: p.toolChoice,
       reasoningEffort: opts.reasoningEffort ?? null,
     });
-    const r = (await streamResponses({
-      fetchImpl,
-      url,
-      token,
-      body,
-      signal,
-      onChunk,
-      onTextDelta: p.onTextDelta ? (d: string) => p.onTextDelta!(d) : undefined,
-    })) as { text: string; toolUses: LlmToolUse[]; usage: LlmResult['usage']; stopReason: string | null };
+    // The stream is cut on our side (stop sequence or length cap) through
+    // its own controller, so a cut never reads as the caller's cancel.
+    const inner = new AbortController();
+    const onOuter = (): void => inner.abort();
+    if (signal.aborted) inner.abort();
+    else signal.addEventListener('abort', onOuter, { once: true });
+    const gate = createStreamGate({
+      stops: p.stopSequences,
+      maxChars: charCapFor(p.maxTokens),
+      forward: p.onTextDelta ? (d: string) => p.onTextDelta!(d) : undefined,
+      onCut: () => inner.abort(),
+    });
+    const calls: LlmToolUse[] = [];
+    let r: { text: string; toolUses: LlmToolUse[]; usage: LlmResult['usage']; stopReason: string | null };
+    try {
+      r = (await streamResponses({
+        fetchImpl,
+        url,
+        token,
+        body,
+        signal: inner.signal,
+        onChunk,
+        onTextDelta: (d: string) => gate.push(d),
+        onCall: (c) => {
+          calls.push(c as LlmToolUse);
+        },
+      })) as typeof r;
+    } catch (err) {
+      // Our own cut ended the stream early: what was kept IS the answer.
+      if (!gate.cut || signal.aborted) throw err;
+      r = { text: '', toolUses: calls, usage: {}, stopReason: null };
+    } finally {
+      signal.removeEventListener('abort', onOuter);
+    }
+    await gate.flush();
 
     let text = r.text;
     let toolUses = r.toolUses;
     let stopReason = r.stopReason;
-    const stopped = applyStopSequences(text, p.stopSequences);
-    if (stopped.stopped) {
-      text = stopped.text.trim();
-      stopReason = 'stop_sequence';
+    if (gate.cut) {
+      text = gate.text.trim();
+      stopReason = gate.cut === 'stop' ? 'stop_sequence' : 'max_tokens';
+    } else {
+      const stopped = applyStopSequences(text, p.stopSequences);
+      if (stopped.stopped) {
+        text = stopped.text.trim();
+        stopReason = 'stop_sequence';
+      }
     }
     if (p.toolChoice && toolUses.length === 0 && text) {
       const input = parseToolJsonFallback(text);
@@ -120,10 +218,17 @@ export function createChatgptProvider(opts: {
         return await once(p, tok.token, controller.signal, rearm);
       } catch (err) {
         if ((err as { code?: string })?.code !== 'CHATGPT_AUTH') throw err;
-        // One forced refresh + one retry. A second 401 surfaces as is.
+        // One forced refresh + one retry. A 401 on the retry means the
+        // sign-in itself is refused: terminal, latched by the session, and
+        // the player is asked to sign in again (no loop every turn).
         tok = await session.getAccessToken({ force: true });
         deadline.rearm();
-        return await once(p, tok.token, controller.signal, rearm);
+        try {
+          return await once(p, tok.token, controller.signal, rearm);
+        } catch (again) {
+          if ((again as { code?: string })?.code === 'CHATGPT_AUTH') throw authRejectedError(again);
+          throw again;
+        }
       }
     } catch (err) {
       session.reportError(err);

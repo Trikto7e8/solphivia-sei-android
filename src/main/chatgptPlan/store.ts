@@ -31,6 +31,18 @@ async function atomicWrite(target: string, data: Buffer | string): Promise<void>
   }
 }
 
+/** Rename an unreadable vault to `<name>.unreadable-<stamp>.bak`; never throws. */
+export async function quarantineUnreadable(file: string): Promise<string | null> {
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const bak = `${file}.unreadable-${stamp}.bak`;
+  try {
+    await rename(file, bak);
+    return bak;
+  } catch {
+    return null;
+  }
+}
+
 /** The safeStorage-backed vault for the ACTIVE profile (path read per call). */
 export const electronVault: ChatgptVault = {
   key: () => paths.chatgptAccountsPath(),
@@ -44,9 +56,12 @@ export const electronVault: ChatgptVault = {
     try {
       return parseVault(JSON.parse(safeStorage.decryptString(buf)));
     } catch {
-      // Undecryptable (keychain reset, other machine's copy): treat as no
-      // accounts rather than crashing every LLM call. The next sign-in
-      // overwrites it.
+      // Undecryptable (keychain reset or locked, other machine's copy):
+      // treat as no accounts rather than crashing every LLM call, but move
+      // the file aside first so the next save never destroys it. A later
+      // keychain fix can still recover the tokens (or at least the
+      // registrations) from the .bak.
+      await quarantineUnreadable(paths.chatgptAccountsPath());
       return emptyVault();
     }
   },

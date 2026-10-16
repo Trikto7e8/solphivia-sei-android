@@ -24,7 +24,7 @@ export function chatgptSession(): ChatgptSession {
       hostId: getChatgptHostId,
       fetchImpl: (...args) => globalThis.fetch(...args),
       openExternal: (url) => shell.openExternal(url),
-      startListener: () => startCallbackListener(),
+      startListener: (state) => startCallbackListener(state),
       log: (line) => console.log(line),
     });
     session.onStatus((s: ChatgptStatus) => {

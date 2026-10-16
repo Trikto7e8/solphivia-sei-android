@@ -392,4 +392,10 @@ export const ZH_SCREENS_B: Record<string, string> = {
     '你的伙伴现在使用你的 ChatGPT 套餐运行。符合条件的请求计入你的套餐用量或额度余额，不消耗 Sei 额度。',
   "You've used the ChatGPT plan usage available to Sei for now. Check Manage usage to see when it resets. Sei pauses ChatGPT requests until then.":
     '你目前可供 Sei 使用的 ChatGPT 套餐用量已用完。查看「管理用量」了解何时重置。在此之前，Sei 会暂停 ChatGPT 请求。',
+  'Sign in to ChatGPT again': '重新登录 ChatGPT',
+  "ChatGPT didn't accept Sei's sign-in, even after renewing it. Sign in again to keep using your ChatGPT plan, or pick another AI option in Settings.":
+    'ChatGPT 不接受 Sei 的登录，即使已经续期也一样。请重新登录以继续使用你的 ChatGPT 套餐，或在设置中选择其他 AI 选项。',
+  'ChatGPT rejected the request': 'ChatGPT 拒绝了请求',
+  "ChatGPT didn't accept the request Sei sent, so your companion stopped instead of retrying. Try again, or pick another AI option in Settings.":
+    'ChatGPT 不接受 Sei 发送的请求，所以你的伙伴停了下来，没有反复重试。请重试，或在设置中选择其他 AI 选项。',
 };

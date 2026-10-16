@@ -21,6 +21,7 @@ import {
 import { hasApiKey, loadApiKey } from '../apiKeyStore';
 import { loadConfig } from '../configStore';
 import { buildLocalProviderFor, resolveLocalModel } from './index';
+import type { LlmCallParams } from './types';
 import { ollamaModelVision } from './ollamaCapabilities';
 import { applyAnthropicModelDefaults } from '../../bot/brain/llm/anthropicModelDefaults.js';
 
@@ -134,6 +135,24 @@ export async function listProviderModels(provider: ProviderKind): Promise<ListMo
   }
 }
 
+/**
+ * The Settings "Test" request. The ChatGPT plan route has no
+ * max_output_tokens, so its probe asks for one word and is capped on our
+ * side (chatgptResponses.ts cuts the stream at about maxTokens * 4 chars):
+ * a test never spends real plan usage on a long greeting.
+ */
+export function testCallParams(provider: ProviderKind): LlmCallParams {
+  if (provider === 'chatgpt') {
+    return {
+      system: 'Reply with the single word OK.',
+      maxTokens: 4,
+      messages: [{ role: 'user', content: 'ping' }],
+      timeoutMs: LIST_TIMEOUT_MS,
+    };
+  }
+  return { maxTokens: 1, messages: [{ role: 'user', content: 'hi' }], timeoutMs: LIST_TIMEOUT_MS };
+}
+
 export async function testProvider(provider: ProviderKind, model: string): Promise<TestResult> {
   try {
     if (provider === 'anthropic') {
@@ -155,11 +174,7 @@ export async function testProvider(provider: ProviderKind, model: string): Promi
     const cfg = await loadConfig();
     const p = await buildLocalProviderFor(provider, model || resolveLocalModel(cfg, provider));
     const t0 = Date.now();
-    await p.call({
-      maxTokens: 1,
-      messages: [{ role: 'user', content: 'hi' }],
-      timeoutMs: LIST_TIMEOUT_MS,
-    });
+    await p.call(testCallParams(provider));
     return { ok: true, latencyMs: Date.now() - t0 };
   } catch (err) {
     const msg = String((err as Error)?.message ?? err ?? '');

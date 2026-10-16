@@ -270,6 +270,18 @@ describe('useChatStore.send: model timeout vs user cancel (260926)', () => {
     expect(isOllamaSetupError(down) && isOllamaSetupError(missing)).toBe(true);
     expect(isOllamaSetupError(ipcError('Error: 500 upstream'))).toBe(false);
   });
+
+  it('chatFailureLine names the ChatGPT rejections (261017 review)', async () => {
+    const { chatFailureLine, isChatgptPlanError } = await import('./useChatStore');
+    const auth = ipcError('Error: CHATGPT_AUTH_REJECTED: ChatGPT did not accept the sign-in');
+    const req = ipcError("Error: CHATGPT_REQUEST_REJECTED: ChatGPT rejected Sei's request format");
+    const forbidden = ipcError('Error: CHATGPT_FORBIDDEN: not permitted');
+    expect(chatFailureLine(auth)).toMatch(/sign-in needs attention/);
+    expect(chatFailureLine(req)).toMatch(/didn't accept the request/);
+    expect(chatFailureLine(forbidden)).toMatch(/region or plan/);
+    expect(chatFailureLine(forbidden)).not.toMatch(/sign in again/i);
+    expect(isChatgptPlanError(auth) && isChatgptPlanError(req)).toBe(true);
+  });
 });
 
 /**

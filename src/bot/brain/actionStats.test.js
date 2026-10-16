@@ -222,5 +222,8 @@ describe('llmMetaFromConfig', () => {
     const o = llmMetaFromConfig({ llm: { provider: 'ollama', providers: { ollama: { model: 'qwen3:4b' } } }, anthropic: {} })
     expect(o).toEqual({ provider_kind: 'ollama', llm_provider: 'ollama', model_id: 'qwen3:4b' })
     expect(llmMetaFromConfig({ llm: { provider: 'openai', providers: { openai: { model: 'gpt-5-mini' } } } }).provider_kind).toBe('byok')
+    // 261017 (issue #46): the ChatGPT plan is its own kind, not BYOK.
+    expect(llmMetaFromConfig({ llm: { provider: 'chatgpt', providers: { chatgpt: { model: 'gpt-6-luna' } } } }))
+      .toEqual({ provider_kind: 'chatgpt', llm_provider: 'chatgpt', model_id: 'gpt-6-luna' })
   })
 })

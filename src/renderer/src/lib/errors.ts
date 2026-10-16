@@ -115,7 +115,9 @@ export const ERROR_COPY: Record<ErrorClass, string> = {
   // 261017 (issue #46): ChatGPT plan.
   CHATGPT_USAGE_LIMIT: "You've reached your ChatGPT plan's usage limit. Check Manage usage in ChatGPT to see when it resets, or switch to another AI option in Settings.",
   CHATGPT_NOT_ELIGIBLE: "This ChatGPT account can't use its plan in Sei. Sign in with a different account, or pick another AI option in Settings.",
-  CHATGPT_FORBIDDEN: "ChatGPT refused this request for your account. Sign in again in Settings, or pick another AI option.",
+  CHATGPT_FORBIDDEN: "ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan. Pick another AI option in Settings.",
+  CHATGPT_AUTH_REJECTED: "ChatGPT didn't accept Sei's sign-in, even after renewing it. Continue with ChatGPT in Settings to sign in again.",
+  CHATGPT_REQUEST_REJECTED: "ChatGPT didn't accept the request Sei sent, so your companion stopped. Try again, or pick another AI option in Settings.",
   CHATGPT_UNSUPPORTED: "The ChatGPT model picked in Settings can't handle this request. Pick another model in Settings and try again.",
   CHATGPT_SIGNED_OUT: "Your ChatGPT sign-in ended. Continue with ChatGPT in Settings to sign in again.",
   CHATGPT_PLAN_DISABLED: "ChatGPT plan use isn't turned on for this sign-in. Turn it on in Settings, then try again.",

@@ -7,7 +7,15 @@
 // is replaced by main's pushes (chatgptTokenBridge.onChatgptToken). When it
 // is about to expire, or a call comes back 401, the provider asks main for a
 // fresh one (requestChatgptToken); main refreshes single-flight. A 401 is
-// retried exactly once with the fresh token.
+// retried exactly once with the fresh token; a 401 on that retry is the
+// terminal CHATGPT_AUTH_REJECTED (the sign-in itself is refused, so asking
+// again every turn would only loop).
+//
+// A 400 before this provider has had any request accepted, or on the first
+// request that carries a tool result, is the terminal
+// CHATGPT_REQUEST_REJECTED: the request SHAPE is refused (a preview API
+// change), every turn would fail the same way, and the companion would stand
+// there mute. After a success a 400 stays an ordinary error.
 //
 // Voice-call latency parity with anthropicClient: `onSay` fires the moment
 // the FIRST say() function call's item completes in the stream, and
@@ -19,7 +27,7 @@
 // orchestrator halts the session (onTerminalError) instead of redriving.
 // A blown budget is an AbortError with isTimeout, like anthropicClient.
 
-import { buildResponsesBody, streamResponses } from './responsesWire.js'
+import { authRejectedError, buildResponsesBody, requestRejectedError, streamResponses } from './responsesWire.js'
 import { onChatgptToken, requestChatgptToken } from './chatgptTokenBridge.js'
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses'
@@ -39,6 +47,9 @@ export function createChatgptProvider(config, { fetchImpl = globalThis.fetch, ur
   let expiresAt = Number.isFinite(pcfg.token_expires_at) ? pcfg.token_expires_at : null
   // Vision follows the model (the catalog said so when main resolved it).
   const capabilities = { ...CAPABILITIES, vision: pcfg.vision !== false }
+  // Request-shape bookkeeping for CHATGPT_REQUEST_REJECTED (see the header).
+  let anyAccepted = false
+  let toolRoundTripAccepted = false
 
   const unsubscribe = onChatgptToken((t, exp) => {
     token = t || ''
@@ -90,16 +101,32 @@ export function createChatgptProvider(config, { fetchImpl = globalThis.fetch, ur
     }
     const body = buildResponsesBody({ model, system: systemBlocks, messages, tools, reasoningEffort })
 
+    const carriesToolResult = Array.isArray(messages) && messages.some(m =>
+      Array.isArray(m?.content) && m.content.some(b => b?.type === 'tool_result'))
+
     const attempt = (tok) => streamResponses({ fetchImpl, url, token: tok, body, signal: ctrl.signal, onChunk: arm, onCall })
     try {
       let resp
       try {
-        resp = await attempt(await currentToken())
+        try {
+          resp = await attempt(await currentToken())
+        } catch (err) {
+          if (err?.code !== 'CHATGPT_AUTH') throw err
+          arm()
+          try {
+            resp = await attempt(await freshToken(true))
+          } catch (again) {
+            if (again?.code === 'CHATGPT_AUTH') throw authRejectedError(again)
+            throw again
+          }
+        }
       } catch (err) {
-        if (err?.code !== 'CHATGPT_AUTH') throw err
-        arm()
-        resp = await attempt(await freshToken(true))
+        const shapeSuspect = !anyAccepted || (carriesToolResult && !toolRoundTripAccepted)
+        if (err?.code === 'CHATGPT_HTTP_ERROR' && err.httpStatus === 400 && shapeSuspect) throw requestRejectedError(err)
+        throw err
       }
+      anyAccepted = true
+      if (carriesToolResult) toolRoundTripAccepted = true
       if (spokenSay) resp = collapseSay(resp, spokenSay)
       return resp
     } catch (err) {

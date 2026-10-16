@@ -259,7 +259,11 @@ export function createActionStats({ now = () => Date.now(), unansweredMs = UNANS
 /** The one instance for this bot process (= this summon). */
 export const sessionActionStats = createActionStats()
 
-/** Provider kind for analytics: cloud proxy, the user's own key, or local Ollama. */
+/**
+ * Provider kind for analytics: cloud proxy, the user's own key, local Ollama,
+ * or the player's ChatGPT plan (261017, issue #46; not BYOK: no key, no Sei
+ * credits).
+ */
 export function llmMetaFromConfig(config) {
   const provider = config?.llm?.provider ?? 'anthropic'
   const cloud = provider === 'anthropic' && !!config?.anthropic?.cloudMode
@@ -267,7 +271,7 @@ export function llmMetaFromConfig(config) {
     ? config?.anthropic?.model
     : config?.llm?.providers?.[provider]?.model
   return {
-    provider_kind: cloud ? 'cloud' : provider === 'ollama' ? 'ollama' : 'byok',
+    provider_kind: cloud ? 'cloud' : provider === 'ollama' ? 'ollama' : provider === 'chatgpt' ? 'chatgpt' : 'byok',
     llm_provider: String(provider),
     model_id: typeof model === 'string' ? model : null,
   }

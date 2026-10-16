@@ -8,7 +8,7 @@ import {
   requestChatgptToken,
   setChatgptTokenTransport,
 } from './chatgptTokenBridge.js'
-import { TOOL_NAMESPACE } from './responsesWire.js'
+import { TERMINAL_CHATGPT_CODES, TOOL_NAMESPACE } from './responsesWire.js'
 
 function sse(events) {
   return events.map((e) => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`).join('')
@@ -198,12 +198,48 @@ describe('createChatgptProvider', () => {
     p.dispose()
   })
 
-  it('a second 401 after the refresh is not retried again', async () => {
+  it('a second 401 after the forced refresh is terminal CHATGPT_AUTH_REJECTED (no loop)', async () => {
     setChatgptTokenTransport(() => queueMicrotask(() => deliverChatgptToken({ token: 'tok-2', expiresAt: Date.now() + 3_600_000 })))
     const fetchImpl = vi.fn(async () => errResp(401, { error: { message: 'no' } }))
     const p = createChatgptProvider(config(), { fetchImpl })
-    await expect(p.call(callArgs())).rejects.toMatchObject({ code: 'CHATGPT_AUTH' })
+    const err = await p.call(callArgs()).catch((e) => e)
+    expect(err).toMatchObject({ code: 'CHATGPT_AUTH_REJECTED', terminal: true, httpStatus: 401 })
+    // No `status`: the orchestrator's 401 JWT recovery must not redrive it.
+    expect(err.status).toBeUndefined()
+    expect(TERMINAL_CHATGPT_CODES).toContain(err.code)
     expect(fetchImpl).toHaveBeenCalledTimes(2)
+    p.dispose()
+  })
+
+  it('a 400 on the very first request is terminal CHATGPT_REQUEST_REJECTED', async () => {
+    const fetchImpl = vi.fn(async () => errResp(400, { error: { message: 'Unknown parameter: tools[0].namespace', param: 'tools[0].namespace' } }))
+    const p = createChatgptProvider(config(), { fetchImpl })
+    const err = await p.call(callArgs()).catch((e) => e)
+    expect(err).toMatchObject({ code: 'CHATGPT_REQUEST_REJECTED', terminal: true, httpStatus: 400, param: 'tools[0].namespace' })
+    expect(err.status).toBeUndefined()
+    expect(TERMINAL_CHATGPT_CODES).toContain(err.code)
+    p.dispose()
+  })
+
+  it('a 400 on the first tool round trip is terminal even after plain turns worked', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(okStream(sayAndDig))
+      .mockResolvedValueOnce(errResp(400, { error: { message: 'bad function_call_output' } }))
+      .mockResolvedValueOnce(errResp(400, { error: { message: 'one-off' } }))
+    const p = createChatgptProvider(config(), { fetchImpl })
+    await p.call(callArgs())
+    const roundTrip = callArgs({
+      messages: [
+        { role: 'user', content: 'hi' },
+        { role: 'assistant', content: [{ type: 'tool_use', id: 'call_dig', name: 'dig', input: { x: 1 } }] },
+        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'call_dig', content: 'dug' }] },
+      ],
+    })
+    await expect(p.call(roundTrip)).rejects.toMatchObject({ code: 'CHATGPT_REQUEST_REJECTED' })
+    // A plain turn after successes: an ordinary, non-terminal error.
+    const plain = await p.call(callArgs()).catch((e) => e)
+    expect(plain.code).toBe('CHATGPT_HTTP_ERROR')
+    expect(plain.terminal).toBe(false)
     p.dispose()
   })
 

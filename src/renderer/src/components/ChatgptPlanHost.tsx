@@ -10,14 +10,24 @@
  *   usage (chatgpt.com/settings/usage) is the primary action. Main pauses
  *   plan requests while the limit stands (no retry storm); Try again lifts
  *   the pause for one attempt.
+ *
+ * Plus two of Sei's own, for answers main latches so they are not retried
+ * every turn: "Sign in to ChatGPT again" (a 401 even after a fresh token)
+ * and "ChatGPT rejected the request" (a 400 on Sei's request format).
+ *
+ * The welcome waits until ChatGPT is the backend actually in use (the main
+ * push behind useUiStore.llmProvider), so it never claims "You're using your
+ * ChatGPT plan" while the cloud plan is still selected or the switch failed.
  */
 import React, { useEffect } from 'react';
 import { CHATGPT_USAGE_URL } from '@shared/chatgptPlan';
 import { useT } from '../lib/i18n';
 import { sei } from '../lib/ipcClient';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { useUiStore } from '../lib/stores/useUiStore';
 import { Button } from './Button';
 import { ChatgptLogo } from './ChatgptLogo';
+import { ContinueWithChatGPTButton } from './ContinueWithChatGPTButton';
 import { ModalFooter, ModalShell } from './ModalShell';
 import styles from './ChatgptPlanHost.module.css';
 
@@ -28,6 +38,10 @@ export function ChatgptPlanHost(): React.ReactElement | null {
   const dismissWelcome = useChatgptStore((s) => s.dismissWelcome);
   const clearLimit = useChatgptStore((s) => s.clearLimit);
   const closeLimitDialog = useChatgptStore((s) => s.closeLimitDialog);
+  const blockDialog = useChatgptStore((s) => s.blockDialog);
+  const closeBlockDialog = useChatgptStore((s) => s.closeBlockDialog);
+  const signIn = useChatgptStore((s) => s.signIn);
+  const llmProvider = useUiStore((s) => s.llmProvider);
 
   useEffect(() => {
     const store = useChatgptStore.getState();
@@ -56,7 +70,54 @@ export function ChatgptPlanHost(): React.ReactElement | null {
     );
   }
 
-  if (status && chatgptReady(status) && !status.welcomeSeen) {
+  if (blockDialog === 'CHATGPT_AUTH_REJECTED' && status?.blockedCode === blockDialog) {
+    const signingIn = status.signingIn;
+    return (
+      <ModalShell title={t('Sign in to ChatGPT again')} width={420} onClose={closeBlockDialog} tier="stacked">
+        <p className={styles.body}>
+          {t(
+            "ChatGPT didn't accept Sei's sign-in, even after renewing it. Sign in again to keep using your ChatGPT plan, or pick another AI option in Settings.",
+          )}
+        </p>
+        <ModalFooter>
+          <Button kind="quiet" onClick={closeBlockDialog}>
+            {t('Cancel')}
+          </Button>
+          <ContinueWithChatGPTButton
+            disabled={signingIn}
+            busy={signingIn}
+            onClick={() => {
+              void signIn({ accountId: status.activeId }).then((r) => {
+                if (r?.ok) closeBlockDialog();
+              });
+            }}
+          />
+        </ModalFooter>
+      </ModalShell>
+    );
+  }
+
+  if (blockDialog === 'CHATGPT_REQUEST_REJECTED' && status?.blockedCode === blockDialog) {
+    return (
+      <ModalShell title={t('ChatGPT rejected the request')} width={420} onClose={closeBlockDialog} tier="stacked">
+        <p className={styles.body}>
+          {t(
+            "ChatGPT didn't accept the request Sei sent, so your companion stopped instead of retrying. Try again, or pick another AI option in Settings.",
+          )}
+        </p>
+        <ModalFooter>
+          <Button kind="quiet" onClick={closeBlockDialog}>
+            {t('Close')}
+          </Button>
+          <Button kind="primary" onClick={() => void clearLimit()}>
+            {t('Try again')}
+          </Button>
+        </ModalFooter>
+      </ModalShell>
+    );
+  }
+
+  if (status && llmProvider === 'chatgpt' && chatgptReady(status) && !status.welcomeSeen) {
     return (
       <ModalShell title={null} width={400} escClose={false} tier="stacked" aria-label={t("You're using your ChatGPT plan")}>
         <div className={styles.welcomeHead}>

@@ -296,8 +296,10 @@ describe('SettingsScreen (W5 china-compat: model picker + Test probe)', () => {
     const src = readFileSync(SETTINGS_TSX, 'utf-8');
     expect(src.includes('model: modelId')).toBe(true);
     expect(src.includes('provider_config: pc')).toBe(true);
-    // The current-model readout falls back to the catalog default.
-    expect(src.includes('DEFAULT_MODELS[currentProvider]')).toBe(true);
+    // The current-model readout falls back to the catalog default (the
+    // ChatGPT plan's default comes from its live model list first).
+    expect(src.includes('defaultModelFor(currentProvider)')).toBe(true);
+    expect(src.includes(': DEFAULT_MODELS[provider]')).toBe(true);
   });
 
   it('W5.3: every typed error token maps to a human string', () => {

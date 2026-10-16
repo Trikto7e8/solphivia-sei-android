@@ -19,12 +19,18 @@ import styles from './confirmModal.module.css';
 export interface SwitchBackendConfirmModalProps {
   /** Target backend the user is switching TO. */
   direction: 'cloud-proxy' | 'local';
+  /**
+   * 261017 (issue #46): the switch to local was started from "Use your
+   * ChatGPT plan", so the copy talks about the ChatGPT plan, not an API key.
+   */
+  via?: 'chatgpt';
   onCancel: () => void;
   onConfirm: () => Promise<void>;
 }
 
 export function SwitchBackendConfirmModal({
   direction,
+  via,
   onCancel,
   onConfirm,
 }: SwitchBackendConfirmModalProps): React.ReactElement {
@@ -42,15 +48,30 @@ export function SwitchBackendConfirmModal({
   };
 
   const toCloud = direction === 'cloud-proxy';
-  const title = toCloud ? t('Switch to managed billing?') : t('Switch to your own API key?');
-  const body = toCloud
+  const toChatgpt = !toCloud && via === 'chatgpt';
+  const title = toCloud
+    ? t('Switch to managed billing?')
+    : toChatgpt
+      ? t('Use your ChatGPT plan?')
+      : t('Switch to your own API key?');
+  const body = toChatgpt
+    ? t(
+        "Sei will stop using managed cloud credits and run your companions on your ChatGPT plan instead. ChatGPT plan usage is OpenAI's, separate from Sei's own subscription and credits. This applies to a running bot right away. Your Sei subscription, if you have one, keeps renewing until you cancel it.",
+      )
+    : toCloud
     ? t(
         'Sei will stop using your local API key and route through our managed cloud, billed to your subscription or credits. This applies to a running bot right away. You can switch back any time.',
       )
     : t(
         'Sei will stop using managed cloud credits and route through the API key stored on this device. This applies to a running bot right away. Your subscription keeps renewing until you cancel it.',
       );
-  const ctaLabel = submitting ? t('Switching…') : toCloud ? t('Switch to cloud') : t('Switch to my key');
+  const ctaLabel = submitting
+    ? t('Switching…')
+    : toCloud
+      ? t('Switch to cloud')
+      : toChatgpt
+        ? t('Use ChatGPT plan')
+        : t('Switch to my key');
 
   return (
     <ModalShell

@@ -17,6 +17,20 @@ import { LLM_PROVIDER_KINDS } from './config.js'
 
 const nonEmpty = (v) => (typeof v === 'string' && v.trim() ? v.trim() : null)
 
+/**
+ * 261017 (issue #46): the ChatGPT-plan extras main ships beside the access
+ * token. Junk is dropped field by field (the schema would reject it).
+ */
+function chatgptExtras(llm) {
+  if (!llm || typeof llm !== 'object') return {}
+  const out = {}
+  if (Number.isFinite(llm.token_expires_at)) out.token_expires_at = llm.token_expires_at
+  const effort = nonEmpty(llm.reasoning_effort)
+  if (effort) out.reasoning_effort = effort
+  if (typeof llm.vision === 'boolean') out.vision = llm.vision
+  return out
+}
+
 const validUrl = (v) => {
   const s = nonEmpty(v)
   if (!s) return null
@@ -63,7 +77,9 @@ export function applyLlmInit(rawConfig, llm, apiKey) {
   const pcfg = {
     ...(provider === 'ollama' ? {} : { api_key: key }), // ollama has no key field
     ...(model ? { model } : {}),
-    ...(baseUrl ? { base_url: baseUrl } : {}),
+    // chatgpt has one fixed endpoint (the plan route); no base_url override.
+    ...(baseUrl && provider !== 'chatgpt' ? { base_url: baseUrl } : {}),
+    ...(provider === 'chatgpt' ? chatgptExtras(llm) : {}),
   }
   out.llm = { provider, providers: { [provider]: pcfg } }
   return out
@@ -95,7 +111,8 @@ export function applyLlmInit(rawConfig, llm, apiKey) {
  *
  * @param {object} config  the PARSED live config (mutated)
  * @param {{cloudMode?:{baseURL:string,authToken:string}, api_key?:string,
- *          llm?:{provider?:string,model?:string,base_url?:string,api_key?:string}}} backend
+ *          llm?:{provider?:string,model?:string,base_url?:string,api_key?:string,
+                token_expires_at?:number,reasoning_effort?:string,vision?:boolean}}} backend
  * @returns {string} the provider kind now in effect ('anthropic' | 'openai' | ...)
  */
 export function applyLlmSwitch(config, backend) {
@@ -137,7 +154,8 @@ export function applyLlmSwitch(config, backend) {
     ...prev,
     ...(provider === 'ollama' ? {} : { api_key: key }), // ollama has no key field
     ...(model ? { model } : {}),
-    ...(baseUrl ? { base_url: baseUrl } : {}),
+    ...(baseUrl && provider !== 'chatgpt' ? { base_url: baseUrl } : {}),
+    ...(provider === 'chatgpt' ? chatgptExtras(llm) : {}),
   }
   return provider
 }

@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { MICRO } from '../bench/micro.mjs'
 import { WEIGHTS } from './scorecard.mjs'
+import { COMPANION_MODEL } from '../report.mjs'
 
 const pc = (x) => (x == null || !Number.isFinite(x) ? 'n/a' : `${Math.round(100 * x)}%`)
 const ci = (c) => (c && Number.isFinite(c[0]) ? `${Math.round(100 * c[0])}-${Math.round(100 * c[1])}%` : 'n/a')
@@ -24,7 +25,7 @@ function scorecardSection(L, sc, rows) {
   if (Object.keys(sc.micro).length) {
     L.push('## Action benchmarks')
     L.push('')
-    L.push('Fixed arena state, one order, success read from the server. Brain = the real bot hears the order and decides (Haiku 5.5). Direct = the same bot code with the actions called straight, no LLM. Brain fails where direct passes = a brain problem; both fail = a skill problem.')
+    L.push(`Fixed arena state, one order, success read from the server. Brain = the real bot hears the order and decides (${COMPANION_MODEL}). Direct = the same bot code with the actions called straight, no LLM. Brain fails where direct passes = a brain problem; both fail = a skill problem.`)
     L.push('')
     L.push('| benchmark | brain success | 95% CI | direct success | 95% CI | median s to success (brain / direct) | invalid |')
     L.push('|---|---:|---:|---:|---:|---:|---:|')
@@ -118,7 +119,7 @@ function costSection(L, config, byRef) {
   const ss = config.suiteSeconds || {}
   L.push('## Cost and time')
   L.push('')
-  L.push(`Companion (Haiku 5.5) ${usd(comp)}, free-play player (Haiku) ${usd(player)}, judge (Opus 5.5) ${usd(judge)}. **Total ${usd(total)}** (list prices from token usage).`)
+  L.push(`Companion (${COMPANION_MODEL}) ${usd(comp)}, free-play player (Haiku) ${usd(player)}, judge (Opus 5.5) ${usd(judge)}. **Total ${usd(total)}** (list prices from token usage).`)
   L.push('')
   L.push(`Wall time ${mins(config.wallSeconds)}: micro ${mins(ss.micro)}, scripted conversations ${mins(ss.convo)}, free play ${mins(ss.freeplay)}, judge tail ${mins(ss.judgeTail)}.`)
   L.push('')
@@ -129,7 +130,7 @@ export function writeScorecardReport(file, { config, byRef, cmp, rows }) {
   const refs = config.refs
   L.push(`# Companion quality scorecard: ${path.basename(path.dirname(file))}`)
   L.push('')
-  L.push(`Bot code: ${refs.map((r) => `${r.label === 'run' ? '' : `${r.label} = `}${r.ref} (${r.sha.slice(0, 9)})`).join(', ')}. ${config.quick ? 'Quick subset.' : (config.cfg?.suites?.length === 3 ? 'Full scorecard.' : `Partial run (suites: ${config.cfg?.suites?.join(', ')}).`)} Companion Sui on claude-haiku-5-5; judge claude-opus-5-5.`)
+  L.push(`Bot code: ${refs.map((r) => `${r.label === 'run' ? '' : `${r.label} = `}${r.ref} (${r.sha.slice(0, 9)})`).join(', ')}. ${config.quick ? 'Quick subset.' : (config.cfg?.suites?.length === 3 ? 'Full scorecard.' : `Partial run (suites: ${config.cfg?.suites?.join(', ')}).`)} Companion Sui on ${COMPANION_MODEL}; judge claude-opus-5-5.`)
   L.push('')
   L.push('How to read: every rate has a 95% interval. A change between two scorecards is real only if it falls outside the interval; use `--compare <refA> <refB>` (same worlds, scripts and seeds, interleaved) for a proper paired delta.')
   L.push('')

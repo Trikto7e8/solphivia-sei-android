@@ -53,6 +53,9 @@ import type { AvatarMode, UserConfig } from '@shared/characterSchema';
 import type { LlmListModelsResult, SpeechPackStatePush } from '@shared/ipc';
 import styles from './SettingsScreen.module.css';
 import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
+import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 
 const API_KEY_BULLET_LEN = 24;
 
@@ -142,6 +145,8 @@ export function SettingsScreen(): React.ReactElement {
   // CONTEXT D-57. Subscription cancel/manage lives on the Playtime screen →
   // "Manage billing" (Polar portal), not here.
   const aiBackendKind = useCreditsStore((s) => s.ai_backend_kind);
+  // 261017 (issue #46): the ChatGPT-plan sign-in (main owns the tokens).
+  const chatgptStatus = useChatgptStore((s) => s.status);
   // WR-05 follow-up: flipping the backend mid-bot applies LIVE — main's
   // proxy.configure handler rebuilds the running utilityProcess's Anthropic SDK
   // in place. This notice is a positive confirmation that the swap reached the
@@ -154,12 +159,22 @@ export function SettingsScreen(): React.ReactElement {
   // modal instead of toggling directly. Non-null = modal is open for that
   // target backend; cancelling leaves ai_backend_kind (and the Seg) untouched.
   const [pendingSwitch, setPendingSwitch] = useState<null | 'cloud-proxy' | 'local'>(null);
+  // 261017 (issue #46): a cloud -> local switch started from "Use your
+  // ChatGPT plan" also picks the ChatGPT plan as the provider, on confirm.
+  const [switchVia, setSwitchVia] = useState<null | 'chatgpt'>(null);
   useEffect(() => {
     if (!botRunning) setSwitchNotice(null);
   }, [botRunning]);
   const confirmSwitch = async (): Promise<void> => {
     const target = pendingSwitch;
     if (!target) return;
+    if (target === 'local' && switchVia === 'chatgpt') {
+      // Provider first, so the running bot's live switch (and the next
+      // summon) resolve the ChatGPT plan, never the old BYOK provider.
+      const base = cfg ?? (await sei.getConfig());
+      await sei.saveConfig({ ...base, provider: 'chatgpt', provider_config: base.provider_config ?? {} });
+      setEditingKey(false);
+    }
     await window.sei.proxyConfigure(target);
     // 260725: re-seed the local whole-config copy so later wholesale saves
     // from this screen carry the new backend kind, not the mount-time value.
@@ -172,6 +187,7 @@ export function SettingsScreen(): React.ReactElement {
       setSwitchNotice(target === 'cloud-proxy' ? 'switched-to-cloud' : 'switched-to-local');
     }
     setPendingSwitch(null);
+    setSwitchVia(null);
   };
   const [cfg, setCfg] = useState<UserConfig | null>(null);
   const [hasKey, setHasKey] = useState<boolean>(false);
@@ -539,6 +555,11 @@ export function SettingsScreen(): React.ReactElement {
       return t('The provider rejected your key. Check that it is correct and active.');
     if (token === 'timeout') return t('Timed out. Check your connection and try again.');
     if (token === 'network') return t('Could not reach the provider. Check your connection.');
+    if (token === 'chatgpt_signed_out') return t('Sign in with ChatGPT first.');
+    if (token === 'chatgpt_plan_disabled') return t('Turn on ChatGPT plan use first.');
+    if (token === 'chatgpt_usage_limit') return t("You've reached your ChatGPT plan's usage limit.");
+    if (token === 'chatgpt_not_eligible' || token === 'chatgpt_forbidden')
+      return t("This ChatGPT account can't use its plan in Sei.");
     if (token.startsWith('http_'))
       return t('The provider returned an error (HTTP {status}).', { status: token.slice(5) });
     return t('Something went wrong. Try again.');
@@ -653,6 +674,12 @@ export function SettingsScreen(): React.ReactElement {
   };
 
   const currentProvider: Provider = (cfg?.provider ?? 'anthropic') as Provider;
+  /** The default a provider rides when no model is stored. The ChatGPT plan's
+   *  comes from the signed-in account's catalog (what main resolves too). */
+  const defaultModelFor = (provider: Provider): string =>
+    provider === 'chatgpt' && chatgptStatus?.models.length
+      ? pickDefaultChatgptModel(chatgptStatus.models)
+      : DEFAULT_MODELS[provider];
 
   // ui-A1: provider tile click changes config.provider AND clears any existing
   // api key (the prior key is for a different vendor; reusing it would silently
@@ -664,13 +691,18 @@ export function SettingsScreen(): React.ReactElement {
     try {
       await sei.saveConfig({ ...cfg, provider: next, provider_config: cfg.provider_config ?? {} });
       setCfg({ ...cfg, provider: next });
-      try {
-        await sei.saveApiKey('');
-        setHasKey(false);
-      } catch {
-        // best-effort
+      // 261017: the ChatGPT plan uses no API key, so switching TO it leaves
+      // the saved key alone and opens no key editor. Switching away from it
+      // still clears, as before (the slot may hold another vendor's key).
+      if (next !== 'chatgpt') {
+        try {
+          await sei.saveApiKey('');
+          setHasKey(false);
+        } catch {
+          // best-effort
+        }
       }
-      setEditingKey(true);
+      setEditingKey(next !== 'chatgpt');
       setKeyDraft('');
       setKeyError(null);
       // W5: a different vendor lists different models — drop the open picker
@@ -1063,6 +1095,20 @@ export function SettingsScreen(): React.ReactElement {
             </p>
           ) : null}
 
+          {/* 261017 (issue #46): the ChatGPT plan is offered on every Sei plan,
+              Free included, so a cloud account sees the card too. Choosing it
+              switches the backend to local (with its own confirm) and picks
+              the ChatGPT plan as the provider. */}
+          {aiBackendKind === 'cloud-proxy' && authState.kind === 'signed_in' ? (
+            <ChatgptPlanSettings
+              active={false}
+              onUsePlan={() => {
+                setSwitchVia('chatgpt');
+                setPendingSwitch('local');
+              }}
+            />
+          ) : null}
+
           {/* Provider + API key — local (BYOK) mode only. */}
           {aiBackendKind === 'local' ? (
             <>
@@ -1077,7 +1123,9 @@ export function SettingsScreen(): React.ReactElement {
               {/* Ollama is keyless (260915): no key row, no "Not set" warning —
                   a local server authenticates nothing, so asking for a key
                   read as a blocker to people setting up local models. */}
-              {currentProvider === 'ollama' ? (
+              {currentProvider === 'chatgpt' ? (
+                <ChatgptPlanSettings active onUsePlan={() => undefined} />
+              ) : currentProvider === 'ollama' ? (
                 <p className={styles.helper}>{t('Ollama runs on your computer and needs no API key.')}</p>
               ) : (
               <div className={styles.row}>
@@ -1114,19 +1162,21 @@ export function SettingsScreen(): React.ReactElement {
                 )}
               </div>
               )}
-              {keyError && currentProvider !== 'ollama' ? <div className={styles.errorRow}>{keyError}</div> : null}
+              {keyError && currentProvider !== 'ollama' && currentProvider !== 'chatgpt' ? (
+                <div className={styles.errorRow}>{keyError}</div>
+              ) : null}
 
               {/* W5 (260817): model picker. Shown once the provider can list
                   models (a saved key, or Ollama which needs none). Persists to
                   provider_config[provider].model — what resolveLocalModel and
                   the bot init payload read. */}
-              {hasKey || currentProvider === 'ollama' ? (
+              {(currentProvider === 'chatgpt' ? chatgptReady(chatgptStatus) : hasKey || currentProvider === 'ollama') ? (
                 <>
                   <div className={styles.row}>
                     <span className={styles.label}>{t('Model')}</span>
                     <span className={styles.monoValue}>
                       {storedModelFor(currentProvider) ??
-                        `${DEFAULT_MODELS[currentProvider]} · ${t('default')}`}
+                        `${defaultModelFor(currentProvider)} · ${t('default')}`}
                     </span>
                     <Button kind="ghost" size="sm" onClick={() => void onOpenModelPicker()}>
                       {t('Choose model')}
@@ -1165,7 +1215,7 @@ export function SettingsScreen(): React.ReactElement {
                                   .join(' ')}
                                 onClick={() => void onPickModel(m.id)}
                               >
-                                <span className={styles.monoValue}>{m.id}</span>
+                                <span className={styles.monoValue}>{m.label ?? m.id}</span>
                                 {m.vision === 'no' ? (
                                   <span className={styles.modelMark}>{t('no vision')}</span>
                                 ) : null}
@@ -1223,6 +1273,12 @@ export function SettingsScreen(): React.ReactElement {
                     </p>
                   ) : null}
                 </>
+              ) : null}
+
+              {/* 261017 (issue #46): the "Use your ChatGPT plan" card, offered
+                  beside every other local provider. */}
+              {currentProvider !== 'chatgpt' ? (
+                <ChatgptPlanSettings active={false} onUsePlan={() => onChangeProvider('chatgpt')} />
               ) : null}
             </>
           ) : null}
@@ -1964,7 +2020,11 @@ export function SettingsScreen(): React.ReactElement {
       {pendingSwitch ? (
         <SwitchBackendConfirmModal
           direction={pendingSwitch}
-          onCancel={() => setPendingSwitch(null)}
+          via={switchVia ?? undefined}
+          onCancel={() => {
+            setPendingSwitch(null);
+            setSwitchVia(null);
+          }}
           onConfirm={confirmSwitch}
         />
       ) : null}

@@ -75,6 +75,7 @@ import { BotCrashModal } from './components/BotCrashModal';
 import { SetupWizardModal } from './components/SetupWizardModal';
 import { LogsBar } from './components/LogsBar';
 import { UpdatePopup, type UpdatePopupState } from './components/UpdatePopup';
+import { ChatgptPlanHost } from './components/ChatgptPlanHost';
 import { UpdatePill, type UpdatePillState } from './components/UpdatePill';
 import { NoticesInboxModal } from './components/NoticesInboxModal';
 import { RecoveryPrompt } from './components/recovery/RecoveryPrompt';
@@ -1121,6 +1122,8 @@ export function App(): React.ReactElement {
           WizardStepMachine), so suppress the global modal there to avoid a
           double-render. Elsewhere (Settings "Re-run setup") it works as before. */}
       {view.kind !== 'skin-setup' ? <SetupWizardModal /> : null}
+      {/* 261017 (issue #46): ChatGPT-plan welcome + usage-limit dialogs. */}
+      <ChatgptPlanHost />
       {updatePopup ? (
         <UpdatePopup
           state={updatePopup}

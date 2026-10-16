@@ -101,6 +101,14 @@ describe('ERROR_COPY', () => {
     }
   });
 
+  // 261017 (issue #46, review round 2): a 403 without a known code is a
+  // region / plan restriction; signing in again cannot fix it.
+  it('a ChatGPT 403 names a region or plan restriction, not a re-sign-in', () => {
+    expect(ERROR_COPY.CHATGPT_FORBIDDEN).toMatch(/region|plan/);
+    expect(ERROR_COPY.CHATGPT_FORBIDDEN.toLowerCase()).not.toContain('sign in again');
+    expect(ERROR_COPY.CHATGPT_AUTH_REJECTED.toLowerCase()).toContain('sign in again');
+  });
+
   // Retrying a modded-host rejection is the one action guaranteed not to work,
   // so the copy must not suggest it.
   it('does not tell a modded-host user to press Summon again', () => {

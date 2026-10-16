@@ -116,6 +116,10 @@ import {
   type AttributionSource,
 } from '@shared/attribution';
 import styles from './onboard.module.css';
+import { ContinueWithChatGPTButton } from '../components/ContinueWithChatGPTButton';
+import { signInFailureText } from '../components/ChatgptPlanSettings';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 
 /* ── Script ──────────────────────────────────────────────────────────────── */
 
@@ -2081,6 +2085,18 @@ function LocalSetupPanel(props: {
     );
   }
 
+  if (step === 'key' && provider === 'chatgpt') {
+    return (
+      <ChatgptKeyStep
+        onProvider={(next) => setProvider(next)}
+        onSignedIn={(defaultModel) => {
+          setModel(defaultModel);
+          setStep('model');
+        }}
+      />
+    );
+  }
+
   if (step === 'key') {
     return (
       <div className={styles.panel}>
@@ -2192,6 +2208,101 @@ function LocalSetupPanel(props: {
  * unlistable provider never blocks the wizard. Non-vision models get a short
  * hint because two whole surfaces (screen sharing, Draw!) need vision.
  */
+/**
+ * 261017 (issue #46): the key step when "ChatGPT plan" is picked. No key:
+ * Continue with ChatGPT signs in through the browser (main owns the tokens),
+ * then the wizard moves on to the model step with the account's default.
+ */
+function ChatgptKeyStep(props: {
+  onProvider: (next: ProviderKind) => void;
+  onSignedIn: (defaultModel: string) => void;
+}): React.ReactElement {
+  const tt = useT();
+  const status = useChatgptStore((s) => s.status);
+  const signInError = useChatgptStore((s) => s.signInError);
+  const [busy, setBusy] = useState(false);
+  const [planOff, setPlanOff] = useState(false);
+  useEffect(() => {
+    void useChatgptStore.getState().load();
+  }, []);
+  const defaultModel = (): string => {
+    const models = useChatgptStore.getState().status?.models ?? [];
+    return models.length ? pickDefaultChatgptModel(models) : DEFAULT_MODELS.chatgpt;
+  };
+  const signIn = async (enablePlan: boolean): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setPlanOff(false);
+    try {
+      const st = useChatgptStore.getState();
+      const r = await st.signIn(
+        enablePlan ? { accountId: st.status?.activeId ?? null, enablePlan: true } : undefined,
+      );
+      if (r?.ok) {
+        if (r.planEnabled) props.onSignedIn(defaultModel());
+        else setPlanOff(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ready = chatgptReady(status);
+  const active = status?.accounts.find((a) => a.id === status.activeId);
+  const errorLine = signInError ? signInFailureText(signInError, tt) : null;
+  return (
+    <div className={styles.panel}>
+      <p className={styles.panelText}>{tt('Pick your model provider.')}</p>
+      <select
+        className={styles.fieldSelect}
+        value="chatgpt"
+        onChange={(e) => props.onProvider(e.target.value as ProviderKind)}
+        aria-label={tt('Model provider')}
+      >
+        {PROVIDERS.map((p) => (
+          <option key={p.value} value={p.value}>
+            {tt(p.label)}
+          </option>
+        ))}
+      </select>
+      <p className={styles.panelNote}>
+        {tt('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')}
+      </p>
+      {ready && active ? (
+        <>
+          <p className={styles.panelNote}>{tt('Signed in as {name}.', { name: active.label })}</p>
+          <button className={`${styles.pill} ${styles.pillWide}`} onClick={() => props.onSignedIn(defaultModel())}>
+            {tt('Continue')}
+          </button>
+        </>
+      ) : planOff ? (
+        <>
+          <p className={styles.panelError} role="alert">
+            {tt('ChatGPT plan use was not turned on when you signed in, so Sei cannot use your plan yet.')}
+          </p>
+          <button className={`${styles.pill} ${styles.pillWide}`} disabled={busy} onClick={() => void signIn(true)}>
+            {tt('Turn on ChatGPT plan')}
+          </button>
+        </>
+      ) : (
+        <ContinueWithChatGPTButton format="black" disabled={busy} busy={busy} onClick={() => void signIn(false)} />
+      )}
+      {busy ? (
+        <>
+          <p className={styles.panelNote}>{tt('Finish signing in with ChatGPT in your browser.')}</p>
+          <button className={styles.quietLink} onClick={() => useChatgptStore.getState().cancelSignIn()}>
+            {tt('Cancel sign-in')}
+          </button>
+        </>
+      ) : null}
+      {errorLine && !busy ? (
+        <p className={styles.panelError} role="alert">
+          {errorLine}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ModelStep(props: {
   provider: ProviderKind;
   model: string;
@@ -2202,9 +2313,11 @@ function ModelStep(props: {
   const tt = useT();
   const { provider, model, setModel } = props;
   // null = loading. An empty array = listing failed → free-text fallback.
-  const [models, setModels] = useState<Array<{ id: string; vision: 'yes' | 'no' | 'unknown' }> | null>(
-    null,
-  );
+  const [models, setModels] = useState<Array<{
+    id: string;
+    vision: 'yes' | 'no' | 'unknown';
+    label?: string;
+  }> | null>(null);
   useEffect(() => {
     let cancelled = false;
     sei.llmListModels(provider).then(
@@ -2265,7 +2378,7 @@ function ModelStep(props: {
         >
           {options.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.id}
+              {'label' in m && m.label ? m.label : m.id}
             </option>
           ))}
         </select>

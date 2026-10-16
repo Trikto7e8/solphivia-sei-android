@@ -27,6 +27,34 @@ export interface LlmInitSection {
   model?: string;
   base_url?: string;
   api_key: string;
+  /** 261017 (issue #46), chatgpt only: access-token expiry (epoch ms). */
+  token_expires_at?: number;
+  /** chatgpt only: the catalog's reasoning effort for the model, when listed. */
+  reasoning_effort?: string;
+  /** chatgpt only: whether the model takes images (catalog input modalities). */
+  vision?: boolean;
+}
+
+/**
+ * 261017 (issue #46): the ChatGPT-plan section. The credential is the
+ * session's short-lived ACCESS token (never the refresh token, which stays
+ * in main); the model comes from the account's catalog, resolved by main.
+ */
+export function buildChatgptInitSection(opts: {
+  accessToken: string;
+  expiresAt: number;
+  model: string;
+  reasoningEffort: string | null;
+  vision: boolean;
+}): LlmInitSection {
+  return {
+    provider: 'chatgpt',
+    api_key: opts.accessToken,
+    model: opts.model,
+    token_expires_at: opts.expiresAt,
+    ...(opts.reasoningEffort ? { reasoning_effort: opts.reasoningEffort } : {}),
+    vision: opts.vision,
+  };
 }
 
 /**

@@ -10,6 +10,7 @@
 
 import { createLlmProvider } from './llm/index.js'
 import { applyLlmSwitch } from '../llmInit.js'
+import { TERMINAL_CHATGPT_CODES } from './llm/responsesWire.js'
 import { VISION_MESSAGES_PATH } from './anthropicClient.js'
 import { createTokenBucket } from './rateLimiter.js'
 import { createDebouncer, createThrottle } from './debounce.js'
@@ -4683,6 +4684,23 @@ function maybeWarnByteCap(loop, warned) {
         // tool support, or not pulled). Every turn would fail identically and
         // the companion just stood there mute; stop with a plain reason the
         // launch panel shows (ERROR_COPY) instead.
+        // 261017 (issue #46): a ChatGPT-plan answer no retry can change
+        // (usage limit reached, account not eligible, signed out, plan use
+        // disabled). Stop once, quietly; main raises the matching dialog off
+        // the lifecycle error. Redriving would only spend the next turn on
+        // the same refusal.
+        if (err && TERMINAL_CHATGPT_CODES.includes(err.code)) {
+          _halted = true
+          logger.warn?.(`[sei/orch] ChatGPT plan: ${err.code} — stopping the session`)
+          if (typeof onTerminalError === 'function') {
+            try {
+              onTerminalError({ error: err.code, message: err.message })
+            } catch (cbErr) {
+              logger.warn?.(`[sei/orch] onTerminalError callback threw: ${cbErr && cbErr.message}`)
+            }
+          }
+          return
+        }
         if (err && (err.code === 'OLLAMA_MODEL_NO_TOOLS' || err.code === 'OLLAMA_MODEL_MISSING')) {
           _halted = true
           logger.warn?.(`[sei/orch] ${err.message} — stopping the session`)

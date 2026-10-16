@@ -14,6 +14,7 @@ import { createAnthropicProvider } from './anthropicProvider.js'
 import { createOpenAICompatProvider } from './openaiCompatProvider.js'
 import { createGeminiProvider } from './geminiProvider.js'
 import { createOllamaProvider } from './ollamaProvider.js'
+import { createChatgptProvider } from './chatgptProvider.js'
 
 // These providers share the OpenAI Chat Completions wire format with
 // provider-specific baseURL + bearer auth. Mirrored (deliberately duplicated —
@@ -46,6 +47,8 @@ export const SUPPORTED_PROVIDERS = [
   ...Object.keys(BASE_URLS),
   'gemini',
   'ollama',
+  // 261017 (issue #46): ChatGPT plan ("Continue with ChatGPT"), Responses API.
+  'chatgpt',
 ]
 
 export function createLlmProvider(config, deps = {}) {
@@ -53,6 +56,7 @@ export function createLlmProvider(config, deps = {}) {
   if (kind === 'anthropic') return createAnthropicProvider(config)
   if (kind === 'gemini')    return createGeminiProvider(config, deps)
   if (kind === 'ollama')    return createOllamaProvider(config, deps)
+  if (kind === 'chatgpt')   return createChatgptProvider(config, deps)
   if (BASE_URLS[kind]) {
     return createOpenAICompatProvider(config, { ...deps, kind, defaultBaseURL: BASE_URLS[kind] })
   }

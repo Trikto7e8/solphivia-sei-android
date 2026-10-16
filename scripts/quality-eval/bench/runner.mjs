@@ -10,7 +10,7 @@ import { startCompanion, companionName, PLAYER } from '../lib/companionProc.mjs'
 import { cmds, query, itemCount, entityCount } from '../lib/server.mjs'
 import { walkTo, distTo, countBlocks } from '../lib/player.mjs'
 import { arenaReset, playersReset } from './arena.mjs'
-import { costOf } from '../report.mjs'
+import { COMPANION_MODEL, costOf } from '../report.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const DIRECT_GAP_MS = 800
@@ -138,7 +138,7 @@ export async function runMicroTrial(bench, { mode, rep, pbot, botRepo, outDir, r
       firstActionMs: calls[0] ? calls[0].t - tOrder : null,
       actions: calls.map((c) => c.name),
       chat: ev.filter((e) => e.kind === 'chat_out').map((e) => e.text).slice(0, 12),
-      llm: usage, costUsd: costOf('claude-haiku-5-5', usage),
+      llm: usage, costUsd: costOf(COMPANION_MODEL, usage),
       heldAtOrder,
       trace, // [s since order, player hp, player food, companion distance]
     }

@@ -113,6 +113,9 @@ export function reportableModelId(
 ): string | null {
   if (model === null) return null;
   if (kind === 'cloud') return model;
+  // ChatGPT plan models come from OpenAI's account catalog, never a name the
+  // user typed, so a plain catalog-shaped id is reported as is.
+  if (kind === 'chatgpt' && /^[a-z0-9][a-z0-9.-]*$/.test(model)) return model;
   if (provider === 'anthropic' && /^claude-[a-z0-9.-]+$/.test(model)) return model;
   if (provider && (DEFAULT_MODELS as Record<string, string>)[provider] === model) return model;
   return 'custom';
@@ -148,7 +151,7 @@ export function mcSessionActionsProps(
 
   const meta = stats.meta;
   const kind = meta.provider_kind;
-  out.provider_kind = kind === 'cloud' || kind === 'byok' || kind === 'ollama' ? kind : null;
+  out.provider_kind = kind === 'cloud' || kind === 'byok' || kind === 'ollama' || kind === 'chatgpt' ? kind : null;
   out.llm_provider = cleanString(meta.llm_provider, /^[a-z]{2,20}$/, 20);
   out.model_id = reportableModelId(
     out.provider_kind,

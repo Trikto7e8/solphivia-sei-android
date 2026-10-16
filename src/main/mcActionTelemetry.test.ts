@@ -302,3 +302,16 @@ describe('reportableModelId', () => {
     expect(reportableModelId('byok', 'openai', null)).toBeNull();
   });
 });
+
+describe('ChatGPT plan sessions (261017, issue #46)', () => {
+  it("report provider_kind 'chatgpt' and the catalog model id", () => {
+    const props = mcSessionActionsProps(
+      parseActionStats(snap({ meta: { mc_version: '1.21.4', provider_kind: 'chatgpt', llm_provider: 'chatgpt', model_id: 'gpt-6-luna' } })),
+      ctx,
+    );
+    expect(props.provider_kind).toBe('chatgpt');
+    expect(props.llm_provider).toBe('chatgpt');
+    expect(props.model_id).toBe('gpt-6-luna');
+    expect(reportableModelId('chatgpt', 'chatgpt', 'someone/odd:tag')).toBe('custom');
+  });
+});

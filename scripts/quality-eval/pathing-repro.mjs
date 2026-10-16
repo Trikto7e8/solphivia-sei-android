@@ -23,6 +23,14 @@
 //   cliff_log_find  a tree on a sheer 6-high mesa (nearest) plus one on the
 //                   ground: find oak_log + goTo it, twice, the way the brain did
 //   cliff_log_gather gather 3 oak_log with the same layout
+//   errands03_goto  261017: 15-deep shaft with a dead-end 2-high pocket in its
+//                   wall 2 above the bottom (the errands-03 hole), goTo the player
+//   errands03_offcenter standing on the edge of a block over the open shaft,
+//                   build below 1 (base: "no solid floor below")
+//   errands03_headroom a block right over her head, build below 1: wants a
+//                   quick answer naming that block
+//   buried_vein_find a 48-ore buried coal vein nearer than surface coal:
+//                   find must return the surface coal
 //   plank_room      she stands in a corner of a closed 3x3x3 oak-plank room
 //                   (2-thick shell), axe + pickaxe, the player on its roof:
 //                   goTo the player must NOT break a single plank, and must
@@ -39,7 +47,8 @@ import { serverCtl, cmds, itemCount } from './lib/server.mjs'
 import { connectPlayer, distTo, entityOf } from './lib/player.mjs'
 import { startCompanion, companionName, PLAYER } from './lib/companionProc.mjs'
 import { Vec3 } from 'vec3'
-import { WORLD_RULES, arenaReset, playersReset, tp, tree, S, P, Y } from './bench/arena.mjs'
+import { WORLD_RULES, arenaReset, playersReset, tp, tree, S, P, Y, A } from './bench/arena.mjs'
+const A_FLOOR = A.floor
 
 const argv = process.argv.slice(2)
 const opt = (n, d) => { const i = argv.indexOf(`--${n}`); return i >= 0 ? argv[i + 1] : d }
@@ -232,6 +241,100 @@ const CASES = {
       const n = await itemCount(ctx.bot, '#minecraft:logs')
       return { result: r.result, ms: Date.now() - t0, logs: n, success: n >= 3 }
     },
+  },
+}
+
+// 261017 (pass 12): the errands-03 hole (scorecard 2026-10-16). Below the
+// arena's 8 stone layers is seed terrain, which arenaReset does not restore
+// and which differs from spot to spot (dirt, ore, water), so these cases
+// first fill a stone block under S and carve their hole into it.
+const DEEP = { x0: S.x - 4, x1: S.x + 4, y0: Y - 18, y1: A_FLOOR - 9, z0: S.z - 4, z1: S.z + 4 }
+const deepStone = () => `fill ${DEEP.x0} ${DEEP.y0} ${DEEP.z0} ${DEEP.x1} ${DEEP.y1} ${DEEP.z1} stone`
+const SHAFT_BOTTOM = Y - 15
+const shaftAir = () => `fill ${S.x} ${SHAFT_BOTTOM} ${S.z} ${S.x} ${Y - 1} ${S.z} air`
+
+CASES.errands03_goto = {
+  // A 15-deep 1x1 shaft with a 2-high pocket mined out of its wall two
+  // blocks above the bottom (the two coal ores she dug in errands-03). The
+  // pocket is the shaft's first side opening and a dead end. goTo the player.
+  give: ['stone_pickaxe', 'cobblestone 16'],
+  async run(ctx) {
+    await cmds([
+      deepStone(),
+      shaftAir(),
+      `fill ${S.x + 1} ${SHAFT_BOTTOM + 2} ${S.z} ${S.x + 1} ${SHAFT_BOTTOM + 3} ${S.z} air`,
+      `tp ${ctx.bot} ${S.x + 0.5} ${SHAFT_BOTTOM} ${S.z + 0.5}`,
+    ])
+    await sleep(1500)
+    return gotoPlayer(ctx)
+  },
+}
+
+CASES.errands03_offcenter = {
+  // She stands on the edge of a block with her feet column over the open
+  // shaft (errands-03 at 01:05), then pillars 1: "no solid floor below" on
+  // the base. Success = she rose a block.
+  give: ['stone_pickaxe', 'cobblestone 4'],
+  async run(ctx) {
+    const feet = SHAFT_BOTTOM + 4
+    await cmds([
+      deepStone(),
+      shaftAir(),
+      `fill ${S.x + 1} ${feet} ${S.z} ${S.x + 1} ${feet + 2} ${S.z} air`,
+      `tp ${ctx.bot} ${S.x + 0.8} ${feet} ${S.z + 0.5}`,
+    ])
+    await sleep(1500)
+    const before = (await ctx.comp.probe())?.pos
+    const t0 = Date.now()
+    const r = await ctx.exec('build', { direction: 'below', count: 1, block: 'cobblestone' }, { timeoutMs: 30000 })
+    const ms = Date.now() - t0
+    await sleep(500)
+    const pos = (await ctx.comp.probe())?.pos
+    return { result: r.result, ms, before, pos, success: /^pillared up 1/.test(String(r.result)) && Number(pos?.y) >= feet + 0.9 }
+  },
+}
+
+CASES.errands03_headroom = {
+  // A block right over her head (errands-03 at 01:16), pillar 1. Nothing can
+  // work; success = a quick answer that names the block over her head.
+  give: ['stone_pickaxe', 'cobblestone 4'],
+  async run(ctx) {
+    const feet = SHAFT_BOTTOM + 4
+    await cmds([
+      deepStone(),
+      shaftAir(),
+      `fill ${S.x + 1} ${feet} ${S.z} ${S.x + 1} ${feet + 1} ${S.z} air`,
+      `tp ${ctx.bot} ${S.x + 1.5} ${feet} ${S.z + 0.5}`,
+    ])
+    await sleep(1500)
+    const t0 = Date.now()
+    const r = await ctx.exec('build', { direction: 'below', count: 1, block: 'cobblestone' }, { timeoutMs: 30000 })
+    const ms = Date.now() - t0
+    const pos = (await ctx.comp.probe())?.pos
+    return { result: r.result, ms, pos, success: /no head room/.test(String(r.result)) && String(r.result).includes(`${S.x + 1},${feet + 2},${S.z}`) && ms < 5000 }
+  },
+}
+
+CASES.buried_vein_find = {
+  // A buried coal vein (48 ores, 13-16 blocks down) nearer than the
+  // exposed coal the errands script places on the surface. errands-03's find
+  // returned the vein: the nearest 24 hits were all buried.
+  give: [],
+  async run(ctx) {
+    await cmds([
+      deepStone(),
+      `fill ${S.x + 1} ${Y - 16} ${S.z - 2} ${S.x + 3} ${Y - 13} ${S.z + 1} coal_ore`,
+      `fill 198 ${Y} 10 199 ${Y + 1} 11 coal_ore`,
+    ])
+    await sleep(800)
+    const t0 = Date.now()
+    const f = await ctx.exec('find', { name: 'coal_ore' })
+    const ms = Date.now() - t0
+    let pos = null
+    try { pos = JSON.parse(f.result).pos } catch {}
+    // Leave no vein behind for the cases after this one.
+    await cmds([deepStone()])
+    return { result: f.result, ms, success: !!pos && pos.y >= Y - 1 }
   },
 }
 

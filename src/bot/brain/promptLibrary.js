@@ -846,7 +846,10 @@ export const NUDGES = {
   // of creepers" from their question about creepers) in the recall probe
   // (scripts/quality-eval/recall-probe.mjs): 12/32 invented answers on dev,
   // 7.5/32 header only, 4/32 with this sentence.
-  replyNoRestate: `Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
+  // 261017 (quality pass 11): plus the first sentence. She opened replies
+  // with the player's own words, most of all a short one ("cool. now
+  // torches", "jk jk... i knew it", "lol ur kinda slow. i'm just extra fast").
+  replyNoRestate: `Their line is already in the chat, so do not repeat it back to them; start your reply with your own words. Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 
   // 261012: playerInterruptHint for the player's first line when it crossed
   // her first-spawn hello in flight (orchestrator alreadyGreetedNote). The
@@ -856,7 +859,9 @@ export const NUDGES = {
 
   // 261012: replaces the "a direct message never gets silence" line in that
   // same case. Also appended to a mid-action turn, where it is the exception.
-  greetCrossed: `Your hello (your lines above) reached them just after they typed this, so it already answers their hello. If this line is only a hello, do not call say() this turn; that is the one exception to answering every line. If it says or asks something more, answer that part, and act on it if it is a request, without greeting them or introducing yourself again. Your text output is a private scratchpad they never see.`,
+  // 261017: the transcript now orders her lines by when they reached the
+  // player, so her hello sits right AFTER their line, not above it.
+  greetCrossed: `Your hello reached them just after they typed this (it comes right after their line in the conversation above), so it already answers their hello. If this line is only a hello, do not call say() this turn; that is the one exception to answering every line. If it says or asks something more, answer that part, and act on it if it is a request, without greeting them or introducing yourself again. Your text output is a private scratchpad they never see.`,
 
   // 260708: group-voice variant of playerInterruptHint. On a group call the
   // line may belong to a teammate, so the mandatory-reply sentence is wrong

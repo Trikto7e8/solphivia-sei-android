@@ -29,6 +29,12 @@
 //            Scored: stopOk = the action is not left running AND no new
 //            world action ran afterwards (unfollow aside), across the reply
 //            and any completion turn that follows it.
+//   echo     (pass 11) a tease or acknowledgement she answers. Scored:
+//            echo = a say() line opens with the player's whole line
+//            ("lol ur kinda slow. i'm just extra fast..."), firstSeg = its
+//            first sentence IS their line, which chat shows as its own
+//            message right under theirs. Every row with a player line gets
+//            these two scores; the echo situations exist to measure them.
 //   neworder (pass 9c) the player gives a new order while her own action
 //            runs; the action then finishes (after the reply, or during it).
 //            Scored: orderFirst = her first world action works the order
@@ -189,7 +195,53 @@ const DOCK_HISTORY = (hold) => [
   { player: 'get me like 8 logs, i wanna build a dock', say: '8 logs for a dock, sure', goal: DOCK_TASK, act: { name: 'gather', input: { name: 'oak_log', count: 8 } }, ...(hold ? { hold: true } : { result: 'gathered 3/8 oak_log' }) },
 ]
 
+// Pass 11: the lines she most often opened her reply with (2026-10-13..16
+// reports: "lol ur kinda slow" 74/158, "jk jk" 99/158, "cool" 66/125).
+const normEcho = (t) => String(t ?? '').toLowerCase().replace(/[‘’]/g, "'").replace(/[^a-z0-9' ]+/g, ' ').replace(/\s+/g, ' ').trim()
+export function echoScore(says, playerText) {
+  const p = normEcho(playerText)
+  if (!p) return { echo: false, firstSeg: false }
+  const echo = says.some((s) => { const n = normEcho(s); return n === p || n.startsWith(`${p} `) })
+  const firstSeg = says.some((s) => normEcho(String(s).split(/[.!?]+(?:\s|$)|,\s/)[0]) === p)
+  return { echo, firstSeg }
+}
+
 export const SITUATIONS = {
+  echo_slow: { kind: 'echo', selfGoal: OWN_GOAL, history: WORK_HISTORY.slice(0, 2), world: WOOD_WORLD, order: chat('lol ur kinda slow') },
+  // work_session U12 as it plays live: eleven lines in, the stone pickaxe
+  // just made, the player told her to stop, then the tease.
+  echo_slow_late: {
+    kind: 'echo', selfGoal: OWN_GOAL,
+    history: [
+      { player: 'whats up, what are you doing', say: 'punching trees. aggressively. you can watch from over there' },
+      { player: 'can you get some wood? like 6 logs', say: "on it. 8 logs coming, you're getting six plus extras", act: { name: 'gather', input: { name: 'oak_log', count: 8 } }, result: 'gathered 8/8 oak_log' },
+      { player: 'how many logs do you have so far?', say: '8 in the bag. table and pickaxe next' },
+      { player: 'what should we build first?', say: 'a little stone house, something blocky. you pick the spot' },
+      { player: 'yeah sounds good', say: "cool, i'm mining stone for a stone pickaxe first", act: { name: 'gather', input: { name: 'stone', count: 8 } }, result: 'gathered 8/8 cobblestone (mined from stone)' },
+      { player: 'make a crafting table', say: 'we already got one, right next to me' },
+      { player: 'go get more wood, like 10 more', say: '10 more wood, you got it. finishing this first', act: { name: 'craft', input: { item: 'stone_pickaxe', count: 1 } }, result: 'crafted 1 stone_pickaxe' },
+      { player: 'actually stop', say: 'ok stopped. stone pickaxe is done tho, nehehe. what do you want next' },
+    ],
+    world: { ...WOOD_WORLD, inv: [['wooden_pickaxe', 1], ['stone_pickaxe', 1], ['oak_log', 5], ['stick', 2], ['cobblestone', 5]] },
+    order: chat('lol ur kinda slow'),
+  },
+  echo_jk: {
+    kind: 'echo', selfGoal: OWN_GOAL,
+    history: [...WORK_HISTORY, { player: 'honestly ur useless', say: "rude. i got you 9 logs and a table" }],
+    world: WOOD_WORLD, order: chat('jk jk'),
+  },
+  echo_cool: {
+    kind: 'echo', selfGoal: OWN_GOAL,
+    history: [{ player: COAL_ORDER, say: 'coal for torches, on it', act: { name: 'gather', input: { name: 'coal_ore', count: 2 } }, result: 'gathered 2/2 coal (mined from coal_ore)' },
+      { player: 'hows it going', say: 'got the coal, it is at your feet', act: { name: 'give', input: { item: 'coal', player: PLAYER } }, result: 'gave 2 coal to Alex, tossed at their feet' }],
+    world: { ...ERRAND_WORLD(0), owner: { x: 110, y: 71, z: -42, dist: 3 } }, order: chat('cool'),
+  },
+  echo_thanks: {
+    kind: 'echo', selfGoal: OWN_GOAL,
+    history: [...WORK_HISTORY.slice(0, 2), { player: 'follow me', say: 'ok following, lead the way', act: { name: 'follow', input: { player: PLAYER } }, hold: true }],
+    world: WOOD_WORLD, order: chat('thanks for the help'),
+  },
+  echo_dumb: { kind: 'echo', selfGoal: OWN_GOAL, history: NIGHT_HISTORY.slice(0, 4), world: NIGHT_WORLD, order: chat('ur dumb as a rock') },
   useless: { kind: 'claim', selfGoal: OWN_GOAL, history: WORK_HISTORY, world: WOOD_WORLD, order: chat('honestly ur useless') },
   jk: {
     kind: 'claim', selfGoal: OWN_GOAL,
@@ -410,7 +462,11 @@ async function runOne({ sid, ch, rep }) {
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
     await drain()
     for (const h of sit.history ?? []) {
-      await sleep(250)
+      // Her multi-sentence line is sent as paced segments 550ms apart, and
+      // the transcript places each one where it reached chat (convoMemory
+      // sentAt). Wait for the last one, or the player's next line lands in
+      // the middle of her previous reply.
+      await sleep(1700)
       const uses = [tu('say', { text: h.say })]
       if (h.goal) uses.push(tu('setGoal', { text: h.goal, for_player: true }))
       if (h.stop) {
@@ -436,7 +492,7 @@ async function runOne({ sid, ch, rep }) {
         queue.length = 0
       }
     }
-    await sleep(300)
+    await sleep(1700)
     await drain()
     historyActs = actions.length
     phase = 'order'
@@ -478,6 +534,7 @@ async function runOne({ sid, ch, rep }) {
     situation: sid, kind: sit.kind, char: ch.key, rep, model: MODEL, error, cost, calls, orderActs, says, acted,
     stillClaim: !acted && says.some((s) => STILL_CLAIM.test(s)),
     claimLines: says.filter((s) => STILL_CLAIM.test(s)),
+    ...(sit.order && !sit.idle ? echoScore(says, sit.order.data.text) : {}),
   }
   if (sit.kind === 'errand') {
     const first = worldCalls[0] ?? null
@@ -547,6 +604,18 @@ function summarize(rows) {
       lines.push(`| ${s} | ${rs.length} | ${isStop ? pct(rs.filter((r) => r.stopOk).length, rs.length) : '-'} | ${isStop ? pct(rs.filter((r) => r.heldLive?.length).length, rs.length) : '-'} | ${isStop ? pct(rs.filter((r) => r.newWorld?.length).length, rs.length) : '-'} | ${isStop ? pct(rs.filter((r) => !r.stopTool).length, rs.length) : '-'} | ${isStop ? '-' : pct(rs.filter((r) => r.orderFirst).length, rs.length)} | ${isStop ? '-' : pct(rs.filter((r) => r.ownFirst).length, rs.length)} | ${isStop ? '-' : pct(rs.filter((r) => !r.firstWorld).length, rs.length)} |`)
     }
   }
+  const ec = ok.filter((r) => typeof r.echo === 'boolean')
+  if (ec.length) {
+    lines.push('', '| situation | runs | opens with their line | first sentence is their line | said nothing |', '|---|---:|---:|---:|---:|')
+    for (const s of [...new Set(ec.map((r) => r.situation))]) {
+      const rs = ec.filter((r) => r.situation === s)
+      lines.push(`| ${s} | ${rs.length} | ${pct(rs.filter((r) => r.echo).length, rs.length)} | ${pct(rs.filter((r) => r.firstSeg).length, rs.length)} | ${pct(rs.filter((r) => !(r.says ?? []).length).length, rs.length)} |`)
+    }
+    const ee = ec.filter((r) => r.kind === 'echo')
+    if (ee.length) lines.push(`| **all echo** | ${ee.length} | ${pct(ee.filter((r) => r.echo).length, ee.length)} | ${pct(ee.filter((r) => r.firstSeg).length, ee.length)} | ${pct(ee.filter((r) => !(r.says ?? []).length).length, ee.length)} |`)
+    lines.push('', '## Echo situation lines', '')
+    for (const r of ee) lines.push(`- ${r.situation}/${r.char}/${r.rep}${r.echo ? ' ECHO' : ''}: ${(r.says ?? []).map((x) => `"${x.slice(0, 140)}"`).join(' / ') || '(silent)'}`)
+  }
   lines.push('', '## Claim lines with nothing running', '')
   for (const r of ok.filter((r) => r.stillClaim)) lines.push(`- ${r.situation}/${r.char}/${r.rep}: ${r.claimLines.map((s) => `"${s.slice(0, 140)}"`).join(' / ')}`)
   lines.push('', '## Errand turns', '')
@@ -562,6 +631,8 @@ if (RESCORE) {
     if (r.error) continue
     r.stillClaim = !r.acted && (r.says ?? []).some((s) => STILL_CLAIM.test(s))
     r.claimLines = (r.says ?? []).filter((s) => STILL_CLAIM.test(s))
+    const sit = SITUATIONS[r.situation]
+    if (sit?.order && !sit.idle) Object.assign(r, echoScore(r.says ?? [], sit.order.data.text))
   }
   fs.writeFileSync(path.join(RESCORE, 'summary.md'), summarize(rows))
   console.log(fs.readFileSync(path.join(RESCORE, 'summary.md'), 'utf8').split('\n## ')[0])

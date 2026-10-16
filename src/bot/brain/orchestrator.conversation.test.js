@@ -615,3 +615,74 @@ describe('a re-asked question is dropped sentence by sentence', () => {
     expect(adapter.chat).toHaveBeenCalledTimes(1)
   })
 })
+
+// 261017 (quality pass 11): with realistic typing her line is decided seconds
+// before the player can read it. The transcript now places it where the
+// player saw it.
+describe('her paced line sits in the transcript where the player saw it', () => {
+  it('a player line typed while hers was still being typed renders before it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const m = createConvoMemory().recentChat
+    m.pushSelf('Lyra', 'heyyy newb', { sentAt: 3_004_000 })
+    vi.setSystemTime(3_001_000)
+    m.pushPlayer('newb', 'hey')
+    vi.setSystemTime(3_006_000)
+    const lines = m.formatConversationBlock().split('\n').slice(1)
+    expect(lines).toEqual([
+      '[5s ago] player (newb): hey',
+      '[2s ago] you: heyyy newb',
+    ])
+    // The decision time is kept for the say() gates and repeat grouping.
+    expect(m.lastSelf().at).toBe(3_000_000)
+  })
+
+  it('ignores a sentAt that is not later than the decision', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const m = createConvoMemory().recentChat
+    m.pushSelf('Lyra', 'one', { sentAt: 1 })
+    m.pushSelf('Lyra', 'two', { sentAt: Number.NaN })
+    m.pushSelf('Lyra', 'three')
+    expect(m._internal.selfLines.map((l) => l.sentAt - l.at)).toEqual([0, 0, 0])
+    vi.setSystemTime(3_002_000)
+    expect(m.formatConversationBlock()).toContain('[2s ago] you: one')
+    expect(m.formatConversationBlock()).toContain('[2s ago] you: three')
+  })
+
+  it('the crossed hello: the reply turn sees their "hey" before her queued greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    vi.useFakeTimers()
+    const { orch, provider, adapter } = makeOrch({
+      config: makeConfig({ realistic_typing: true }),
+      script: [
+        { text: '', toolUses: [say('t1', 'heyyy newb'), { id: 'e1', name: 'end_loop', input: {} }] },
+        { text: '', toolUses: [{ id: 'e2', name: 'end_loop', input: {} }] },
+      ],
+    })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(adapter.chat).not.toHaveBeenCalled()
+    orch.recordIncomingChat('newb', 'hey')
+    await orch.handleDispatch('sei:chat_received', chat('hey'))
+    const convo = blockText(provider.calls[1], 'recent_conversation')
+    expect(convo.indexOf('] player (newb): hey')).toBeGreaterThan(-1)
+    expect(convo.indexOf('] player (newb): hey')).toBeLessThan(convo.indexOf('] you: heyyy newb'))
+    expect(JSON.stringify(provider.calls[1].messages ?? provider.calls[1])).toContain('it comes right after their line')
+    await vi.runAllTimersAsync()
+    expect(adapter.chat).toHaveBeenCalled()
+  })
+})
+
+describe('the player line in the seed turn (261017)', () => {
+  it('comes after the instructions as a transcript line, not a bare quoted string, with the no-echo sentence', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider } = makeOrch({ script: [{ text: '', toolUses: [say('t1', 'nice')] }] })
+    orch.recordIncomingChat('newb', 'cool')
+    await orch.handleDispatch('sei:chat_received', chat('cool'))
+    const msg = blockText(provider.calls[0], 'player_message')
+    // After the instructions, labelled as in the transcript, never quoted.
+    expect(msg.endsWith('\n\nTheir line, player (newb): cool\nAnswer it with say().')).toBe(true)
+    expect(msg).not.toContain('"cool"')
+    expect(msg).toContain('do not repeat it back to them')
+  })
+})

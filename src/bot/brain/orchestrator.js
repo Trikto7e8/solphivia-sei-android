@@ -1205,12 +1205,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // in that gap was blind to the line: an idle tick re-greeted over a
       // greeting still in the queue, and re-answered a question whose answer
       // was still being "typed" (with a different answer).
-      convoMemory.recentChat.pushSelf(config.persona.name, msg)
+      const at = leadMs + i * 550
+      convoMemory.recentChat.pushSelf(config.persona.name, msg, { sentAt: Date.now() + Math.max(0, at) })
       const send = () => {
         logChatOut(msg)
         try { adapter.chat(msg) } catch {}
       }
-      const at = leadMs + i * 550
       if (at <= 0) send()
       else setTimeout(send, at)
     })
@@ -2916,7 +2916,20 @@ function maybeWarnByteCap(loop, warned) {
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
         loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
-        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to THIS, not to the scene around you:'}\n"${String(data?.text ?? '').trim()}"\n` +
+        // 261017 (quality pass 11): their line comes after the instructions,
+        // labelled the way the transcript labels it ("Their line, player
+        // (Alex): cool"), instead of as a bare quoted string right under the
+        // header. Right under the header it was the first thing her reply
+        // picked up, and she opened by saying it back ("cool. now torches",
+        // "lol ur kinda slow?? i just..."), which chat shows as its own
+        // message right under theirs. claims-probe echo_* (5 characters, 75
+        // replies an arm): replies opening with their whole line 27 -> 15,
+        // first sentence equal to it 22 -> 8. Pointing at the transcript
+        // instead of repeating the line cut echoes further but she answered
+        // the line before it ("ok, stopping" to a tease after "actually stop").
+        const lineSpeaker = fromTeammate ? (speakerName || 'your teammate') : playerLabel(speakerName)
+        const lineText = String(data?.text ?? '').trim()
+        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to their line, not to the scene around you.'}\n` +
           (groupVoice
             ? voiceGroupGuidance(companions).trim() + ' Your text output is a private scratchpad the player can NEVER see; a reply that exists only in your text is silence to them; only say() reaches them.'
             : teammateVoice
@@ -2930,7 +2943,13 @@ function maybeWarnByteCap(loop, warned) {
               // check; a line that starts a fresh loop did not, and errands
               // given while she was idle ("grab coal then come back") were
               // never recorded (0/18 in the goals harness).
-              (fromTeammate ? '' : MEMORY_GOAL_TAIL))
+              (fromTeammate ? '' : MEMORY_GOAL_TAIL)) +
+          `\n\nTheir line, ${lineSpeaker}: ${lineText}` +
+          // Said again right under the line. Ending the block on the line
+          // alone read as a transcript to continue: she wrote say("...") in
+          // her text instead of calling the tool (persona eval 261017, 20 of
+          // 150 player-line samples silent that way, 0 with this sentence).
+          (!groupVoice && !teammateVoice && !crossed ? '\nAnswer it with say().' : '')
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`

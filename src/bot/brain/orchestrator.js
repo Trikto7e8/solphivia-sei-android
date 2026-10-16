@@ -2944,7 +2944,12 @@ function maybeWarnByteCap(loop, warned) {
               // given while she was idle ("grab coal then come back") were
               // never recorded (0/18 in the goals harness).
               (fromTeammate ? '' : MEMORY_GOAL_TAIL)) +
-          `\n\nTheir line, ${lineSpeaker}: ${lineText}`
+          `\n\nTheir line, ${lineSpeaker}: ${lineText}` +
+          // Said again right under the line. Ending the block on the line
+          // alone read as a transcript to continue: she wrote say("...") in
+          // her text instead of calling the tool (persona eval 261017, 20 of
+          // 150 player-line samples silent that way, 0 with this sentence).
+          (!groupVoice && !teammateVoice && !crossed ? '\nAnswer it with say().' : '')
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`

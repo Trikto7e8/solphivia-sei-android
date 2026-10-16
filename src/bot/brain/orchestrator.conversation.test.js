@@ -681,7 +681,7 @@ describe('the player line in the seed turn (261017)', () => {
     await orch.handleDispatch('sei:chat_received', chat('cool'))
     const msg = blockText(provider.calls[0], 'player_message')
     // After the instructions, labelled as in the transcript, never quoted.
-    expect(msg.endsWith('\n\nTheir line, player (newb): cool')).toBe(true)
+    expect(msg.endsWith('\n\nTheir line, player (newb): cool\nAnswer it with say().')).toBe(true)
     expect(msg).not.toContain('"cool"')
     expect(msg).toContain('do not repeat it back to them')
   })

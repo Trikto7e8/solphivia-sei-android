@@ -351,4 +351,18 @@ export const ZH_MISC: Record<string, string> = {
   'Continue with Google': '通过 Google 继续',
   'Companion': '伙伴',
   'You': '你',
+
+  // ── 261017 (issue #46): ChatGPT plan ERROR_COPY rows ──────────────────
+  "You've reached your ChatGPT plan's usage limit. Check Manage usage in ChatGPT to see when it resets, or switch to another AI option in Settings.":
+    '你已达到 ChatGPT 套餐的用量上限。在 ChatGPT 的「管理用量」中查看何时重置，或在设置中换用其他 AI 选项。',
+  "This ChatGPT account can't use its plan in Sei. Sign in with a different account, or pick another AI option in Settings.":
+    '这个 ChatGPT 账户无法在 Sei 中使用其套餐。请换一个账户登录，或在设置中选择其他 AI 选项。',
+  'ChatGPT refused this request for your account. Sign in again in Settings, or pick another AI option.':
+    'ChatGPT 拒绝了你账户的这次请求。请在设置中重新登录，或选择其他 AI 选项。',
+  "The ChatGPT model picked in Settings can't handle this request. Pick another model in Settings and try again.":
+    '设置中选择的 ChatGPT 模型无法处理这个请求。请在设置中换一个模型后重试。',
+  'Your ChatGPT sign-in ended. Continue with ChatGPT in Settings to sign in again.':
+    '你的 ChatGPT 登录已失效。请在设置中点击 Continue with ChatGPT 重新登录。',
+  "ChatGPT plan use isn't turned on for this sign-in. Turn it on in Settings, then try again.":
+    '这次登录没有开启 ChatGPT 套餐使用权限。请在设置中开启后重试。',
 };

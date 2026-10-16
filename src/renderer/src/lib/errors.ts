@@ -112,6 +112,13 @@ export const ERROR_COPY: Record<ErrorClass, string> = {
   OLLAMA_NOT_RUNNING: "Sei can't reach Ollama. Start the Ollama app, check the Ollama address in Settings, then press Launch again.",
   OLLAMA_MODEL_MISSING: "Ollama doesn't have the model picked in Settings. Download it in Ollama (ollama pull followed by the model name) or pick another model, then press Launch again.",
   OLLAMA_MODEL_NO_TOOLS: "This Ollama model can't use tools, and your companion needs them to talk and act in games. Pick a model with tool support in Settings, like qwen3 or qwen3-vl, then press Launch again.",
+  // 261017 (issue #46): ChatGPT plan.
+  CHATGPT_USAGE_LIMIT: "You've reached your ChatGPT plan's usage limit. Check Manage usage in ChatGPT to see when it resets, or switch to another AI option in Settings.",
+  CHATGPT_NOT_ELIGIBLE: "This ChatGPT account can't use its plan in Sei. Sign in with a different account, or pick another AI option in Settings.",
+  CHATGPT_FORBIDDEN: "ChatGPT refused this request for your account. Sign in again in Settings, or pick another AI option.",
+  CHATGPT_UNSUPPORTED: "The ChatGPT model picked in Settings can't handle this request. Pick another model in Settings and try again.",
+  CHATGPT_SIGNED_OUT: "Your ChatGPT sign-in ended. Continue with ChatGPT in Settings to sign in again.",
+  CHATGPT_PLAN_DISABLED: "ChatGPT plan use isn't turned on for this sign-in. Turn it on in Settings, then try again.",
   SMAPI_INSTALL_FAILED: "Couldn't install SMAPI, the mod loader Stardew Valley needs. Make sure the game is closed and try the setup again, or install SMAPI from smapi.io and then re-run the setup.",
 };
 

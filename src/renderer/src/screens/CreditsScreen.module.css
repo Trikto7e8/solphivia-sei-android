@@ -236,6 +236,52 @@
   margin: 2px 0 0;
 }
 
+/* 261017: "Use your ChatGPT plan", its own block under the plan cards. */
+.chatgptPlan {
+  margin-top: var(--space-lg);
+}
+
+.chatgptPlanRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.chatgptPlanText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Not .planName: that one uppercases, and "ChatGPT" is a brand name. */
+.chatgptPlanName {
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.planFeatureLink {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.planFeatureLink:hover {
+  color: var(--accent);
+}
+
 .planCardActions {
   margin-top: auto;
   padding-top: 12px;

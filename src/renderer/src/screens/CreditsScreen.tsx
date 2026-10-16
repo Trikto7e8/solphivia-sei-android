@@ -58,6 +58,8 @@ import { useResetLine } from '../lib/useResetLine';
 import { TIER_ORDER, planCard, planName } from '../lib/planCatalog';
 import { t, useT } from '../lib/i18n';
 import styles from './CreditsScreen.module.css';
+import { ChatgptLogo } from '../components/ChatgptLogo';
+import { CHATGPT_HELP_URL } from '@shared/chatgptPlan';
 
 /** Note under the extra-credits bar: what carries over and what does not (SPEC §2). */
 const CARRY_OVER_NOTE =
@@ -519,6 +521,36 @@ export function CreditsScreen(): React.ReactElement {
           {/* A rejected in-place tier change (260725). Without this the failure
               was silent and the watcher's timeout was the only signal. */}
           {changeError ? <p className={styles.manageError}>{changeError}</p> : null}
+        </div>
+
+        {/* 261017 (issue #46): "Use your ChatGPT plan". OpenAI's guidelines
+            ask the pricing page to say which plans support it (every Sei plan,
+            Free included) and to keep it apart from the app's own
+            subscription, so it is its own block under the plan cards, never a
+            feature inside a paid card. */}
+        <div className={styles.chatgptPlan}>
+          <h3 className={styles.sectionTitle}>{t('ChatGPT plan, separate from Sei plans')}</h3>
+          <div className={styles.chatgptPlanRow}>
+            <ChatgptLogo size={18} />
+            <div className={styles.chatgptPlanText}>
+              <span className={styles.chatgptPlanName}>{t('Use your ChatGPT plan')}</span>
+              <span className={styles.planBlurb}>
+                {t(
+                  'Have ChatGPT Plus or Pro? Run your companions on your ChatGPT plan instead of Sei credits. It works on every Sei plan, including Free. ChatGPT plan usage is part of your OpenAI subscription, not a Sei charge.',
+                )}{' '}
+                <button
+                  type="button"
+                  className={styles.planFeatureLink}
+                  onClick={() => void sei.openExternal(CHATGPT_HELP_URL)}
+                >
+                  {t('Learn more')}
+                </button>
+              </span>
+            </div>
+            <Button kind="ghost" size="sm" onClick={() => navigate({ kind: 'settings' })}>
+              {t('Set up in Settings')}
+            </Button>
+          </div>
         </div>
 
         {/*

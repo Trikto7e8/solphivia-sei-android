@@ -68,6 +68,7 @@ import { CHAT_TEXT_MAX, type ChatMessage, type ChatReplyRef, type UserProfile } 
 import type { Character } from '@shared/characterSchema';
 import { ClipCard } from '../components/backseat/ClipCard';
 import { FirstMomentCard } from '../components/FirstMomentCard';
+import { ChatgptPlanBadge } from '../components/ChatgptPlanBadge';
 import { useFirstMomentStore } from '../lib/stores/useFirstMomentStore';
 import { useTutorialStore } from '../lib/stores/useTutorialStore';
 import styles from './ChatScreen.module.css';
@@ -908,6 +909,8 @@ export function ChatScreen({ characterId }: ChatScreenProps): React.ReactElement
               </button>
             ) : null}
           </div>
+          {/* 261017 (issue #46): "Using ChatGPT plan" + Manage usage. */}
+          <ChatgptPlanBadge />
         </div>
 
           </div>

@@ -2074,6 +2074,14 @@ function blockedReason(errorClass: string): string {
       return 'the Ollama model picked in Settings is not downloaded; the player needs to pull it in Ollama or pick another model';
     case 'OLLAMA_MODEL_NO_TOOLS':
       return 'the Ollama model picked in Settings cannot use tools, which you need to play games; the player needs to pick one that can, like qwen3, in Settings';
+    case 'CHATGPT_USAGE_LIMIT':
+      return "the player's ChatGPT plan usage limit is reached; they can check Manage usage in ChatGPT or pick another AI option in Settings";
+    case 'CHATGPT_SIGNED_OUT':
+    case 'CHATGPT_PLAN_DISABLED':
+      return 'the ChatGPT sign-in needs attention; the player needs to sign in with ChatGPT again in Settings';
+    case 'CHATGPT_NOT_ELIGIBLE':
+    case 'CHATGPT_FORBIDDEN':
+      return "this ChatGPT account can't be used here; the player needs another account or AI option in Settings";
     case 'FORGE_HOST_BLOCKED':
       return "the world is running Forge or NeoForge, which you can't join; the player needs to open the Sei profile in the Minecraft Launcher and host the world from there";
     default:

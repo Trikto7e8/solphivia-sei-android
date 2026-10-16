@@ -60,6 +60,7 @@ import { useLangStore } from '../../lib/i18n';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
 import { VoiceCallScreen } from '../../screens/VoiceCallScreen';
 import { SettingsScreen } from '../../screens/SettingsScreen';
+import { CreditsScreen } from '../../screens/CreditsScreen';
 import { CharactersScreen } from '../../screens/CharactersScreen';
 import { IconRail } from '../IconRail';
 import { GamesPickerModal } from '../GamesPickerModal';
@@ -283,7 +284,8 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
       <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--window)' }}>
         <IconRail />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {part === 'settings' ? <SettingsScreen /> : <ChatScreen characterId={SDV_ID} />}
+          {/* &part=credits (261017): the pricing page's ChatGPT plan block. */}
+          {part === 'settings' ? <SettingsScreen /> : part === 'credits' ? <CreditsScreen /> : <ChatScreen characterId={SDV_ID} />}
         </div>
         {part === 'picker' ? <GamesPickerModal characterId={SDV_ID} /> : null}
       </div>

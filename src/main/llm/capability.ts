@@ -8,9 +8,25 @@
 import { BrowserWindow } from 'electron';
 import { IpcChannel, type LlmCapability } from '../../shared/ipc';
 import { activeLlmModelLabel, activeLlmVision } from './index';
+import { getAiBackendKind } from '../apiKeyStore';
+import { loadConfig } from '../configStore';
+
+/** The active local provider kind, or null on the cloud backend. Never throws. */
+async function activeLocalProvider(): Promise<string | null> {
+  try {
+    if ((await getAiBackendKind()) === 'cloud-proxy') return null;
+    return (await loadConfig()).provider ?? 'anthropic';
+  } catch {
+    return null;
+  }
+}
 
 export async function currentLlmCapability(): Promise<LlmCapability> {
-  return { vision: await activeLlmVision(), model: await activeLlmModelLabel() };
+  return {
+    vision: await activeLlmVision(),
+    model: await activeLlmModelLabel(),
+    provider: await activeLocalProvider(),
+  };
 }
 
 /** Best-effort broadcast to every window. Never throws, never load-bearing. */

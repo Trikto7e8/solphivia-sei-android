@@ -130,6 +130,11 @@ export const paths = {
   // backs the escalating per-device account-creation cooldown.
   signupAttemptsPath: () => path.join(userDataRoot(), 'signup-attempts.json'),
 
+  // 261017 (issue #46): the ChatGPT-plan `ext_agent_host_id` (urn:uuid:v4).
+  // DEVICE-GLOBAL: the SIWC docs define it per HOST (the machine the app runs
+  // on), stable across sign-ins and accounts. Opaque, not a credential.
+  chatgptHostIdPath: () => path.join(userDataRoot(), 'chatgpt-host-id.json'),
+
   // ── Profile-scoped (one per account; re-points on account switch) ─────────
   /** Active profile's data root. */
   profileRoot: profileRootDir,
@@ -139,6 +144,9 @@ export const paths = {
   characterPortraitPath: (id: string) => path.join(profileRootDir(), 'characters', `${id}.png`),
   indexPath: () => path.join(profileRootDir(), 'characters', 'index.json'),
   apiKeyPath: () => path.join(profileRootDir(), 'api_key.bin'),
+  // 261017 (issue #46): ChatGPT-plan registrations + token sets, encrypted
+  // with safeStorage (like api_key.bin). Profile-scoped like the BYOK key.
+  chatgptAccountsPath: () => path.join(profileRootDir(), 'chatgpt_accounts.bin'),
   // BYOK ElevenLabs voice key (260725) — same safeStorage-encrypted blob
   // pattern as api_key.bin, profile-scoped for the same reason.
   elevenLabsKeyPath: () => path.join(profileRootDir(), 'elevenlabs_key.bin'),

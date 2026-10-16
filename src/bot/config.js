@@ -226,7 +226,7 @@ const AdapterSchema = z.object({
 export const LLM_PROVIDER_KINDS = [
   'anthropic', 'openai', 'gemini', 'grok', 'openrouter', 'ollama',
   'deepseek', 'qwen', 'mistral', 'together', 'groq', 'fireworks',
-  'cerebras', 'perplexity',
+  'cerebras', 'perplexity', 'chatgpt',
 ]
 
 const ConfigObjectSchema = z.object({
@@ -375,6 +375,12 @@ const ConfigObjectSchema = z.object({
       fireworks:  z.object({ api_key: z.string().default(''), model: z.string().default('accounts/fireworks/models/llama-v3p1-70b-instruct'), base_url: z.string().url().optional() }).default({}),
       cerebras:   z.object({ api_key: z.string().default(''), model: z.string().default('llama-3.3-70b'),                                     base_url: z.string().url().optional() }).default({}),
       perplexity: z.object({ api_key: z.string().default(''), model: z.string().default('sonar'),                                              base_url: z.string().url().optional() }).default({}),
+      // 261017 (issue #46): ChatGPT plan. api_key carries the short-lived
+      // OAuth ACCESS token main hands over (never the refresh token);
+      // token_expires_at (epoch ms) lets the provider ask main for a fresh one
+      // before it lapses. reasoning_effort ships only when the account's model
+      // catalog lists levels. vision follows the catalog's input modalities.
+      chatgpt:    z.object({ api_key: z.string().default(''), model: z.string().default('gpt-6-luna'), reasoning_effort: z.string().optional(), token_expires_at: z.number().optional(), vision: z.boolean().optional() }).default({}),
       ollama:     z.object({ model: z.string().default('llama3.1'),                                                                            base_url: z.string().default('http://localhost:11434') }).default({}),
     }).default({}),
   }).default({}),

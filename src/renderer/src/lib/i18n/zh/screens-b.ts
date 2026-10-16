@@ -333,4 +333,63 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'They’re waiting in your party.': '他们正在你的队伍中等你。',
   'Go home': '回到主页',
   'Say hello': '打个招呼',
+
+  // ── 261017 (issue #46): ChatGPT plan ("Continue with ChatGPT" itself is
+  //    OpenAI's fixed button label and is never translated) ─────────────
+  'ChatGPT plan': 'ChatGPT 套餐',
+  'Use your ChatGPT plan': '使用你的 ChatGPT 套餐',
+  'Use ChatGPT plan': '使用 ChatGPT 套餐',
+  'Using ChatGPT plan': '正在使用 ChatGPT 套餐',
+  'Manage usage': '管理用量',
+  'Learn more': '了解更多',
+  'Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.':
+    '在此应用中完成符合条件的 AI 请求，用量计入你的 ChatGPT 套餐或额度余额。',
+  "Works on every Sei plan, including Free. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.":
+    '适用于所有 Sei 方案，包括免费方案。用量计入你的 ChatGPT 套餐，不占用 Sei 的订阅或额度。',
+  'Use your ChatGPT plan?': '使用你的 ChatGPT 套餐？',
+  "Sei will stop using managed cloud credits and run your companions on your ChatGPT plan instead. ChatGPT plan usage is OpenAI's, separate from Sei's own subscription and credits. This applies to a running bot right away. Your Sei subscription, if you have one, keeps renewing until you cancel it.":
+    'Sei 将停止使用云端托管额度，改用你的 ChatGPT 套餐运行伙伴。ChatGPT 套餐用量由 OpenAI 提供，与 Sei 自己的订阅和额度分开。此更改会立即应用到正在运行的机器人。如果你有 Sei 订阅，它会继续续订，直到你取消。',
+  'ChatGPT plan, separate from Sei plans': 'ChatGPT 套餐，独立于 Sei 方案',
+  'Have ChatGPT Plus or Pro? Run your companions on your ChatGPT plan instead of Sei credits. It works on every Sei plan, including Free. ChatGPT plan usage is part of your OpenAI subscription, not a Sei charge.':
+    '有 ChatGPT Plus 或 Pro？你可以用 ChatGPT 套餐运行伙伴，而不消耗 Sei 额度。它适用于所有 Sei 方案，包括免费方案。ChatGPT 套餐用量属于你的 OpenAI 订阅，不是 Sei 的收费。',
+  'Set up in Settings': '在设置中开启',
+  'ChatGPT account': 'ChatGPT 账户',
+  'ChatGPT accounts': 'ChatGPT 账户列表',
+  'Other accounts': '其他账户',
+  'Add account': '添加账户',
+  'Switch': '切换',
+  'active': '当前',
+  'Signed in as {name}.': '已登录为 {name}。',
+  'Finish signing in with ChatGPT in your browser.': '请在浏览器中完成 ChatGPT 登录。',
+  'Sign in with your ChatGPT account to use your plan in Sei. No API key needed.':
+    '登录你的 ChatGPT 账户，即可在 Sei 中使用你的套餐。无需 API 密钥。',
+  'Your ChatGPT sign-in ended. Continue with ChatGPT to sign in again.':
+    '你的 ChatGPT 登录已失效。点击 Continue with ChatGPT 重新登录。',
+  'ChatGPT plan use was not turned on when you signed in, so Sei cannot use your plan yet.':
+    '登录时没有开启 ChatGPT 套餐使用权限，所以 Sei 暂时无法使用你的套餐。',
+  'Turn on ChatGPT plan': '开启 ChatGPT 套餐',
+  'Usage limit reached. Requests are paused.': '已达到用量上限，请求已暂停。',
+  "This ChatGPT account can't use its plan in Sei right now. Try another account, or pick another provider.":
+    '这个 ChatGPT 账户目前无法在 Sei 中使用其套餐。请换一个账户，或选择其他服务商。',
+  'Signed out on this device, but Sei could not confirm the sign-out with ChatGPT. To be sure, disconnect Sei in your ChatGPT settings.':
+    '已在此设备上退出登录，但 Sei 无法向 ChatGPT 确认退出。为确保安全，请在 ChatGPT 设置中断开 Sei 的连接。',
+  'Sign-in was cancelled in ChatGPT.': '已在 ChatGPT 中取消登录。',
+  'Sign-in timed out. Try again.': '登录超时，请重试。',
+  'That is a different ChatGPT account. Sign in with the same account, or add it as a new account.':
+    '这是另一个 ChatGPT 账户。请用同一个账户登录，或将它添加为新账户。',
+  'Could not reach ChatGPT. Check your connection and try again.': '无法连接 ChatGPT。请检查网络后重试。',
+  'Sei could not save your sign-in securely on this device.': 'Sei 无法在此设备上安全保存你的登录信息。',
+  'Could not open your browser. Try again.': '无法打开浏览器，请重试。',
+  'Sei could not start its sign-in listener. Try again.': 'Sei 无法启动登录监听，请重试。',
+  'Sign-in did not finish. Try again.': '登录未完成，请重试。',
+  'Sign in with ChatGPT first.': '请先登录 ChatGPT。',
+  'Turn on ChatGPT plan use first.': '请先开启 ChatGPT 套餐使用权限。',
+  "You've reached your ChatGPT plan's usage limit.": '你已达到 ChatGPT 套餐的用量上限。',
+  "This ChatGPT account can't use its plan in Sei.": '这个 ChatGPT 账户无法在 Sei 中使用其套餐。',
+  'ChatGPT plan usage limit reached': '已达到 ChatGPT 套餐用量上限',
+  "You're using your ChatGPT plan": '你正在使用 ChatGPT 套餐',
+  'Your companions now run on your ChatGPT plan. Eligible requests count toward your plan usage or credits balance, not Sei credits.':
+    '你的伙伴现在使用你的 ChatGPT 套餐运行。符合条件的请求计入你的套餐用量或额度余额，不消耗 Sei 额度。',
+  "You've used the ChatGPT plan usage available to Sei for now. Check Manage usage to see when it resets. Sei pauses ChatGPT requests until then.":
+    '你目前可供 Sei 使用的 ChatGPT 套餐用量已用完。查看「管理用量」了解何时重置。在此之前，Sei 会暂停 ChatGPT 请求。',
 };

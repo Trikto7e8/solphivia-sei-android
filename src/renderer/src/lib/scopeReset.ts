@@ -28,6 +28,7 @@ import { useAvatarStore } from './stores/useAvatarStore';
 import { useDataStore } from './stores/useDataStore';
 import { useFirstMomentStore } from './stores/useFirstMomentStore';
 import { useHomeNextStepStore } from './stores/useHomeNextStepStore';
+import { useChatgptStore } from './stores/useChatgptStore';
 import { clearAllFeedbackDrafts } from './feedbackDraft';
 import { useVoiceStore } from './stores/useVoiceStore';
 import { useBackseatStore } from './stores/useBackseatStore';
@@ -102,4 +103,6 @@ export function resetAccountScopedState(): void {
   useFirstMomentStore.getState().reset();
   // 261013 (T119): the Home "up next" cards are read from this account's memory.
   useHomeNextStepStore.getState().reset();
+  // 261017 (issue #46): the ChatGPT-plan accounts file lives in the profile.
+  useChatgptStore.getState().reset();
 }

@@ -158,6 +158,17 @@ export function isOllamaSetupError(err: unknown): boolean {
   return /OLLAMA_UNREACHABLE|OLLAMA_MODEL_MISSING/.test(String((err as { message?: string })?.message ?? err));
 }
 
+/**
+ * 261017 (issue #46): a ChatGPT-plan answer a retry cannot change (usage
+ * limit, signed out, plan use off, account not eligible). Main also raises
+ * the usage-limit dialog off the session status; the chat line just says it.
+ */
+export function isChatgptPlanError(err: unknown): boolean {
+  return /CHATGPT_(USAGE_LIMIT|SIGNED_OUT|PLAN_DISABLED|NOT_ELIGIBLE|FORBIDDEN)/.test(
+    String((err as { message?: string })?.message ?? err),
+  );
+}
+
 /** The companion line shown when a chat turn fails for real. */
 export function chatFailureLine(err: unknown): string {
   if (isLocalNoApiKey(err)) {
@@ -173,6 +184,16 @@ export function chatFailureLine(err: unknown): string {
   }
   if (/OLLAMA_MODEL_MISSING/.test(msg)) {
     return "Ollama doesn't have the model picked in Settings. download it in Ollama or pick another model.";
+  }
+  // 261017 (issue #46): ChatGPT plan, tagged in bot/brain/llm/responsesWire.js.
+  if (/CHATGPT_USAGE_LIMIT/.test(msg)) {
+    return "i can't reply: your ChatGPT plan's usage limit is reached. check Manage usage in ChatGPT, or pick another AI option in Settings.";
+  }
+  if (/CHATGPT_SIGNED_OUT|CHATGPT_PLAN_DISABLED/.test(msg)) {
+    return "i can't reply: your ChatGPT sign-in needs attention. continue with ChatGPT in Settings to fix it.";
+  }
+  if (/CHATGPT_NOT_ELIGIBLE|CHATGPT_FORBIDDEN/.test(msg)) {
+    return "i can't reply: this ChatGPT account can't be used here. try another account or AI option in Settings.";
   }
   return "sorry, i couldn't reply just now. try again in a moment?";
 }
@@ -639,7 +660,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       // retry cannot conjure a missing API key. Neither do model timeouts
       // (260926): the local deadline is 120s, so a retry is two more silent
       // minutes on the same model.
-      if (!isLocalNoApiKey(err) && !isLlmTimeout(err) && !isOllamaSetupError(err) && notifyTurnFailed(characterId)) {
+      if (!isLocalNoApiKey(err) && !isLlmTimeout(err) && !isOllamaSetupError(err) && !isChatgptPlanError(err) && notifyTurnFailed(characterId)) {
         put((s) => ({ awaiting: { ...s.awaiting, [characterId]: false } }));
         return null;
       }

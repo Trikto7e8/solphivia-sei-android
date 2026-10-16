@@ -494,6 +494,10 @@ export const UserConfigSchema = z.object({
       'fireworks',
       'cerebras',
       'perplexity',
+      // 261017 (issue #46): ChatGPT plan usage via "Continue with ChatGPT"
+      // (OpenAI SIWC). Credential = the OAuth session in
+      // src/main/chatgptPlan, not api_key.bin.
+      'chatgpt',
     ])
     .default('anthropic'),
   /**

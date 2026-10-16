@@ -31,12 +31,15 @@
  */
 
 import type { UserConfig } from './characterSchema';
+import { CHATGPT_FALLBACK_MODEL, chatgptModelVision } from './chatgptPlan';
 
 export type ProviderKind = NonNullable<UserConfig['provider']>;
 
-/** The 8 providers the picker offers (order = display order). */
+/** The 9 providers the picker offers (order = display order). */
 export const SHOWN_PROVIDERS: readonly ProviderKind[] = [
   'anthropic',
+  // 261017 (issue #46): "Continue with ChatGPT", the user's ChatGPT plan.
+  'chatgpt',
   'openai',
   'deepseek',
   'qwen',
@@ -71,6 +74,7 @@ export const PROVIDER_LABELS: Record<ProviderKind, string> = {
   fireworks: 'Fireworks',
   cerebras: 'Cerebras',
   perplexity: 'Perplexity',
+  chatgpt: 'ChatGPT plan',
 };
 
 /**
@@ -128,6 +132,9 @@ export const DEFAULT_MODELS: Record<ProviderKind, string> = {
   fireworks: 'accounts/fireworks/models/llama-v3p1-70b-instruct',
   cerebras: 'llama-3.3-70b',
   perplexity: 'sonar',
+  // Static fallback only: the real default comes from the signed-in
+  // account's /v1/models catalog (pickDefaultChatgptModel).
+  chatgpt: CHATGPT_FALLBACK_MODEL,
 };
 
 /**
@@ -181,6 +188,9 @@ export function modelVision(provider: ProviderKind, model: string): VisionVerdic
     }
     case 'ollama':
       return ollamaVisionHeuristic(m);
+    case 'chatgpt':
+      // Name heuristic; main passes the account catalog where it has one.
+      return chatgptModelVision(m);
     default:
       // Grandfathered providers: the bot's capability table said no vision
       // for groq/cerebras/perplexity; mistral/together depend on the model.

@@ -29,6 +29,8 @@ const LIST_TIMEOUT_MS = 10_000;
 export interface ListedModel {
   id: string;
   vision: VisionVerdict;
+  /** Display name, when the provider gives one (ChatGPT plan). */
+  label?: string;
 }
 export interface ListModelsResult {
   models: ListedModel[];
@@ -37,8 +39,11 @@ export interface ListModelsResult {
 export type TestResult = { ok: true; latencyMs: number } | { ok: false; error: string };
 
 function typedError(err: unknown): string {
-  const e = err as { name?: string; message?: string };
+  const e = err as { name?: string; message?: string; code?: unknown };
   const msg = String(e?.message ?? err ?? '');
+  // 261017 (issue #46): ChatGPT-plan codes ride through as their own tokens
+  // ('chatgpt_usage_limit', 'chatgpt_signed_out', ...).
+  if (typeof e?.code === 'string' && e.code.startsWith('CHATGPT_')) return e.code.toLowerCase();
   if (e?.name === 'AbortError' || /abort/i.test(msg)) return 'timeout';
   const status = /\b(\d{3})\b/.exec(msg)?.[1];
   if (status === '401' || status === '403') return 'unauthorized';
@@ -76,6 +81,15 @@ async function providerBaseUrl(provider: ProviderKind): Promise<string | undefin
 export async function listProviderModels(provider: ProviderKind): Promise<ListModelsResult> {
   try {
     let ids: string[] = [];
+    if (provider === 'chatgpt') {
+      // 261017 (issue #46): the signed-in account's own catalog
+      // (GET /v1/models with the plan token), server order, labelled.
+      const { chatgptSession } = await import('../chatgptPlan');
+      const catalog = await chatgptSession().listModels({ force: true });
+      return {
+        models: catalog.map((m) => ({ id: m.slug, label: m.display_name, vision: m.accepts_images === null ? 'unknown' : m.accepts_images ? 'yes' : 'no' })),
+      };
+    }
     if (provider === 'ollama') {
       const base = (await providerBaseUrl(provider)) ?? 'http://localhost:11434';
       const data = (await fetchJson(`${base}/api/tags`, {})) as { models?: Array<{ name?: string }> };

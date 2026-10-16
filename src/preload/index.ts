@@ -36,6 +36,7 @@ import {
   type WorldState,
   type GameDashboardSnapshot,
 } from '../shared/ipc';
+import type { ChatgptStatus } from '../shared/chatgptPlan';
 
 const api: RendererApi = {
   // Game adapters (M0): {characterId, game} (main also still accepts a bare id).
@@ -534,6 +535,19 @@ const api: RendererApi = {
     const handler = (_e: Electron.IpcRendererEvent, cap: VisionCapability) => cb(cap);
     ipcRenderer.on(IpcChannel.vision.capability, handler);
     return () => ipcRenderer.off(IpcChannel.vision.capability, handler);
+  },
+  chatgptStatus: () => ipcRenderer.invoke(IpcChannel.chatgpt.status),
+  chatgptSignIn: (opts?: { accountId?: string | null; enablePlan?: boolean }) =>
+    ipcRenderer.invoke(IpcChannel.chatgpt.signIn, opts ?? {}),
+  chatgptCancelSignIn: () => ipcRenderer.invoke(IpcChannel.chatgpt.cancelSignIn),
+  chatgptSignOut: (accountId?: string) => ipcRenderer.invoke(IpcChannel.chatgpt.signOut, { accountId }),
+  chatgptSwitchAccount: (accountId: string) => ipcRenderer.invoke(IpcChannel.chatgpt.switchAccount, { accountId }),
+  chatgptDismissWelcome: () => ipcRenderer.invoke(IpcChannel.chatgpt.dismissWelcome),
+  chatgptClearLimit: () => ipcRenderer.invoke(IpcChannel.chatgpt.clearLimit),
+  onChatgptStatus(cb: (s: ChatgptStatus) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, st: ChatgptStatus) => cb(st);
+    ipcRenderer.on(IpcChannel.chatgpt.statusChanged, handler);
+    return () => ipcRenderer.off(IpcChannel.chatgpt.statusChanged, handler);
   },
   llmListModels: (provider: string) => ipcRenderer.invoke(IpcChannel.llm.listModels, { provider }),
   llmTest: (provider: string, model: string) =>

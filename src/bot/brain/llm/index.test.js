@@ -9,13 +9,13 @@ const baseConfig = {
 }
 
 describe('createLlmProvider', () => {
-  it('lists all 14 supported providers (incl. qwen and the grandfathered set)', () => {
+  it('lists all 15 supported providers (incl. qwen, chatgpt and the grandfathered set)', () => {
     // 260816: qwen added; mistral/together/groq/fireworks/cerebras/perplexity
     // are grandfathered (hidden from the picker, still run here).
     expect(SUPPORTED_PROVIDERS).toEqual([
       'anthropic', 'openai', 'grok', 'openrouter', 'deepseek', 'qwen',
       'mistral', 'together', 'groq', 'fireworks', 'cerebras', 'perplexity',
-      'gemini', 'ollama',
+      'gemini', 'ollama', 'chatgpt',
     ])
   })
 

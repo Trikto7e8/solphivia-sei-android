@@ -42,6 +42,14 @@ import { isGameId, type GameId } from '../shared/gameIpc';
 import { getGameModule, type GameModule } from './games';
 import { clampChatLanguage } from '../shared/chatLanguage';
 import { buildLlmInitSection, type LlmInitSection } from './llmInitSection';
+import { chatgptSession } from './chatgptPlan';
+import {
+  answerChatgptTokenRequest,
+  ChatgptSummonError,
+  chatgptBotInitSection,
+  pushChatgptTokens,
+} from './chatgptPlan/botBridge';
+import { resolveChatgptModel } from './llm';
 import { checkOllamaForGame } from './llm/ollamaCapabilities';
 import { OLLAMA_DEFAULT_BASE_URL } from './llm/ollama';
 import { resolveWebSearchSettings } from './llm/webSearchSettings';
@@ -187,6 +195,13 @@ const PROXY_BASE_URL = process.env.SEI_PROXY_URL ?? 'https://api.sei.gg';
  * matches; if Anthropic changes their wire format and the smoke test
  * regresses, extend this regex AND the renderer's classifyRendererError.
  */
+/** 261017: the model the player picked for `provider` in Settings, if any. */
+function storedProviderModel(cfg: { provider_config?: unknown }, provider: string): string | undefined {
+  const pc = (cfg.provider_config as Record<string, unknown> | undefined)?.[provider];
+  const m = pc && typeof pc === 'object' ? (pc as { model?: unknown }).model : undefined;
+  return typeof m === 'string' && m.trim() ? m.trim() : undefined;
+}
+
 function classifyChildError(err: unknown): ErrorClass {
   const msg = (err && typeof err === 'object' && 'message' in err)
     ? String((err as { message: unknown }).message)
@@ -565,6 +580,14 @@ interface ActiveSession {
    */
   teardownJwtRotation?: () => void;
   /**
+   * 261017 (issue #46): the ChatGPT-plan token push subscription
+   * (chatgptPlan/botBridge.ts pushChatgptTokens), set only while the session
+   * runs the 'chatgpt' provider. Torn down with the JWT pump.
+   */
+  teardownChatgptTokens?: () => void;
+  /** 261017: the local LLM provider kind this session runs (llmInit.provider). */
+  llmProvider?: string;
+  /**
    * 260618: timestamp of the last reactive JWT-refresh request from this bot
    * (it posts {type:'request-jwt'} on a 401 expired_jwt). Debounced so a burst
    * of 401s triggers at most one refreshSession() call.
@@ -744,6 +767,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // onto a disposed port. setupJwtRotation re-checks `running` between
     // the await and the postMessage; the teardown closure flips that flag.
     try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
+    try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+    session.teardownChatgptTokens = undefined;
     try {
       session.port1.postMessage({ type: 'stop' });
     } catch {
@@ -1037,7 +1062,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // it — the no-cloud-fallback property still holds, because llmInit
       // below routes the fork to the ollama provider, never the proxy.
       const localProvider = userCfg.provider ?? 'anthropic';
-      if (localProvider !== 'ollama') {
+      // 261017 (issue #46): the ChatGPT plan's credential is main's OAuth
+      // session, not api_key.bin; it is resolved into llmInit below.
+      if (localProvider !== 'ollama' && localProvider !== 'chatgpt') {
         if (!(await hasApiKey())) {
           const message =
             'Local mode is on but no API key is saved. Add your API key in Settings, or switch to managed billing.';
@@ -1098,6 +1125,30 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     let llmInit: LlmInitSection | undefined;
     if (aiBackendKind === 'local') {
       llmInit = buildLlmInitSection(userCfg, apiKey);
+      if (llmInit.provider === 'chatgpt') {
+        // 261017 (issue #46): ChatGPT plan. A fresh ACCESS token from main's
+        // session (the refresh token never leaves main) plus the account
+        // catalog's model. A paused plan, a dead sign-in or plan use turned
+        // off refuses here, before the fork, with the matching error class.
+        try {
+          llmInit = await chatgptBotInitSection(chatgptSession(), async () => {
+            // Only a model the player PICKED is passed; otherwise the
+            // account catalog's default (buildLlmInitSection would have
+            // filled the static fallback).
+            const r = await resolveChatgptModel(storedProviderModel(userCfg, 'chatgpt'));
+            return { model: r.model, reasoningEffort: r.reasoningEffort, vision: r.vision === 'yes' };
+          });
+        } catch (err) {
+          const code = err instanceof ChatgptSummonError ? err.code : 'NETWORK_OFFLINE';
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn(`[sei/sup] summon blocked: ${code}: ${message}`);
+          if (code === 'CHATGPT_USAGE_LIMIT' || code === 'CHATGPT_NOT_ELIGIBLE' || code === 'CHATGPT_FORBIDDEN') {
+            chatgptSession().reportError(err instanceof ChatgptSummonError ? { code } : err);
+          }
+          sendStatus({ kind: 'error', error: code as ErrorClass, message, characterId });
+          throw new Error(`${code}: ${message}`);
+        }
+      }
     }
     if (!preferred_name) {
       // 260828: this used to send error: 'BOT_CRASH' while throwing the
@@ -1277,6 +1328,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       game,
       username,
       backendKind: aiBackendKind,
+      llmProvider: llmInit?.provider,
       startedAtMs,
       child,
       port1,
@@ -1408,6 +1460,20 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // so return before lifecycleToStatus.
       if ((data as { type?: string }).type === 'request-jwt') {
         void handleJwtRefreshRequest(characterId);
+        return;
+      }
+      // 261017 (issue #46): a ChatGPT-plan bot wants a fresh access token
+      // (near expiry, or a 401 with force). Only a session that runs the
+      // chatgpt provider is ever answered.
+      if ((data as { type?: string }).type === 'request-chatgpt-token') {
+        const s = sessions.get(characterId);
+        if (s && s.backendKind === 'local' && s.llmProvider === 'chatgpt') {
+          void answerChatgptTokenRequest(
+            chatgptSession(),
+            (m) => s.port1.postMessage(m),
+            (data as { force?: unknown }).force === true,
+          );
+        }
         return;
       }
       // The in-game bot is replying to a message that was routed in from the
@@ -1598,6 +1664,16 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // leave the world on its own, but a stalled self-shutdown would leave
         // the avatar frozen in-game (still connected). Authoritatively drain
         // and, on timeout, kill the child so the character actually leaves.
+        void _stop(characterId, STOP_TIMEOUT_MS);
+      }
+      // 261017 (issue #46): the bot stopped on a ChatGPT-plan answer (usage
+      // limit, not eligible, signed out, ...). Latch it in main's session so
+      // the renderer shows the usage-limit dialog and every other surface
+      // fails fast instead of asking again, and drive the same drain as the
+      // credits path so the body leaves even if the bot's own exit stalls.
+      if (data.type === 'error' && typeof data.error === 'string' && data.error.startsWith('CHATGPT_')) {
+        logger.warn(`[sei/sup] ChatGPT plan stopped the session: ${data.error}`);
+        try { chatgptSession().reportError({ code: data.error }); } catch { /* best-effort */ }
         void _stop(characterId, STOP_TIMEOUT_MS);
       }
       const status = lifecycleToStatus(data, characterId, startedAtMs);
@@ -1950,6 +2026,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // Party redesign §5: session ended (clean exit or crash) — clear the
         // action verb so a stale "gathering…" doesn't outlive the bot.
         opts.onBotAction?.(characterId, null, undefined, Date.now());
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
         session.resolveExited();
       });
     });
@@ -1979,6 +2057,12 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       }
     }
 
+    // 261017 (issue #46): ChatGPT-plan rotations (and sign-out) go straight
+    // to this bot over its port.
+    if (aiBackendKind === 'local' && llmInit?.provider === 'chatgpt') {
+      session.teardownChatgptTokens = pushChatgptTokens(chatgptSession(), (m) => port1.postMessage(m));
+    }
+
     // Wait for summon-ready or fail
     try {
       await summonPromise;
@@ -1991,6 +2075,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // _stopActive, so a pending tick doesn't postMessage onto a port
       // we're about to close.
       try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
+      try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+      session.teardownChatgptTokens = undefined;
       try {
         await router.close();
       } catch {
@@ -2043,6 +2129,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // Track the live kind so updateJwt / the reactive 401 refresh treat
         // this session as a legitimate JWT consumer from here on (260703).
         session.backendKind = 'cloud-proxy';
+        // 261017: a cloud session never takes ChatGPT-plan tokens.
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
+        session.llmProvider = undefined;
         try {
           session.port1.postMessage({
             type: 'backend-switch',
@@ -2087,7 +2177,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // 260817 (china-compat W10): ollama is keyless — mirror _summon's guard
       // skip so a keyless ollama config never gets a spurious INVALID_API_KEY
       // advisory on a cloud→local switch.
-      const keylessProvider = (userCfg?.provider ?? 'anthropic') === 'ollama';
+      // 261017 (issue #46): the ChatGPT plan has no key either; its
+      // credential comes from main's OAuth session below.
+      const keylessProvider = ['ollama', 'chatgpt'].includes(userCfg?.provider ?? 'anthropic');
       if (!keylessProvider) {
         try {
           // 260703: a MISSING key gets the same clear INVALID_API_KEY surface as
@@ -2108,7 +2200,21 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // Anthropic with stale defaults regardless of the configured provider.
       // Ship the SAME llm section a fresh summon would build (shared helper),
       // so the bot's applyLlmSwitch can reroute its provider/model/config.
-      const llm = buildLlmInitSection(userCfg ?? {}, apiKey);
+      let llm = buildLlmInitSection(userCfg ?? {}, apiKey);
+      let keyErrorClass: ErrorClass | null = null;
+      if (llm.provider === 'chatgpt') {
+        try {
+          llm = await chatgptBotInitSection(chatgptSession(), async () => {
+            const r = await resolveChatgptModel(storedProviderModel(userCfg ?? {}, 'chatgpt'));
+            return { model: r.model, reasoningEffort: r.reasoningEffort, vision: r.vision === 'yes' };
+          });
+        } catch (err) {
+          // The bot still flips off the cloud; with no token its first call
+          // asks main and stops on the same refusal.
+          keyError = err;
+          keyErrorClass = (err instanceof ChatgptSummonError ? err.code : 'NETWORK_OFFLINE') as ErrorClass;
+        }
+      }
       for (const session of sessions.values()) {
         // 260703 hard guard: flip the tracked kind FIRST so no concurrent
         // updateJwt tick can post a token to a session that is now BYOK.
@@ -2117,9 +2223,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           const message = (keyError && typeof keyError === 'object' && 'message' in keyError)
             ? String((keyError as { message: unknown }).message)
             : String(keyError);
-          const ec = message.startsWith('LOCAL_NO_API_KEY')
-            ? ('INVALID_API_KEY' as const)
-            : classifyChildError(keyError);
+          const ec = keyErrorClass
+            ?? (message.startsWith('LOCAL_NO_API_KEY')
+              ? ('INVALID_API_KEY' as const)
+              : classifyChildError(keyError));
           // ADVISORY, not terminal: this session STAYS LIVE — the bot remains
           // connected in-world and just 401s on its next LLM call. Flag
           // transient so broadcastStatus does not drop it from onlineIds (which
@@ -2137,6 +2244,14 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // can't post a stray cloud-jwt-update after the switch.
         try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
         session.teardownJwtRotation = undefined;
+        // 261017: (re)wire the ChatGPT-plan token push to match the provider.
+        session.llmProvider = llm.provider;
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
+        if (llm.provider === 'chatgpt') {
+          const port = session.port1;
+          session.teardownChatgptTokens = pushChatgptTokens(chatgptSession(), (m) => port.postMessage(m));
+        }
         try {
           session.port1.postMessage({ type: 'backend-switch', apiKey, llm });
         } catch {

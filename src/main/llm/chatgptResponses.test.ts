@@ -1,0 +1,145 @@
+/**
+ * 261017 (issue #46): the main-process ChatGPT-plan adapter. A fake session
+ * (latches + tokens) and canned SSE; no network.
+ */
+import { describe, expect, it, vi } from 'vitest';
+import type { ChatgptSession } from '../chatgptPlan/session';
+import type { LlmCallParams } from './types';
+import { applyStopSequences, createChatgptProvider } from './chatgptResponses';
+
+function sse(events: Array<Record<string, unknown>>): string {
+  return events.map((e) => `event: ${String(e.type)}\ndata: ${JSON.stringify(e)}\n\n`).join('');
+}
+
+function okStream(text: string): Response {
+  return new Response(text, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function errResp(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+}
+
+const textReply = (text: string) =>
+  sse([
+    { type: 'response.created', response: { id: 'r' } },
+    { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'm', content: [] } },
+    { type: 'response.output_text.delta', output_index: 0, item_id: 'm', delta: text },
+    { type: 'response.output_item.done', output_index: 0, item: { type: 'message', id: 'm', content: [{ type: 'output_text', text }] } },
+    { type: 'response.completed', response: { id: 'r', usage: { input_tokens: 50, output_tokens: 5, input_tokens_details: { cached_tokens: 40 } } } },
+  ]);
+
+function fakeSession(over: Partial<ChatgptSession> = {}) {
+  let n = 0;
+  const reported: unknown[] = [];
+  const s = {
+    assertUsable: vi.fn(() => {}),
+    getAccessToken: vi.fn(async (o?: { force?: boolean }) => ({ token: `at-${++n}${o?.force ? '-forced' : ''}`, expiresAt: null, accountId: 'a' })),
+    reportError: vi.fn((e: unknown) => reported.push(e)),
+    ...over,
+  } as unknown as ChatgptSession;
+  return { s, reported };
+}
+
+const params: LlmCallParams = { system: 'You are Sui.', messages: [{ role: 'user', content: 'hi' }], maxTokens: 300 };
+
+const authOf = (f: ReturnType<typeof vi.fn>, i: number): string =>
+  new Headers((f.mock.calls[i][1] as RequestInit).headers).get('authorization') ?? '';
+
+describe('chatgpt main provider', () => {
+  it('streams text, normalizes usage and never sends max_output_tokens or stop', async () => {
+    const fetchImpl = vi.fn(async (_u: unknown, _i?: RequestInit) => okStream(textReply('hey there')));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'gpt-6-luna', reasoningEffort: 'low', vision: 'yes', session: s, fetchImpl });
+    const deltas: string[] = [];
+    const r = await p.call({ ...params, maxTokens: 300, stopSequences: ['\n\n'], onTextDelta: (d) => { deltas.push(d); } });
+    expect(r.text).toBe('hey there');
+    expect(deltas.join('')).toBe('hey there');
+    expect(r.usage).toMatchObject({ input_tokens: 10, output_tokens: 5, cache_read_input_tokens: 40 });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0][1]?.body));
+    expect(body).not.toHaveProperty('max_output_tokens');
+    expect(body).not.toHaveProperty('stop');
+    expect(body).toMatchObject({ model: 'gpt-6-luna', store: false, stream: true, reasoning: { effort: 'low' } });
+    expect(p.kind).toBe('chatgpt');
+    expect(p.backend).toBe('local');
+  });
+
+  it('fails fast on a latched plan: no token, no request', async () => {
+    const fetchImpl = vi.fn();
+    const latched = Object.assign(new Error('CHATGPT_USAGE_LIMIT: paused'), { code: 'CHATGPT_USAGE_LIMIT', terminal: true });
+    const { s } = fakeSession({ assertUsable: vi.fn(() => { throw latched; }) });
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    await expect(p.call(params)).rejects.toBe(latched);
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(s.getAccessToken).not.toHaveBeenCalled();
+  });
+
+  it('a 401 forces one refresh and one retry', async () => {
+    const fetchImpl = vi.fn()
+      .mockResolvedValueOnce(errResp(401, { error: { code: 'invalid_token' } }))
+      .mockResolvedValueOnce(okStream(textReply('ok')));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    const r = await p.call(params);
+    expect(r.text).toBe('ok');
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(authOf(fetchImpl, 1)).toBe('Bearer at-2-forced');
+  });
+
+  it('a usage limit is reported to the session (latch) and thrown once, no retry', async () => {
+    const fetchImpl = vi.fn(async () => errResp(429, { error: { code: 'subscription_sharing_usage_limit_exceeded', message: 'limit' } }));
+    const { s, reported } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    const err = await p.call(params).catch((e) => e);
+    expect(err.code).toBe('CHATGPT_USAGE_LIMIT');
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((reported[0] as { code: string }).code).toBe('CHATGPT_USAGE_LIMIT');
+  });
+
+  it('a mid-stream usage limit (response.failed) is reported the same way', async () => {
+    const body = sse([
+      { type: 'response.created', response: { id: 'r' } },
+      { type: 'response.failed', response: { error: { code: 'usage_limit_exceeded', message: 'limit' } } },
+    ]);
+    const { s, reported } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: vi.fn(async () => okStream(body)) });
+    await expect(p.call(params)).rejects.toMatchObject({ code: 'CHATGPT_USAGE_LIMIT' });
+    expect(reported).toHaveLength(1);
+  });
+
+  it('a forced tool answered as JSON text falls back to a tool call', async () => {
+    const { s } = fakeSession();
+    const fetchImpl = vi.fn(async () => okStream(textReply('{"elo": 1200}')));
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    const r = await p.call({
+      ...params,
+      tools: [{ name: 'set_profile', description: 'd', input_schema: { type: 'object', properties: { elo: { type: 'number' } } } }],
+      toolChoice: { type: 'tool', name: 'set_profile' },
+    });
+    expect(r.toolUses).toEqual([{ id: expect.any(String), name: 'set_profile', input: { elo: 1200 } }]);
+    expect(r.stopReason).toBe('tool_use');
+  });
+
+  it('times out a stalled stream', async () => {
+    const { s } = fakeSession();
+    const fetchImpl = vi.fn(async (_u: unknown, init: RequestInit) =>
+      new Response(
+        new ReadableStream({
+          start(c) {
+            init.signal?.addEventListener('abort', () => c.error(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+          },
+        }),
+        { status: 200 },
+      ),
+    );
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
+    await expect(p.call({ ...params, timeoutMs: 30 })).rejects.toThrow(/ChatGPT|timed out|timeout/i);
+  });
+});
+
+describe('applyStopSequences', () => {
+  it('cuts at the earliest stop', () => {
+    expect(applyStopSequences('a END b STOP', ['STOP', 'END'])).toEqual({ text: 'a ', stopped: true });
+    expect(applyStopSequences('abc', ['x'])).toEqual({ text: 'abc', stopped: false });
+    expect(applyStopSequences('abc', undefined)).toEqual({ text: 'abc', stopped: false });
+  });
+});

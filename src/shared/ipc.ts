@@ -26,6 +26,7 @@ import type {
   UserPreferencesPatch,
 } from './characterSchema';
 import type { ErrorClass } from './errorClasses';
+import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from './chatgptPlan';
 import type { RegionStatus } from './regionGate';
 export type { ErrorClass } from './errorClasses';
 import type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
@@ -243,13 +244,20 @@ export interface LlmCapability {
    * Anthropic BYOK (both always vision-capable, so no gate ever needs it).
    */
   model: string | null;
+  /**
+   * 261017 (issue #46): the active LOCAL provider kind, null on the cloud
+   * backend. Lets surfaces show "Using ChatGPT plan" without reading config.
+   * Optional so an older main still type-checks against a newer renderer.
+   */
+  provider?: string | null;
 }
 
 /** llm:list-models — live model listing with the user's own key. `error` is a
  * typed token ('no_api_key' | 'unauthorized' | 'timeout' | 'network' |
  * 'http_<status>' | 'unknown'), never a raw message. */
 export interface LlmListModelsResult {
-  models: Array<{ id: string; vision: 'yes' | 'no' | 'unknown' }>;
+  /** `label` is the provider's display name when it has one (ChatGPT plan). */
+  models: Array<{ id: string; vision: 'yes' | 'no' | 'unknown'; label?: string }>;
   error?: string;
 }
 
@@ -2776,6 +2784,22 @@ export interface RendererApi {
    */
   llmListModels(provider: string): Promise<LlmListModelsResult>;
   llmTest(provider: string, model: string): Promise<LlmTestResult>;
+  /**
+   * 261017 (issue #46): "Continue with ChatGPT" (the ChatGPT plan provider).
+   * Tokens never reach the renderer: these calls see account summaries only.
+   * `chatgptSignIn` opens the system browser and resolves when the loopback
+   * callback lands (or fails/cancels). `enablePlan` re-asks consent for plan
+   * usage on an account that signed in without it.
+   */
+  chatgptStatus(): Promise<ChatgptStatus>;
+  chatgptSignIn(opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<ChatgptSignInResult>;
+  chatgptCancelSignIn(): Promise<void>;
+  chatgptSignOut(accountId?: string): Promise<ChatgptSignOutResult>;
+  chatgptSwitchAccount(accountId: string): Promise<ChatgptStatus>;
+  chatgptDismissWelcome(): Promise<ChatgptStatus>;
+  /** "Try again" after a usage limit: lifts the pause (the next call probes). */
+  chatgptClearLimit(): Promise<ChatgptStatus>;
+  onChatgptStatus(cb: (s: ChatgptStatus) => void): Unsubscribe;
   /** Pull the current config-derived LLM vision capability (seed; the
    * llm:capability push keeps it current afterwards). */
   getLlmCapability(): Promise<LlmCapability>;
@@ -3148,6 +3172,18 @@ export const IpcChannel = {
    * the config-derived vision capability of the active chat backend
    * (push on change + pull to seed, the lan.state/lan.get pattern).
    */
+  /** 261017 (issue #46): ChatGPT plan sign-in + status. */
+  chatgpt: {
+    status: 'chatgpt:status',
+    signIn: 'chatgpt:sign-in',
+    cancelSignIn: 'chatgpt:cancel-sign-in',
+    signOut: 'chatgpt:sign-out',
+    switchAccount: 'chatgpt:switch-account',
+    dismissWelcome: 'chatgpt:dismiss-welcome',
+    clearLimit: 'chatgpt:clear-limit',
+    /** main -> renderer push (CHATGPT_STATUS_CHANNEL in main/chatgptPlan). */
+    statusChanged: 'chatgpt:status-changed',
+  },
   llm: {
     listModels: 'llm:list-models',
     test: 'llm:test',

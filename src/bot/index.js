@@ -35,6 +35,7 @@ import { preparePackLoader } from './packLoader.js'
 import { start as startBrain } from './brain/index.js'
 import { sessionActionStats, llmMetaFromConfig } from './brain/actionStats.js'
 import { sessionDigest } from './brain/sessionDigest.js'
+import { setChatgptTokenTransport, deliverChatgptToken } from './brain/llm/chatgptTokenBridge.js'
 
 // 260926: the static graph above (config, zod, the brain, the LLM SDKs) is
 // evaluated by now. See bootTiming.js for the phase list.
@@ -952,6 +953,9 @@ if (process.parentPort) {
       }
       initPort = ports[0]
       initPort.start()
+      // 261017 (issue #46): ChatGPT-plan token requests go up this port;
+      // main answers with {type:'chatgpt-token'} (handled below).
+      setChatgptTokenTransport((msg) => { initPort?.postMessage(msg) })
       // 260926: boot-phase stamps go up as full snapshots (no stdout mirror:
       // main folds them into the summon diagnostics). The first post is the
       // init_received stamp in bootstrapWithInit, which carries the phases
@@ -1033,6 +1037,19 @@ if (process.parentPort) {
             //       the data.type === 'jwt' branch so rotation actually
             //       reaches the live SDK.
             try { _running?.setAuthToken?.(data.jwt) } catch {}
+          } else if (data && data.type === 'chatgpt-token') {
+            // 261017 (issue #46): main's ChatGPT-plan session rotated the
+            // access token (or answered a request-chatgpt-token). A null
+            // token means signed out; waiting callers reject with
+            // CHATGPT_SIGNED_OUT.
+            try {
+              deliverChatgptToken({
+                token: typeof data.token === 'string' ? data.token : null,
+                expiresAt: Number.isFinite(data.expiresAt) ? data.expiresAt : null,
+                error: typeof data.error === 'string' ? data.error : undefined,
+                code: typeof data.code === 'string' ? data.code : undefined,
+              })
+            } catch {}
           } else if (data && data.type === 'backend-switch') {
             // WR-05 follow-up: the user flipped cloud ↔ local in Settings
             // while the bot is running. The supervisor ships the new routing

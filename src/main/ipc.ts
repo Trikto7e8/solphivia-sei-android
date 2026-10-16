@@ -3057,6 +3057,49 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { testProvider } = await import('./llm/listModels');
     return await testProvider(args.provider, args.model);
   });
+  // === ChatGPT plan (261017, issue #46) ===
+  // Main owns the OAuth session (src/main/chatgptPlan). The renderer only ever
+  // sees account summaries; tokens stay in main and reach a bot over its port.
+  const ChatgptSignInArgs = z
+    .object({ accountId: z.string().max(400).nullable().optional(), enablePlan: z.boolean().optional() })
+    .default({});
+  const ChatgptAccountArg = z.object({ accountId: z.string().max(400) });
+  ipcMain.handle(IpcChannel.chatgpt.status, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().status();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.signIn, async (_event, raw: unknown) => {
+    const args = ChatgptSignInArgs.parse(raw ?? {});
+    const { chatgptSession } = await import('./chatgptPlan');
+    const r = await chatgptSession().signIn(args);
+    // A new account brings a new model catalog (default model + vision).
+    if (r.ok) void import('./llm/capability').then((m) => m.pushLlmCapability());
+    return r;
+  });
+  ipcMain.handle(IpcChannel.chatgpt.cancelSignIn, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    chatgptSession().cancelSignIn();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.signOut, async (_event, raw: unknown) => {
+    const { accountId } = z.object({ accountId: z.string().max(400).optional() }).parse(raw ?? {});
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().signOut(accountId);
+  });
+  ipcMain.handle(IpcChannel.chatgpt.switchAccount, async (_event, raw: unknown) => {
+    const { accountId } = ChatgptAccountArg.parse(raw);
+    const { chatgptSession } = await import('./chatgptPlan');
+    const r = await chatgptSession().switchAccount(accountId);
+    void import('./llm/capability').then((m) => m.pushLlmCapability());
+    return r;
+  });
+  ipcMain.handle(IpcChannel.chatgpt.dismissWelcome, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().dismissWelcome();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.clearLimit, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().clearBlock();
+  });
   ipcMain.handle(IpcChannel.llm.capabilityGet, async () => {
     const { currentLlmCapability } = await import('./llm/capability');
     return await currentLlmCapability();

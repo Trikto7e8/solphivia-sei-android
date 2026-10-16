@@ -170,6 +170,8 @@ function findEntity(bot, name, maxDistance) {
 
 // 261015 (pass 10): find looks at this many hits, nearest first.
 const FIND_CANDIDATES = 24
+// ...plus this many of the nearest exposed ones when those all came back.
+const FIND_EXPOSED = 8
 // A buried block (no open face) counts as this much farther than it is: the
 // walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
 const BURIED_PENALTY_M = 12
@@ -451,6 +453,20 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // the errands eval was 17 blocks down inside the stone, the walk dug a
       // shaft after it, and she spent the rest of the session in the hole.
       const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_CANDIDATES, point }) ?? []
+      // 261017 (pass 12): the nearest 24 can all be buried. In the 261016
+      // errands eval a seed coal vein 16 blocks down filled the whole list,
+      // so the exposed coal on the surface 3 blocks farther was never
+      // scored, and she dug a shaft after the buried one. Ask for the
+      // nearest exposed ones too (mineflayer applies a function
+      // useExtraInfo on top of `matching`).
+      if (hits.length >= FIND_CANDIDATES) {
+        let open = []
+        try {
+          open = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_EXPOSED, point, useExtraInfo: (b) => !!b?.position && isExposed(bot, b.position) }) ?? []
+        } catch {}
+        const have = new Set(hits.map((h) => `${h.x},${h.y},${h.z}`))
+        for (const h of open) if (!have.has(`${h.x},${h.y},${h.z}`)) hits.push(h)
+      }
       if (!hits.length) {
         return { found: false, reason: `no ${args.name} in loaded chunks within ${args.maxDistance}m` }
       }

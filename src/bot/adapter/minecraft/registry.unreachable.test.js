@@ -72,6 +72,24 @@ describe('find (261015)', () => {
     expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
   })
 
+  // 261017 (pass 12): a buried vein can fill the whole candidate list. In the
+  // 261016 errands eval the 24 nearest coal were all in a seed vein 16 down,
+  // so the exposed surface coal 3 blocks farther was never scored.
+  it('still sees an exposed ore when the nearest 24 hits are all buried', async () => {
+    const reg = createDefaultRegistry()
+    const vein = []
+    for (let x = 0; x < 4; x++) for (let y = 50; y < 54; y++) for (let z = 10; z < 13; z++) vein.push([x, y, z, 'coal_ore'])
+    const { bot } = makeBot([...vein, [22, 65, 10, 'coal_ore']])
+    const find = bot.findBlocks
+    bot.findBlocks = (opts) => {
+      const all = find({ ...opts, count: 1000 })
+      const keep = typeof opts.useExtraInfo === 'function' ? all.filter((p) => opts.useExtraInfo(bot.blockAt(p))) : all
+      return keep.slice(0, opts.count ?? 1)
+    }
+    const r = await reg.execute('find', { name: 'coal_ore' }, bot, {})
+    expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
+  })
+
   it('still finds the buried one when it is much nearer', async () => {
     const reg = createDefaultRegistry()
     const { bot } = makeBot([[0, 62, 1, 'coal_ore'], [40, 65, 3, 'coal_ore']])

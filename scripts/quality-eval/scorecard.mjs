@@ -42,7 +42,7 @@ import { judgeConvoSession } from './bench/convoJudge.mjs'
 import { SCENARIOS } from './scenarios.mjs'
 import { judgeSession } from './judge.mjs'
 import { loadSession } from './transcript.mjs'
-import { costOf } from './report.mjs'
+import { COMPANION_MODEL, costOf } from './report.mjs'
 import { serverCtl, cmds, MC_DIR } from './lib/server.mjs'
 import { connectPlayer } from './lib/player.mjs'
 import { KEY_FILE } from './lib/companionProc.mjs'
@@ -179,7 +179,7 @@ async function main() {
       for (let rep = 1; rep <= CFG.convoReps; rep++) for (const s of scripts) for (const R of refs) {
         const dir = await runConvoSession(s, { rep, pbot, botRepo: R.repo, outDir: path.join(OUT, 'convo'), ref: refs.length === 2 ? R.label : 'HEAD' })
         const ev = fs.readFileSync(path.join(dir, 'companion.events.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
-        addRow({ suite: 'convo', refLabel: R.label, id: path.basename(dir), script: s.id, rep, dir, companionCost: costOf('claude-haiku-5-5', llmUsage(ev)) })
+        addRow({ suite: 'convo', refLabel: R.label, id: path.basename(dir), script: s.id, rep, dir, companionCost: costOf(COMPANION_MODEL, llmUsage(ev)) })
         log(`convo ${s.id} #${rep}${refs.length === 2 ? ` [${R.label}]` : ''}: played`)
         if (!CFG.skipJudge) judges.add(async () => { const l = await judgeConvoSession(anthropic, dir); log(`judged ${path.basename(dir)}: ${l.labels.filter((x) => x.label === 'off').length}/${l.labels.length} off`) })
       }
@@ -204,7 +204,7 @@ async function main() {
         if (!r.ok) { log(`freeplay ${id}: companion failed`); continue }
       } catch (e) { log(`freeplay ${id} crashed: ${e?.message}`); continue }
       const sess = loadSession(dir)
-      addRow({ suite: 'freeplay', refLabel: R.label, id, scenario: sc.id, rep, dir, minutes: CFG.fpMinutes, companionCost: costOf('claude-haiku-5-5', sess.usage), playerCost: costOf('claude-haiku-5-5', sess.meta.usage?.player) })
+      addRow({ suite: 'freeplay', refLabel: R.label, id, scenario: sc.id, rep, dir, minutes: CFG.fpMinutes, companionCost: costOf(COMPANION_MODEL, sess.usage), playerCost: costOf('claude-haiku-5-5', sess.meta.usage?.player) })
       log(`freeplay ${id}: played`)
       if (!CFG.skipJudge) judges.add(async () => { const l = await judgeSession(anthropic, dir); log(`judged ${id}: ${l.labels.filter((x) => x.label === 'off').length}/${l.labels.length} off`) })
     }

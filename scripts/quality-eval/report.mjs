@@ -14,11 +14,25 @@ import { CATEGORIES, JUDGE_MODEL } from './judge.mjs'
 export const PRICES = {
   'claude-haiku-5-5': { in: 0.10, out: 0.50, cw: 0.125, cr: 0.01 },
   'claude-opus-5-5': { in: 4, out: 20, cw: 5, cr: 0.20 },
+  // OpenAI list prices (developers.openai.com/api/docs/pricing, read
+  // 261017); cached input is billed as cache_read. No write premium.
+  'gpt-6-luna': { in: 0.10, out: 0.50, cw: 0.10, cr: 0.01 },
+  'gpt-5.6-luna': { in: 0.20, out: 1.20, cw: 0.20, cr: 0.02 },
+  'gpt-6-sol': { in: 2.00, out: 10.00, cw: 2.00, cr: 0.20 },
+  'gpt-6.1-sol': { in: 2.00, out: 10.00, cw: 2.00, cr: 0.10 },
 }
+
+/**
+ * The companion's model for cost and labels: QE_LLM_MODEL when the run uses
+ * another provider (companion.mjs QE_LLM_*), else Haiku 5.5.
+ */
+export const COMPANION_MODEL = (process.env.QE_LLM_PROVIDER && process.env.QE_LLM_MODEL) || 'claude-haiku-5-5'
+
 const WEB_SEARCH_USD = 0.01  // per Anthropic server web_search request
 
 export function costOf(model, u = {}) {
   const p = PRICES[model]
+  if (!p) return NaN // an unpriced model must not read as free
   return ((u.input_tokens || 0) * p.in + (u.output_tokens || 0) * p.out +
     (u.cache_creation_input_tokens || 0) * p.cw + (u.cache_read_input_tokens || 0) * p.cr) / 1e6
 }
@@ -67,11 +81,11 @@ export async function writeReport(outDir) {
       for (const k of Object.keys(counters)) counters[k] += st.counters?.[k] || 0
       row.stats = st.counters
     }
-    cost.companion += costOf('claude-haiku-5-5', sess.usage)
+    cost.companion += costOf(COMPANION_MODEL, sess.usage)
     cost.web += (sess.usage.web_search_requests || 0) * WEB_SEARCH_USD
     cost.player += costOf('claude-haiku-5-5', sess.meta.usage?.player)
     if (judged) cost.judge += costOf(JUDGE_MODEL, judged.usage)
-    row.cost = costOf('claude-haiku-5-5', sess.usage) + costOf('claude-haiku-5-5', sess.meta.usage?.player) + (judged ? costOf(JUDGE_MODEL, judged.usage) : 0)
+    row.cost = costOf(COMPANION_MODEL, sess.usage) + costOf('claude-haiku-5-5', sess.meta.usage?.player) + (judged ? costOf(JUDGE_MODEL, judged.usage) : 0)
     rows.push(row)
   }
 

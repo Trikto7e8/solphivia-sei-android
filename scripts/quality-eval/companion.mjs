@@ -19,6 +19,16 @@
 //   QE_BOT_REPO     repo whose src/bot runs (default: this one). The paired
 //                   comparison points it at a worktree of another ref, so the
 //                   harness stays fixed while the bot code varies.
+//   QE_LLM_PROVIDER optional companion LLM other than the default Anthropic
+//                   BYOK path, e.g. 'chatgpt' (the ChatGPT-plan Responses
+//                   provider; a platform OpenAI key stands in for the plan
+//                   token) or 'openai'. Shipped as the init `llm` section,
+//                   exactly like main does. Needs QE_LLM_KEY_ENV.
+//   QE_LLM_MODEL    that provider's model (e.g. gpt-6-luna)
+//   QE_LLM_EFFORT   reasoning effort (chatgpt only; the app sends 'low' when
+//                   the account catalog lists it)
+//   QE_LLM_KEY_ENV  NAME of the env var holding that provider's key (the key
+//                   itself never goes on a command line or into a file)
 //   QE_MODE         'brain' (default): the full app path, Haiku decides.
 //                   'direct': the same runtime and adapter with a stub brain;
 //                   the orchestrator calls actions itself over stdin
@@ -43,6 +53,23 @@ const MODE = process.env.QE_MODE === 'direct' ? 'direct' : 'brain'
 const keyFile = process.env.QE_KEY_FILE || path.join(os.homedir(), '.sei-dev', 'anthropic-test-key')
 const apiKey = fs.readFileSync(keyFile, 'utf8').trim()
 if (!apiKey) { console.error('[qe-companion] empty key file'); process.exit(2) }
+
+// Optional non-Anthropic companion LLM (see the header).
+const llmProvider = process.env.QE_LLM_PROVIDER || ''
+let llmInit
+if (llmProvider) {
+  const keyEnv = process.env.QE_LLM_KEY_ENV || ''
+  const llmKey = keyEnv ? (process.env[keyEnv] || '').trim() : ''
+  if (!llmKey) { console.error(`[qe-companion] QE_LLM_PROVIDER=${llmProvider} needs QE_LLM_KEY_ENV naming a set env var`); process.exit(2) }
+  llmInit = {
+    provider: llmProvider,
+    api_key: llmKey,
+    ...(process.env.QE_LLM_MODEL ? { model: process.env.QE_LLM_MODEL } : {}),
+    ...(process.env.QE_LLM_EFFORT ? { reasoning_effort: process.env.QE_LLM_EFFORT } : {}),
+    ...(llmProvider === 'chatgpt' ? { vision: true } : {}),
+  }
+}
+const companionModel = llmProvider ? `${llmProvider}:${process.env.QE_LLM_MODEL || 'default'}${process.env.QE_LLM_EFFORT ? `@${process.env.QE_LLM_EFFORT}` : ''}` : 'claude-haiku-5-5'
 
 const charFile = process.env.QE_CHARACTER
 if (!charFile) { console.error('[qe-companion] QE_CHARACTER is required'); process.exit(2) }
@@ -292,7 +319,7 @@ async function startDirect() {
 }
 let directStop = null
 
-emit({ kind: 'companion_boot', character: character.name, username: character.username, model: MODE === 'direct' ? 'none (direct actions)' : 'claude-haiku-5-5', mode: MODE, userDataDir })
+emit({ kind: 'companion_boot', character: character.name, username: character.username, model: MODE === 'direct' ? 'none (direct actions)' : companionModel, mode: MODE, userDataDir })
 
 if (MODE === 'direct') {
   process.removeAllListeners('SIGTERM'); process.removeAllListeners('SIGINT')
@@ -324,6 +351,7 @@ parentPort.emit('message', {
     continuity: null,
     knowledge: '',
     readyBudgetMs: 120000,
+    ...(llmInit ? { llm: llmInit } : {}),
   },
   ports: [botPort],
 })

@@ -180,6 +180,29 @@ describe('chatgpt main provider: streamed stop sequences and length cap', () => 
     expect(reported).toHaveLength(0);
   });
 
+  it('keeps usage seen on the stream when it is cut before response.completed', async () => {
+    const enc = new TextEncoder();
+    const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => new Response(
+      new ReadableStream<Uint8Array>({
+        start(c) {
+          c.enqueue(enc.encode(sse([
+            { type: 'response.created', response: { id: 'r' } },
+            { type: 'response.in_progress', response: { id: 'r', usage: { input_tokens: 120, output_tokens: 3, input_tokens_details: { cached_tokens: 100 } } } },
+            { type: 'response.output_item.added', output_index: 0, item: { type: 'message', id: 'm', content: [] } },
+            { type: 'response.output_text.delta', output_index: 0, item_id: 'm', delta: 'hi\nPlayer: more' },
+          ])));
+          init?.signal?.addEventListener('abort', () => c.error(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+        },
+      }),
+      { status: 200 },
+    ));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl: fetchImpl as unknown as typeof fetch });
+    const r = await p.call({ ...params, stopSequences: ['\nPlayer:'] });
+    expect(r.text).toBe('hi');
+    expect(r.usage).toMatchObject({ input_tokens: 20, output_tokens: 3, cache_read_input_tokens: 100 });
+  });
+
   it('caps the text near maxTokens and aborts the stream', async () => {
     const counter = { pulls: 0, cancelled: false };
     const fetchImpl = vi.fn(async (_u: unknown, init?: RequestInit) => endlessDeltas(init, ['blah '], counter));
@@ -222,6 +245,27 @@ describe('chatgpt main provider: streamed stop sequences and length cap', () => 
 });
 
 describe('chatgpt main provider: repeated 401', () => {
+  it('a forced refresh that changes nothing (earliest_refresh_at) sends no retry and is not terminal', async () => {
+    const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'invalid_token' } }));
+    const { s, reported } = fakeSession({
+      getAccessToken: vi.fn(async () => ({ token: 'same', expiresAt: null, accountId: 'a' })),
+    });
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    const err = await p.call(params).catch((e) => e);
+    expect(err.code).toBe('CHATGPT_AUTH');
+    expect(err.terminal).toBe(false);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect((reported[0] as { code: string }).code).toBe('CHATGPT_AUTH');
+  });
+
+  it('subscription_sharing_invalid_user after a real refresh is FORBIDDEN (no sign-in prompt)', async () => {
+    const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'subscription_sharing_invalid_user' } }));
+    const { s } = fakeSession();
+    const p = createChatgptProvider({ model: 'm', vision: 'yes', session: s, fetchImpl });
+    await expect(p.call(params)).rejects.toMatchObject({ code: 'CHATGPT_FORBIDDEN', terminal: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
+
   it('a 401 right after the forced refresh is terminal CHATGPT_AUTH_REJECTED, reported, no third request', async () => {
     const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'invalid_token' } }));
     const { s, reported } = fakeSession();

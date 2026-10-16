@@ -27,7 +27,7 @@
 // orchestrator halts the session (onTerminalError) instead of redriving.
 // A blown budget is an AbortError with isTimeout, like anthropicClient.
 
-import { authRejectedError, buildResponsesBody, requestRejectedError, streamResponses } from './responsesWire.js'
+import { buildResponsesBody, requestRejectedError, retried401Error, streamResponses } from './responsesWire.js'
 import { onChatgptToken, requestChatgptToken } from './chatgptTokenBridge.js'
 
 const RESPONSES_URL = 'https://api.openai.com/v1/responses'
@@ -108,15 +108,20 @@ export function createChatgptProvider(config, { fetchImpl = globalThis.fetch, ur
     try {
       let resp
       try {
+        const used = await currentToken()
         try {
-          resp = await attempt(await currentToken())
+          resp = await attempt(used)
         } catch (err) {
           if (err?.code !== 'CHATGPT_AUTH') throw err
+          const fresh = await freshToken(true)
+          // The forced refresh changed nothing (earliest_refresh_at): the
+          // same token would 401 again and prove nothing about the sign-in.
+          if (fresh === used) throw err
           arm()
           try {
-            resp = await attempt(await freshToken(true))
+            resp = await attempt(fresh)
           } catch (again) {
-            if (again?.code === 'CHATGPT_AUTH') throw authRejectedError(again)
+            if (again?.code === 'CHATGPT_AUTH') throw retried401Error(again)
             throw again
           }
         }

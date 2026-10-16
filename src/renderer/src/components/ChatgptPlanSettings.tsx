@@ -218,15 +218,52 @@ export function ChatgptPlanSettings({
           </Button>
         </div>
       ) : null}
-      {status?.blockedCode ? (
-        <p className={`${settings.helper} ${settings.helperError}`} role="alert">
-          {t("This ChatGPT account can't use its plan in Sei right now. Try another account, or pick another provider.")}
-        </p>
-      ) : null}
+      {status?.blockedCode ? <BlockedNotice code={status.blockedCode} /> : null}
       {signingInRow}
       {notices}
     </>
   );
+
+  /**
+   * A latched plan answer, with the action that lifts it: the dialog that
+   * first showed it may be long closed, so this row is how a player gets
+   * unstuck. A rejected sign-in needs a new sign-in; everything else gets
+   * Try again (one attempt, the latch returns if the answer does).
+   */
+  function BlockedNotice({ code }: { code: string }): React.ReactElement {
+    if (code === 'CHATGPT_AUTH_REJECTED') {
+      return (
+        <>
+          <p className={`${settings.helper} ${settings.helperError}`} role="alert">
+            {t("ChatGPT didn't accept Sei's sign-in, even after renewing it. Sign in again to keep using your plan.")}
+          </p>
+          <div className={styles.buttonRow}>
+            <ContinueWithChatGPTButton
+              disabled={signingIn}
+              busy={signingIn}
+              onClick={() => void startSignIn(activeAcc ? { accountId: activeAcc.id } : undefined)}
+            />
+          </div>
+        </>
+      );
+    }
+    const text =
+      code === 'CHATGPT_REQUEST_REJECTED'
+        ? t("ChatGPT didn't accept Sei's last request, so ChatGPT requests are paused.")
+        : code === 'CHATGPT_FORBIDDEN'
+          ? t("ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan.")
+          : t("This ChatGPT account can't use its plan in Sei right now. Try another account, or pick another provider.");
+    return (
+      <div className={settings.row}>
+        <span className={`${settings.label} ${settings.statusWarn}`} role="alert">
+          {text}
+        </span>
+        <Button kind="ghost" size="sm" onClick={() => void clearLimit()}>
+          {t('Try again')}
+        </Button>
+      </div>
+    );
+  }
 
   function AccountList(): React.ReactElement {
     return (

@@ -30,7 +30,7 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { CHATGPT_RESPONSES_URL } from '../../shared/chatgptPlan';
 import type { VisionVerdict } from '../../shared/llmCatalog';
 // The shared wire format (plain JS, imported like other bot helpers).
-import { authRejectedError, buildResponsesBody, streamResponses } from '../../bot/brain/llm/responsesWire.js';
+import { buildResponsesBody, normalizeResponsesUsage, retried401Error, streamResponses } from '../../bot/brain/llm/responsesWire.js';
 import type { ChatgptSession } from '../chatgptPlan/session';
 import { parseToolJsonFallback, synthesizeContent } from './messageMappers';
 import { requestDeadline, timeoutOr } from './timeout';
@@ -148,6 +148,9 @@ export function createChatgptProvider(opts: {
       onCut: () => inner.abort(),
     });
     const calls: LlmToolUse[] = [];
+    // The last usage any event carried, for a stream we cut before
+    // response.completed (that is where usage normally arrives).
+    let seenUsage: unknown = undefined;
     let r: { text: string; toolUses: LlmToolUse[]; usage: LlmResult['usage']; stopReason: string | null };
     try {
       r = (await streamResponses({
@@ -158,6 +161,9 @@ export function createChatgptProvider(opts: {
         signal: inner.signal,
         onChunk,
         onTextDelta: (d: string) => gate.push(d),
+        onEvent: (ev: { response?: { usage?: unknown } } | null) => {
+          if (ev?.response?.usage) seenUsage = ev.response.usage;
+        },
         onCall: (c) => {
           calls.push(c as LlmToolUse);
         },
@@ -165,7 +171,7 @@ export function createChatgptProvider(opts: {
     } catch (err) {
       // Our own cut ended the stream early: what was kept IS the answer.
       if (!gate.cut || signal.aborted) throw err;
-      r = { text: '', toolUses: calls, usage: {}, stopReason: null };
+      r = { text: '', toolUses: calls, usage: normalizeResponsesUsage(seenUsage), stopReason: null };
     } finally {
       signal.removeEventListener('abort', onOuter);
     }
@@ -221,12 +227,16 @@ export function createChatgptProvider(opts: {
         // One forced refresh + one retry. A 401 on the retry means the
         // sign-in itself is refused: terminal, latched by the session, and
         // the player is asked to sign in again (no loop every turn).
+        const used = tok.token;
         tok = await session.getAccessToken({ force: true });
+        // The forced refresh changed nothing (earliest_refresh_at): a retry
+        // would send the same token, and a second 401 would prove nothing.
+        if (tok.token === used) throw err;
         deadline.rearm();
         try {
           return await once(p, tok.token, controller.signal, rearm);
         } catch (again) {
-          if ((again as { code?: string })?.code === 'CHATGPT_AUTH') throw authRejectedError(again);
+          if ((again as { code?: string })?.code === 'CHATGPT_AUTH') throw retried401Error(again);
           throw again;
         }
       }

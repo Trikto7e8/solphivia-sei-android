@@ -396,6 +396,12 @@ export const ZH_SCREENS_B: Record<string, string> = {
   "ChatGPT didn't accept Sei's sign-in, even after renewing it. Sign in again to keep using your ChatGPT plan, or pick another AI option in Settings.":
     'ChatGPT 不接受 Sei 的登录，即使已经续期也一样。请重新登录以继续使用你的 ChatGPT 套餐，或在设置中选择其他 AI 选项。',
   'ChatGPT rejected the request': 'ChatGPT 拒绝了请求',
+  "ChatGPT didn't accept Sei's sign-in, even after renewing it. Sign in again to keep using your plan.":
+    'ChatGPT 不接受 Sei 的登录，即使已经续期也一样。请重新登录以继续使用你的套餐。',
+  "ChatGPT didn't accept Sei's last request, so ChatGPT requests are paused.":
+    'ChatGPT 不接受 Sei 的上一个请求，所以 ChatGPT 请求已暂停。',
+  "ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan.":
+    '目前无法在这里使用 ChatGPT 套餐，可能受你所在地区或套餐的限制。',
   "ChatGPT didn't accept the request Sei sent, so your companion stopped instead of retrying. Try again, or pick another AI option in Settings.":
     'ChatGPT 不接受 Sei 发送的请求，所以你的伙伴停了下来，没有反复重试。请重试，或在设置中选择其他 AI 选项。',
 };

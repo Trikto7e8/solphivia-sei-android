@@ -41,6 +41,8 @@ interface ChatgptState {
   clearLimit: () => Promise<void>;
   closeLimitDialog: () => void;
   closeBlockDialog: () => void;
+  /** Reopen a latched code's dialog (a chat turn just failed on it). */
+  openBlockDialog: (code: string) => void;
   reset: () => void;
 }
 
@@ -134,6 +136,9 @@ export const useChatgptStore = create<ChatgptState>((set, get) => {
     },
     closeLimitDialog: () => set({ limitDialog: false }),
     closeBlockDialog: () => set({ blockDialog: null }),
+    openBlockDialog: (code) => {
+      if (DIALOG_BLOCKS.has(code)) set({ blockDialog: code });
+    },
     reset: () => {
       set((s) => ({
         status: null,

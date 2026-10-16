@@ -247,6 +247,14 @@ describe('useChatStore.send: model timeout vs user cancel (260926)', () => {
     expect(s.awaiting.c1).toBe(false);
   });
 
+  it('a latched ChatGPT rejection reopens its dialog (the action that lifts it), not a dead retry', async () => {
+    const { useChatgptStore } = await import('./useChatgptStore');
+    useChatgptStore.setState({ blockDialog: null });
+    const s = await sendRejecting(ipcError("Error: CHATGPT_REQUEST_REJECTED: ChatGPT rejected Sei's request format"));
+    expect(s.messages.c1.at(-1)?.text).toMatch(/Try again/);
+    expect(useChatgptStore.getState().blockDialog).toBe('CHATGPT_REQUEST_REJECTED');
+  });
+
   it('a user cancel stays silent: no failure line', async () => {
     const s = await sendRejecting(ipcError('Error: CHAT_ABORTED'));
     expect(s.messages.c1.map((m) => m.role)).toEqual(['user']);
@@ -276,8 +284,10 @@ describe('useChatStore.send: model timeout vs user cancel (260926)', () => {
     const auth = ipcError('Error: CHATGPT_AUTH_REJECTED: ChatGPT did not accept the sign-in');
     const req = ipcError("Error: CHATGPT_REQUEST_REJECTED: ChatGPT rejected Sei's request format");
     const forbidden = ipcError('Error: CHATGPT_FORBIDDEN: not permitted');
-    expect(chatFailureLine(auth)).toMatch(/sign-in needs attention/);
+    expect(chatFailureLine(auth)).toMatch(/sign in again/);
+    expect(chatFailureLine(auth)).toMatch(/Continue with ChatGPT/);
     expect(chatFailureLine(req)).toMatch(/didn't accept the request/);
+    expect(chatFailureLine(req)).toMatch(/Try again/);
     expect(chatFailureLine(forbidden)).toMatch(/region or plan/);
     expect(chatFailureLine(forbidden)).not.toMatch(/sign in again/i);
     expect(isChatgptPlanError(auth) && isChatgptPlanError(req)).toBe(true);

@@ -211,6 +211,27 @@ describe('createChatgptProvider', () => {
     p.dispose()
   })
 
+  it('a forced refresh that hands back the SAME token: no retry, not terminal (earliest_refresh_at)', async () => {
+    setChatgptTokenTransport(() => queueMicrotask(() => deliverChatgptToken({ token: 'tok-1', expiresAt: Date.now() + 3_600_000 })))
+    const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'invalid_token' } }))
+    const p = createChatgptProvider(config(), { fetchImpl })
+    const err = await p.call(callArgs()).catch((e) => e)
+    expect(err.code).toBe('CHATGPT_AUTH')
+    expect(err.terminal).toBe(false)
+    expect(fetchImpl).toHaveBeenCalledTimes(1)
+    p.dispose()
+  })
+
+  it('subscription_sharing_invalid_user after a real refresh stops as FORBIDDEN, not a sign-in prompt', async () => {
+    setChatgptTokenTransport(() => queueMicrotask(() => deliverChatgptToken({ token: 'tok-2', expiresAt: Date.now() + 3_600_000 })))
+    const fetchImpl = vi.fn(async () => errResp(401, { error: { code: 'subscription_sharing_invalid_user', message: 'no' } }))
+    const p = createChatgptProvider(config(), { fetchImpl })
+    const err = await p.call(callArgs()).catch((e) => e)
+    expect(err).toMatchObject({ code: 'CHATGPT_FORBIDDEN', terminal: true, apiCode: 'subscription_sharing_invalid_user' })
+    expect(fetchImpl).toHaveBeenCalledTimes(2)
+    p.dispose()
+  })
+
   it('a 400 on the very first request is terminal CHATGPT_REQUEST_REJECTED', async () => {
     const fetchImpl = vi.fn(async () => errResp(400, { error: { message: 'Unknown parameter: tools[0].namespace', param: 'tools[0].namespace' } }))
     const p = createChatgptProvider(config(), { fetchImpl })

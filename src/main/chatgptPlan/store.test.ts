@@ -8,14 +8,15 @@ import { mkdtemp, readdir, readFile, rm, writeFile, mkdir } from 'node:fs/promis
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
-const crypto = { broken: false };
+const crypto = { broken: false, available: true, denied: false };
 vi.mock('electron', () => ({
   app: { isPackaged: false, getPath: (_k: string) => tmpdir() },
   safeStorage: {
-    isEncryptionAvailable: () => true,
+    isEncryptionAvailable: () => crypto.available,
     encryptString: (s: string) => Buffer.from(`enc:${s}`, 'utf8'),
     decryptString: (b: Buffer) => {
       const s = b.toString('utf8');
+      if (crypto.denied) throw new Error('Keychain access denied');
       if (crypto.broken || !s.startsWith('enc:')) throw new Error('Error while decrypting the ciphertext provided to safeStorage.decryptString.');
       return s.slice(4);
     },
@@ -23,7 +24,7 @@ vi.mock('electron', () => ({
 }));
 
 import { _setUserDataOverride, paths, setActiveScope } from '../paths';
-import { electronVault } from './store';
+import { _resetVaultLocks, electronVault } from './store';
 import { emptyVault } from './session';
 
 let tmp: string;
@@ -32,6 +33,9 @@ beforeEach(async () => {
   tmp = await mkdtemp(path.join(tmpdir(), 'sei-chatgpt-vault-test-'));
   _setUserDataOverride(tmp);
   crypto.broken = false;
+  crypto.available = true;
+  crypto.denied = false;
+  _resetVaultLocks();
 });
 
 afterEach(async () => {
@@ -60,4 +64,19 @@ describe('electronVault', () => {
     expect((await readFile(path.join(path.dirname(file), bak!))).toString()).toBe('ciphertext-from-another-keychain');
     expect((await electronVault.load()).welcomeSeen).toBe(true);
   });
+
+  for (const mode of ['encryption unavailable', 'keychain denied'] as const) {
+    it(`${mode}: the vault is neither moved aside nor written over`, async () => {
+      await electronVault.save({ ...emptyVault(), welcomeSeen: true });
+      const file = paths.chatgptAccountsPath();
+      const before = await readFile(file);
+      if (mode === 'encryption unavailable') crypto.available = false;
+      else crypto.denied = true;
+      expect((await electronVault.load()).accounts).toEqual([]);
+      expect((await readdir(path.dirname(file))).some((n) => n.endsWith('.bak'))).toBe(false);
+      crypto.available = true;
+      await expect(electronVault.save({ ...emptyVault() })).rejects.toThrow('KEYCHAIN_UNAVAILABLE');
+      expect(await readFile(file)).toEqual(before);
+    });
+  }
 });

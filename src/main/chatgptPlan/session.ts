@@ -197,6 +197,9 @@ export interface ChatgptSessionDeps {
   revokeBackoffMs?: number;
 }
 
+/** How long sign-out waits for a refresh already on the wire. */
+const SIGN_OUT_SETTLE_MS = 5_000;
+
 /** Refresh this long before expiry. */
 export const REFRESH_MARGIN_MS = 5 * 60_000;
 /** The usage-limit pause, after which ONE request may probe again. */
@@ -348,6 +351,8 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     if (t.scopes.length) rec.scopes = t.scopes;
     rec.saved_at = new Date(now()).toISOString();
   }
+
+  const tokenOf = (r: StoredAccount): AccessToken => ({ token: r.access_token!, expiresAt: r.expires_at, accountId: r.id });
 
   function clearTokens(rec: StoredAccount, { keepIdToken }: { keepIdToken: boolean }): void {
     rec.access_token = null;
@@ -534,10 +539,13 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       return newest;
     });
     if (d.activeId === rec.id) emitToken(null);
-    // Let an in-flight refresh settle (it discards its result and revokes
-    // its rotated token) so nothing outlives the sign-out.
+    // Give an in-flight refresh a moment to settle (it discards its result
+    // and revokes its rotated token itself). Correctness does not depend on
+    // this wait (the generation bump does that), so it is bounded.
     const inflight = refreshing.get(rec.id);
-    if (inflight) await inflight.catch(() => undefined);
+    if (inflight) {
+      await Promise.race([inflight.catch(() => undefined), new Promise((r) => setTimeout(r, SIGN_OUT_SETTLE_MS))]);
+    }
     let revoked = true;
     if (refreshToken) {
       const endpoints = await discover();
@@ -608,18 +616,24 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       if (isTerminalRefreshError(err)) {
         // Clear only the token set this refresh was about: a sign-in that
         // landed meanwhile stored a new, good one.
-        const cleared = await mutate((v) => {
+        const out = await mutate((v): { cleared: boolean; current: AccessToken | null } => {
           const r = v.accounts.find((a) => a.id === rec.id);
-          if (!r || r.refresh_token !== used) return false;
+          if (!r) return { cleared: false, current: null };
+          if (r.refresh_token !== used) {
+            // A re-sign-in replaced the rejected set meanwhile: its token is
+            // the answer, not "signed out".
+            return { cleared: false, current: isSignedIn(r) ? tokenOf(r) : null };
+          }
           // Keep the id_token: it is the id_token_hint for the re-auth.
           clearTokens(r, { keepIdToken: true });
-          return true;
+          return { cleared: true, current: null };
         });
-        log(`[chatgpt] refresh rejected (${(err as OAuthError).oauthError})${cleared ? '; token set cleared' : ''}`);
-        if (cleared) {
+        log(`[chatgpt] refresh rejected (${(err as OAuthError).oauthError})${out.cleared ? '; token set cleared' : ''}`);
+        if (out.cleared) {
           emitToken(null);
           void emitStatus();
         }
+        if (out.current) return out.current;
         throw signedOut('the ChatGPT session expired');
       }
       if (err instanceof OAuthError && err.oauthError === 'invalid_client') {
@@ -637,16 +651,19 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       const r = v.accounts.find((a) => a.id === rec.id);
       if (!r) return null;
       if (epochOf(rec.id) !== epoch || r.refresh_token !== used) {
-        const current = isSignedIn(r) ? { token: r.access_token!, expiresAt: r.expires_at, accountId: r.id } : null;
-        return { kind: 'stale', current };
+        return { kind: 'stale', current: isSignedIn(r) ? tokenOf(r) : null };
       }
       applyTokens(r, t);
-      return { kind: 'ok', tok: { token: r.access_token!, expiresAt: r.expires_at, accountId: r.id } };
+      return { kind: 'ok', tok: tokenOf(r) };
     });
     if (!result || result.kind === 'stale') {
-      // The rotated token is live at the server but belongs to nobody now.
-      if (t.refresh_token) {
-        await revokeRefreshToken(deps.fetchImpl, {
+      // Signed out meanwhile: the rotated token is live at the server but
+      // belongs to nobody, so revoke it (in the background: a dead network
+      // must not hold this caller or a sign-out for the revoke backoff).
+      // A re-sign-in meanwhile is left alone: if the server revokes per
+      // grant, revoking the old family's token could end the NEW sign-in.
+      if (t.refresh_token && !result?.current) {
+        void revokeRefreshToken(deps.fetchImpl, {
           revocationEndpoint: endpoints.revocation_endpoint,
           clientId: rec.client_id,
           refreshToken: t.refresh_token,

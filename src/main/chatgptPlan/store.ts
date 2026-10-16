@@ -43,33 +43,69 @@ export async function quarantineUnreadable(file: string): Promise<string | null>
   }
 }
 
+/**
+ * A decrypt error that says the KEY is out of reach right now (keychain
+ * locked or access denied), not that this ciphertext is foreign. Electron's
+ * own wording for a wrong key is "Error while decrypting the ciphertext".
+ */
+function keychainOutOfReach(err: unknown): boolean {
+  return /keychain|denied|not available|unavailable|user canceled|interaction is not allowed/i.test(String((err as Error)?.message ?? err));
+}
+
+/**
+ * Vault files this process could not read because the keychain was out of
+ * reach. They are never moved aside (the data is fine) and never written
+ * over: save refuses until a restart reads them again.
+ */
+const unreadableHere = new Set<string>();
+
 /** The safeStorage-backed vault for the ACTIVE profile (path read per call). */
 export const electronVault: ChatgptVault = {
   key: () => paths.chatgptAccountsPath(),
   async load(): Promise<VaultData> {
+    const file = paths.chatgptAccountsPath();
     let buf: Buffer;
     try {
-      buf = await readFile(paths.chatgptAccountsPath());
+      buf = await readFile(file);
     } catch {
       return emptyVault();
     }
+    if (!safeStorage.isEncryptionAvailable()) {
+      unreadableHere.add(file);
+      return emptyVault();
+    }
+    let text: string;
     try {
-      return parseVault(JSON.parse(safeStorage.decryptString(buf)));
-    } catch {
-      // Undecryptable (keychain reset or locked, other machine's copy):
+      text = safeStorage.decryptString(buf);
+    } catch (err) {
+      if (keychainOutOfReach(err)) {
+        unreadableHere.add(file);
+        return emptyVault();
+      }
+      // A real decrypt failure (keychain reset, another machine's copy):
       // treat as no accounts rather than crashing every LLM call, but move
-      // the file aside first so the next save never destroys it. A later
-      // keychain fix can still recover the tokens (or at least the
-      // registrations) from the .bak.
-      await quarantineUnreadable(paths.chatgptAccountsPath());
+      // the file aside first so the next save never destroys it.
+      await quarantineUnreadable(file);
+      return emptyVault();
+    }
+    try {
+      return parseVault(JSON.parse(text));
+    } catch {
+      await quarantineUnreadable(file);
       return emptyVault();
     }
   },
   async save(data: VaultData): Promise<void> {
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('KEYCHAIN_UNAVAILABLE');
-    await atomicWrite(paths.chatgptAccountsPath(), safeStorage.encryptString(JSON.stringify(data)));
+    const file = paths.chatgptAccountsPath();
+    if (!safeStorage.isEncryptionAvailable() || unreadableHere.has(file)) throw new Error('KEYCHAIN_UNAVAILABLE');
+    await atomicWrite(file, safeStorage.encryptString(JSON.stringify(data)));
   },
 };
+
+/** Tests only. */
+export function _resetVaultLocks(): void {
+  unreadableHere.clear();
+}
 
 const HOST_ID_RE = /^urn:uuid:[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 

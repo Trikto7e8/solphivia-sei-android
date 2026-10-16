@@ -560,6 +560,20 @@ export function authRejectedError(cause) {
 }
 
 /** A 400 that says the request shape itself is refused (see the code list). */
+/**
+ * The verdict on a 401 that came back AGAIN after a forced refresh produced a
+ * new token (callers never retry when the refresh changed nothing, e.g. the
+ * earliest_refresh_at window: that proves nothing about the sign-in).
+ * subscription_sharing_invalid_user means the subscriber context could not be
+ * validated, which a new sign-in does not fix unless the refresh itself was
+ * terminal (that path is CHATGPT_SIGNED_OUT already), so it stops as a plan
+ * restriction instead of asking the player to sign in again.
+ */
+export function retried401Error(cause) {
+  if (cause?.apiCode === 'subscription_sharing_invalid_user') return terminalFrom(cause, 'CHATGPT_FORBIDDEN')
+  return authRejectedError(cause)
+}
+
 export function requestRejectedError(cause) {
   return terminalFrom(cause, 'CHATGPT_REQUEST_REJECTED')
 }

@@ -17,6 +17,7 @@ import { sei } from '../ipcClient';
 import { useDataStore } from './useDataStore';
 import { useUiStore } from './useUiStore';
 import { useFirstMomentStore } from './useFirstMomentStore';
+import { useChatgptStore } from './useChatgptStore';
 import {
   notifyCompanionText,
   notifyPlayerText,
@@ -190,7 +191,10 @@ export function chatFailureLine(err: unknown): string {
   if (/CHATGPT_USAGE_LIMIT/.test(msg)) {
     return "i can't reply: your ChatGPT plan's usage limit is reached. check Manage usage in ChatGPT, or pick another AI option in Settings.";
   }
-  if (/CHATGPT_SIGNED_OUT|CHATGPT_PLAN_DISABLED|CHATGPT_AUTH_REJECTED/.test(msg)) {
+  if (/CHATGPT_AUTH_REJECTED/.test(msg)) {
+    return "i can't reply: ChatGPT needs you to sign in again. use Continue with ChatGPT in the popup or in Settings.";
+  }
+  if (/CHATGPT_SIGNED_OUT|CHATGPT_PLAN_DISABLED/.test(msg)) {
     return "i can't reply: your ChatGPT sign-in needs attention. continue with ChatGPT in Settings to fix it.";
   }
   if (/CHATGPT_NOT_ELIGIBLE/.test(msg)) {
@@ -200,7 +204,7 @@ export function chatFailureLine(err: unknown): string {
     return "i can't reply: ChatGPT plan use isn't available here right now, maybe because of your region or plan. pick another AI option in Settings.";
   }
   if (/CHATGPT_REQUEST_REJECTED/.test(msg)) {
-    return "i can't reply: ChatGPT didn't accept the request. try again, or pick another AI option in Settings.";
+    return "i can't reply: ChatGPT didn't accept the request, so requests are paused. press Try again in the popup or in Settings, or pick another AI option.";
   }
   return "sorry, i couldn't reply just now. try again in a moment?";
 }
@@ -676,6 +680,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       // 260703: the local-mode/no-key failure gets specific, actionable copy —
       // this state is deliberate (local mode never silently uses the cloud) and
       // the fix is in Settings, so "try again in a moment" would be a lie.
+      // A latched ChatGPT rejection: retyping cannot lift it, so bring back
+      // the dialog that can (re-sign-in, or Try again).
+      const latched = /CHATGPT_(AUTH_REJECTED|REQUEST_REJECTED)/.exec(String((err as { message?: string })?.message ?? err));
+      if (latched) useChatgptStore.getState().openBlockDialog(`CHATGPT_${latched[1]}`);
       const fallback: ChatMessage = {
         id: `local-err-${Date.now()}`,
         role: 'companion',

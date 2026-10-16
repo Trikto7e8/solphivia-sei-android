@@ -12,7 +12,7 @@ import { answerChatgptTokenRequest, chatgptBotInitSection, pushChatgptTokens, Ch
 
 const HOST = 'urn:uuid:11111111-2222-4333-8444-555555555555';
 
-function setup(opts: { clock?: { t: number } } = {}) {
+function setup(opts: { clock?: { t: number }; revokeBackoffMs?: number } = {}) {
   const srv = createMockAuthServer({ now: opts.clock ? () => opts.clock!.t : undefined });
   const mem = memoryVault();
   const logs: string[] = [];
@@ -24,7 +24,7 @@ function setup(opts: { clock?: { t: number } } = {}) {
     startListener: srv.startListener,
     now: opts.clock ? () => opts.clock!.t : undefined,
     log: (l) => logs.push(l),
-    revokeBackoffMs: 1,
+    revokeBackoffMs: opts.revokeBackoffMs ?? 1,
   });
   return { srv, mem, session, logs };
 }
@@ -283,7 +283,8 @@ describe('sign-out during a refresh (race)', () => {
     // refresh are both revoked, so no live refresh token outlives sign-out.
     const rotated = [...srv.refreshTokens.entries()].find(([k, v]) => k !== used && !v.used)?.[0];
     expect(rotated).toBeTruthy();
-    expect(srv.revoked).toEqual(expect.arrayContaining([used, rotated]));
+    // The discarded rotation is revoked in the background.
+    await vi.waitFor(() => expect(srv.revoked).toEqual(expect.arrayContaining([used, rotated])));
     await expect(session.getAccessToken()).rejects.toMatchObject({ code: 'CHATGPT_SIGNED_OUT' });
   });
 
@@ -310,9 +311,47 @@ describe('sign-out during a refresh (race)', () => {
     srv.knobs.refreshDelayMs = 0;
     const id = (await session.status()).activeId;
     expect(await session.signIn({ accountId: id })).toMatchObject({ ok: true });
-    await inflight;
+    const got = await inflight;
     expect(mem.read().accounts[0].refresh_token).toBeTruthy();
     expect((await session.status()).accounts[0].signedIn).toBe(true);
+    // The caller gets the re-sign-in's token, not CHATGPT_SIGNED_OUT.
+    expect(got).toMatchObject({ token: mem.read().accounts[0].access_token });
+  });
+
+  it('a refresh discarded because of a re-sign-in returns the new token and revokes NOTHING', async () => {
+    const clock = { t: 1_000_000_000_000 };
+    const { srv, mem, session } = setup({ clock });
+    await session.signIn();
+    clock.t += 3600_000 + 1;
+    srv.knobs.refreshDelayMs = 30;
+    const inflight = session.getAccessToken();
+    await new Promise((r) => setTimeout(r, 5));
+    srv.knobs.refreshDelayMs = 0;
+    const id = (await session.status()).activeId;
+    expect(await session.signIn({ accountId: id })).toMatchObject({ ok: true });
+    const got = await inflight;
+    const acc = mem.read().accounts[0];
+    expect(got.token).toBe(acc.access_token);
+    await new Promise((r) => setTimeout(r, 20));
+    // Per-grant revocation could end the new sign-in, so the discarded
+    // rotation is left to expire.
+    expect(srv.revoked).toEqual([]);
+    expect(acc.refresh_token).toBeTruthy();
+  });
+
+  it('a token waiter is not held by the background revoke of a discarded rotation', async () => {
+    const clock = { t: 1_000_000_000_000 };
+    const { srv, session } = setup({ clock, revokeBackoffMs: 5_000 });
+    await session.signIn();
+    clock.t += 3600_000 + 1;
+    srv.knobs.refreshDelayMs = 30;
+    const t0 = Date.now();
+    const inflight = session.getAccessToken().catch((e) => e);
+    await new Promise((r) => setTimeout(r, 5));
+    srv.knobs.revokeStatus = 'network'; // every revoke retries with a 5s backoff
+    void session.signOut(); // its OWN revoke is awaited (the UI reports it)
+    expect(await inflight).toMatchObject({ code: 'CHATGPT_SIGNED_OUT' });
+    expect(Date.now() - t0).toBeLessThan(1_000);
   });
 });
 

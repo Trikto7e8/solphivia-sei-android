@@ -48,6 +48,15 @@ describe('useChatgptStore block dialog', () => {
     off();
   });
 
+  it('openBlockDialog reopens a closed dialog for a dialog code only', () => {
+    useChatgptStore.getState().closeBlockDialog();
+    useChatgptStore.getState().openBlockDialog('CHATGPT_FORBIDDEN');
+    expect(useChatgptStore.getState().blockDialog).toBeNull();
+    useChatgptStore.getState().openBlockDialog('CHATGPT_AUTH_REJECTED');
+    expect(useChatgptStore.getState().blockDialog).toBe('CHATGPT_AUTH_REJECTED');
+    useChatgptStore.getState().closeBlockDialog();
+  });
+
   it('NOT_ELIGIBLE / FORBIDDEN keep using the error copy, no dialog', () => {
     const off = useChatgptStore.getState().subscribe();
     push!({ ...base, blockedCode: 'CHATGPT_FORBIDDEN' });

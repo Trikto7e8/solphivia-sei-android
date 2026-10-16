@@ -416,6 +416,18 @@ export function replyWindowApplies(adapter) {
 }
 
 /**
+ * 261017: true when her line ends on a question to the player ("you know
+ * where trees are?"). A question with more words after it ("trees? lol")
+ * does not count.
+ * Read only to time the next idle turn (the reply window); the line itself is
+ * never changed.
+ * @param {unknown} text
+ */
+export function asksPlayer(text) {
+  return typeof text === 'string' && /\?[\s!.~)]*$/.test(text)
+}
+
+/**
  * Remaining floor-hold, in ms (0 = none). Pure; the orchestrator feeds it.
  *
  * @param {Object} args
@@ -1205,12 +1217,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // in that gap was blind to the line: an idle tick re-greeted over a
       // greeting still in the queue, and re-answered a question whose answer
       // was still being "typed" (with a different answer).
-      convoMemory.recentChat.pushSelf(config.persona.name, msg)
+      const at = leadMs + i * 550
+      convoMemory.recentChat.pushSelf(config.persona.name, msg, { sentAt: Date.now() + Math.max(0, at) })
       const send = () => {
         logChatOut(msg)
         try { adapter.chat(msg) } catch {}
       }
-      const at = leadMs + i * 550
       if (at <= 0) send()
       else setTimeout(send, at)
     })
@@ -2916,7 +2928,15 @@ function maybeWarnByteCap(loop, warned) {
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
         loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
-        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to THIS, not to the scene around you:'}\n"${String(data?.text ?? '').trim()}"\n` +
+        // 261017 (quality pass 11): the line is shown the way the transcript
+        // shows it ("player (Alex): cool"), not as a bare quoted string. She
+        // opened her reply with their words ("cool. now torches", "lol ur
+        // kinda slow. i'm just..."), which chat shows as its own message right
+        // under theirs. In the echo probe (claims-probe.mjs echo_*) this
+        // layout plus the replyNoRestate sentence took that from 48 to 29 of
+        // 111 replies.
+        const lineSpeaker = fromTeammate ? (speakerName || 'your teammate') : playerLabel(speakerName)
+        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to THIS, not to the scene around you.'}\n${lineSpeaker}: ${String(data?.text ?? '').trim()}\n` +
           (groupVoice
             ? voiceGroupGuidance(companions).trim() + ' Your text output is a private scratchpad the player can NEVER see; a reply that exists only in your text is silence to them; only say() reaches them.'
             : teammateVoice
@@ -5832,7 +5852,21 @@ function maybeWarnByteCap(loop, warned) {
     // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
     // "ok holding still alex"): the 5s cadence is for resuming work, and with
     // no work to resume an idle turn has nothing new to say.
-    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
+    // 261017 (quality pass 11): how long until her last paced line reaches
+    // chat (0 when it has). brain/index.js adds it to the idle cadence, so the
+    // quiet an idle tick waits for starts when her words land, not when the
+    // turn that wrote them ended. With realistic typing a long line lands up
+    // to ~7s after it was decided, and the agentic 5s tick fired before her
+    // question had reached the player: errands-03 (261016 scorecard) asked
+    // "got 8 cobble ... you know where trees are?" and an idle turn composed
+    // 0.8s before that line finished sending asked it again.
+    chatPendingMs: () => Math.max(0, _lastChatSendDeadline - Date.now()),
+    // 261017: and in every game when her last line asked the player
+    // something. errands-03 above: the loop had dug and picked up, so the
+    // talk-only hold did not apply, and the next idle turn re-asked the same
+    // question 7s later with nothing new to go on. Waiting on an answer is
+    // the reply window's whole point; it ends the moment the player speaks.
+    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly || asksPlayer(convoMemory.recentChat.lastSelf?.()?.text)) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,
       sendDeadline: _lastChatSendDeadline,

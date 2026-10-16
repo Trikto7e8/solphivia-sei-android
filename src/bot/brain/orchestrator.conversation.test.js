@@ -25,6 +25,7 @@ import {
   _setTickIntervalForTests,
   replyWindowRemainingMs,
   replyWindowApplies,
+  asksPlayer,
   isExactRepeatSincePlayerSpoke,
   splitRepeatedSegments,
   joinSegments,
@@ -187,6 +188,22 @@ describe('the reply window: always in Stardew, after a talk-only loop everywhere
 
   it('does not hold it in Minecraft after a loop that did world work, so the agentic cadence resumes the goal', async () => {
     expect(await holdAfter('Minecraft', talkAndWork)).toBe(0)
+  })
+
+  it('holds it in Minecraft after world work when her last line asked them something (261017)', async () => {
+    const askAndWork = [
+      { text: '', toolUses: [say('t1', 'got 8 cobble. you know where trees are?'), { id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
+      { text: '', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
+    ]
+    expect(await holdAfter('Minecraft', askAndWork)).toBeGreaterThan(REPLY_WINDOW_MS - 5000)
+  })
+
+  it('asksPlayer reads only a line that ends on its question', () => {
+    expect(asksPlayer('you know where trees are?')).toBe(true)
+    expect(asksPlayer('torches now or the dock first?! ')).toBe(true)
+    expect(asksPlayer('trees? lol')).toBe(false)
+    expect(asksPlayer('on it')).toBe(false)
+    expect(asksPlayer(undefined)).toBe(false)
   })
 })
 
@@ -613,5 +630,76 @@ describe('a re-asked question is dropped sentence by sentence', () => {
     await orch.handleDispatch('sei:idle', { quietMs: 10_000 })
     await orch.handleDispatch('sei:idle', { quietMs: 30_000 })
     expect(adapter.chat).toHaveBeenCalledTimes(1)
+  })
+})
+
+// 261017 (quality pass 11): with realistic typing her line is decided seconds
+// before the player can read it. The transcript now places it where the
+// player saw it, and the idle cadence waits for it to land.
+describe('her paced line sits in the transcript where the player saw it', () => {
+  it('a player line typed while hers was still being typed renders before it', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const m = createConvoMemory().recentChat
+    m.pushSelf('Lyra', 'heyyy newb', { sentAt: 3_004_000 })
+    vi.setSystemTime(3_001_000)
+    m.pushPlayer('newb', 'hey')
+    vi.setSystemTime(3_006_000)
+    const lines = m.formatConversationBlock().split('\n').slice(1)
+    expect(lines).toEqual([
+      '[5s ago] player (newb): hey',
+      '[2s ago] you: heyyy newb',
+    ])
+    // The decision time is kept for the say() gates and repeat grouping.
+    expect(m.lastSelf().at).toBe(3_000_000)
+  })
+
+  it('ignores a sentAt that is not later than the decision', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(3_000_000)
+    const m = createConvoMemory().recentChat
+    m.pushSelf('Lyra', 'one', { sentAt: 1 })
+    m.pushSelf('Lyra', 'two', { sentAt: Number.NaN })
+    m.pushSelf('Lyra', 'three')
+    expect(m._internal.selfLines.map((l) => l.sentAt - l.at)).toEqual([0, 0, 0])
+    vi.setSystemTime(3_002_000)
+    expect(m.formatConversationBlock()).toContain('[2s ago] you: one')
+    expect(m.formatConversationBlock()).toContain('[2s ago] you: three')
+  })
+
+  it('the crossed hello: the reply turn sees their "hey" before her queued greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    vi.useFakeTimers()
+    const { orch, provider, adapter } = makeOrch({
+      config: makeConfig({ realistic_typing: true }),
+      script: [
+        { text: '', toolUses: [say('t1', 'heyyy newb'), { id: 'e1', name: 'end_loop', input: {} }] },
+        { text: '', toolUses: [{ id: 'e2', name: 'end_loop', input: {} }] },
+      ],
+    })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(adapter.chat).not.toHaveBeenCalled()
+    expect(orch.chatPendingMs()).toBeGreaterThan(0)
+    orch.recordIncomingChat('newb', 'hey')
+    await orch.handleDispatch('sei:chat_received', chat('hey'))
+    const convo = blockText(provider.calls[1], 'recent_conversation')
+    expect(convo.indexOf('] player (newb): hey')).toBeGreaterThan(-1)
+    expect(convo.indexOf('] player (newb): hey')).toBeLessThan(convo.indexOf('] you: heyyy newb'))
+    expect(JSON.stringify(provider.calls[1].messages ?? provider.calls[1])).toContain('it comes right after their line')
+    await vi.runAllTimersAsync()
+    expect(orch.chatPendingMs()).toBe(0)
+  })
+})
+
+describe('the player line in the seed turn (261017)', () => {
+  it('is shown as a transcript line, not a bare quoted string, with the no-echo sentence', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider } = makeOrch({ script: [{ text: '', toolUses: [say('t1', 'nice')] }] })
+    orch.recordIncomingChat('newb', 'cool')
+    await orch.handleDispatch('sei:chat_received', chat('cool'))
+    const msg = blockText(provider.calls[0], 'player_message')
+    expect(msg).toContain('\nplayer (newb): cool\n')
+    expect(msg).not.toContain('"cool"')
+    expect(msg).toContain('do not repeat it back to them')
   })
 })

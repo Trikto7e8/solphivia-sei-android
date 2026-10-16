@@ -131,11 +131,22 @@ export function createConvoMemory({ onLine = null } = {}) {
   // realistic typing a line reaches the socket 1-6s after the turn that wrote
   // it, and a turn composed inside that gap did not know the line existed
   // (260921: a question answered twice, two different answers, 8s apart).
-  function pushSelf(who, text) {
+  //
+  // 261017 (quality pass 11): `sentAt` is when the line reaches the player
+  // (the paced send). `at` stays the decision time, which the say() gates,
+  // the greeting check and ownRepeats' turn grouping key on; the transcript
+  // is ordered by sentAt. Ordered by decision time, a line the player typed
+  // while hers was still being typed sat AFTER it, so their "hey" read as a
+  // reply to her hello. Her scratchpad said "Alex just said hi back" and she
+  // greeted again ("yo alex" then "hey alex", about 20 of the 178 repetitive
+  // labels in the 261015-16 compares).
+  function pushSelf(who, text, opts = {}) {
     if (!text) return
     const line = String(text).trim()
     if (!line) return
-    pushRing(selfLines, { at: Date.now(), who: String(who), text: line.slice(0, RECENT_CHAT_LINE_TRUNC) }, RECENT_CHAT_CAPACITY)
+    const at = Date.now()
+    const sentAt = Number.isFinite(opts?.sentAt) && opts.sentAt > at ? opts.sentAt : at
+    pushRing(selfLines, { at, sentAt, who: String(who), text: line.slice(0, RECENT_CHAT_LINE_TRUNC) }, RECENT_CHAT_CAPACITY)
     tap('you', line)
   }
 
@@ -164,12 +175,13 @@ export function createConvoMemory({ onLine = null } = {}) {
     const now = Date.now()
     // Stable merge: equal timestamps keep the player's line first, since a
     // reply recorded in the same millisecond still came after what it answers.
+    // Her lines go where the player saw them, at sentAt (see pushSelf).
     const merged = [
-      ...playerLines.map((l, i) => ({ ...l, self: false, i })),
-      ...selfLines.map((l, i) => ({ ...l, self: true, i })),
-    ].sort((a, b) => (a.at - b.at) || (Number(a.self) - Number(b.self)) || (a.i - b.i))
+      ...playerLines.map((l, i) => ({ ...l, self: false, i, t: l.at })),
+      ...selfLines.map((l, i) => ({ ...l, self: true, i, t: l.sentAt ?? l.at })),
+    ].sort((a, b) => (a.t - b.t) || (Number(a.self) - Number(b.self)) || (a.i - b.i))
     const spoken = lastTurns(merged).map((l) => ({
-      at: l.at, line: `[${fmtAgo(now, l.at)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`,
+      at: l.t, line: `[${fmtAgo(now, l.t)}] ${l.self ? 'you' : speakerLabel(l)}: ${l.text}`,
     }))
     // An event recorded in the same millisecond as a line goes after it: the
     // line was decided first (say() is emitted before the action runs).

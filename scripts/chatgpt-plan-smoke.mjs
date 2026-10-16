@@ -4,10 +4,16 @@
  * plan access token. Manual only, never run in CI (not a *.test.* file, and
  * it does nothing without the env token).
  *
- *   CHATGPT_PLAN_ACCESS_TOKEN=... node scripts/chatgpt-plan-smoke.mjs
+ *   CHATGPT_PLAN_ACCESS_TOKEN=... node --experimental-strip-types scripts/chatgpt-plan-smoke.mjs
+ *
+ * (The flag lets it reuse the app's own model-list parser and default pick
+ * from src/shared/chatgptPlan.ts; Node 23.6+ does not need it.)
+ *
+ * A platform API key works too (same /v1/responses request shape, different
+ * route): it validates the request body, not the plan route or its limits.
  *
  * Optional env:
- *   CHATGPT_PLAN_MODEL       model slug (default: first one /v1/models lists)
+ *   CHATGPT_PLAN_MODEL       model slug (default: the app's own default pick)
  *   CHATGPT_PLAN_EFFORT      reasoning effort to send (default: none)
  *   CHATGPT_PLAN_API_BASE    API base (default https://api.openai.com/v1);
  *                            only for pointing the script at a local stub
@@ -28,9 +34,19 @@
 import { deflateSync } from 'node:zlib';
 import { buildResponsesBody, streamResponses } from '../src/bot/brain/llm/responsesWire.js';
 
+let shared;
+try {
+  shared = await import('../src/shared/chatgptPlan.ts');
+} catch {
+  console.error('chatgpt-plan-smoke: run with `node --experimental-strip-types` (Node 22) so the app model parser loads.');
+  process.exit(2);
+}
+const { parseChatgptModels, pickDefaultChatgptModel, pickReasoningEffort } = shared;
+
 const TOKEN = process.env.CHATGPT_PLAN_ACCESS_TOKEN ?? '';
 const BASE = (process.env.CHATGPT_PLAN_API_BASE || 'https://api.openai.com/v1').replace(/\/+$/, '');
 const EFFORT = process.env.CHATGPT_PLAN_EFFORT || null;
+let effort = EFFORT;
 const TIMEOUT_MS = 90_000;
 
 if (!TOKEN) {
@@ -134,10 +150,15 @@ async function main() {
       report('GET /v1/models', false, `http ${resp.status}: ${scrub(text)}`);
     } else {
       const json = JSON.parse(text);
-      const list = Array.isArray(json?.data) ? json.data : Array.isArray(json?.models) ? json.models : [];
-      const ids = list.map((m) => m?.slug ?? m?.id).filter((x) => typeof x === 'string');
-      report('GET /v1/models', ids.length > 0, `${ids.length} models: ${ids.slice(0, 8).join(', ')}${ids.length > 8 ? ', ...' : ''}`);
-      if (!model) model = ids[0] ?? null;
+      const shape = Array.isArray(json?.models) ? 'plan catalog {models}' : Array.isArray(json?.data) ? 'platform list {data}' : 'unknown shape';
+      const catalog = parseChatgptModels(json);
+      const ids = catalog.map((m) => m.slug);
+      report('GET /v1/models', ids.length > 0, `${shape}, ${ids.length} usable: ${ids.slice(0, 10).join(', ')}${ids.length > 10 ? ', ...' : ''}`);
+      if (!model && catalog.length) {
+        model = pickDefaultChatgptModel(catalog);
+        const entry = catalog.find((m) => m.slug === model);
+        if (!EFFORT && entry) effort = pickReasoningEffort(entry.reasoning_levels);
+      }
     }
   } catch (err) {
     report('GET /v1/models', false, errLine(err));
@@ -146,7 +167,7 @@ async function main() {
     report('pick a model', false, 'no model listed; set CHATGPT_PLAN_MODEL');
     return;
   }
-  console.log(`      model: ${model}${EFFORT ? `, effort ${EFFORT}` : ''}`);
+  console.log(`      model: ${model}${effort ? `, effort ${effort}` : ', no reasoning field'}`);
 
   // 2. Image + namespace tools + forced tool -> a function_call.
   const png = solidPng(16, 16, [220, 20, 20]);
@@ -165,7 +186,7 @@ async function main() {
       messages: [userTurn],
       tools: TOOLS,
       toolChoice: { name: 'report_color' },
-      reasoningEffort: EFFORT,
+      reasoningEffort: effort,
     });
     const r = await respond(TOKEN, body);
     call = r.toolUses.find((t) => t.name === 'report_color') ?? null;
@@ -199,7 +220,7 @@ async function main() {
       ],
       tools: TOOLS,
       toolChoice: null,
-      reasoningEffort: EFFORT,
+      reasoningEffort: effort,
     });
     const kinds = body.input.map((i) => i.type).join(' > ');
     const r = await respond(TOKEN, body);

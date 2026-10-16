@@ -64,11 +64,41 @@ export interface ChatgptModel {
 }
 
 /**
+ * A platform model id that can run a companion turn on /v1/responses: the
+ * GPT and o-series text models, minus audio / realtime / image / embedding /
+ * search / codex variants and dated snapshots (the alias is listed too).
+ */
+export function isResponsesChatModelId(id: string): boolean {
+  if (!/^(gpt-\d|o\d)/i.test(id)) return false;
+  if (/(tts|audio|realtime|transcribe|search|image|embedding|instruct|codex|oss|moderation|deep-research|computer-use)/i.test(id)) return false;
+  return !/-\d{4}-\d{2}-\d{2}$/.test(id);
+}
+
+/**
  * Parse the catalog body: keep `visibility: "list"` entries in SERVER order
  * (the docs' own filter). Unknown shapes return [] rather than throwing.
+ *
+ * The plan route answers `{models: [{slug, display_name, ...}]}`. The same
+ * URL called with a platform API key (dev testing, the smoke script) answers
+ * the OpenAI list shape `{data: [{id, owned_by, ...}]}` instead: those ids
+ * are kept when they name a chat model, with nothing known about reasoning
+ * levels or images.
  */
 export function parseChatgptModels(body: unknown): ChatgptModel[] {
   const list = (body as { models?: unknown })?.models;
+  const data = (body as { data?: unknown })?.data;
+  if (!Array.isArray(list) && Array.isArray(data)) {
+    const ids = data
+      .map((m) => (m && typeof m === 'object' && typeof (m as { id?: unknown }).id === 'string' ? (m as { id: string }).id.trim() : ''))
+      .filter((id) => id && isResponsesChatModelId(id));
+    return [...new Set(ids)].map((slug) => ({
+      slug,
+      display_name: slug,
+      reasoning_levels: [],
+      default_reasoning_level: null,
+      accepts_images: null,
+    }));
+  }
   if (!Array.isArray(list)) return [];
   const out: ChatgptModel[] = [];
   for (const raw of list) {
@@ -96,15 +126,28 @@ export function parseChatgptModels(body: unknown): ChatgptModel[] {
   return out;
 }
 
+/** The numeric generation in a GPT slug ("gpt-6.1-sol" -> 6.1), else -1. */
+function gptGeneration(slug: string): number {
+  const m = /^gpt-(\d+(?:\.\d+)?)/i.exec(slug);
+  return m ? Number(m[1]) : -1;
+}
+
 /**
  * Default model: a companion turn wants the fast, efficient tier, not the
- * most capable one (latency and the Plus 5-hour limit both favor it). First
- * listed slug that names the efficient tier, else the first listed model.
+ * most capable one (latency and the Plus 5-hour limit both favor it). The
+ * newest generation of the efficient tier (luna, else mini, else nano), ties
+ * kept in listed order, else the first listed model. Newest-first matters
+ * for the platform list shape, whose order means nothing (gpt-5.6-luna can
+ * come before gpt-6-luna).
  */
 export function pickDefaultChatgptModel(models: readonly Pick<ChatgptModel, 'slug'>[]): string {
   for (const re of [/luna/i, /mini/i, /nano/i]) {
-    const hit = models.find((m) => re.test(m.slug));
-    if (hit) return hit.slug;
+    let best: string | null = null;
+    for (const m of models) {
+      if (!re.test(m.slug)) continue;
+      if (best === null || gptGeneration(m.slug) > gptGeneration(best)) best = m.slug;
+    }
+    if (best) return best;
   }
   return models[0]?.slug ?? CHATGPT_FALLBACK_MODEL;
 }

@@ -169,8 +169,11 @@ function findEntity(bot, name, maxDistance) {
 }
 
 // 261015 (pass 10): find looks at this many hits, nearest first.
-// 261017 (pass 12): 24 -> 96, see the find handler.
-const FIND_CANDIDATES = 96
+const FIND_CANDIDATES = 24
+// 261017 (pass 12): when the best of those is buried or deep, also look for
+// the nearest few exposed ones, no farther than this (see the find handler).
+const FIND_EXPOSED = 8
+const FIND_EXPOSED_MAX_M = 32
 // A buried block (no open face) counts as this much farther than it is: the
 // walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
 const BURIED_PENALTY_M = 12
@@ -456,14 +459,6 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // block with an open face over one buried in rock: the nearest coal in
       // the errands eval was 17 blocks down inside the stone, the walk dug a
       // shaft after it, and she spent the rest of the session in the hole.
-      // 261017 (pass 12): the nearest 24 can all be buried. In the 261016
-      // errands eval a seed coal vein 16 blocks down filled the whole list,
-      // so the exposed coal on the surface 3 blocks farther was never
-      // scored, and she dug a shaft after the buried one. Score a wider net.
-      // (Review: a second exposed-only findBlocks had no work bound; with
-      // few exposed matches in range it read every block of every section,
-      // about a second at 64m, synchronously. One query with a larger count
-      // stops as soon as it has that many, on the cheap matcher.)
       const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_CANDIDATES, point }) ?? []
       if (!hits.length) {
         return { found: false, reason: `no ${args.name} in loaded chunks within ${args.maxDistance}m` }
@@ -482,11 +477,35 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // wall the walk cannot reach without digging (pass 10 compare,
       // errands-02-B: coal at y54 beat the surface coal 3 blocks farther).
       const depthOf = (h) => (point ? Math.max(0, point.y - h.y - DEPTH_FREE_M) : 0)
+      const scoreOf = (c) => distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
       let h = fresh[0]
       let best = Infinity
       for (const c of fresh) {
-        const score = distOf(c) + (isExposed(bot, c) ? 0 : BURIED_PENALTY_M) + DEPTH_PENALTY_PER_M * depthOf(c)
+        const score = scoreOf(c)
         if (score < best) { best = score; h = c }
+      }
+      // 261017 (pass 12): the nearest 24 can all be buried. In the 261016
+      // errands eval a seed coal vein 16 blocks down filled the whole list,
+      // so the exposed coal on the surface 3 blocks farther was never
+      // scored, and she dug a shaft after the buried one (the eval arena has
+      // ~135 coal nearer than its surface coal, so no fixed count is enough).
+      // When the winner carries a penalty, ask for the nearest exposed ones
+      // too (mineflayer applies a function useExtraInfo on top of
+      // `matching`). Bounded: an exposed-only search reads every block of
+      // every section in range until it has its count, so it is capped at
+      // FIND_EXPOSED_MAX_M, and at the winner's score, since nothing farther
+      // than that can beat it.
+      if (point && best > distOf(h) + 0.5) {
+        const reach = Math.min(args.maxDistance, FIND_EXPOSED_MAX_M, Math.ceil(best))
+        let open = []
+        try {
+          open = bot.findBlocks({ matching, maxDistance: reach, count: FIND_EXPOSED, point, useExtraInfo: (b) => !!b?.position && isExposed(bot, b.position) }) ?? []
+        } catch {}
+        for (const c of open) {
+          if (isUnreachable(bot, c)) continue
+          const score = scoreOf(c)
+          if (score < best) { best = score; h = c }
+        }
       }
       const blk = bot.blockAt(h)
       const d = Number(distOf(h).toFixed(1))

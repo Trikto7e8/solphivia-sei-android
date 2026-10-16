@@ -80,14 +80,15 @@ describe('find (261015)', () => {
     const vein = []
     for (let x = 0; x < 4; x++) for (let y = 50; y < 54; y++) for (let z = 10; z < 13; z++) vein.push([x, y, z, 'coal_ore'])
     const { bot } = makeBot([...vein, [22, 65, 10, 'coal_ore']])
+    // The mock returns the nearest `count`, like mineflayer.
+    const calls = []
     const find = bot.findBlocks
-    bot.findBlocks = (opts) => {
-      const all = find({ ...opts, count: 1000 })
-      const keep = typeof opts.useExtraInfo === 'function' ? all.filter((p) => opts.useExtraInfo(bot.blockAt(p))) : all
-      return keep.slice(0, opts.count ?? 1)
-    }
+    bot.findBlocks = (opts) => { calls.push(opts); return find(opts) }
     const r = await reg.execute('find', { name: 'coal_ore' }, bot, {})
     expect(r.pos).toEqual({ x: 22, y: 65, z: 10 })
+    // One bounded query: no unbounded exposed-only second scan (review).
+    expect(calls).toHaveLength(1)
+    expect(calls[0].useExtraInfo).toBeUndefined()
   })
 
   it('still finds the buried one when it is much nearer', async () => {

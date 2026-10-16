@@ -79,6 +79,19 @@ describe('goTo from a hole', () => {
     expect(r).toMatch(/dead-end pocket, not the way out/)
     expect(r).not.toMatch(/try build to Y=/)
     expect(r).not.toMatch(/out of the 2-deep hole/)
+    expect(r).toMatch(/pillar up with build \(direction below\).*or dig a staircase/)
+    expect(r).not.toMatch(/ $|  /)
+  })
+
+  it('with no climb to report, the line still reads cleanly and gives the next step', async () => {
+    const bot = holeBot(57)
+    climbOutMock.mockResolvedValue({ status: 'not_in_pit' })
+    goToMock.mockResolvedValue('timeout — unreachable — try build to Y=71')
+    escapeUpMock.mockResolvedValue({ status: 'not_in_pit' })
+    const reg = createDefaultRegistry()
+    const r = String(await reg.execute('goTo', { x: 4, y: 71, z: 0 }, bot, {}))
+    expect(r).toMatch(/^timeout: you are still down in the hole at 0,57,0, 14 blocks below where you are going, so you are not on your way yet\. Walking again/)
+    expect(r).not.toMatch(/ $|  /)
   })
 
   it('a failed escape keeps its own "stuck in a hole" line first', async () => {

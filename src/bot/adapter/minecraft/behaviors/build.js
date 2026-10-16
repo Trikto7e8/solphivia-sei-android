@@ -7,6 +7,7 @@
 import { Vec3 } from 'vec3'
 import { placeBlockAction } from './place.js'
 import { goTo } from './pathfind.js'
+import { isNaturalBlock } from './naturalBlocks.js'
 import { reason } from '../../../brain/errStrings.js'
 
 export const DEFAULT_TIMEOUT_MS = 4000 // per-cell, inherited via placeBlockAction
@@ -246,10 +247,10 @@ async function jumpPlace(bot, refBlock, col, cellY) {
   return isSolid(bot.blockAt(targetCell))
 }
 
-async function waitForLanding(bot, maxMs) {
+async function waitForLanding(bot, maxMs, signal) {
   const start = Date.now()
   while (Date.now() - start < maxMs) {
-    if (bot.entity?.onGround) return
+    if (bot.entity?.onGround || signal?.aborted) return
     await new Promise(r => setTimeout(r, 40))
   }
 }
@@ -282,12 +283,13 @@ export function supportCell(bot, cellY) {
 }
 
 /** Walk (no jump) onto the centre of cell (x, cellY, z) next to her. */
-async function shuffleTo(bot, cell, cellY) {
+async function shuffleTo(bot, cell, cellY, signal) {
   const cx = cell.x + 0.5, cz = cell.z + 0.5
   const t0 = Date.now()
   bot._seiGazeHold = (bot._seiGazeHold ?? 0) + 1
   try {
     while (Date.now() - t0 < SHUFFLE_MS) {
+      if (signal?.aborted) break
       const p = bot.entity.position
       if (Math.abs(p.x - cx) < 0.2 && Math.abs(p.z - cz) < 0.2) break
       try { await bot.lookAt?.(new Vec3(cx, p.y + 1.6, cz), true) } catch {}
@@ -295,10 +297,15 @@ async function shuffleTo(bot, cell, cellY) {
       await new Promise(r => setTimeout(r, 50))
     }
   } finally {
-    bot.setControlState?.('forward', false)
+    // A reflex or survival takeover that cut the step short drives the body
+    // now; clearing its controls would stall a creeper flee (as in
+    // climbOut.js stepUpTo).
+    if (!bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat) {
+      bot.setControlState?.('forward', false)
+    }
     bot._seiGazeHold = Math.max(0, (bot._seiGazeHold ?? 1) - 1)
   }
-  await waitForLanding(bot, LANDING_MAX_MS)
+  await waitForLanding(bot, LANDING_MAX_MS, signal)
   return Math.floor(bot.entity.position.x) === cell.x && Math.floor(bot.entity.position.z) === cell.z && Math.floor(bot.entity.position.y) === cellY
 }
 
@@ -334,7 +341,10 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
       if (config?.signal?.aborted) return 'aborted'
       // Mid-air (still falling into the cell, or the last jump not landed):
       // the floor and head room read below would be off by a block.
-      if (bot.entity?.onGround === false) await waitForLanding(bot, LANDING_MAX_MS)
+      if (bot.entity?.onGround === false) {
+        await waitForLanding(bot, LANDING_MAX_MS, config?.signal)
+        if (config?.signal?.aborted) return 'aborted'
+      }
       const pos = bot.entity.position
       const cellY = Math.floor(pos.y)               // cell the feet rest in / vacate on jump
       const col = { x: Math.floor(pos.x), z: Math.floor(pos.z) }
@@ -348,7 +358,8 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
         const support = shuffles < MAX_SHUFFLES ? supportCell(bot, cellY) : null
         if (!support) return 'scaffold failed: no solid floor below'
         shuffles++
-        await shuffleTo(bot, support, cellY)
+        await shuffleTo(bot, support, cellY, config?.signal)
+        if (config?.signal?.aborted) return 'aborted'
         attempt--
         continue
       }
@@ -358,8 +369,13 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
       // feet" after four wasted jumps.
       const roof = bot.blockAt(new Vec3(col.x, cellY + 2, col.z))
       if (isSolid(roof)) {
+        // Review: only natural ground is hers to dig; a plank ceiling is
+        // someone's build (the same rule as the climb's staircase).
+        const advice = isNaturalBlock(roof.name)
+          ? 'Dig that block out first, or move to a spot with open space above'
+          : 'It looks built, and you do not dig through builds. Move to a spot with open space above, or leave by a door or stairs'
         return `scaffold failed: no head room. There is ${roof.name} at ${col.x},${cellY + 2},${col.z} right above your head, ` +
-          'so you cannot jump to put a block under you. Dig that block out first, or move to a spot with open space above'
+          `so you cannot jump to put a block under you. ${advice}`
       }
 
       // Hold the gaze controller (behaviors/gaze.js) off the head for this

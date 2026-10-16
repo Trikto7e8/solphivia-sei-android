@@ -337,6 +337,39 @@ describe('escapeUp (any hole, after a failed walk)', () => {
     expect(scaffoldUp).toHaveBeenCalledWith(bot, 'dirt', 72, expect.anything())
   })
 
+  // Review (261017): the target on a hill above the ground. Once the pillar
+  // reaches the shaft's rim she is out; a staircase toward targetY from
+  // there would cut into the hillside.
+  it('stops at the shaft rim when the target is higher than the ground, without digging', async () => {
+    const bot = pocketBot({ items: [{ name: 'dirt', count: 12 }] })
+    // A hill west of the shaft, the target on top of it.
+    const world = bot.blockAt
+    bot.blockAt = (p) => (p.x <= -1 && p.x >= -9 && p.y >= 71 && p.y <= 79) ? { name: 'stone', boundingBox: 'block', position: p } : world(p)
+    Object.assign(bot, { canDigBlock: () => true, digTime: () => 300, dig: vi.fn(), equip: vi.fn(), lookAt: vi.fn() })
+    const goTo = vi.fn(async (b, x, y, z) => { b.entity.position = new Vec3(x + 0.5, y, z + 0.5); return 'reached' })
+    scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
+    const r = await escapeUp(bot, { x: -6, y: 80, z: 0 }, { goTo, budgetMs: 2000 })
+    expect(r).toMatchObject({ status: 'climbed', how: 'pillar', depth: 7 })
+    expect(scaffoldUp).toHaveBeenCalledWith(bot, 'dirt', 72, expect.anything())
+    expect(bot.entity.position.y).toBe(71)
+    expect(bot.dig).not.toHaveBeenCalled()
+  })
+
+  it('climbOut to the rim, then escapeUp from the surface: no staircase into the hill', async () => {
+    const bot = shaftBot(6, { items: [{ name: 'cobblestone', count: 8 }] })
+    const world = bot.blockAt
+    bot.blockAt = (p) => (p.x >= 2 && p.x <= 9 && p.y >= 71 && p.y <= 79) ? { name: 'stone', boundingBox: 'block', position: p } : world(p)
+    Object.assign(bot, { canDigBlock: () => true, digTime: () => 300, dig: vi.fn(), equip: vi.fn(), lookAt: vi.fn() })
+    scaffoldUp.mockImplementation(async (b, name, targetY) => { b.entity.position.y = targetY - 1; return 'ok' })
+    const target = { x: 5, y: 80, z: 0 }
+    expect(await climbOut(bot, target)).toMatchObject({ status: 'climbed', exit: true })
+    expect(bot.entity.position.y).toBe(71)
+    // The walk to the hilltop failed; the goTo handler runs escapeUp next.
+    expect((await escapeUp(bot, target)).status).toBe('not_in_pit')
+    expect(scaffoldUp).toHaveBeenCalledTimes(1)
+    expect(bot.dig).not.toHaveBeenCalled()
+  })
+
   it('leaves open ground and cliff feet alone', async () => {
     const bot = { entity: { position: new Vec3(0.5, 71, 0.5), onGround: true }, blockAt: makeWorld(), inventory: { items: () => [{ name: 'dirt', count: 9 }] } }
     expect(findOpenColumn(bot, 77).open).toBe(true)

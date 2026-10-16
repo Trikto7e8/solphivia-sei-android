@@ -25,6 +25,7 @@
 import { Vec3 } from 'vec3'
 import { scaffoldUp } from './build.js'
 import { JUNK_SCAFFOLD } from './pathfind.js'
+import { isNaturalBlock } from './naturalBlocks.js'
 
 export { JUNK_SCAFFOLD }
 
@@ -35,28 +36,7 @@ export const MIN_PIT_DEPTH = 2
 const DIRS = [[1, 0], [-1, 0], [0, 1], [0, -1]]
 const MAX_STEP_DIG_MS = 2500
 
-// 261016 review: the staircase only cuts NATURAL ground. A closed room (shut
-// door, player upstairs) reads as a hole too, and with an axe planks, doors,
-// chests and beds all break under the 2.5s step limit (glass by hand).
-// Anything not on this list is refused as built, and the climb says so.
-const NATURAL_BLOCKS = new Set([
-  'stone', 'granite', 'diorite', 'andesite', 'deepslate', 'tuff', 'calcite',
-  'dripstone_block', 'smooth_basalt', 'basalt', 'blackstone', 'netherrack', 'end_stone',
-  'dirt', 'grass_block', 'coarse_dirt', 'rooted_dirt', 'podzol', 'mycelium', 'mud', 'moss_block',
-  'clay', 'gravel', 'sand', 'red_sand', 'sandstone', 'red_sandstone', 'soul_sand', 'soul_soil',
-  'terracotta', 'snow_block', 'packed_ice',
-])
-const TERRACOTTA_COLORS = new Set(['white', 'orange', 'yellow', 'red', 'brown', 'light_gray'])
-
-/** Ground the world generated, which a staircase may cut through. */
-export function isNaturalBlock(name) {
-  if (!name) return false
-  if (NATURAL_BLOCKS.has(name)) return true
-  if (name.endsWith('_ore') || name === 'ancient_debris') return true
-  // Badlands bands; glazed terracotta is always player-made.
-  if (name.endsWith('_terracotta') && !name.includes('glazed')) return TERRACOTTA_COLORS.has(name.slice(0, -'_terracotta'.length))
-  return false
-}
+export { isNaturalBlock }
 
 /** Blocks that fall when the block under them is dug out. */
 export function isFallingBlock(name) {
@@ -478,11 +458,16 @@ function standable(bot, x, y, z) {
 }
 
 /**
- * How far up the column above a standing cell is open. `toTarget` is true when
- * it is open all the way to `targetY` (the body could pillar straight up to
- * the target's height); otherwise `rimY` is the first level at least 2 up
- * where a side cell opens onto somewhere (sideLeadsOut), else the first level
- * where a side cell opens at all (a pocket), else null. `exit` says which.
+ * How far up the column above a standing cell is open, scanning up from her
+ * feet and stopping at the first of:
+ *   - a level at least 2 up whose side cell opens onto somewhere
+ *     (sideLeadsOut): `{ toTarget: false, rimY: that level, exit: true }`.
+ *     In an open-sky shaft this is the ground level, so a target higher than
+ *     the ground (on a hill) gives toTarget false: the way out is the rim.
+ *   - the target's height, the column open all the way:
+ *     `{ toTarget: true, exit: true }` (rimY is a pocket level or null).
+ *   - a solid block over the column, or maxDepth: `{ toTarget: false,
+ *     rimY: first pocket level or null, exit: false }`.
  */
 export function columnOpening(bot, x, feetY, z, targetY, maxDepth = MAX_PIT_DEPTH, target = null) {
   let pocketY = null
@@ -638,12 +623,19 @@ async function escapeUpInner(bot, target, opts = {}) {
   } else {
     why = col ? 'pillar: no dirt, cobblestone or similar blocks' : 'pillar: nothing open above nearby'
   }
-  if (how && done()) return { status: 'climbed', depth: targetY - startY, how }
-  if (canDig && !done() && Date.now() < deadline) {
+  // Review (261017): a column that opens onto the surface below the target's
+  // height (a shaft up to the ground, the target on a hill) is done at that
+  // opening. Climbing on toward targetY from there would cut a staircase
+  // into the hillside; the walk takes over instead.
+  const exitY = col && !col.toTarget && col.exit && col.rimY != null ? col.rimY : null
+  const atExit = () => exitY != null && feet() >= exitY
+  const top = exitY ?? targetY
+  if (how && (done() || atExit())) return { status: 'climbed', depth: feet() - startY, how }
+  if (canDig && !done() && !atExit() && Date.now() < deadline) {
     await waitOnGround(bot, 1000)
-    const r = await stairTo(bot, targetY, target, signal, deadline)
+    const r = await stairTo(bot, top, target, signal, deadline)
     if (r === 'aborted') return { status: 'aborted' }
-    if (r === 'ok') return { status: 'climbed', depth: targetY - startY, how: how ? 'pillar' : 'stairs' }
+    if (r === 'ok') return { status: 'climbed', depth: feet() - startY, how: how ? 'pillar' : 'stairs' }
     why = why ? `${why}; staircase: ${r}` : `staircase: ${r}`
   }
   // Partway up still counts when it got her out of the shaft she was in: the

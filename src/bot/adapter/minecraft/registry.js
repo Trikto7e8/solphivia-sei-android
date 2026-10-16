@@ -169,9 +169,8 @@ function findEntity(bot, name, maxDistance) {
 }
 
 // 261015 (pass 10): find looks at this many hits, nearest first.
-const FIND_CANDIDATES = 24
-// ...plus this many of the nearest exposed ones when those all came back.
-const FIND_EXPOSED = 8
+// 261017 (pass 12): 24 -> 96, see the find handler.
+const FIND_CANDIDATES = 96
 // A buried block (no open face) counts as this much farther than it is: the
 // walk to it is a tunnel, and a tunnel down is a shaft she has to climb out of.
 const BURIED_PENALTY_M = 12
@@ -214,6 +213,8 @@ function stillInHole(bot, y) {
   return `you are still down in the hole at ${Math.floor(p.x)},${feetY},${Math.floor(p.z)}, ` +
     `${Math.floor(y) - feetY} blocks below where you are going, so you are not on your way yet`
 }
+
+const HOLE_NEXT_STEP = 'Walking again from here will fail the same way. To get out, pillar up with build (direction below) using dirt or cobblestone, or dig a staircase up the wall, or ask the player for help.'
 
 /** What the climbs did, for a result that did not get her out. */
 function climbSummary(climb, esc) {
@@ -333,7 +334,7 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       if (isUnreachableResult(r) && wellBelow(bot, args.y)) {
         esc = await escapeUp(bot, target, { signal: config?.signal, goTo })
         if (esc.status === 'aborted') return climbAborted(esc)
-        if (esc.status === 'failed') return `${esc.line}. ${climbSummary(climb, null)}`.trim()
+        if (esc.status === 'failed') return [`${esc.line}.`, climbSummary(climb, null).trim()].filter(Boolean).join(' ')
         if (esc.status === 'climbed') {
           up = esc
           r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
@@ -347,7 +348,10 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // Only when she really is shut in: on open ground below a cliff a failed
       // walk is not a hole.
       if (isUnreachableResult(r) && wellBelow(bot, args.y) && !findOpenColumn(bot, args.y, target).open) {
-        return `${stripVerticalHint(r)}: ${stillInHole(bot, args.y)}. ${climbSummary(climb, esc).trim()}`
+        // Review: end with what to do, so she does not just call goTo again
+        // (each try costs up to ~50s of climbing and walking).
+        return [`${stripVerticalHint(r)}: ${stillInHole(bot, args.y)}.`, climbSummary(climb, esc).trim(), HOLE_NEXT_STEP]
+          .filter(Boolean).join(' ')
       }
       if (up.status === 'climbed') {
         const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
@@ -452,21 +456,15 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // block with an open face over one buried in rock: the nearest coal in
       // the errands eval was 17 blocks down inside the stone, the walk dug a
       // shaft after it, and she spent the rest of the session in the hole.
-      const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_CANDIDATES, point }) ?? []
       // 261017 (pass 12): the nearest 24 can all be buried. In the 261016
       // errands eval a seed coal vein 16 blocks down filled the whole list,
       // so the exposed coal on the surface 3 blocks farther was never
-      // scored, and she dug a shaft after the buried one. Ask for the
-      // nearest exposed ones too (mineflayer applies a function
-      // useExtraInfo on top of `matching`).
-      if (hits.length >= FIND_CANDIDATES) {
-        let open = []
-        try {
-          open = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_EXPOSED, point, useExtraInfo: (b) => !!b?.position && isExposed(bot, b.position) }) ?? []
-        } catch {}
-        const have = new Set(hits.map((h) => `${h.x},${h.y},${h.z}`))
-        for (const h of open) if (!have.has(`${h.x},${h.y},${h.z}`)) hits.push(h)
-      }
+      // scored, and she dug a shaft after the buried one. Score a wider net.
+      // (Review: a second exposed-only findBlocks had no work bound; with
+      // few exposed matches in range it read every block of every section,
+      // about a second at 64m, synchronously. One query with a larger count
+      // stops as soon as it has that many, on the cheap matcher.)
+      const hits = bot.findBlocks({ matching, maxDistance: args.maxDistance, count: FIND_CANDIDATES, point }) ?? []
       if (!hits.length) {
         return { found: false, reason: `no ${args.name} in loaded chunks within ${args.maxDistance}m` }
       }

@@ -390,6 +390,39 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
       'so you cannot jump to put a block under you. Dig that block out first, or move to a spot with open space above')
     expect(jumps).toBe(0)
   })
+
+  it('no head room under a built ceiling: does not tell her to dig it', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,66,0', 'oak_planks')
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toMatch(/There is oak_planks at 0,66,0 right above your head/)
+    expect(r).toMatch(/you do not dig through builds/)
+    expect(r).not.toMatch(/Dig that block out/)
+  })
+
+  // Review: the step onto the supporting block stops on abort, and leaves
+  // the controls alone when a reflex has taken the body.
+  it('the off-centre step stops on abort and does not clear a reflex flee', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.delete('0,63,0')
+    bot.entity.position = new Vec3(0.75, 64, 0.5)
+    bot.lookAt = async () => {}
+    const ac = new AbortController()
+    const calls = []
+    bot.setControlState = (control, on) => {
+      calls.push([control, on])
+      if (control === 'forward' && on) {
+        // The step is under way when a creeper reflex takes over.
+        bot._seiReflexActive = true
+        ac.abort()
+      }
+    }
+    const t0 = Date.now()
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, { signal: ac.signal })
+    expect(Date.now() - t0).toBeLessThan(600)
+    expect(r).toMatch(/^aborted/)
+    expect(calls).not.toContainEqual(['forward', false])
+  })
 })
 
 describe('buildAction — the builder FOLLOWS its own work (260803)', () => {

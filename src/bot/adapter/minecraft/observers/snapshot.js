@@ -7,6 +7,7 @@ import { inventory, heldItem } from './inventory.js'
 import { aroundFeet } from './blocks.js'
 import { surveyBlocks } from './veins.js'
 import { nearbyEntities, droppedItemName, isDeadEntity, trackEntityDeaths } from './entities.js'
+import { givenDropFor } from './givenDrops.js'
 import { HOSTILE_MOBS } from '../behaviors/hostiles.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getCraftableEntries } from './craftable.js'
@@ -302,7 +303,13 @@ export function composeSnapshot(bot, opts = {}) {
       // dirt drop) and walk to the right one — walking onto it picks it up.
       if (label === 'item' || label === 'item_stack') {
         const it = droppedItemName(e)
-        if (it) label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
+        if (it) {
+          label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
+          // 261017 (pass 14): her own toss to the player is theirs, not loot.
+          // Only a stack that decodes is labelled.
+          const given = givenDropFor(bot, e)
+          if (given) label = `${label.slice(0, -1)}, you gave this to ${given.to ?? 'the player'})`
+        }
       }
       // 260618: mark fellow AI companions so the model treats them as teammates
       // (coordinate / direct) and never mistakes one for the human player.
@@ -338,7 +345,10 @@ export function composeSnapshot(bot, opts = {}) {
   // (or a malformed spine) just skips the line — a snapshot tick never throws.
   // This is ADDITIVE; the heartbeat frontier path (orchestrator renderHeartbeat)
   // is complementary and untouched.
-  try {
+  // 261017 (pass 14): left out while the player is owed something
+  // (opts.hideNext): the eval's completion turns read "next: make a furnace"
+  // and went back to her own stone over the logs the player asked for.
+  if (!opts.hideNext) try {
     const pstate = readProgressionState(bot)
     const nm = nextMilestone(pstate)
     if (nm?.node) {

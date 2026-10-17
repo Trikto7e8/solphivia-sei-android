@@ -276,7 +276,7 @@ describe('261013 the waiting-order check-in can switch actions', () => {
     const { adapter, executed, aborted } = makeAdapter()
     const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
     await orch.handleDispatch('sei:idle', {})
-    await orch.handleDispatch('sei:chat_received', chat('come here'))
+    await orch.handleDispatch('sei:chat_received', chat('go to the house pls'))
     await flush()
     expect(orch.currentLoop?.inFlight?.name).toBe('gather')
     await orch.handleDispatch('sei:action_tick', { elapsedSec: 30 })

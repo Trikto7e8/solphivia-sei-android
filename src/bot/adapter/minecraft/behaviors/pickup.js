@@ -10,6 +10,7 @@
 
 import { goTo as realGoTo, dropWalkOpts } from './pathfind.js'
 import { droppedItemName } from '../observers/entities.js'
+import { givenDropFor } from '../observers/givenDrops.js'
 
 const MAX_ITEMS = 10
 const WALK_MS = 4000
@@ -61,6 +62,8 @@ export async function pickupAction(args, bot, config, _deps) {
   const before = inventoryCounts(bot)
   const attempted = new Set()
   let seen = 0
+  // 261017 (pass 14): items she tossed to the player stay theirs.
+  const left = new Map()
 
   for (let i = 0; i < MAX_ITEMS; i++) {
     if (signal?.aborted) break
@@ -77,7 +80,13 @@ export async function pickupAction(args, bot, config, _deps) {
         if (!it || it.name !== want) continue
       }
       const d = e.position.distanceTo(here)
-      if (d <= maxDistance && d < bestD) { bestD = d; best = e }
+      if (d > maxDistance) continue
+      const given = givenDropFor(bot, e)
+      if (given) {
+        if (!left.has(e.id)) left.set(e.id, given)
+        continue
+      }
+      if (d < bestD) { bestD = d; best = e }
     }
     if (!best) break
     seen++
@@ -98,6 +107,10 @@ export async function pickupAction(args, bot, config, _deps) {
     return `${prefix} ${got.join(', ')}`
   }
   if (signal?.aborted) return 'aborted'
+  if (seen === 0 && left.size > 0) {
+    const g = [...left.values()][0]
+    return `nothing picked up: the ${g.item} on the ground is what you gave ${g.to ?? 'the player'}, left there for them`
+  }
   if (seen === 0) return `no ${what} within ${maxDistance}m`
   return `could not pick up the ${what} (walked to ${seen}, nothing reached your inventory; they may be out of reach or your inventory is full)`
 }

@@ -162,7 +162,8 @@ describe('260708 group-voice framing', () => {
       action: 'gather oak_log', stopTool: 'end_loop', playerLine: 'sweet, make two wooden swords',
       who: 'Sei', voice: true, peers: ['Marv'],
     })
-    expect(midAction).toContain('KEEP GOING')
+    expect(midAction).toContain('Your current action is still running')
+    expect(midAction).toContain('answer it and let the action carry on')
     expect(midAction).toContain('Decide from context who it is addressed to')
     expect(midAction).not.toContain('you must still call say()')
 

@@ -34,19 +34,23 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
     })
     expect(t).toContain('follow Steve')
     expect(t).toContain('Steve said: "wait here"')
-    // 260616 (#2): mid-action chat defaults to CONTINUE — answer/stay silent
-    // and let the running action carry on; only switch/stop if the message
-    // actually requires it. This must be the default for every character.
+    // 260616 (#2): chat mid-action is answered while the action carries on.
+    // 261018 (pass 15): the frame is balanced, no "KEEP GOING" default: a
+    // come / follow / go / stop / stay line is a switch made in this turn.
     expect(t).toMatch(/answer with one short say\(\)|stay silent/i)
-    expect(t).toContain('KEEP GOING')
-    expect(t).toContain('reply and resume')
+    expect(t).not.toContain('KEEP GOING')
+    expect(t).toContain('answer it and let the action carry on')
+    expect(t).toContain('If they ask you to come to them or follow them, call the action that takes you to them')
+    expect(t).toContain('If they ask you to stop or to stay where you are, call unfollow')
+    expect(t).toContain('make the switch in this same turn, even when the current action is one they asked for')
+    expect(t).toContain('asked for once you finish what you are doing now is not a switch')
     expect(t).toContain('To stop, call unfollow')
     expect(t).toContain('call that action')
     // 260619 say()-leak fix: a player-addressed mid-action turn must STILL call
     // say() even when it also acts / switches / end_loops. The model was leaking
     // the spoken line into its private scratchpad and only calling the action,
     // so the player heard nothing. The action is not the reply.
-    expect(t).toContain('the action is not the reply')
+    expect(t).toContain('The action is not the reply')
     expect(t).toContain('also call say() this turn')
     // The interrupt variant must NOT carry the silent-monitor phrasing.
     expect(t).not.toContain('Nothing needs you')
@@ -72,13 +76,13 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
       who: 'Steve',
     })
     expect(t).toContain('wait for me')
-    expect(t).toContain('hold position')
-    expect(t).toMatch(/do NOT path toward them|do not follow|not.*follow/i)
+    expect(t).toContain('they are the one coming to you')
+    expect(t).toContain('do not walk toward them')
     // The "come to them" half is still spelled out so the contrast is explicit.
-    expect(t).toContain('follow me')
+    expect(t).toContain('If they ask you to come to them or follow them')
     // Silent-monitor ticks never carry the interrupt-only intent hint.
     const silent = NUDGES.actionTurn({ action: 'dig', stopTool: 'end_loop', elapsedSec: 5 })
-    expect(silent).not.toContain('hold position')
+    expect(silent).not.toContain('they are the one coming to you')
   })
 
   it('silent-monitor variant (no playerLine) shows elapsed + empty-text default', () => {

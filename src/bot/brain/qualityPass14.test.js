@@ -1,8 +1,6 @@
 // 261017: quality pass 14, player orders beat her own project.
-//  - "follow me" / "come here" cuts the running foreground action at once
-//  - a stop ("stop moving", "stay here") holds her: the turn that answered it
-//    ends once its unfollow settles, and a later turn the player did not
-//    start cannot walk her off
+//  (261018, pass 15: the movement-order cut and the stop hold were phrase
+//  matchers; they are gone. qualityPass15.test.js covers what replaced them.)
 //  - every player line a reply deferred comes back in the completion turn
 //  - the snapshot leaves out her own `next:` while the player is owed work
 //  - items she gave the player are not picked back up
@@ -16,38 +14,12 @@ import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
 import { NUDGES } from './promptLibrary.js'
-import { createOrchestrator, _setTickIntervalForTests, isHoldLine, isMovementOrder } from './orchestrator.js'
+import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
 import { beginGivenToss, givenDropFor } from '../adapter/minecraft/observers/givenDrops.js'
 import { recordOwnStation } from '../adapter/minecraft/observers/ownStations.js'
 import { composeSnapshot } from '../adapter/minecraft/observers/snapshot.js'
 import { pickupAction } from '../adapter/minecraft/behaviors/pickup.js'
 import { readProgressionState, nextMilestone } from '../adapter/minecraft/observers/progression.js'
-
-describe('isHoldLine', () => {
-  it('matches lines that ask her to stay put', () => {
-    for (const t of ['stop moving', 'ok stop moving', 'stay here', 'stay here pls', 'sui stay here', "don't move", 'dont move', 'hold still', 'wait here', 'freeze', 'stay put', 'stop following me', 'stop', 'STAY HERE!']) {
-      expect(isHoldLine(t), t).toBe(true)
-    }
-  })
-  it('does not match questions, negations or work orders', () => {
-    for (const t of ['why did you stop moving?', 'dont stop moving', 'stay here?', 'stay here and mine some stone', "why'd you stay there", 'keep mining', 'can you stop moving around so much while you mine', "i'll wait here", 'ill stay here', 'i stay here']) {
-      expect(isHoldLine(t), t).toBe(false)
-    }
-  })
-})
-
-describe('isMovementOrder', () => {
-  it('matches a call to the player', () => {
-    for (const t of ['follow me', 'ok follow me', 'come here', 'come over here pls', 'sui come with me', 'get over here', 'meet me at the house', 'can you come here', 'come back here']) {
-      expect(isMovementOrder(t), t).toBe(true)
-    }
-  })
-  it('does not match negations, questions or orders for later', () => {
-    for (const t of ['dont follow me', "don't come here", 'why did you follow me', 'grab the logs then come back', 'come here when youre done', 'once you finish come here', 'no need to follow me', 'thanks for the help', "you don't have to follow me", 'you dont need to come here', "i'll come back", 'brb ill come back', 'should i come here?']) {
-      expect(isMovementOrder(t), t).toBe(false)
-    }
-  })
-})
 
 // ─── orchestrator harness ───────────────────────────────────────────────
 
@@ -141,121 +113,6 @@ function setup(script, cfg = config()) {
   }
   return { orch, provider, executed, running, aborted, snapshotOpts, queue, drain }
 }
-
-describe('a movement order cuts the running action', () => {
-  it('"follow me" during a gather aborts it and her turn starts with nothing running', async () => {
-    const { orch, provider, executed, aborted, drain } = setup([
-      turn(say('s1', 'on it'), act('a1', 'gather', { name: 'stone' })),
-      turn(say('s2', 'coming'), act('f1', 'follow', { player: 'Steve' })),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('get some stone'))
-    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
-    await orch.handleDispatch('sei:chat_received', line('follow me'))
-    await flush()
-    expect(aborted).toEqual(['gather'])
-    await drain()
-    expect(provider.calls.length).toBe(2)
-    const text = lastUserText(provider.calls[1])
-    expect(text).toContain('follow me')
-    expect(text).not.toContain('KEEP GOING')
-    expect(executed).toEqual(['gather', 'follow'])
-  })
-
-  it('a line that is not a movement order still rides the running action', async () => {
-    const { orch, aborted } = setup([
-      turn(say('s1', 'on it'), act('a1', 'gather', { name: 'stone' })),
-      turn(say('s2', 'np')),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('get some stone'))
-    await orch.handleDispatch('sei:chat_received', line('thanks for the help'))
-    await flush()
-    expect(aborted).toEqual([])
-    expect(orch.currentLoop?.inFlight?.name).toBe('gather')
-  })
-
-  it('leaves a follow alone', async () => {
-    const { orch, aborted } = setup([
-      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
-      turn(say('s2', 'right behind you')),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('lets go'))
-    expect(orch.currentLoop?.inFlight?.name).toBe('follow')
-    await orch.handleDispatch('sei:chat_received', line('come with me'))
-    await flush()
-    expect(aborted).toEqual([])
-  })
-})
-
-describe('a stop holds her', () => {
-  it('"stop moving" answered with unfollow ends the loop once the unfollow settles', async () => {
-    const { orch, provider, executed, drain } = setup([
-      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
-      turn(say('s2', 'ok holding still'), act('u1', 'unfollow')),
-      turn(say('s3', 'gonna grab some stone'), act('a2', 'gather', { name: 'stone' })),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('follow me'))
-    await orch.handleDispatch('sei:chat_received', line('stop moving'))
-    await flush()
-    await drain()
-    await flush()
-    await drain()
-    expect(provider.calls.length).toBe(2)
-    expect(executed).not.toContain('gather')
-    expect(orch.currentLoop).toBeNull()
-    // and the next idle tick does not start anything either
-    await orch.handleDispatch('sei:idle', {})
-    await flush()
-    expect(provider.calls.length).toBe(2)
-  })
-
-  it('a later turn the player did not start cannot walk her off while the hold is on', async () => {
-    const { orch, provider, executed, drain } = setup([
-      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
-      turn(say('s2', 'ok, staying right here'), act('u1', 'unfollow')),
-      // a zombie hits her: she fights back (allowed), and the turn after the
-      // swing tries to wander off to explore
-      turn(act('k1', 'attackEntity', { name: 'zombie' })),
-      turn(say('s4', 'gonna look around'), act('e1', 'explore')),
-      turn(say('s5', 'unreachable')),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('follow me'))
-    await orch.handleDispatch('sei:chat_received', line('stay here'))
-    await flush()
-    await drain()
-    expect(orch.currentLoop).toBeNull()
-    await orch.handleDispatch('sei:attacked', { attacker: 'zombie', health: 15 })
-    await flush()
-    await drain()
-    await flush()
-    await drain()
-    expect(executed).toContain('attackEntity')
-    expect(executed).not.toContain('explore')
-    expect(provider.calls.length).toBe(4)
-    expect(orch.currentLoop).toBeNull()
-  })
-
-  it('new work from the player ends the hold', async () => {
-    const { orch, provider, executed, drain } = setup([
-      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
-      turn(say('s2', 'ok'), act('u1', 'unfollow')),
-      turn(say('s3', 'on it'), act('a1', 'gather', { name: 'oak_log' })),
-    ])
-    await orch.handleDispatch('sei:chat_received', line('follow me'))
-    await orch.handleDispatch('sei:chat_received', line('stop moving'))
-    await flush()
-    await drain()
-    await orch.handleDispatch('sei:chat_received', line('ok now get wood'))
-    await flush()
-    expect(executed).toContain('gather')
-    expect(provider.calls.length).toBe(3)
-  })
-
-  it('the blocked-action result says why, in plain words', () => {
-    const t = NUDGES.stopHoldBlocked(12)
-    expect(t).toContain('12s ago')
-    expect(t).not.toMatch(/—/)
-  })
-})
 
 describe('deferred player lines come back together', () => {
   it('keeps an order that a later question would have replaced', async () => {

@@ -160,6 +160,10 @@ describe('261012 crossed greeting', () => {
     expect(provider.calls.length).toBeGreaterThanOrEqual(2)
     expect(lastTurnText(provider)).toContain("You're currently: gather")
     expect(lastTurnText(provider)).toContain(NOTE)
+    // 261017 (pass 13): the own_repeats tail quotes her hello without the
+    // reply ask ("find something new to say").
+    expect(lastTurnText(provider)).toContain('They already heard it.')
+    expect(lastTurnText(provider)).not.toContain('find something new to say')
   })
 
   it('no note when the player stayed silent and says hello long after her greeting', async () => {
@@ -187,5 +191,67 @@ describe('261012 crossed greeting', () => {
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
     await say2(orch, 'hey sui')
     expect(lastTurnText(provider)).not.toContain(NOTE)
+  })
+})
+
+// 261017 (pass 13): the first-spawn tick is a P3 idle that waits behind any
+// running loop. When the player's hello got there first, the reply greeted
+// them (GREETING_HINT), and the tick must not greet them again.
+describe('261017 no second greeting turn', () => {
+  const sayTurn = (text) => ({ text: '', toolUses: [{ id: `s${text.length}`, name: 'say', input: { text } }, { id: 'el', name: 'end_loop', input: {} }] })
+
+  it('the first-spawn tick after she already greeted is a plain idle tick', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('oh hey steve'), { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    orch.recordIncomingChat('Steve', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    expect(JSON.stringify(provider.calls[0])).toContain('You have not greeted the player yet')
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(provider.calls.length).toBe(2)
+    expect(JSON.stringify(provider.calls[1])).not.toContain('FIRST CONTACT')
+  })
+
+  // Review (pass 13): main marks the home-screen plan used at session
+  // start, so when FIRST CONTACT is skipped the plan rides the greeting hint
+  // on the reply turn instead, or it never comes up.
+  it('the reply that greets carries the open plan from the home screen', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('oh hey steve, cabin roof today?'), { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const config = makeConfig()
+    config._seiNextStepPlan = 'finish the cabin roof'
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    orch.recordIncomingChat('Steve', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    const first = JSON.stringify(provider.calls[0])
+    expect(first).toContain('You have not greeted the player yet')
+    expect(first).toContain('saved this to pick up next time: \\"finish the cabin roof\\"')
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(JSON.stringify(provider.calls[1])).not.toContain('finish the cabin roof')
+  })
+
+  it('no plan cue on the hint when none is open', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('oh hey steve')])
+    const { adapter } = makeAdapter()
+    const config = makeConfig()
+    config._seiNextStepPlan = null
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    orch.recordIncomingChat('Steve', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    const first = JSON.stringify(provider.calls[0])
+    expect(first).toContain('You have not greeted the player yet')
+    expect(first).not.toContain('pick up next time')
+  })
+
+  it('without an earlier line the first-spawn tick still greets', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(JSON.stringify(provider.calls[0])).toContain('FIRST CONTACT')
   })
 })

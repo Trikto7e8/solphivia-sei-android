@@ -41,6 +41,7 @@ import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.j
 import { isUnreachable, noteUnreachable } from './unreachable.js'
 import { inventoryCounts, gained } from './pickup.js'
 import { droppedItemName } from '../observers/entities.js'
+import { givenDropFor } from '../observers/givenDrops.js'
 
 const NEIGHBOR_OFFSETS = [
   [1, 0, 0], [-1, 0, 0],
@@ -102,6 +103,7 @@ async function sweepDrops(bot, goTo, signal, sleep = (ms) => new Promise(r => se
       if (!isItemEntity(e) || !e.position || e.isValid === false) continue
       if (attempted.has(e.id ?? e)) continue
       if (e.position.y > here.y + 2) continue // canopy drop — never climb for one item
+      if (givenDropFor(bot, e)) continue // 261017: tossed to the player, theirs
       const d = e.position.distanceTo(here)
       if (d <= SWEEP_RADIUS && d < bestD) { bestD = d; best = e }
     }

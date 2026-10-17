@@ -826,6 +826,21 @@ export const NUDGES = {
   // this stone batch", and the completion turn crafted a furnace instead.
   deferredReply: (line) => `While it ran, the player said "${String(line).trim().slice(0, 200)}" and you answered without starting anything. If they asked you to do something you have not started, start it now, before your own plan.`,
 
+  // 261017 (quality pass 14): the same for several lines. The slot used to
+  // keep only the newest one, so "get me like 8 logs" was replaced by
+  // "whats ur favorite block" before the gather finished, and the
+  // completion turn never saw the order.
+  deferredReplies: (lines) => {
+    const list = (Array.isArray(lines) ? lines : [lines]).map((l) => String(l ?? '').trim().slice(0, 200)).filter(Boolean)
+    if (list.length <= 1) return NUDGES.deferredReply(list[0] ?? '')
+    const quoted = list.map((l) => `"${l}"`)
+    return `While it ran, the player said ${quoted.slice(0, -1).join(', ')} and then ${quoted[quoted.length - 1]}, and you answered without starting anything. If one of them asked you to do something you have not started, start it now, before your own plan.`
+  },
+
+  // 261017 (quality pass 14): the tool result for a world action the stop
+  // hold did not start (a turn the player did not start, while the hold is on).
+  stopHoldBlocked: (secs) => `not started: the player told you to stop ${secs}s ago, so you stay where you are until they ask you for something.`,
+
   // 261015 (quality pass 8): the one extra call after a turn whose only work
   // was a new setGoal (orchestrator goalNotStartedNudgeFor). setGoal is a
   // memory write, so that turn started nothing while her say() often said

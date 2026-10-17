@@ -13,6 +13,7 @@
 import { goTo as realGoTo } from './pathfind.js'
 import { dropItemAction as realDrop } from './drop.js'
 import { resolveOwner } from '../observers/snapshot.js'
+import { recordGivenDrop } from '../observers/givenDrops.js'
 
 /** Within this many blocks a toss lands at their feet. */
 export const HAND_RANGE = 3
@@ -125,9 +126,13 @@ export async function giveAction(args, bot, config, _deps) {
 
   await faceEntity(bot, ent)
   if (signal?.aborted) return 'aborted'
+  const tossFrom = bot.entity?.position ?? null
+  const tossAt = ent?.position ?? null
   const res = String(await drop({ item, count }, bot, config))
   const m = /^dropped (\d+) /.exec(res)
   if (m) {
+    // 261017 (pass 14): so pickup and the drop sweep leave the toss for them.
+    recordGivenDrop(bot, { item, count: Number(m[1]), at: tossAt, from: tossFrom, to: name })
     const left = countOf(bot, item)
     const tail = res.slice(m[0].length - 1).replace(new RegExp(`^ ${item}`), '')
     return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left`

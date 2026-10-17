@@ -149,7 +149,7 @@ describe('261011 end_loop keeps a running action; stop cancels it', () => {
     const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
 
     await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
-    await orch.handleDispatch('sei:chat_received', chat('actually come here'))
+    await orch.handleDispatch('sei:chat_received', chat('actually go to the house instead'))
     await flush()
     expect(aborted).toEqual(['gather'])
     expect(executed).toContain('goTo')

@@ -92,7 +92,13 @@ function dimShort(dim) {
 function rawDone(node, state) {
   const g = node.goal
   const items = state.items ?? {}
-  if (g.have) return (items[g.have] ?? 0) >= (g.count ?? 1)
+  if (g.have) {
+    if ((items[g.have] ?? 0) >= (g.count ?? 1)) return true
+    // 261017 (pass 14): a station she placed nearby counts as had. Placing
+    // the furnace emptied the inventory predicate, and the next: line went
+    // back to "make a furnace... You have 0 cobblestone".
+    return (g.count ?? 1) <= 1 && !!state.placed?.[g.have]
+  }
   if (g.haveSuffix) {
     let total = 0
     for (const [name, c] of Object.entries(items)) if (name.endsWith(g.haveSuffix)) total += c
@@ -274,6 +280,29 @@ function itemsByName(bot) {
   return out
 }
 
+// 261017 (pass 14): stations that count once placed, and how far to look.
+export const PLACED_STATIONS = ['crafting_table', 'furnace']
+export const PLACED_STATION_RADIUS = 24
+const PLACED_CACHE_MS = 5000
+
+function placedStations(bot, now = Date.now()) {
+  const cache = bot?._seiPlacedStations
+  if (cache && now - cache.at < PLACED_CACHE_MS) return cache.placed
+  const placed = {}
+  try {
+    if (typeof bot?.findBlock === 'function' && bot?.registry?.blocksByName && bot?.entity?.position) {
+      for (const name of PLACED_STATIONS) {
+        const id = bot.registry.blocksByName[name]?.id
+        if (id == null) continue
+        const b = bot.findBlock({ matching: id, maxDistance: PLACED_STATION_RADIUS })
+        if (b) placed[name] = true
+      }
+    }
+  } catch { /* best effort: no world read means nothing placed */ }
+  if (bot && typeof bot === 'object') bot._seiPlacedStations = { at: now, placed }
+  return placed
+}
+
 function normalizeDim(raw) {
   const s = String(raw ?? '').toLowerCase()
   if (s.includes('nether')) return 'the_nether'
@@ -290,6 +319,7 @@ export function readProgressionState(bot, flags = {}) {
   try {
     return {
       items: itemsByName(bot),
+      placed: placedStations(bot),
       pickaxeTier: bestPickaxeTier(bot),
       dim: normalizeDim(bot?.game?.dimension),
       flags,

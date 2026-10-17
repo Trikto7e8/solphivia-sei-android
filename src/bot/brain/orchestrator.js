@@ -522,7 +522,7 @@ export function asksToStop(text) {
 // her stop() or a bare "stop", so in the eval she said "ok holding still",
 // called unfollow, and the very next call of the same loop started a gather
 // and an explore away from the player.
-const HOLD_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not|cant|can't|wont|won't|why|didnt|didn't|doesnt|doesn't)\b)[\w']+[,\s]+)?(?:stop (?:moving|walking|running|following(?: me)?|there|right there)|stay (?:here|there|put|still|right there)|(?:hold|stand|keep) still|(?:dont|don't|do not) move|freeze|wait (?:here|there|right here|right there))(?:\s+(?:ok|okay|now|pls|plz|please|for a sec|a sec|for now|for a bit|a bit|then|lol|bro))*(?:\s+[a-z]+)?$/
+const HOLD_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not|cant|can't|wont|won't|why|didnt|didn't|doesnt|doesn't|i|ill|i'll|im|i'm)\b)[\w']+[,\s]+)?(?:stop (?:moving|walking|running|following(?: me)?|there|right there)|stay (?:here|there|put|still|right there)|(?:hold|stand|keep) still|(?:dont|don't|do not) move|freeze|wait (?:here|there|right here|right there))(?:\s+(?:ok|okay|now|pls|plz|please|for a sec|a sec|for now|for a bit|a bit|then|lol|bro))*(?:\s+[a-z]+)?$/
 export function isHoldLine(text, { wordsOnly = false } = {}) {
   if (isBareStopLine(text, { wordsOnly })) return true
   const raw = String(text ?? '').toLowerCase().trim()
@@ -542,12 +542,14 @@ export function isHoldLine(text, { wordsOnly = false } = {}) {
 // you're done"): the running job is part of what they asked for.
 const MOVE_ORDER_RE = /\b(?:follow me|come (?:over )?here|come to me|come with me|come back(?: here| to me)?|get over here|meet me)\b/
 const MOVE_LATER_RE = /\b(?:then|after|afterwards|when|once|later|first|done|finish|finished|finishing)\b/
-const MOVE_NEG_RE = /\b(?:dont|don't|do not|never|not|stop|quit|no need to|wont|won't|cant|can't)\s+(?:\w+\s+)?(?:follow me|come|meet me|get over here)\b/
+const MOVE_NEG_RE = /\b(?:dont|don't|do not|never|not|stop|quit|no need to|wont|won't|cant|can't)\s+(?:[\w']+\s+){0,2}(?:follow me|come|meet me|get over here)\b/
+// The player saying where THEY will go ("ill come back", "should i come here").
+const MOVE_SELF_RE = /\b(?:i|ill|i'll|i will|im|i'm|we'll|we will)\s+(?:\w+\s+)?(?:come|meet)\b/
 const QUESTION_LEAD_RE = /^(?:why|how|what|whats|what's|when|where|who|did|does|do you|are you|is|was|were|have you|had)\b/
 export function isMovementOrder(text) {
   const t = String(text ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
   if (!t || t.length > 80) return false
-  if (!MOVE_ORDER_RE.test(t) || MOVE_NEG_RE.test(t) || MOVE_LATER_RE.test(t)) return false
+  if (!MOVE_ORDER_RE.test(t) || MOVE_NEG_RE.test(t) || MOVE_SELF_RE.test(t) || MOVE_LATER_RE.test(t)) return false
   return !QUESTION_LEAD_RE.test(t)
 }
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])

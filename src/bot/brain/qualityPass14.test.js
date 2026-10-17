@@ -25,7 +25,7 @@ describe('isHoldLine', () => {
     }
   })
   it('does not match questions, negations or work orders', () => {
-    for (const t of ['why did you stop moving?', 'dont stop moving', 'stay here?', 'stay here and mine some stone', "why'd you stay there", 'keep mining', 'can you stop moving around so much while you mine']) {
+    for (const t of ['why did you stop moving?', 'dont stop moving', 'stay here?', 'stay here and mine some stone', "why'd you stay there", 'keep mining', 'can you stop moving around so much while you mine', "i'll wait here", 'ill stay here', 'i stay here']) {
       expect(isHoldLine(t), t).toBe(false)
     }
   })
@@ -38,7 +38,7 @@ describe('isMovementOrder', () => {
     }
   })
   it('does not match negations, questions or orders for later', () => {
-    for (const t of ['dont follow me', "don't come here", 'why did you follow me', 'grab the logs then come back', 'come here when youre done', 'once you finish come here', 'no need to follow me', 'thanks for the help']) {
+    for (const t of ['dont follow me', "don't come here", 'why did you follow me', 'grab the logs then come back', 'come here when youre done', 'once you finish come here', 'no need to follow me', 'thanks for the help', "you don't have to follow me", 'you dont need to come here', "i'll come back", 'brb ill come back', 'should i come here?']) {
       expect(isMovementOrder(t), t).toBe(false)
     }
   })

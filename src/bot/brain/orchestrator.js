@@ -519,7 +519,7 @@ export function asksToStop(text) {
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
 // 261017 (pass 14): world actions that keep her where she stands. A
 // player-started turn that calls only these is not new work, so it does not
-// end the stop hold or the stay note.
+// end the stay note.
 const STATIONARY_ACTIONS = new Set(['unfollow', 'look', 'equip', 'consumeItem', 'attackEntity', 'setPvp', 'activateItem', 'readSign', 'dropItem'])
 // 261018 (pass 15): how long the stay note rides the snapshot after she
 // stopped in answer to the player.
@@ -4985,14 +4985,17 @@ function maybeWarnByteCap(loop, warned) {
       if (_p1Trigger && loop._lastPlayerLine) {
         // 261013: a goal set from the player's line is new work too. The
         // idle tick is what starts it, so a hold left on would sit on it.
-        const newWork = newSuspendingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || toolUses.some(u => u.name === 'setGoal')
+        const setsGoal = toolUses.some(u => u.name === 'setGoal')
         const line = loop._lastPlayerLine.text
-        if (newWork) playerStopAt = 0
+        // The idle hold keeps its pre-pass-14 trigger: any action but unfollow
+        // ends it. The stay note below lets stationary actions through.
+        if (newSuspendingTools.some(u => u.name !== 'unfollow') || setsGoal) playerStopAt = 0
         else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
         // 261018 (pass 15): her own choice to stop or unfollow in answer to
         // this line leaves the stay note for later turns (see stayNote). Not
         // for a group-call line, which may have been for someone else.
         const calledUnfollow = newSuspendingTools.some(u => u.name === 'unfollow')
+        const newWork = newSuspendingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
         if (newWork) {
           if (stayNote) logger.info?.(`[sei/orch] stay note cleared: new work from the player's line (loop=${loop.id})`)
           stayNote = null

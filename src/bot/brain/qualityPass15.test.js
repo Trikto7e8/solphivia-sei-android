@@ -238,6 +238,27 @@ describe('the stay note', () => {
     expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(false)
   })
 
+  it('stop + look: the idle hold keeps its pre-pass-14 trigger, the note is still set', async () => {
+    const { orch, provider, drain } = setup([
+      turn(say('s1', 'on it'), act('a1', 'gather', { name: 'stone' })),
+      turn(say('s2', 'ok'), act('st', 'stop'), act('l1', 'look')),
+      turn(say('s3', 'hm')),
+    ])
+    await orch.handleDispatch('sei:chat_received', line('get some stone'))
+    await orch.handleDispatch('sei:chat_received', line('stop'))
+    await flush()
+    await drain()
+    await flush()
+    await drain()
+    // look is not unfollow, so (as before pass 14) the idle hold is off and
+    // the idle tick reaches the model, which still sees the stay note.
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:idle', {})
+    await flush()
+    expect(provider.calls.length).toBe(before + 1)
+    expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(true)
+  })
+
   it('reads plainly', () => {
     const t = NUDGES.stayNote({ who: 'Steve', line: 'stay here', secs: 12 })
     expect(t).toContain('12s ago')

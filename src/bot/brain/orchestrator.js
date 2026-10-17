@@ -54,7 +54,7 @@ import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask } from './memory/heartbeat.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -560,7 +560,6 @@ const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop
 const HOLD_ALLOWED_ACTIONS = new Set(['unfollow', 'look', 'equip', 'consumeItem', 'attackEntity', 'setPvp', 'activateItem', 'readSign', 'dropItem'])
 // 261017 (pass 14): how many player lines a completion turn brings back.
 const DEFERRED_REPLY_MAX = 3
-const PLAYER_TASK_NEXT_HIDE_MS = 10 * 60_000
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 // 260516-0yw: action-tick interval. Exported via a module-level let so the
@@ -1084,12 +1083,17 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // and re-surface the frontier: [{ text, ids, id, label, procedure }].
   const progressionFlags = { entered_nether: false, entered_end: false, killed_dragon: false }
   let linkedGoals = []
-  // 261017 (pass 14): the player's tasks set this session (text -> when).
-  // While one is open the snapshot leaves out its own `next:` milestone, so
-  // the turn after an action is not pointed at her furnace while the logs
-  // the player asked for are still owed. Bounded by PLAYER_TASK_NEXT_HIDE_MS
-  // so a task she never cleared does not hide it for the whole session.
-  const sessionPlayerTasks = new Map()
+  // 261017 (pass 14): true while her goal list still holds a player task.
+  // While it does, the snapshot leaves out her own `next:` milestone, so the
+  // turn after an action is not pointed at her furnace while the logs the
+  // player asked for are still owed. Read from the heartbeat file itself (each
+  // loop seed and after setGoal/clearGoal), so it clears the moment the task
+  // leaves the list, however it was cleared.
+  let playerTaskInGoals = false
+  async function refreshPlayerTaskInGoals() {
+    if (!heartbeatLog) { playerTaskInGoals = false; return }
+    try { playerTaskInGoals = hasPlayerTask(await heartbeatLog.readAll()) } catch { /* keep the last value */ }
+  }
   // 261012 (quality pass 5): when the player last told her to stop. Every
   // stop_gather failure in the eval was the same: the gather stopped at once,
   // then the next idle tick (5s later at the agentic cadence) read her own
@@ -2123,15 +2127,6 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   // ─── Snapshot helper ────────────────────────────────────────────────
-  function playerTaskOpen() {
-    const now = Date.now()
-    for (const [t, at] of sessionPlayerTasks) {
-      if (now - at < PLAYER_TASK_NEXT_HIDE_MS) return true
-      sessionPlayerTasks.delete(t)
-    }
-    return false
-  }
-
   function snapshotText({ playerRequestOwed = false } = {}) {
     // 260725: the pause contract says NO Minecraft context reaches the model
     // while paused — this is the single choke point every turn's snapshot
@@ -2160,7 +2155,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         worldTag: w ? `#${w.num}${w.label ? ` ${w.label}` : ''}` : null,
         // 261017 (pass 14): something the player asked for comes first, so
         // her own next milestone is left out of this snapshot.
-        hideNext: playerRequestOwed || playerTaskOpen(),
+        hideNext: playerRequestOwed || playerTaskInGoals,
       })
       if (typeof text === 'string') _repeatsContext.snapshot = text
       return text
@@ -3071,6 +3066,9 @@ function maybeWarnByteCap(loop, warned) {
     const { frontierText: progFrontierText, justCompletedNote: progCompletedNote } =
       await refreshProgressionForSeed()
     if (progCompletedNote) eventText += progCompletedNote
+    // The goal file can change outside setGoal/clearGoal (a UI edit, a new
+    // session); re-read whether a player task is still in it.
+    await refreshPlayerTaskInGoals()
     // 260703: sticky greeting — until a say() line has actually reached chat
     // this session, every fresh-loop seed carries the short greet hint (no-op
     // once greeted, and skipped when the full FIRST CONTACT block is present).
@@ -3697,7 +3695,7 @@ function maybeWarnByteCap(loop, warned) {
         const forPlayer = fp === true || String(fp).toLowerCase() === 'true' || isPlayerTask(text)
         const added = await heartbeatLog.append(text, new Date(), { forPlayer })
         lastActionResult = 'goal set'
-        if (forPlayer) sessionPlayerTasks.set(text.replace(/\s*\n+\s*/g, ' ').trim(), Date.now())
+        await refreshPlayerTaskInGoals()
         // Link this goal to the spine nodes its finish condition names, so JS
         // can clear it once they are ALL done (goalLink.js). 261012: no longer
         // limited to the frontier and no longer one-node: the old link named
@@ -3744,12 +3742,12 @@ function maybeWarnByteCap(loop, warned) {
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'clearGoal: empty', is_error: true }, terminate: false }
         }
         const removed = await heartbeatLog.remove(text)
+        await refreshPlayerTaskInGoals()
         // Drop the progression links of the goals the model cleared (the same
         // substring rule removeGoal uses).
         if (removed > 0) {
           const q = text.toLowerCase()
           linkedGoals = linkedGoals.filter((g) => !g.text.toLowerCase().includes(q))
-          for (const t of [...sessionPlayerTasks.keys()]) if (t.toLowerCase().includes(q)) sessionPlayerTasks.delete(t)
         }
         const content = removed > 0 ? `goal cleared (${removed})` : 'goal cleared 0 (no match)'
         lastActionResult = content

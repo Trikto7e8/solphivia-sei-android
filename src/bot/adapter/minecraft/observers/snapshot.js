@@ -303,10 +303,13 @@ export function composeSnapshot(bot, opts = {}) {
       // dirt drop) and walk to the right one — walking onto it picks it up.
       if (label === 'item' || label === 'item_stack') {
         const it = droppedItemName(e)
-        if (it) label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
-        // 261017 (pass 14): her own toss to the player is theirs, not loot.
-        const given = givenDropFor(bot, e)
-        if (given) label = `${it ? label.slice(0, -1) : `item(${given.item}`}, you gave this to ${given.to ?? 'the player'})`
+        if (it) {
+          label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
+          // 261017 (pass 14): her own toss to the player is theirs, not loot.
+          // Only a stack that decodes is labelled.
+          const given = givenDropFor(bot, e)
+          if (given) label = `${label.slice(0, -1)}, you gave this to ${given.to ?? 'the player'})`
+        }
       }
       // 260618: mark fellow AI companions so the model treats them as teammates
       // (coordinate / direct) and never mistakes one for the human player.

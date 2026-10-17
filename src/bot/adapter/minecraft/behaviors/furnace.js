@@ -10,6 +10,7 @@ import mcDataLib from 'minecraft-data'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
 import { liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
+import { recordOwnStation } from '../observers/ownStations.js'
 
 export const OPEN_TIMEOUT_MS = 6000
 export const TRANSFER_TIMEOUT_MS = 4000
@@ -175,6 +176,8 @@ export async function openFurnaceAction(args, bot, config) {
     .then((furnace) => {
       FURNACE_SESSION.furnace = furnace
       FURNACE_SESSION.blockPos = target.position
+      // 261017 (pass 14b): a furnace she used counts as hers for the spine.
+      if (targetName === 'furnace') recordOwnStation(bot, 'furnace', target.position)
       noteFurnace(bot, furnace)
       let status = ''
       try { status = furnaceStatus(furnace) } catch {}

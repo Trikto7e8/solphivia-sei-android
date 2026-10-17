@@ -9,12 +9,17 @@
 //  - a placed furnace / crafting table counts for the progression spine
 
 import os from 'node:os'
+import fs from 'node:fs'
+import { EventEmitter } from 'node:events'
 import path from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { z } from 'zod'
+import { Vec3 } from 'vec3'
 import { NUDGES } from './promptLibrary.js'
 import { createOrchestrator, _setTickIntervalForTests, isHoldLine, isMovementOrder } from './orchestrator.js'
-import { recordGivenDrop, givenDropFor } from '../adapter/minecraft/observers/givenDrops.js'
+import { beginGivenToss, givenDropFor } from '../adapter/minecraft/observers/givenDrops.js'
+import { recordOwnStation } from '../adapter/minecraft/observers/ownStations.js'
+import { composeSnapshot } from '../adapter/minecraft/observers/snapshot.js'
 import { pickupAction } from '../adapter/minecraft/behaviors/pickup.js'
 import { readProgressionState, nextMilestone } from '../adapter/minecraft/observers/progression.js'
 
@@ -115,7 +120,7 @@ const line = (text) => ({ text, username: 'Steve', playerSpoke: true, ts: Date.n
 const DRAINED = new Set(['sei:action_complete', 'sei:chat_received', 'sei:action_tick'])
 const flush = () => new Promise((r) => setTimeout(r, 5))
 
-function setup(script) {
+function setup(script, cfg = config()) {
   _setTickIntervalForTests(10_000_000)
   const executed = []
   const running = {}
@@ -124,7 +129,7 @@ function setup(script) {
   const queue = []
   const provider = makeProvider(script)
   const orch = createOrchestrator({
-    adapter: makeAdapter(executed, running, aborted, snapshotOpts), config: config(),
+    adapter: makeAdapter(executed, running, aborted, snapshotOpts), config: cfg,
     reenqueue: (event, data) => queue.push({ event, data }),
     _anthropicOverride: provider,
   })
@@ -311,6 +316,44 @@ describe('a player task hides her own next milestone', () => {
   })
 })
 
+describe('next: hide follows the goal list, not a timer', () => {
+  it('a clearGoal that names the task with its tag shows next: again', async () => {
+    const { orch, running, snapshotOpts, drain } = setup([
+      turn(say('s1', 'on it'), { id: 'g1', name: 'setGoal', input: { text: 'get 8 logs for Steve', for_player: true } }, act('a1', 'gather', { name: 'oak_log' })),
+      turn(say('s2', 'here you go'), act('v1', 'give', { item: 'oak_log' }), { id: 'c1', name: 'clearGoal', input: { text: '(player task) get 8 logs for Steve' } }),
+      turn(say('s3', 'there')),
+    ])
+    snapshotOpts.length = 0
+    await orch.handleDispatch('sei:chat_received', line('get me 8 logs'))
+    running.gather('gathered 8/8 oak_log')
+    await flush()
+    await drain()
+    await flush()
+    await drain()
+    const flags = snapshotOpts.map((o) => o?.hideNext === true)
+    expect(flags).toContain(true)
+    expect(flags.at(-1)).toBe(false)
+  })
+
+  it('a player task already in the goal file hides next: from the first turn', async () => {
+    const cfg = config()
+    fs.writeFileSync(cfg.memory.heartbeat_md_path, '# Heartbeat\n\n- [2026-10-17T00:00:00.000Z] (player task) bring Steve 3 coal\n')
+    const { orch, snapshotOpts } = setup([turn(say('s1', 'on it'))], cfg)
+    snapshotOpts.length = 0
+    await orch.handleDispatch('sei:chat_received', line('hey'))
+    expect(snapshotOpts[0]?.hideNext).toBe(true)
+  })
+
+  it('her own goals alone do not hide next:', async () => {
+    const cfg = config()
+    fs.writeFileSync(cfg.memory.heartbeat_md_path, '# Heartbeat\n\n- [2026-10-17T00:00:00.000Z] make a furnace\n')
+    const { orch, snapshotOpts } = setup([turn(say('s1', 'hi'))], cfg)
+    snapshotOpts.length = 0
+    await orch.handleDispatch('sei:chat_received', line('hey'))
+    expect(snapshotOpts[0]?.hideNext).toBe(false)
+  })
+})
+
 // ─── given drops ─────────────────────────────────────────────────────────
 
 function vec(x, y, z) {
@@ -319,52 +362,124 @@ function vec(x, y, z) {
 function itemEntity(id, name, pos) {
   return { id, name: 'item', position: pos, getDroppedItem: () => (name ? { name, count: 6 } : null) }
 }
+function emitterBot(extra = {}) {
+  return Object.assign(new EventEmitter(), extra)
+}
 
 describe('items she gave the player', () => {
-  it('are recognised near the toss for a few minutes', () => {
-    const bot = {}
-    const now = 1_000_000
-    recordGivenDrop(bot, { item: 'oak_log', count: 6, at: vec(10, 64, 10), from: vec(13, 64, 10), to: 'Steve' }, now)
-    expect(givenDropFor(bot, itemEntity(1, 'oak_log', vec(11, 64, 10)), now + 1000)?.to).toBe('Steve')
-    // an undecoded stack near the toss counts too
-    expect(givenDropFor(bot, itemEntity(2, null, vec(11, 64, 10)), now + 1000)).not.toBeNull()
-    // another item, far away, or after the window does not
-    expect(givenDropFor(bot, itemEntity(3, 'cobblestone', vec(11, 64, 10)), now + 1000)).toBeNull()
-    expect(givenDropFor(bot, itemEntity(4, 'oak_log', vec(40, 64, 40)), now + 1000)).toBeNull()
-    expect(givenDropFor(bot, itemEntity(5, 'oak_log', vec(11, 64, 10)), now + 6 * 60_000)).toBeNull()
+  it('are the entities that spawned at her during the toss, for a few minutes', () => {
+    const bot = emitterBot()
+    const toss = beginGivenToss(bot, { item: 'oak_log', from: vec(13, 64, 10), to: 'Steve' })
+    bot.emit('entitySpawn', itemEntity(1, null, vec(13, 65.3, 10)))
+    toss.commit(6, 0)
+    const now = Date.now()
+    const tossed = itemEntity(1, null, vec(10, 64, 10))
+    expect(givenDropFor(bot, tossed, now + 1000)?.to).toBe('Steve')
+    // the same stack decoded later still counts
+    expect(givenDropFor(bot, itemEntity(1, 'oak_log', vec(10, 64, 10)), now + 1000)).not.toBeNull()
+    // logs she chops right next to the give spot are hers to pick up
+    expect(givenDropFor(bot, itemEntity(2, 'oak_log', vec(10.5, 64, 10)), now + 1000)).toBeNull()
+    // an unknown stack beside the toss is not labelled as the toss
+    expect(givenDropFor(bot, itemEntity(3, null, vec(10.5, 64, 10)), now + 1000)).toBeNull()
+    // after the window it is loot again
+    expect(givenDropFor(bot, tossed, now + 6 * 60_000)).toBeNull()
+  })
+
+  it('only counts item spawns at her, and none after a failed toss', async () => {
+    const bot = emitterBot()
+    const toss = beginGivenToss(bot, { item: 'oak_log', from: vec(0, 64, 0), to: 'Steve' })
+    bot.emit('entitySpawn', itemEntity(7, null, vec(9, 64, 0))) // a drop far off
+    bot.emit('entitySpawn', itemEntity(8, 'cobblestone', vec(0, 65, 0))) // another item
+    bot.emit('entitySpawn', { id: 9, name: 'zombie', position: vec(0, 64, 0) })
+    toss.commit(1, 0)
+    await new Promise((r) => setTimeout(r, 5))
+    bot.emit('entitySpawn', itemEntity(10, null, vec(0, 65, 0))) // after the window closed
+    for (const id of [7, 8, 10]) expect(givenDropFor(bot, itemEntity(id, null, vec(0, 64, 0)))).toBeNull()
+    expect(bot.listenerCount('entitySpawn')).toBe(0)
+
+    const bot2 = emitterBot()
+    const failed = beginGivenToss(bot2, { item: 'oak_log', from: vec(0, 64, 0) })
+    failed.cancel()
+    bot2.emit('entitySpawn', itemEntity(11, null, vec(0, 65, 0)))
+    expect(givenDropFor(bot2, itemEntity(11, null, vec(0, 64, 0)))).toBeNull()
+    expect(bot2.listenerCount('entitySpawn')).toBe(0)
   })
 
   it('pickup leaves them and says whose they are', async () => {
-    const bot = {
+    const bot = emitterBot({
       entity: { position: vec(12, 64, 10) },
       entities: { 1: itemEntity(1, 'oak_log', vec(10.5, 64, 10)) },
       inventory: { items: () => [] },
-    }
-    recordGivenDrop(bot, { item: 'oak_log', count: 6, at: vec(10, 64, 10), from: vec(12, 64, 10), to: 'Steve' })
+    })
+    const toss = beginGivenToss(bot, { item: 'oak_log', from: vec(12, 64, 10), to: 'Steve' })
+    bot.emit('entitySpawn', itemEntity(1, null, vec(12, 65.3, 10)))
+    toss.commit(6, 0)
     const goTo = vi.fn(async () => 'reached')
     const res = await pickupAction({ item: 'oak_log' }, bot, {}, { goTo, sleep: async () => {} })
     expect(goTo).not.toHaveBeenCalled()
     expect(res).toContain('you gave Steve')
   })
+
+  it('the snapshot never labels a stack it cannot read as given', () => {
+    const bot = emitterBot({
+      entity: { position: new Vec3(12, 64, 10), yaw: 0, pitch: 0 },
+      username: 'Sei',
+      entities: {
+        1: itemEntity(1, null, new Vec3(10.5, 64, 10)),
+        2: itemEntity(2, 'oak_log', new Vec3(11, 64, 10)),
+      },
+      players: {},
+      inventory: { items: () => [], slots: [] },
+      findBlocks: () => [],
+      findBlock: () => null,
+      blockAt: (p) => ({ name: 'air', shapes: [], position: p }),
+      health: 20,
+      food: 20,
+      game: { dimension: 'overworld' },
+      time: { timeOfDay: 1000 },
+    })
+    const toss = beginGivenToss(bot, { item: 'oak_log', from: new Vec3(12, 64, 10), to: 'Steve' })
+    bot.emit('entitySpawn', itemEntity(1, null, new Vec3(12, 65.3, 10)))
+    bot.emit('entitySpawn', itemEntity(2, null, new Vec3(12, 65.3, 10)))
+    toss.commit(6, 0)
+    let text = ''
+    try { text = composeSnapshot(bot, {}) } catch (e) { text = 'ERR ' + e.stack }
+    expect(text).toContain('item(oak_log x6, you gave this to Steve)')
+    expect(text).not.toMatch(/item\(oak_log, you gave/)
+  })
 })
 
 // ─── progression: a placed station counts ────────────────────────────────
 
-describe('a placed furnace counts as had', () => {
-  function bot({ placed = [] } = {}) {
-    const ids = { crafting_table: 1, furnace: 2 }
+describe('only her own furnace counts as had', () => {
+  // A world with a crafting table and a furnace beside her (the player's,
+  // say); only positions she recorded count.
+  function bot() {
+    const world = { '1,64,1': 'crafting_table', '2,64,1': 'furnace' }
     return {
       entity: { position: vec(0, 64, 0) },
       registry: { blocksByName: { crafting_table: { id: 1 }, furnace: { id: 2 } } },
-      findBlock: ({ matching }) => (placed.some((n) => ids[n] === matching) ? { position: vec(1, 64, 1) } : null),
+      blockAt: (p) => ({ name: world[`${p.x},${p.y},${p.z}`] ?? 'air', position: p }),
+      findBlock: () => ({ position: vec(2, 64, 1) }),
       inventory: { items: () => [{ name: 'stone_pickaxe', count: 1 }, { name: 'oak_log', count: 4 }, { name: 'cobblestone', count: 2 }] },
       game: { dimension: 'overworld' },
     }
   }
-  it('the next milestone moves past the furnace once one is placed nearby', () => {
-    const before = nextMilestone(readProgressionState(bot({ placed: ['crafting_table'] })))
-    expect(before?.node?.id).toBe('furnace')
-    const after = nextMilestone(readProgressionState(bot({ placed: ['crafting_table', 'furnace'] })))
-    expect(after?.node?.id).not.toBe('furnace')
+  it('a furnace that is not hers does not move the milestone', () => {
+    const b = bot()
+    recordOwnStation(b, 'crafting_table', vec(1, 64, 1))
+    expect(nextMilestone(readProgressionState(b))?.node?.id).toBe('furnace')
+  })
+  it('one she placed or used does, while it is still there', () => {
+    const b = bot()
+    recordOwnStation(b, 'crafting_table', vec(1, 64, 1))
+    expect(nextMilestone(readProgressionState(b))?.node?.id).toBe('furnace')
+    recordOwnStation(b, 'furnace', vec(2, 64, 1))
+    expect(nextMilestone(readProgressionState(b))?.node?.id).not.toBe('furnace')
+    // a recorded spot that no longer holds a furnace does not count
+    const c = bot()
+    recordOwnStation(c, 'crafting_table', vec(1, 64, 1))
+    recordOwnStation(c, 'furnace', vec(5, 64, 5))
+    expect(nextMilestone(readProgressionState(c))?.node?.id).toBe('furnace')
   })
 })

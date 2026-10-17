@@ -38,7 +38,9 @@
 // a stub bot.
 
 import { readFileSync } from 'node:fs'
+import { Vec3 } from 'vec3'
 import { liveInventoryItems } from './liveInventory.js'
+import { OWN_STATIONS, ownStationPositions } from './ownStations.js'
 
 // Pickaxe material → tool tier. A milestone gated on `pickaxe: N` is satisfied
 // when the bot's BEST pickaxe is tier ≥ N. Gold mines like wood, so it is tier 1.
@@ -94,7 +96,7 @@ function rawDone(node, state) {
   const items = state.items ?? {}
   if (g.have) {
     if ((items[g.have] ?? 0) >= (g.count ?? 1)) return true
-    // 261017 (pass 14): a station she placed nearby counts as had. Placing
+    // 261017 (pass 14): a station she placed (or used) nearby counts as had. Placing
     // the furnace emptied the inventory predicate, and the next: line went
     // back to "make a furnace... You have 0 cobblestone".
     return (g.count ?? 1) <= 1 && !!state.placed?.[g.have]
@@ -281,7 +283,9 @@ function itemsByName(bot) {
 }
 
 // 261017 (pass 14): stations that count once placed, and how far to look.
-export const PLACED_STATIONS = ['crafting_table', 'furnace']
+// 261017 (pass 14b): only her own (ownStations.js): one she placed or used,
+// still standing, within the radius.
+export const PLACED_STATIONS = OWN_STATIONS
 export const PLACED_STATION_RADIUS = 24
 const PLACED_CACHE_MS = 5000
 
@@ -290,12 +294,15 @@ function placedStations(bot, now = Date.now()) {
   if (cache && now - cache.at < PLACED_CACHE_MS) return cache.placed
   const placed = {}
   try {
-    if (typeof bot?.findBlock === 'function' && bot?.registry?.blocksByName && bot?.entity?.position) {
+    const here = bot?.entity?.position
+    if (typeof bot?.blockAt === 'function' && here) {
       for (const name of PLACED_STATIONS) {
-        const id = bot.registry.blocksByName[name]?.id
-        if (id == null) continue
-        const b = bot.findBlock({ matching: id, maxDistance: PLACED_STATION_RADIUS })
-        if (b) placed[name] = true
+        for (const p of ownStationPositions(bot, name)) {
+          const d = Math.hypot(p.x + 0.5 - here.x, p.y - here.y, p.z + 0.5 - here.z)
+          if (d > PLACED_STATION_RADIUS) continue
+          const b = bot.blockAt(new Vec3(p.x, p.y, p.z))
+          if (b?.name === name) { placed[name] = true; break }
+        }
       }
     }
   } catch { /* best effort: no world read means nothing placed */ }

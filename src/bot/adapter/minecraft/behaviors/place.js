@@ -3,6 +3,7 @@ import { Vec3 } from 'vec3'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
 import { reason } from '../../../brain/errStrings.js'
 import { liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
+import { recordOwnStation } from '../observers/ownStations.js'
 
 export const DEFAULT_TIMEOUT_MS = 4000
 
@@ -89,6 +90,11 @@ function tryPlace(bot, refBlock, faceVector, itemName, timeoutMs, signal) {
   try { oldName = dest && typeof bot.blockAt === 'function' ? (bot.blockAt(dest)?.name ?? null) : null } catch { oldName = null }
   const op = bot.placeBlock(refBlock, faceVector)
     .then(() => verifyPlaced(bot, dest, itemName, before, oldName, refLoc, signal))
+    .then((r) => {
+      // 261017 (pass 14b): a station she put down is hers for the progression spine.
+      if (dest && typeof r === 'string' && r.startsWith('placed ')) recordOwnStation(bot, itemName, dest)
+      return r
+    })
     .catch((err) => {
       const r = reason(err)
       return r ? `cannot place ${itemName} on ${refLoc}: ${r}` : `cannot place ${itemName} on ${refLoc}`

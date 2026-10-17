@@ -58,6 +58,15 @@ export function isPlayerTask(text) {
   return String(text ?? '').trimStart().startsWith(PLAYER_TASK_TAG)
 }
 
+// 261017 (pass 14b): whether the heartbeat file still holds a player task.
+export function hasPlayerTask(fullText) {
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(line)
+    if (m && isPlayerTask(m[1])) return true
+  }
+  return false
+}
+
 function stripPlayerTaskTag(text) {
   const t = String(text ?? '').trim()
   return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t

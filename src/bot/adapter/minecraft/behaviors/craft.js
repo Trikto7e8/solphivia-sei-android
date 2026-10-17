@@ -16,6 +16,7 @@
 import mcDataLib from 'minecraft-data'
 import { reason } from '../../../brain/errStrings.js'
 import { detectCraftingTable, maxRepetitions } from '../observers/craftable.js'
+import { recordOwnStation } from '../observers/ownStations.js'
 import { goTo } from './pathfind.js'
 import { liveInventoryItems, liveCount, hasLiveInventory, waitInventoryQuiet } from '../observers/liveInventory.js'
 
@@ -361,6 +362,8 @@ export async function craftAction(args, bot, config) {
   if (first === 'aborted') return 'aborted'
   if (first === 'timeout') return `timeout crafting ${item}`
   if (first !== 'ok') return first === 'failed' ? `cannot craft ${item}` : `cannot craft ${item}: ${first}`
+  // 261017 (pass 14b): a table she crafted at counts as hers for the spine.
+  if (tableBlock?.position) recordOwnStation(bot, 'crafting_table', tableBlock.position)
   if (!live) return `crafted ${produced} ${item}${over}${partsNote}${placeNote(item)}`
 
   if (await waitInventoryQuiet(bot, withSignal(SETTLE_AFTER, signal)) === 'aborted') return 'aborted'

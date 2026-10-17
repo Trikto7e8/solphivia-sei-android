@@ -261,7 +261,7 @@ describe('261012 own action yields to a player order', () => {
     await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
     await orch.handleDispatch('sei:chat_received', chat('how many so far'))
     const text = lastUserText(provider.calls[1])
-    expect(text).toContain('MID-ACTION')
+    expect(text).toContain('Your current action is still running')
     expect(text).not.toContain(OWN)
   })
 })

@@ -516,49 +516,14 @@ const ASKS_STOP_RE = /(?<!\b(?:dont|don't|do not|never|not|cant|can't|wont|won't
 export function asksToStop(text) {
   return ASKS_STOP_RE.test(String(text ?? '').toLowerCase())
 }
-// 261017 (pass 14): a line that tells her to stay where she is ("stop
-// moving", "stay here", "hold still", "dont move") as well as a bare stop.
-// It starts the stop hold even when she answered it with unfollow, the
-// usual reply to "stop moving" while she follows. Before, the hold needed
-// her stop() or a bare "stop", so in the eval she said "ok holding still",
-// called unfollow, and the very next call of the same loop started a gather
-// and an explore away from the player.
-const HOLD_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not|cant|can't|wont|won't|why|didnt|didn't|doesnt|doesn't|i|ill|i'll|im|i'm)\b)[\w']+[,\s]+)?(?:stop (?:moving|walking|running|following(?: me)?|there|right there)|stay (?:here|there|put|still|right there)|(?:hold|stand|keep) still|(?:dont|don't|do not) move|freeze|wait (?:here|there|right here|right there))(?:\s+(?:ok|okay|now|pls|plz|please|for a sec|a sec|for now|for a bit|a bit|then|lol|bro))*(?:\s+[a-z]+)?$/
-export function isHoldLine(text, { wordsOnly = false } = {}) {
-  if (isBareStopLine(text, { wordsOnly })) return true
-  const raw = String(text ?? '').toLowerCase().trim()
-  if (/\?[\s!~.]*$/.test(raw)) return false
-  const t = raw.replace(/[.!?~,]+/g, ' ').replace(/\s+/g, ' ').trim()
-  return t.length > 0 && t.length <= 40 && HOLD_LINE_RE.test(t)
-}
-// 261017 (pass 14): a line that calls her to the player ("follow me", "come
-// here", "meet me over here"). It cuts the running foreground action at once
-// instead of riding a mid-action turn, whose default is to keep going: in the
-// scripted eval she answered "follow me" with "keep the stone coming" and
-// dug on, and in 6 of 36 work sessions no follow started before the next
-// player line. The model still picks the reply and the action; the turn
-// just reaches it with nothing running. A question about it ("why did you
-// follow me?") or a negation ("dont follow me") is not an order, and
-// neither is one for later ("grab the logs then come back", "come here when
-// you're done"): the running job is part of what they asked for.
-const MOVE_ORDER_RE = /\b(?:follow me|come (?:over )?here|come to me|come with me|come back(?: here| to me)?|get over here|meet me)\b/
-const MOVE_LATER_RE = /\b(?:then|after|afterwards|when|once|later|first|done|finish|finished|finishing)\b/
-const MOVE_NEG_RE = /\b(?:dont|don't|do not|never|not|stop|quit|no need to|wont|won't|cant|can't)\s+(?:[\w']+\s+){0,2}(?:follow me|come|meet me|get over here)\b/
-// The player saying where THEY will go ("ill come back", "should i come here").
-const MOVE_SELF_RE = /\b(?:i|ill|i'll|i will|im|i'm|we'll|we will)\s+(?:\w+\s+)?(?:come|meet)\b/
-const QUESTION_LEAD_RE = /^(?:why|how|what|whats|what's|when|where|who|did|does|do you|are you|is|was|were|have you|had)\b/
-export function isMovementOrder(text) {
-  const t = String(text ?? '').toLowerCase().replace(/\s+/g, ' ').trim()
-  if (!t || t.length > 80) return false
-  if (!MOVE_ORDER_RE.test(t) || MOVE_NEG_RE.test(t) || MOVE_SELF_RE.test(t) || MOVE_LATER_RE.test(t)) return false
-  return !QUESTION_LEAD_RE.test(t)
-}
 const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
-// 261017 (pass 14): world actions that keep her where she stands, so the
-// player stop hold lets them through on a turn the player did not start.
-// Everything else (walking, gathering, digging, building, following) waits
-// for the player's next line.
-const HOLD_ALLOWED_ACTIONS = new Set(['unfollow', 'look', 'equip', 'consumeItem', 'attackEntity', 'setPvp', 'activateItem', 'readSign', 'dropItem'])
+// 261017 (pass 14): world actions that keep her where she stands. A
+// player-started turn that calls only these is not new work, so it does not
+// end the stop hold or the stay note.
+const STATIONARY_ACTIONS = new Set(['unfollow', 'look', 'equip', 'consumeItem', 'attackEntity', 'setPvp', 'activateItem', 'readSign', 'dropItem'])
+// 261018 (pass 15): how long the stay note rides the snapshot after she
+// stopped in answer to the player.
+const STAY_NOTE_MS = 180_000
 // 261017 (pass 14): how many player lines a completion turn brings back.
 const DEFERRED_REPLY_MAX = 3
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
@@ -1107,6 +1072,20 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   const sessionStartedAt = Date.now()
   const PLAYER_STOP_HOLD_MS = config?.memory?.player_stop_hold_ms ?? 120_000
   const playerStopHeld = () => playerStopAt > 0 && Date.now() - playerStopAt < PLAYER_STOP_HOLD_MS
+  // 261018 (pass 15): set when she herself answered a player's line with stop
+  // or unfollow and started nothing new: { at, who, line }. Later turns see a
+  // short note in the snapshot (NUDGES.stayNote) so a completion or idle turn
+  // remembers why she is standing there. Only a note: nothing is blocked. It
+  // ends when a player line gets new work or a goal from her, or after
+  // STAY_NOTE_MS. A plain chat line ("lol") does not end it, since that is
+  // not the player asking for something else.
+  let stayNote = null
+  const stayNoteText = () => {
+    if (!stayNote) return ''
+    const ms = Date.now() - stayNote.at
+    if (ms >= STAY_NOTE_MS) { stayNote = null; return '' }
+    return NUDGES.stayNote({ who: stayNote.who, line: stayNote.line, secs: Math.max(1, Math.round(ms / 1000)) })
+  }
   // 17-04 (D-08): node ids whose known-good `procedure` has already been written
   // to per-world memory this session — dedupes the procedural write-back so a
   // milestone records its procedure at most once.
@@ -2166,7 +2145,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         hideNext: playerRequestOwed || playerTaskInGoals,
       })
       if (typeof text === 'string') _repeatsContext.snapshot = text
-      return text
+      const note = stayNoteText()
+      return note && typeof text === 'string' ? `${text}\n${note}` : text
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
@@ -2708,19 +2688,11 @@ function maybeWarnByteCap(loop, warned) {
         // the action). The abort-and-fold fallback below only fires in the rare
         // race where a call started between enqueue and here, or there is no
         // in_flight to monitor (transient between-action window).
-        // 261017 (pass 14): except a line calling her to the player ("follow
-        // me", "come here") over a foreground action: that action stops now
-        // and the line takes the fold below, so her turn starts with nothing
-        // running instead of "the DEFAULT is to KEEP GOING". A background
-        // action (follow) is already going their way and is left alone. Not
-        // for a teammate, or on a group call where the line may be for
-        // someone else.
-        const moveOrder = !isTeammateVoiceChat && data?.voice !== true && isMovementOrder(chatText) &&
-          !!currentLoop.inFlight && !caps.backgroundActions[currentLoop.inFlight.name]
-        if (moveOrder) {
-          logger.info?.(`[sei/orch] movement order from the player: cutting ${currentLoop.inFlight.name} now (loop=${currentLoop.id})`)
-        }
-        if (currentLoop.inFlight && !currentLoop._llmCallInFlight && !currentLoop.isTerminal && !moveOrder) {
+        // 261018 (pass 15): a "follow me" / "come here" line rides this path
+        // too. Pass 14 cut the running action on an English regex instead;
+        // the mid-action frame now asks keep-or-switch evenly, so the model
+        // reads the line in whatever language it came in.
+        if (currentLoop.inFlight && !currentLoop._llmCallInFlight && !currentLoop.isTerminal) {
           await handleActionTick(currentLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
           return
         }
@@ -4207,20 +4179,6 @@ function maybeWarnByteCap(loop, warned) {
       replaceAbortController(loop)
     }
 
-    // 261017 (pass 14): the turn that answered a stop ("stop moving" ->
-    // unfollow + "ok") is done once its unfollow settles. Calling the model
-    // again here is how she used to walk off to her own project seconds
-    // after saying she would hold still. A line still owed to the player
-    // (answered with actions only) keeps the call.
-    if (loop._holdTurn && !extraEventText && playerStopHeld() && !loop.inFlight
-        && !(loop._unansweredNudgeText && !loop._spokeThisLoop)) {
-      loop._holdTurn = false
-      logger.info?.(`[sei/orch] stop turn settled, holding (loop=${loop.id})`)
-      terminateLoop(loop, 'player-stop-hold')
-      await teardownLoop(loop)
-      return
-    }
-
     // Drive ONE more iteration. The next callPersonality response is the
     // R1-R4 decision point.
     try {
@@ -5027,65 +4985,21 @@ function maybeWarnByteCap(loop, warned) {
       if (_p1Trigger && loop._lastPlayerLine) {
         // 261013: a goal set from the player's line is new work too. The
         // idle tick is what starts it, so a hold left on would sit on it.
-        const newWork = newSuspendingTools.some(u => !HOLD_ALLOWED_ACTIONS.has(u.name)) || toolUses.some(u => u.name === 'setGoal')
+        const newWork = newSuspendingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || toolUses.some(u => u.name === 'setGoal')
         const line = loop._lastPlayerLine.text
-        // 261017 (pass 14): her unfollow answers "stop moving" as surely as
-        // stop() does, and a "stay here" / "dont move" line holds her too.
+        if (newWork) playerStopAt = 0
+        else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
+        // 261018 (pass 15): her own choice to stop or unfollow in answer to
+        // this line leaves the stay note for later turns (see stayNote). Not
+        // for a group-call line, which may have been for someone else.
         const calledUnfollow = newSuspendingTools.some(u => u.name === 'unfollow')
         if (newWork) {
-          playerStopAt = 0
-          loop._holdTurn = false
-        } else if (((hasStop || calledUnfollow) && asksToStop(line)) || isHoldLine(line)) {
-          playerStopAt = Date.now()
-          // This turn answers the stop: once its unfollow settles the loop
-          // ends instead of calling the model again (handleActionComplete).
-          loop._holdTurn = true
+          if (stayNote) logger.info?.(`[sei/orch] stay note cleared: new work from the player's line (loop=${loop.id})`)
+          stayNote = null
+        } else if ((hasStop || calledUnfollow) && !loop._groupVoiceLine) {
+          stayNote = { at: Date.now(), who: loop._lastPlayerLine.who ?? null, line }
+          logger.info?.(`[sei/orch] stay note set: she ${hasStop ? 'stopped' : 'unfollowed'} on the player's line (loop=${loop.id})`)
         }
-      }
-
-      // 261017 (pass 14): the stop hold also covers the rest of the loop and
-      // any completion turn after it, not only idle ticks. In the eval the
-      // unfollow that answered "stop moving" settled, the same loop called
-      // the model again, and that turn started gather + explore away from
-      // the player. While the hold is on, a turn the player did not start
-      // (an action result, a loop end) does not start world actions; a new
-      // player line, a hit or a death still can.
-      const heldTrigger = (() => {
-        const e = loop._currentIterationTrigger ?? loop._triggerEvent
-        return e === 'sei:action_complete' || e === 'sei:idle' || e === 'idle' || e === 'sei:loop_end'
-      })()
-      const heldTools = playerStopHeld() && heldTrigger && !_p1Trigger
-        ? newSuspendingTools.filter(u => !HOLD_ALLOWED_ACTIONS.has(u.name))
-        : []
-      if (heldTools.length > 0) {
-        const ago = Math.max(1, Math.round((Date.now() - playerStopAt) / 1000))
-        logger.info?.(`[sei/orch] player stop hold: not starting ${heldTools.map(u => u.name).join(',')} (stop ${ago}s ago, loop=${loop.id})`)
-        const results = new Array(toolUses.length)
-        for (let i = 0; i < toolUses.length; i++) {
-          const u = toolUses[i]
-          if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
-          if (u.name === 'clearGoal' && toolUses.some(t => isHandOver(t.name))) {
-            results[i] = goalKeptResult(u, CLEAR_KEPT_NO_HANDOVER)
-            continue
-          }
-          if (isInlineMetadata(u.name)) {
-            try {
-              const r = await executeInlineMetadata(loop, u)
-              results[i] = r.result
-            } catch (err) {
-              results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
-            }
-          } else {
-            results[i] = { type: 'tool_result', tool_use_id: u.id, content: NUDGES.stopHoldBlocked(ago), is_error: false }
-          }
-        }
-        try {
-          loop.appendToolResults(results, { snapshot: snapshotText() })
-        } catch (err) {
-          logger.warn?.(`[sei/orch] stop hold appendToolResults failed: ${err.message}`)
-        }
-        terminateLoop(loop, 'player-stop-hold')
-        return
       }
 
       // 260921: a player line answered with ACTIONS ONLY: text + a world
@@ -5170,7 +5084,7 @@ function maybeWarnByteCap(loop, warned) {
       // Not on a group call's line to someone else ("lyra stop"): that turn
       // is often silent on purpose (_groupVoiceLine, as the unanswered retry).
       const unheededPlayerStop = !hasStop && !hasEndLoop && newSuspendingTools.length === 0 &&
-        _p1Trigger && !loop._groupVoiceLine && isHoldLine(loop._lastPlayerLine?.text, { wordsOnly: true })
+        _p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text, { wordsOnly: true })
       if (unheededPlayerStop) logger.info?.(`[sei/orch] player said stop and the reply started nothing: treating it as stop (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? loop._settleOwed ?? 'none'})`)
       // 261016: a reply that started nothing while an action runs (or just
       // finished during the call) leaves the player's line for the
@@ -6082,6 +5996,7 @@ function maybeWarnByteCap(loop, warned) {
         // 261013: pressing play is the player saying go, so a stop hold from
         // before the pause must not swallow the resume tick.
         playerStopAt = 0
+        stayNote = null
         try { reenqueue('sei:idle', { reason: 'game_unpaused', ...(note ? { pausedInflight: note } : {}) }) } catch {}
       }
     },

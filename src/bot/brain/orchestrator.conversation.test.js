@@ -10,7 +10,7 @@
 //     lists hid which line answered which, and a mid-loop player line arrived
 //     with no conversation at all;
 //   - an answer written in the private scratchpad beside a world action, with
-//     no say(), under a "You are MID-ACTION, KEEP GOING" framing for an action
+//     no say(), under the old "You are MID-ACTION, KEEP GOING" framing for an action
 //     that had already finished;
 //   - three web searches in 50 seconds on one topic, each forgotten by the
 //     next turn, producing six answers that did not agree;

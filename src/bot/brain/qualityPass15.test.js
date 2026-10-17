@@ -259,6 +259,96 @@ describe('the stay note', () => {
     expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(true)
   })
 
+  it('a world action she starts on a later turn the player did not start ends it', async () => {
+    const { orch, provider, running, drain } = setup([
+      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
+      turn(say('s2', 'ok holding still'), act('u1', 'unfollow')),
+      // the completion turn after the unfollow: her own project
+      turn(say('s3', 'gonna grab some stone'), act('a2', 'gather', { name: 'stone' })),
+      turn(say('s4', 'done')),
+    ])
+    await orch.handleDispatch('sei:chat_received', line('follow me'))
+    await orch.handleDispatch('sei:chat_received', line('stop moving'))
+    await flush()
+    await drain()
+    await flush()
+    await drain()
+    expect(hasNote(provider.calls[2])).toBe(true)
+    expect(running.gather).toBeTypeOf('function')
+    const before = provider.calls.length
+    running.gather('gathered 3 cobblestone')
+    await flush()
+    await drain()
+    await flush()
+    expect(provider.calls.length).toBeGreaterThan(before)
+    expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(false)
+  })
+
+  it('a stationary action on a later turn keeps it', async () => {
+    const { orch, provider, drain } = setup([
+      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
+      turn(say('s2', 'ok'), act('u1', 'unfollow')),
+      turn(act('l1', 'look')),
+      turn(say('s4', 'still here')),
+    ])
+    await orch.handleDispatch('sei:chat_received', line('follow me'))
+    await orch.handleDispatch('sei:chat_received', line('stay here'))
+    for (let i = 0; i < 3; i++) { await flush(); await drain() }
+    expect(provider.calls.length).toBe(4)
+    expect(hasNote(provider.calls[3])).toBe(true)
+  })
+
+  it('death ends it', async () => {
+    const { orch, provider, drain } = setup([
+      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
+      turn(say('s2', 'ok'), act('u1', 'unfollow')),
+      turn(say('s3', 'staying')),
+      turn(say('s4', 'ugh i died')),
+    ])
+    await orch.handleDispatch('sei:chat_received', line('follow me'))
+    await orch.handleDispatch('sei:chat_received', line('wait here'))
+    for (let i = 0; i < 2; i++) { await flush(); await drain() }
+    expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(true)
+    const before = provider.calls.length
+    await orch.handleDispatch('sei:death', { reason: 'zombie' })
+    for (let i = 0; i < 2; i++) { await flush(); await drain() }
+    expect(provider.calls.length).toBeGreaterThan(before)
+    expect(hasNote(provider.calls[provider.calls.length - 1])).toBe(false)
+  })
+
+  it('a teammate line never sets it', async () => {
+    const { orch, provider, drain } = setup([
+      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
+      turn(act('u1', 'unfollow')),
+      turn(say('s3', 'hm')),
+    ])
+    orch.setVoiceCall(true)
+    await orch.handleDispatch('sei:chat_received', line('follow me'))
+    await orch.handleDispatch('sei:chat_received', {
+      text: 'stay here', message: 'stay here', username: 'Marv', playerSpoke: false,
+      addressed: true, seiChat: true, voice: true, ts: Date.now(),
+    })
+    for (let i = 0; i < 3; i++) { await flush(); await drain() }
+    expect(provider.calls.length).toBeGreaterThanOrEqual(3)
+    expect(provider.calls.some(hasNote)).toBe(false)
+  })
+
+  it('a group-call line never sets it', async () => {
+    const { orch, provider, drain } = setup([
+      turn(say('s1', 'ok'), act('f1', 'follow', { player: 'Steve' })),
+      turn(say('s2', 'ok'), act('u1', 'unfollow')),
+      turn(say('s3', 'hm')),
+    ])
+    orch.setVoiceCall(true)
+    orch.setCompanions(['Marv'])
+    const voice = (text) => ({ text, message: text, username: 'Steve', playerSpoke: true, addressed: true, seiChat: true, voice: true, ts: Date.now() })
+    await orch.handleDispatch('sei:chat_received', voice('follow me'))
+    await orch.handleDispatch('sei:chat_received', voice('stay here'))
+    for (let i = 0; i < 3; i++) { await flush(); await drain() }
+    expect(provider.calls.length).toBeGreaterThanOrEqual(3)
+    expect(provider.calls.some(hasNote)).toBe(false)
+  })
+
   it('reads plainly', () => {
     const t = NUDGES.stayNote({ who: 'Steve', line: 'stay here', secs: 12 })
     expect(t).toContain('12s ago')

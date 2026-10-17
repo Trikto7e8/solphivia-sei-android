@@ -2440,6 +2440,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     // (two pathfinder goals, a dig and a goTo) is the "runs alongside the new
     // turn" failure.
     abortDrain('superseded by a new action')
+    // 261018 (pass 15): any world action that moves her or starts work ends
+    // the stay note, on any trigger (a completion turn, an idle tick, her own
+    // project), not only on the turn a player line started.
+    if (stayNote && !ACTION_VERB_SKIP.has(name) && !STATIONARY_ACTIONS.has(name)) {
+      logger.info?.(`[sei/orch] stay note cleared: she started ${name}`)
+      stayNote = null
+    }
     const handle = inflight.start({ name, args })
     // Party redesign §2/§5: this is the single world-tool dispatch path. Surface
     // the action as a presence verb — but only for real world tools, never for
@@ -2550,6 +2557,12 @@ function maybeWarnByteCap(loop, warned) {
     // gate, every chat/idle tick fires a fresh personality call which all 402
     // again — costing nothing but leaking the [haiku?] request log to stdout.
     if (_halted) return
+    // 261018 (pass 15): she died and respawned somewhere else, so where she
+    // was told to stay no longer exists.
+    if (event === 'sei:death' && stayNote) {
+      logger.info?.('[sei/orch] stay note cleared: she died')
+      stayNote = null
+    }
     // 260502-h6i: chat events arrive from src/behaviors/chat.js as
     // `sei:chat_received` with an `playerSpoke` flag. The legacy `player_chat`
     // shape is preserved for backwards-compat.
@@ -4993,7 +5006,10 @@ function maybeWarnByteCap(loop, warned) {
         else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
         // 261018 (pass 15): her own choice to stop or unfollow in answer to
         // this line leaves the stay note for later turns (see stayNote). Not
-        // for a group-call line, which may have been for someone else.
+        // for a group-call line, which may have been for someone else, and
+        // not for a teammate's line (_lastPlayerLine is null for those). A
+        // goal set from the line ends it here; a world action ends it in
+        // startLongRunner, on any turn.
         const calledUnfollow = newSuspendingTools.some(u => u.name === 'unfollow')
         const newWork = newSuspendingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
         if (newWork) {

@@ -209,10 +209,20 @@ const MAX_QUOTE_CHARS = 160
 // Words that only carry the job or its timing. A phrase whose own wording is
 // just these ("need stone", "pickaxe next", "mining stone now") is the task
 // she is on, which a status line has to name, not a bit.
+// 261017 (pass 13): plus the walking words ("heading to the oak trees",
+// "coming back with the logs"), which the looser test below would otherwise
+// call hers.
 const TASK_GLUE = new Set((
   'next now need needs want wanna first again still more soon later ready ' +
-  'make made get grab dig mine craft find build gather punch chop collect place put use try start pick'
+  'make made get grab dig mine craft find build gather punch chop collect place put use try start pick ' +
+  'head walk coming back'
 ).split(' '))
+// 261017 (pass 13): count words. STOP keeps them from ever being a tic on
+// their own, but inside a phrase they are part of the bit: "nine blocks
+// away" three replies running, "still zero wood tho" four times in a scripted
+// night (pass 12 compare). They count as words of the phrase, never as her
+// own wording, so "zero wood" or "four logs" alone (the status) is not named.
+const COUNT_WORDS = new Set('zero two three four five six seven eight nine ten twenty'.split(' '))
 
 const clip = (s, n = MAX_QUOTE_CHARS) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim()
@@ -232,13 +242,21 @@ export function recentOwnTurns(selfLines, { now = Date.now(), turns = LAST_LINES
 
 /**
  * Phrases (two words or more) found in at least `minTurns` of her last
- * `window` turns. Kept only when the phrase has two content words and most of
- * them are her own wording: not a name, and not an item, block, mob or task
- * word (from `context`, the game's `vocab`, or the task verbs). Two of her
- * lines about "the stone pickaxe" or "the oak trees" share the job, not a
- * bit; "boss of the wood pile" in two lines is a bit. Phrases the player also
- * used recently are left out, as in repeatedOwnTerms. Only the longest form
- * of a phrase is returned.
+ * `window` turns. Kept only when the phrase has two content words (a count
+ * word counts) and at least one of them is her own wording: not a name, not a
+ * count, and not an item, block, mob or task word (from `context`, the game's
+ * `vocab`, or the task verbs). Two of her lines about "the stone pickaxe" or
+ * "the oak trees" share the job, not a bit; "boss of the wood pile" in two
+ * lines is a bit, and so is "nine blocks away" or "holding a stone pickaxe
+ * plan". Phrases the player also used recently are left out, as in
+ * repeatedOwnTerms. Only the longest form of a phrase is returned.
+ *
+ * 261017 (pass 13): one word of her own is enough. The rule used to be "most
+ * of the words are hers", which let every bit built on a game word through:
+ * in the pass 12 compare "nine blocks away" (3 uses), "still zero wood tho"
+ * (4), "holding a stone pickaxe plan" (2) and "you owe me a cave tour" (2)
+ * were all quoted in her last lines and none was named, and "repetitive" was
+ * half of the off lines.
  *
  * @param {Array<{at:number,text:string}>} selfLines   oldest first
  * @param {Array<{text:string,who?:string}>} [playerLines]
@@ -275,17 +293,19 @@ export function repeatedOwnPhrases(selfLines, playerLines = [], {
     }
     for (const p of seen) counts.set(p, (counts.get(p) ?? 0) + 1)
   }
+  const isWord = (w) => isContent(w) || COUNT_WORDS.has(w)
   const ok = (p) => {
     const words = p.split(' ')
     if (words.some(isName)) return false
-    const content = words.filter(isContent)
+    const content = words.filter(isWord)
     if (content.length < 2) return false
-    // Most of it has to be her own wording: "heading to the oak trees" or
-    // "need iron ingots" is the job, "boss of the wood pile" is a bit.
-    if (content.filter((w) => !isKnown(w)).length * 2 <= content.length) return false
+    // Some of it has to be her own wording: "heading to the oak trees",
+    // "need iron ingots" or "zero wood" is the job or the count, "boss of
+    // the wood pile" and "nine blocks away" are bits.
+    if (!content.some((w) => !COUNT_WORDS.has(w) && !isKnown(w))) return false
     // It starts and ends on a content word, so "of the wood" never stands
     // in for "boss of the wood pile".
-    if (!isContent(words[0]) || !isContent(words[words.length - 1])) return false
+    if (!isWord(words[0]) || !isWord(words[words.length - 1])) return false
     return !heard.some((h) => h.includes(` ${p} `))
   }
   const hits = [...counts]
@@ -296,7 +316,7 @@ export function repeatedOwnPhrases(selfLines, playerLines = [], {
   for (const h of hits) {
     // One phrase per bit: "boss of the wood pile" covers "wood pile" and
     // "ok fine you're the boss of the wood" (two content words in common).
-    const shared = (a, b) => { const bw = new Set(b.split(' ').filter(isContent)); return a.split(' ').filter((w) => isContent(w) && bw.has(w)).length }
+    const shared = (a, b) => { const bw = new Set(b.split(' ').filter(isWord)); return a.split(' ').filter((w) => isWord(w) && bw.has(w)).length }
     if (out.some((o) => shared(h.phrase, o.phrase) >= 2)) continue
     out.push(h)
     if (out.length >= max) break
@@ -364,11 +384,28 @@ export function repeatedOpener(selfLines, {
 //   checkin a check-in while her action runs, every few seconds. Silence is
 //           already the default there; a short form keeps a line she does
 //           say new without the full note each tick.
+//   greeted (261017, pass 13) the player's first line crossed her
+//           first-contact hello (orchestrator greetCrossed). That turn is
+//           already told her hello answers theirs and that a plain hello
+//           needs no say(); the reply ask ("find something new to say")
+//           pulled the other way, and a second hello ("yo alex", "hey alex.
+//           you're back") went out in 1 to 2 of 18 scripted sessions per run.
+//           Only the quote and the repeats, no ask.
 const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
 
 /** The line half of the note: her last lines, quoted, and what they share. */
+// 261017 (pass 13): the end of the reply ask. It used to be "If something
+// has to come up again, like a count or the plan, say it in new words", and
+// she took that as leave to pitch the plan again in new words: "you wanna
+// mine some stone with me next?", then "you ready to mine some stone with me
+// or nah" to "hows it going", then "ok so stone next, you in?" to "cool", all
+// with the earlier lines quoted right above (pass 11 compare, errands-06).
+// Re-pitching the plan or a status after "thanks", "cool" or "ok" was the
+// biggest kind of repetitive label left on dev.
+const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If their line only acknowledges yours, a short reaction is enough.'
+
 function linesNote(selfLines, playerLines, opts = {}) {
-  const mode = opts.mode === 'idle' || opts.mode === 'checkin' ? opts.mode : 'reply'
+  const mode = ['idle', 'checkin', 'greeted'].includes(opts.mode) ? opts.mode : 'reply'
   const last = recentOwnTurns(selfLines, { now: opts.now })
   if (!last.length) return null
   // A word the tic note already names is not named twice ("big brother").
@@ -384,6 +421,7 @@ function linesNote(selfLines, playerLines, opts = {}) {
   if (mode === 'checkin') {
     return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}, so if you say something this tick, make it new.${bits}`
   }
+  if (mode === 'greeted') return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}.${bits}`
   const opener = repeatedOpener(selfLines, {
     now: opts.now, names, context: opts.context, vocab: opts.vocab, signature: opts.signature, skipTerms: opts.skipTerms,
   })
@@ -392,13 +430,13 @@ function linesNote(selfLines, playerLines, opts = {}) {
   return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}. ` +
     REUSE_ASK +
     bits + open +
-    ' If something has to come up again, like a count or the plan, say it in new words.'
+    ` ${REPITCH_ASK}`
 }
 
 /**
  * The prompt note for the next turn, or null when she has said nothing
  * recently and nothing repeats. `opts.mode` is the kind of turn: 'reply'
- * (default, the player just spoke), 'idle' or 'checkin' (see the note above
+ * (default, the player just spoke), 'idle', 'checkin' or 'greeted' (see the note above
  * REUSE_ASK).
  */
 export function ownRepeatsNote(selfLines, playerLines = [], opts = {}) {

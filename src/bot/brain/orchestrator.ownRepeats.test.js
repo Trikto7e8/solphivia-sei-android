@@ -113,3 +113,26 @@ describe('own_repeats wording by kind of turn', () => {
     finish?.('done')
   })
 })
+
+// 261017 (pass 13): the player's first line crossed her first-contact hello.
+// That turn already says a plain hello needs no say(); the reply ask ("find
+// something new to say") pulled the other way. The next line gets the full
+// ask again.
+describe('own_repeats on the reply to a hello that crossed hers', () => {
+  it('quotes her hello without the ask, once', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { orch, provider } = makeOrch([
+      { text: '', toolUses: [say('t1', 'oh hey newb, first time in this world')] },
+      { text: '', toolUses: [{ id: 'e1', name: 'end_loop', input: {} }] },
+      { text: '', toolUses: [say('t3', 'wood, sure')] },
+    ])
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    orch.recordIncomingChat('newb', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    const crossed = blockText(provider.calls[1], 'own_repeats')
+    expect(crossed).toBe('Your last line to them was "oh hey newb, first time in this world". They already heard it.')
+    orch.recordIncomingChat('newb', 'wanna get wood')
+    await orch.handleDispatch('sei:chat_received', chat('wanna get wood'))
+    expect(blockText(provider.calls[2], 'own_repeats')).toContain(REPLY_ASK)
+  })
+})

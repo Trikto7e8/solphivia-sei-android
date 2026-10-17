@@ -225,7 +225,7 @@ describe('ownRepeatsNote, by kind of turn', () => {
   const QUOTE = `Your last lines to them were "hey alex, want to grab wood with me?" and then "i'll get the oak trees, can you keep an eye on me?". They already heard these.`
 
   it('keeps the full reply-turn wording, byte for byte', () => {
-    const reply = `${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less. If something has to come up again, like a count or the plan, say it in new words.`
+    const reply = `${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less. Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If their line only acknowledges yours, a short reaction is enough.`
     expect(ownRepeatsNote(lines, [], { now, names: ['Alex'] })).toBe(reply)
     expect(ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'reply' })).toBe(reply)
   })
@@ -258,7 +258,26 @@ describe('ownRepeatsNote, by kind of turn', () => {
   })
 
   it('has no dashes in any form', () => {
-    for (const mode of ['reply', 'idle', 'checkin']) expect(ownRepeatsNote(lines, [], { now, mode }) ?? '').not.toMatch(/[—–]/)
+    for (const mode of ['reply', 'idle', 'checkin', 'greeted']) expect(ownRepeatsNote(lines, [], { now, mode }) ?? '').not.toMatch(/[—–]/)
+  })
+
+  // 261017 (pass 13): the reply ask no longer invites her to say the plan
+  // again in new words (she re-pitched "stone next, you in?" three times).
+  it('the reply ask never invites restating the plan or a count', () => {
+    const note = ownRepeatsNote(lines, [], { now, names: ['Alex'] })
+    expect(note).not.toContain('say it in new words')
+    expect(note).toContain('Do not bring up your plan, a count or an offer again unless they ask about it or it has changed.')
+  })
+
+  // 261017 (pass 13): the reply to a hello that crossed hers. That turn
+  // already says a plain hello needs no say(), so no "find something new to
+  // say" here.
+  it('on the turn after a crossed hello is the quote and the repeats only', () => {
+    const hello = session(["oh hey alex. first time in this world together, i'm sui"])
+    expect(ownRepeatsNote(hello, [], { now: nowAfter(1), names: ['Alex'], mode: 'greeted' }))
+      .toBe(`Your last line to them was "oh hey alex. first time in this world together, i'm sui". They already heard it.`)
+    const bit = session(["ok fine, you're the boss of the wood pile", "sure thing, boss of the wood pile"])
+    expect(ownRepeatsNote(bit, [], { now: nowAfter(2), mode: 'greeted' })).toContain('"boss of the wood pile" more than once')
   })
 })
 
@@ -291,6 +310,51 @@ describe('repeatedOwnPhrases, item vocabulary', () => {
     expect(repeatedOwnPhrases(wood, [], opts(2, { vocab: [...VOCAB, 'wood'] })).map((h) => h.phrase)).toEqual(['boss of the wood pile'])
     const snack = session(['you owe me a snack', 'fine, you owe me a snack'])
     expect(repeatedOwnPhrases(snack, [], opts(2)).map((h) => h.phrase)).toEqual(['owe me a snack'])
+  })
+})
+
+// 261017 (pass 13): bits built on a game word or a count. In the pass 12
+// compare these were quoted in her last lines turn after turn and never
+// named, and the judge marked every reuse repetitive.
+describe('repeatedOwnPhrases, bits with game words and counts', () => {
+  const VOCAB = ['oak_log', 'oak_planks', 'oak_wood', 'stone', 'stone_pickaxe', 'cobblestone', 'grass_block', 'cave_air', 'block', 'blocks', 'tree', 'zombie']
+  const opts = (n, extra = {}) => ({ now: nowAfter(n), vocab: VOCAB, names: ['Alex'], ...extra })
+
+  it('names "nine blocks away" (work_session-04, three replies running)', () => {
+    const lines = session([
+      "lol ur kinda slow, says the guy watching from nine blocks away. i'm getting stone next",
+      'favorite mob? creeper obviously',
+      "ehh you're the one standing nine blocks away holding nothing. carry your own logs",
+    ])
+    expect(repeatedOwnPhrases(lines, [], opts(3)).map((h) => h.phrase)).toEqual(['nine blocks away'])
+  })
+
+  it('names "still zero wood tho" but never the bare count', () => {
+    const night = session([
+      "ehehe thanks alex. still zero wood tho so don't get cocky yet",
+      'ehehe ok one joke. why did the zombie not eat the sword guy. still zero wood tho alex',
+    ])
+    expect(repeatedOwnPhrases(night, [], opts(2)).map((h) => h.phrase)).toEqual(['still zero wood tho'])
+    const status = session(['zero wood so far', 'still zero wood, trees are far', 'got four logs', 'four logs now'])
+    expect(repeatedOwnPhrases(status, [], opts(4))).toEqual([])
+  })
+
+  it('names a comeback built on an item ("holding a stone pickaxe plan")', () => {
+    const lines = session([
+      "ok i'm slow AND i'm holding a stone pickaxe plan. nehehe",
+      "rude. i'm useless AND holding a stone pickaxe plan so who's winning now",
+    ])
+    expect(repeatedOwnPhrases(lines, [], opts(2)).map((h) => h.phrase)).toEqual(['holding a stone pickaxe plan'])
+  })
+
+  it('names a made-up debt that mentions a cave', () => {
+    const lines = session(["coal's yours. you still owe me a cave tour tho", 'no prob. you owe me a cave tour for the coal tho'])
+    expect(repeatedOwnPhrases(lines, [], opts(2)).map((h) => h.phrase)).toEqual(['owe me a cave tour'])
+  })
+
+  it('still leaves out the job and where she is walking', () => {
+    const job = session(['mining stone for the stone pickaxe', 'need stone for the stone pickaxe', 'heading to the oak trees', 'walking to the oak trees', 'coming back with the oak logs', 'ok coming back with the oak logs'])
+    expect(repeatedOwnPhrases(job, [], opts(6))).toEqual([])
   })
 })
 

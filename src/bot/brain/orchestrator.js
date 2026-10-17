@@ -2282,7 +2282,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       : ''
     // 261012: the player's first line crossed her first-spawn hello.
     const humanLine = chatText && String(chatText).trim() && !teammate
-    const crossedTail = (humanLine && !unanswered && !voiceCallActive && greetCrossed(loop))
+    const crossed = !!(humanLine && !unanswered && !voiceCallActive && greetCrossed(loop))
+    const crossedTail = crossed
       ? `\n\n${NUDGES.greetCrossed}`
       : humanLine ? `\n\n${NUDGES.replyNoRestate}` : ''
     return convoLead + unansweredLead + withGreetingHint(NUDGES.actionTurn({
@@ -2301,7 +2302,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       peers: companions,
       fromTeammate: teammate === true,
       ownAction,
-    })) + crossedTail + (humanLine ? ownRepeatsTail('reply') : '')
+    })) + crossedTail + (humanLine ? ownRepeatsTail(crossed ? 'greeted' : 'reply') : '')
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -2861,6 +2862,9 @@ function maybeWarnByteCap(loop, warned) {
     const isSafetyEvent = event === 'sei:attacked'
     let eventText
     let playerMessageText = null
+    // 261017 (pass 13): the player's line crossed her first-contact hello
+    // (greetCrossed), for the own_repeats note's 'greeted' form.
+    let greetedTurn = false
     if (isSafetyEvent && typeof adapter.eventAddendum === 'function') {
       eventText = adapter.eventAddendum(event, data).trim() + fightToldSuffix()
     } else {
@@ -2904,6 +2908,7 @@ function maybeWarnByteCap(loop, warned) {
         // deliberate yield. Teammate voice wakes count too.
         loop._groupVoiceLine = isVoiceLine && (companions.length > 0 || fromTeammate)
         const crossed = !groupVoice && !teammateVoice && !fromTeammate && greetCrossed(loop)
+        greetedTurn = crossed
         eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice
           : crossed ? NUDGES.playerInterruptHintGreetCrossed
           : NUDGES.playerInterruptHint
@@ -2979,7 +2984,12 @@ function maybeWarnByteCap(loop, warned) {
         : ''
       eventText = `player just unpaused your game.${inflightLine}\n\n${eventText}`
     }
-    if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive) {
+    // 261017 (pass 13): not when a line of hers already reached the player.
+    // The first-spawn tick is a P3 idle that waits behind any running loop,
+    // so a player who said hello the moment she spawned got a reply (which
+    // carries GREETING_HINT and greets) and then this tick greeted them a
+    // second time.
+    if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive && !greetedPlayer) {
       _firstContactAt = Date.now()
       // 261011: a first-ever session has no memories, and the old single
       // wording ("glad to be back", say("back in business")) made the very
@@ -3031,7 +3041,7 @@ function maybeWarnByteCap(loop, warned) {
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
-          ownRepeatsText: ownRepeatsText(playerMessageText ? 'reply' : 'idle'),
+          ownRepeatsText: ownRepeatsText(playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : 'idle'),
           playerMessageText,
           companions,
           frontierText: progFrontierText,

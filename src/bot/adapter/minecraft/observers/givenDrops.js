@@ -33,7 +33,7 @@ function dist(a, b) {
 }
 
 function isItem(e) {
-  return e?.name === 'item' || e?.name === 'item_stack'
+  return !!e && (e.name === 'item' || e.name === 'item_stack' || e.displayName === 'Item')
 }
 
 function liveTosses(bot, now) {

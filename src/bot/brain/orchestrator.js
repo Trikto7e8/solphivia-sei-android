@@ -37,6 +37,7 @@ import {
   NEXT_TIME_GREETING,
   NEXT_TIME_FOR_PLAYER_FIELD,
   FIRST_CONTACT,
+  nextTimeGreeting,
   MEMORY_GOAL_TAIL,
 } from './prompts.js'
 import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from './nextStep.js'
@@ -1468,7 +1469,14 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (greetedPlayer || voiceCallActive) return text
     const t = String(text ?? '')
     if (t.includes('FIRST CONTACT')) return t
-    return `${t}\n\n${GREETING_HINT}`
+    // 261017 (pass 13): the open plan from the home screen rides here too.
+    // Main marks it used when the session starts, and FIRST CONTACT is
+    // skipped once a reply has greeted, so a player who said hello first
+    // never heard the plan. Only a known open plan (a string); the soft
+    // memory hint stays with FIRST CONTACT.
+    const plan = config?._seiNextStepPlan
+    const cue = typeof plan === 'string' && plan.trim() ? ` ${nextTimeGreeting(plan)}` : ''
+    return `${t}\n\n${GREETING_HINT}${cue}`
   }
   // Pending interrupt blocks supplied via abort signal — picked up by the
   // catch arm to render the PLAYER INTERRUPT user turn.

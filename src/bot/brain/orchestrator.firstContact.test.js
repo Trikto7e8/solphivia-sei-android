@@ -213,6 +213,39 @@ describe('261017 no second greeting turn', () => {
     expect(JSON.stringify(provider.calls[1])).not.toContain('FIRST CONTACT')
   })
 
+  // Review (pass 13): main marks the home-screen plan used at session
+  // start, so when FIRST CONTACT is skipped the plan rides the greeting hint
+  // on the reply turn instead, or it never comes up.
+  it('the reply that greets carries the open plan from the home screen', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('oh hey steve, cabin roof today?'), { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const config = makeConfig()
+    config._seiNextStepPlan = 'finish the cabin roof'
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    orch.recordIncomingChat('Steve', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    const first = JSON.stringify(provider.calls[0])
+    expect(first).toContain('You have not greeted the player yet')
+    expect(first).toContain('saved this to pick up next time: \\"finish the cabin roof\\"')
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    expect(JSON.stringify(provider.calls[1])).not.toContain('finish the cabin roof')
+  })
+
+  it('no plan cue on the hint when none is open', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([sayTurn('oh hey steve')])
+    const { adapter } = makeAdapter()
+    const config = makeConfig()
+    config._seiNextStepPlan = null
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    orch.recordIncomingChat('Steve', 'hey sui')
+    await orch.handleDispatch('sei:chat_received', chat('hey sui'))
+    const first = JSON.stringify(provider.calls[0])
+    expect(first).toContain('You have not greeted the player yet')
+    expect(first).not.toContain('pick up next time')
+  })
+
   it('without an earlier line the first-spawn tick still greets', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([{ text: '', toolUses: [] }])

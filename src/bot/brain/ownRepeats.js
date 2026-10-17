@@ -223,6 +223,25 @@ const TASK_GLUE = new Set((
 // night (pass 12 compare). They count as words of the phrase, never as her
 // own wording, so "zero wood" or "four logs" alone (the status) is not named.
 const COUNT_WORDS = new Set('zero two three four five six seven eight nine ten twenty'.split(' '))
+// 261017 (pass 13 review): words that are never her own wording either:
+// fillers, where something is, and the follow and stop acks. With one own
+// word enough, "nine blocks north" (to "where's the cave again"), "three logs
+// so far", "no wood yet" and "following you now" all passed on a "far", "yet"
+// or "following", and those are facts and answers, not bits.
+const PLAIN_WORDS = new Set((
+  'tho though lol lmao yet so far ok okay kinda yeah yep nah fine actually ' +
+  'block blocks away north south east west left right behind ahead close near nearby over there ' +
+  'follow following followed stop stopping stopped hold holding still stay staying put wait waiting here'
+).split(' '))
+// A phrase made only of job words, counts and the words above is a fact. It
+// counts as a bit only with a count in it, said in this many turns, and not
+// when the player's line is a question: "still zero wood tho" four times in
+// one night, "nine blocks away" three replies running.
+const FACT_BIT_TURNS = 3
+// The player's line asks something ("where's the cave again", "hows it
+// going", "u got wood?"). Chat questions often have no question mark.
+const QUESTION_RE = /\?\s*$|^(where|what|how|why|when|which|who|whats|wheres|hows|is|are|do|does|did|can|could|got|u got|you got|any)\b/i
+const isQuestion = (text) => QUESTION_RE.test(String(text ?? '').trim().replace(/[‘’]/g, "'").replace(/'/g, ''))
 
 const clip = (s, n = MAX_QUOTE_CHARS) => {
   const t = String(s ?? '').replace(/\s+/g, ' ').trim()
@@ -264,7 +283,7 @@ export function recentOwnTurns(selfLines, { now = Date.now(), turns = LAST_LINES
  */
 export function repeatedOwnPhrases(selfLines, playerLines = [], {
   now = Date.now(), window = PHRASE_TURNS, withinMs = PHRASE_WITHIN_MS, minTurns = 2, max = MAX_PHRASES,
-  playerWindow = 8, names = [], context = [], vocab = null,
+  playerWindow = 8, names = [], context = [], vocab = null, asked = false,
 } = {}) {
   const turns = groupTurns(selfLines)
     .filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs)
@@ -294,22 +313,25 @@ export function repeatedOwnPhrases(selfLines, playerLines = [], {
     for (const p of seen) counts.set(p, (counts.get(p) ?? 0) + 1)
   }
   const isWord = (w) => isContent(w) || COUNT_WORDS.has(w)
-  const ok = (p) => {
+  const ok = (p, c) => {
     const words = p.split(' ')
     if (words.some(isName)) return false
     const content = words.filter(isWord)
     if (content.length < 2) return false
-    // Some of it has to be her own wording: "heading to the oak trees",
-    // "need iron ingots" or "zero wood" is the job or the count, "boss of
-    // the wood pile" and "nine blocks away" are bits.
-    if (!content.some((w) => !COUNT_WORDS.has(w) && !isKnown(w))) return false
     // It starts and ends on a content word, so "of the wood" never stands
     // in for "boss of the wood pile".
     if (!isWord(words[0]) || !isWord(words[words.length - 1])) return false
-    return !heard.some((h) => h.includes(` ${p} `))
+    if (heard.some((h) => h.includes(` ${p} `))) return false
+    // Some of it has to be her own wording: "heading to the oak trees",
+    // "need iron ingots" or "zero wood" is the job or the count, "boss of
+    // the wood pile" and "owe me a cave tour" are bits.
+    if (content.some((w) => !COUNT_WORDS.has(w) && !PLAIN_WORDS.has(w) && !isKnown(w))) return true
+    // A fact ("nine blocks away", "still zero wood tho") only as a count
+    // she keeps repeating unasked (FACT_BIT_TURNS).
+    return !asked && c >= Math.max(minTurns, FACT_BIT_TURNS) && content.some((w) => COUNT_WORDS.has(w))
   }
   const hits = [...counts]
-    .filter(([p, c]) => c >= minTurns && ok(p))
+    .filter(([p, c]) => c >= minTurns && ok(p, c))
     .map(([phrase, count]) => ({ phrase, count }))
     .sort((a, b) => b.count - a.count || b.phrase.split(' ').length - a.phrase.split(' ').length)
   const out = []
@@ -402,7 +424,9 @@ const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeb
 // with the earlier lines quoted right above (pass 11 compare, errands-06).
 // Re-pitching the plan or a status after "thanks", "cool" or "ok" was the
 // biggest kind of repetitive label left on dev.
-const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If their line only acknowledges yours, a short reaction is enough.'
+// Review: a question like "hows it going" still gets a real answer about
+// where things stand, only not her last line again.
+const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If they ask how it is going, tell them where things stand, just not in the same words as before. If their line only acknowledges yours, a short reaction is enough.'
 
 function linesNote(selfLines, playerLines, opts = {}) {
   const mode = ['idle', 'checkin', 'greeted'].includes(opts.mode) ? opts.mode : 'reply'
@@ -410,13 +434,16 @@ function linesNote(selfLines, playerLines, opts = {}) {
   if (!last.length) return null
   // A word the tic note already names is not named twice ("big brother").
   const skip = (opts.skipTerms ?? []).map((t) => ` ${t} `)
-  const phrases = repeatedOwnPhrases(selfLines, playerLines, opts)
+  // A fact she repeats is fine when the player just asked about it.
+  const lastHeard = (playerLines ?? []).filter((l) => l && l.companion !== true).at(-1)
+  const asked = (mode === 'reply' || mode === 'greeted') && isQuestion(lastHeard?.text)
+  const phrases = repeatedOwnPhrases(selfLines, playerLines, { ...opts, asked })
     .filter((p) => !skip.some((t) => ` ${p.phrase} `.includes(t)))
   const names = [...(opts.names ?? []), ...(playerLines ?? []).map((l) => l?.who)]
   const quoted = last.map((t) => `"${clip(t.text)}"`).join(' and then ')
   const lead = last.length === 1 ? `Your last line to them was ${quoted}.` : `Your last lines to them were ${quoted}.`
   const bits = phrases.length
-    ? ` You have said ${phrases.map((p) => `"${p.phrase}"`).join(' and ')} more than once already, so leave ${phrases.length === 1 ? 'it' : 'them'} out of this line.`
+    ? ` You have said ${phrases.map((p) => `"${p.phrase}"`).join(' and ')} more than once already, so leave ${phrases.length === 1 ? 'it' : 'them'} out of this line${mode === 'reply' || mode === 'greeted' ? ' unless they ask for it' : ''}.`
     : ''
   if (mode === 'checkin') {
     return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}, so if you say something this tick, make it new.${bits}`

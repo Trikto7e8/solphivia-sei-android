@@ -77,10 +77,15 @@ export function resolveRecipient(bot, who, config) {
 // work_session-02 (pass 15 eval): she gave 6 of her 7 logs, told the player
 // "i'm making the pickaxe", and the craft failed on the 1 log left. The give
 // itself is still hers to decide; this only says what it cost.
-function nextStepNote(bot, item) {
+// The milestone is the one she was on before the toss: the pass 17 compare's
+// work_session-06 gave all 6 logs, and read after the give the frontier was
+// back at "gather wood" (no recipe), so the note was missing exactly when
+// she had nothing left for the table she had just said she would make.
+function nextStepNote(bot, item, given) {
   try {
     const state = readProgressionState(bot)
-    const { node } = nextMilestone(state)
+    const before = { ...state, items: { ...state.items, [item]: (Number(state.items?.[item]) || 0) + given } }
+    const { node } = nextMilestone(before)
     const need = nextNeedAfterGive(node, state.items, item)
     return need ? `. Note: ${need}` : ''
   } catch {
@@ -157,7 +162,7 @@ export async function giveAction(args, bot, config, _deps) {
     toss.commit(Number(m[1]))
     const left = countOf(bot, item)
     const tail = res.slice(m[0].length - 1).replace(new RegExp(`^ ${item}`), '')
-    return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left${nextStepNote(bot, item)}`
+    return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left${nextStepNote(bot, item, Number(m[1]))}`
   }
   return `could not give ${item}: ${res}`
 }

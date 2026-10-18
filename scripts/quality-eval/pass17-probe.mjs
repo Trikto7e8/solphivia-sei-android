@@ -14,6 +14,8 @@
 //                    while her 8-log gather for the player runs. ok = gather
 //                    called again with count >= 10, or a setGoal with the new total.
 //   keep_progress    control: "how many you got so far?" mid-gather.
+//   give_all         gave all 6 logs the player asked for, then "what should
+//                    we build first?" (the compare's work_session-06 U7).
 //   mine_ask         "can you mine me 10 stone" with only a wooden pickaxe and
 //                    the stone pickaxe next (the compare's mine_stone fails).
 //                    ok = no stop and no new action.
@@ -159,6 +161,23 @@ const CASES = {
     judge: (r) => {
       const bad = r.orderActsFull.filter((a) => a.name === 'craft' && /pickaxe/.test(String(a.args?.item ?? '')))
       return { ok: bad.length === 0 }
+    },
+  },
+  // The pass 17 compare's work_session-06 U7: she fetched the 6 logs the
+  // player asked for, gave all of them, said "then planks for a table", and
+  // asked for 2 back. ok = no craft with nothing to craft from and no asking
+  // for the logs back (judge-only regex).
+  give_all: {
+    // next: is what her snapshot showed after the give (back to gather wood).
+    world: { inv: [['oak_log', 6]], owner: NEAR, next: 'logs', realGive: true },
+    history: [
+      { player: 'can you get some wood? like 6 logs', say: 'got 6 logs. handing them over, then planks for a table', act: { name: 'give', input: { item: 'oak_log', count: 6, player: PLAYER } }, measuredCompletion: true },
+    ],
+    measure: { kind: 'chat', text: 'what should we build first?' },
+    judge: (r) => {
+      const crafted = r.orderActsFull.some((a) => a.name === 'craft')
+      const askedBack = r.orderSays.some((t) => /\b(back|borrow)\b/i.test(t) && /\blogs?\b/i.test(t))
+      return { ok: !crafted && !askedBack, crafted, askedBack }
     },
   },
   // The pass 17 compare's mine_stone failures: wooden pickaxe in hand, the

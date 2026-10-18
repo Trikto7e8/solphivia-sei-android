@@ -64,6 +64,15 @@ describe('giveAction', () => {
     expect(r).toBe('gave 6 oak_log to Alex, tossed at their feet; you have 1 oak_log left. Note: your next step (get a wooden pickaxe) takes 2 logs to make and you have 1, so you need 1 more for it')
   })
 
+  // The pass 17 compare (work_session-06): all 6 logs given, no table yet.
+  // Read after the toss the next milestone was "gather wood", with no recipe.
+  it('reads the milestone she was on before the hand-over', async () => {
+    const { bot, items } = makeBot({ inv: [{ name: 'oak_log', count: 6 }] })
+    const d = deps(bot, items)
+    const r = await giveAction({ item: 'oak_log', count: 6 }, bot, cfg, d)
+    expect(r).toBe('gave 6 oak_log to Alex, tossed at their feet; you have 0 oak_log left. Note: your next step (make a crafting table) takes 1 log to make and you have 0, so you need 1 more for it')
+  })
+
   it('adds nothing when she still has enough for her next milestone', async () => {
     const { bot, items } = makeBot({ inv: [{ name: 'crafting_table', count: 1 }, { name: 'oak_log', count: 7 }] })
     const d = deps(bot, items)

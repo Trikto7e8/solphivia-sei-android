@@ -1316,12 +1316,14 @@ function isEarlierLine(line, sessionStartMs) {
 }
 
 // 261018 (pass 16): OWN_GOALS_KNOWN. Her own goal is set on the greeting turn,
-// usually without a word to the player, and is often written "with Alex". On
-// the goodbye line she then said "come back and we finish the wood and
-// pickaxe" about a plan the player had never heard of (5 of 15 probe replays).
+// usually without a word to the player, and is often written "with Alex", so
+// she talked about it as a shared plan the player had never heard of. Only the
+// on-hold head carries it: on the usual heads it made her start a new world
+// action right after a stop more often (claims probe stop_mid, 15/45 against
+// 7/45 base and 2/30 without it) for a small gain on goodbye lines.
 const OWN_GOALS_KNOWN = 'These are your own plans: the player knows about one only if the conversation shows you told them about it.'
-const OWN_GOALS_HEAD = `Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one. ${OWN_GOALS_KNOWN}`
-const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one. ${OWN_GOALS_KNOWN}`
+const OWN_GOALS_HEAD = `Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:`
+const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:`
 // 261018 (pass 16): the heads while she is stopped on the player's word (the
 // orchestrator's stay note). The usual heads say "work the next step of the
 // oldest one now", and on the chat turns after "actually stop" she said

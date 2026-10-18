@@ -8,9 +8,9 @@
 //    heartbeat's "work the next step now" were still in front of her. While
 //    the stay note is on, next: is left out and the heartbeat heads say the
 //    goals are on hold.
-//  - "come back and we finish the wood and pickaxe": her own goal, set on the
-//    greeting turn and never mentioned. The own-goal heads say the player
-//    knows about one only if the conversation shows it.
+//  - Talking about her own goal as a plan the player knows about: the on-hold
+//    own-goal head says the player knows about one only if the conversation
+//    shows it.
 
 import fs from 'node:fs'
 import os from 'node:os'
@@ -111,12 +111,12 @@ describe('renderHeartbeat while she is stopped on the player\'s word', () => {
     expect(normal).not.toContain('on hold')
   })
 
-  it('says her own plans are known to the player only if she told them', () => {
+  it('says her own plans are known to the player only if she told them, on the on-hold head only', () => {
     const own = `- [${stamp}] Build a base with Alex.`
-    for (const opts of [{}, { onHold: true }]) {
-      expect(renderHeartbeat(2, own, '', opts)).toContain('the player knows about one only if the conversation shows you told them about it')
-    }
-    expect(renderHeartbeat(2, goals, '', { sessionStartMs: Date.now() })).toContain('the player knows about one only if the conversation shows you told them about it')
+    const known = 'the player knows about one only if the conversation shows you told them about it'
+    expect(renderHeartbeat(2, own, '', { onHold: true })).toContain(known)
+    expect(renderHeartbeat(2, own, '', {})).not.toContain(known)
+    expect(renderHeartbeat(2, goals, '', { sessionStartMs: Date.now() })).not.toContain(known)
   })
 })
 

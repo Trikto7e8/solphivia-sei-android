@@ -22,9 +22,11 @@
  * API revision ignores voice_type: they are not "your" voices, and the
  * curated pool already covers what Sei offers.
  *
- * Only the DIRECT route lists anything (resolveElevenLabsRoute): a cloud
- * account's voice traffic goes through the proxy, which cannot speak a voice
- * from someone's personal account, so offering one there would be a lie.
+ * Only the DIRECT route lists anything (resolveElevenLabsRoute decides it:
+ * the SEI_TTS_DEV_KEY env on any backend, else the stored BYOK key while the
+ * AI backend is 'local'; resolveElevenLabsKey has the precedence). On the
+ * proxy route voice traffic goes through Sei's account, which cannot speak a
+ * voice from someone's personal account, so offering one there would be a lie.
  */
 import { createHash } from 'node:crypto';
 import type { OwnVoiceInfo, OwnVoiceList } from '../../shared/ipc';
@@ -58,15 +60,25 @@ function str(v: unknown, max = 200): string | undefined {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : undefined;
 }
 
-/** Preview URLs are fetched by main, so only ElevenLabs' own storage hosts
- * are trusted; anything else falls back to synthesizing the sample. */
+/**
+ * Preview URLs are fetched by main, so only ElevenLabs' own storage is
+ * trusted; anything else falls back to synthesizing the sample. The two
+ * shapes ElevenLabs serves (observed 261019 on the public /v1/voices and
+ * /v1/shared-voices responses; both fetch keyless, 200 audio/mpeg, no
+ * redirect):
+ *   https://storage.googleapis.com/eleven-public-prod/...   (their GCS bucket)
+ *   https://api.us.elevenlabs.io/v1/voices/<id>/previews/audio?payload=...
+ * The GCS allowance is pinned to that bucket: storage.googleapis.com hosts
+ * every Google Cloud customer's public buckets.
+ */
 export function isTrustedPreviewUrl(url: string | null | undefined): url is string {
   if (!url) return false;
   try {
     const u = new URL(url);
-    if (u.protocol !== 'https:' || u.username || u.password) return false;
+    if (u.protocol !== 'https:' || u.username || u.password || u.port) return false;
     const h = u.hostname.toLowerCase();
-    return h === 'storage.googleapis.com' || h === 'elevenlabs.io' || h.endsWith('.elevenlabs.io');
+    if (h === 'storage.googleapis.com') return u.pathname.startsWith('/eleven-public-prod/');
+    return h === 'elevenlabs.io' || h.endsWith('.elevenlabs.io');
   } catch {
     return false;
   }

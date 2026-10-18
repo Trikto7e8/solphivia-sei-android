@@ -28,6 +28,9 @@ vi.mock('./voiceAssign', async (importOriginal) => ({
   resolveVoiceId: mockResolveVoiceId,
 }));
 vi.mock('./ownVoices', () => ({ isOwnVoiceId: mockIsOwn }));
+vi.mock('../auth/authState', () => ({
+  getCurrentAuthState: () => ({ kind: 'signed_in', user: { id: '11111111-1111-4111-8111-111111111111' } }),
+}));
 vi.mock('./elevenLabsKeyStore', () => ({
   resolveElevenLabsRoute: mockResolveRoute,
   resolveElevenLabsKey: mockResolveKey,
@@ -458,6 +461,17 @@ describe('own ElevenLabs voices', () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     // the pick itself is never touched (no save path is reachable from here)
     expect(OWN_CHAR.metadata.voiceId).toBe(OWN_ID);
+  });
+
+  it("an adopted character with its author's own voice plays a pool voice on the proxy", async () => {
+    const pool = VOICES[1].id;
+    mockGetCharacter.mockResolvedValue({ ...OWN_CHAR, owner: '22222222-2222-4222-8222-222222222222' });
+    mockResolveVoiceId.mockResolvedValue(pool); // what the real resolver borrows
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.sei.gg/tts/speech');
+    expect(JSON.parse(init.body as string).voice_id).toBe(pool);
   });
 
   it('key removed (unconfigured): the normal setup hint, not a swap', async () => {

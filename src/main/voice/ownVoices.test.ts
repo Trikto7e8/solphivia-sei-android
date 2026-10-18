@@ -133,8 +133,16 @@ describe('isTrustedPreviewUrl', () => {
   it('accepts ElevenLabs storage over https only', () => {
     expect(isTrustedPreviewUrl('https://storage.googleapis.com/eleven-public-prod/x.mp3')).toBe(true);
     expect(isTrustedPreviewUrl('https://api.elevenlabs.io/v1/x.mp3')).toBe(true);
-    expect(isTrustedPreviewUrl('http://storage.googleapis.com/x.mp3')).toBe(false);
-    expect(isTrustedPreviewUrl('https://user:pw@storage.googleapis.com/x.mp3')).toBe(false);
+    expect(
+      isTrustedPreviewUrl('https://api.us.elevenlabs.io/v1/voices/FGY2WhTYpPnrIDTdsKH5/previews/audio?payload=e30%3D'),
+    ).toBe(true);
+    // storage.googleapis.com is shared by every GCS customer: only ElevenLabs' bucket.
+    expect(isTrustedPreviewUrl('https://storage.googleapis.com/someone-else/x.mp3')).toBe(false);
+    expect(isTrustedPreviewUrl('https://storage.googleapis.com/eleven-public-prod-evil/x.mp3')).toBe(false);
+    expect(isTrustedPreviewUrl('https://storage.googleapis.com/x.mp3')).toBe(false);
+    expect(isTrustedPreviewUrl('https://api.elevenlabs.io:8443/x.mp3')).toBe(false);
+    expect(isTrustedPreviewUrl('http://storage.googleapis.com/eleven-public-prod/x.mp3')).toBe(false);
+    expect(isTrustedPreviewUrl('https://user:pw@storage.googleapis.com/eleven-public-prod/x.mp3')).toBe(false);
     expect(isTrustedPreviewUrl('https://elevenlabs.io.evil.com/x.mp3')).toBe(false);
     expect(isTrustedPreviewUrl('file:///etc/passwd')).toBe(false);
     expect(isTrustedPreviewUrl(null)).toBe(false);

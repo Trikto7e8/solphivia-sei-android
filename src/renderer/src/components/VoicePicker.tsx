@@ -30,7 +30,8 @@
  * offline, no sign-in, no spend. Only calmness still changes the bytes.
  *
  * 261019: "Your ElevenLabs voices". When main has a direct ElevenLabs route
- * (a stored BYOK key on the local backend), it lists the voices in the
+ * (resolveElevenLabsRoute: a stored BYOK key while the AI backend is local,
+ * or the SEI_TTS_DEV_KEY env in dev shells), it lists the voices in the
  * user's own account (cloned, designed, saved from the Voice Library) and
  * they get their own tab. A pick reports its OwnVoicePick through onChange so
  * the save site stamps the metadata.voiceOwn marker. Samples are ElevenLabs'

@@ -16,6 +16,7 @@ import { rollVoice, mulberry32, VOICES } from 'soulcaster';
 import type { Character } from '../../shared/characterSchema';
 import { NO_VOICE_ID, OWN_VOICE_KEY, ownVoiceOf, type OwnVoicePick } from '../../shared/voiceIds';
 import { listCharacters, saveCharacter } from '../characterStore';
+import { getCurrentAuthState } from '../auth/authState';
 
 const VOICE_IDS = new Set((VOICES as Array<{ id: string }>).map((v) => v.id));
 
@@ -157,7 +158,43 @@ export function assignedVoiceId(character: Character): string | null {
   const v = character.metadata?.voiceId;
   if (typeof v !== 'string') return null;
   if (VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v)) return v;
-  return ownVoiceOf(character.metadata) ? v : null;
+  return ownVoiceOf(character.metadata) && ownVoiceHonored(character) ? v : null;
+}
+
+function currentUserId(): string | null {
+  try {
+    const auth = getCurrentAuthState();
+    return auth.kind === 'signed_in' ? auth.user.id : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Whether this character's own-voice marker belongs to the person using the
+ * app. A voice from someone's own ElevenLabs account only exists for that
+ * account, but character metadata travels: a shared (World) character is
+ * cached with its author's metadata verbatim (cloud/cacheOnDemand.ts), so an
+ * adopter would inherit a voiceId nobody else can speak and cannot change
+ * (foreign characters are view-only). Same ownership rule as CharacterPage:
+ * a legacy null-owner row or one owned by the signed-in user is theirs; a
+ * bundled default or anyone else's row is not.
+ */
+export function ownVoiceHonored(character: Pick<Character, 'owner' | 'is_default'>): boolean {
+  if (character.is_default) return false;
+  const owner = character.owner;
+  return owner == null || owner === currentUserId();
+}
+
+/**
+ * True when the stored voice is an own-account pick that is NOT this user's
+ * (see ownVoiceHonored): synthesis borrows a pool voice for it, and nothing
+ * is written back, so the author's pick survives every cloud refresh.
+ */
+function isBorrowedOwnVoice(character: Character): boolean {
+  const v = character.metadata?.voiceId;
+  if (typeof v !== 'string' || VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v)) return false;
+  return ownVoiceOf(character.metadata) !== null && !ownVoiceHonored(character);
 }
 
 /**
@@ -169,6 +206,9 @@ export function assignedVoiceId(character: Character): string | null {
 export function ownVoicePickOf(character: Character): OwnVoicePick | null {
   const v = character.metadata?.voiceId;
   if (typeof v === 'string' && (VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v))) return null;
+  // Someone else's own voice is not an own voice HERE: it speaks through the
+  // borrowed pool voice resolveVoiceId returns, like any pool voice.
+  if (!ownVoiceHonored(character)) return null;
   return ownVoiceOf(character.metadata);
 }
 
@@ -214,12 +254,21 @@ export async function resolveVoiceId(character: Character): Promise<string> {
   }
   const assigned = assignedVoiceId(character);
   if (assigned) return assigned;
+  // Another user's own ElevenLabs voice (261019, shared character): roll a
+  // pool voice to speak with, but never persist it. The author's metadata is
+  // the cloud copy's, and a cloud refresh would only overwrite the roll again.
+  const borrowed = isBorrowedOwnVoice(character);
 
   const sheet = (character.metadata?.soulcaster_sheet ?? {}) as SheetHints;
+  // A borrowed voice keeps the author's voice gender when the sheet says
+  // nothing (the marker carries the ElevenLabs gender label).
+  const ownGender = borrowed ? ownVoiceOf(character.metadata)?.gender : undefined;
   const gender =
     sheet.gender === 'male' || sheet.gender === 'female' || sheet.gender === 'other'
       ? sheet.gender
-      : 'other';
+      : ownGender === 'male' || ownGender === 'female'
+        ? ownGender
+        : 'other';
   const age = typeof sheet.age === 'number' && Number.isFinite(sheet.age) ? sheet.age : 30;
 
   // Personality inference from the persona prose (260705, the Marv fix) —
@@ -232,14 +281,19 @@ export async function resolveVoiceId(character: Character): Promise<string> {
 
   // Exclude voices the rest of the library already uses (assigned ones only —
   // resolving them recursively would just be this same roll).
+  // A borrowed voice skips the exclusion list: it is never persisted, so it
+  // must come out the same every time from the character alone, not drift as
+  // the library changes.
   let taken: string[] = [];
-  try {
-    taken = (await listCharacters())
-      .filter((c) => c.id !== character.id)
-      .map((c) => assignedVoiceId(c))
-      .filter((v): v is string => v !== null);
-  } catch {
-    // Library unreadable → roll without exclusions; still deterministic.
+  if (!borrowed) {
+    try {
+      taken = (await listCharacters())
+        .filter((c) => c.id !== character.id)
+        .map((c) => assignedVoiceId(c))
+        .filter((v): v is string => v !== null);
+    } catch {
+      // Library unreadable → roll without exclusions; still deterministic.
+    }
   }
 
   const voice = rollVoice(
@@ -247,6 +301,7 @@ export async function resolveVoiceId(character: Character): Promise<string> {
     { takenVoiceIds: taken, rng: mulberry32(seedFrom(character.id)) },
   ) as { id: string };
 
+  if (borrowed) return voice.id;
   try {
     // The rolled id is a pool voice, so any own-voice marker left beside the
     // replaced id is stale by definition: drop it with the id it described.

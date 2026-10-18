@@ -4850,6 +4850,10 @@ function maybeWarnByteCap(loop, warned) {
       loop._responsesReceived = (loop._responsesReceived ?? 0) + 1
 
       const toolUses = resp.toolUses ?? []
+      // 261018 (pass 17): reset per turn, so a turn that returns before the
+      // tool predicates below (no tool calls at all) does not keep the value
+      // of the turn before it. Set for real at newSuspendingTools.
+      loop._lastTurnTalkOnly = false
 
       // Speech via the say() tool. The assistant's `text` output is a PRIVATE
       // scratchpad and never reaches chat (chat_mode 'full' surfaces it as

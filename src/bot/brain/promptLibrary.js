@@ -910,6 +910,11 @@ export const NUDGES = {
   fightAlreadyTold: (sec) =>
     `You already told the player about this fight ${sec}s ago. Skip the warning this time unless something changed that they need to know, like your health dropping low, more of them arriving, or you pulling out. If you do speak, say what is new.`,
 
+  // 261018 (pass 17): the same idea for a line she said in any other turn
+  // (a reply to the player, an idle line) moments before this heads-up.
+  recentLineTold: (line, sec) =>
+    `You said "${line}" to the player ${sec}s ago. If that already tells them what you are doing about this, you do not need to say anything this turn. Speak only if it does not, or if something changed that they need to know, like your health dropping low, more of them arriving, or you pulling out.`,
+
   capClose:
     'You hit the iteration cap and have to stop. Wrap up gracefully in your own voice by calling say once — under 12 words. Call only say, nothing else.',
 

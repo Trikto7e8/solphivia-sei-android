@@ -44,7 +44,7 @@ import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from './ne
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
-import { ownRepeatsNote } from './ownRepeats.js'
+import { ownRepeatsNote, recentOwnTurns } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
 import {
   describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
@@ -1526,10 +1526,22 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // the same fight is told it already warned the player (NUDGES.fightAlreadyTold).
   let _lastFightLineAt = 0
   const FIGHT_TOLD_WINDOW_MS = 30_000
+  // 261018 (pass 17): a line from any other turn counts too. night_social-01
+  // (pass 15 eval): her reply to "are you ok??" said "going after the zombie
+  // now", a defend heads-up landed 0.3s later asking for "one short line so
+  // they know you are coming", and nothing in that turn showed the line she
+  // had just said, so she said it again in new words. Her last line is quoted
+  // and the turn decides whether it already covered this.
+  const RECENT_LINE_TOLD_MS = 15_000
   function fightToldSuffix() {
-    const ago = Date.now() - _lastFightLineAt
-    if (!_lastFightLineAt || ago >= FIGHT_TOLD_WINDOW_MS) return ''
-    return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+    const now = Date.now()
+    const ago = now - _lastFightLineAt
+    if (_lastFightLineAt && ago < FIGHT_TOLD_WINDOW_MS) {
+      return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+    }
+    const last = recentOwnTurns(convoMemory?.recentChat?._internal?.selfLines, { now, turns: 1, withinMs: RECENT_LINE_TOLD_MS })[0]
+    if (!last?.text || !Number.isFinite(last.at)) return ''
+    return ' ' + NUDGES.recentLineTold(last.text.slice(0, 200), Math.max(1, Math.round((now - last.at) / 1000)))
   }
   // 261011: whether this companion has any history with the player: a memory
   // entry from a past session, or the in-app chat it was summoned from.

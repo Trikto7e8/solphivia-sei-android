@@ -151,6 +151,73 @@ export function describeDeathEvent(evt) {
   return 'you died'
 }
 
+/** Item kinds named in one inventory line; the rest are counted. */
+const GAIN_KINDS_MAX = 4
+
+/**
+ * 261018 (pass 16): the event line for items that came into her inventory
+ * without an action of hers (the player handed them over, or she walked over
+ * them), or null. In the scripted convo her greeting said "i have zero items",
+ * a sword and bread arrived a moment later, and on the next reply she said
+ * "kinda thriving for a thing with zero items" with both in her inventory: the
+ * change was shown on one snapshot only, while her own line stayed in the
+ * transcript. Written here, the arrival sits after that line in time order.
+ *
+ * @param {Array<{item:string, n:number}>} gains  positive counts
+ * @returns {string|null}
+ */
+export function describeInventoryGain(gains) {
+  const list = (Array.isArray(gains) ? gains : [])
+    .filter((g) => g && typeof g.item === 'string' && g.item && Number.isFinite(g.n) && g.n > 0)
+  if (!list.length) return null
+  const named = list.slice(0, GAIN_KINDS_MAX).map((g) => `${g.n} ${g.item}`)
+  const more = list.length - named.length
+  if (more > 0) named.push(`${more} other kind${more === 1 ? '' : 's'} of item`)
+  const joined = named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`
+  return `${joined} came into your inventory`
+}
+
+/**
+ * 261018 (pass 16 review): one line for a run of arrivals. The snapshot
+ * composer reports a gain on every tick that has one, and in normal work
+ * most of them are blocks her own walking digs out (goTo and follow explain
+ * no gain, see snapshot.js splitOwnInventoryChanges) and mob drops. In one
+ * scripted errands session 8 of the 10 game: lines in the record were "1 dirt
+ * came into your inventory" and the like, and the record keeps only
+ * SESSION_EVENT_CAPACITY lines, so they pushed out the kill and the dig the
+ * player asks about later. Arrivals with nothing said in between now add up
+ * into one line. A line said by either side starts a new one, so an arrival
+ * after her "i have zero items" still sits after that line.
+ *
+ * @param {{
+ *   record: (text: string, opts: {key: string, windowMs: number, again: string}) => unknown,
+ *   spokeBetween: (fromMs: number, toMs: number) => boolean,
+ *   now?: () => number,
+ *   windowMs?: number,
+ * }} deps
+ * @returns {(gains: Array<{item:string, n:number}>) => void}
+ */
+export function createInventoryGainRecorder({ record, spokeBetween, now = () => Date.now(), windowMs = ACTION_COALESCE_MS }) {
+  /** @type {{ id: number, startAt: number, lastAt: number, counts: Map<string, number> } | null} */
+  let run = null
+  let seq = 0
+  return (gains) => {
+    const list = (Array.isArray(gains) ? gains : [])
+      .filter((g) => g && typeof g.item === 'string' && g.item && Number.isFinite(g.n) && g.n > 0)
+    if (!list.length) return
+    const t = now()
+    let spoke = false
+    if (run) { try { spoke = !!spokeBetween(run.startAt, t) } catch { spoke = true } }
+    if (!run || spoke || t - run.lastAt > windowMs) run = { id: ++seq, startAt: t, lastAt: t, counts: new Map() }
+    for (const g of list) run.counts.set(g.item, (run.counts.get(g.item) ?? 0) + g.n)
+    run.lastAt = t
+    const text = describeInventoryGain([...run.counts].map(([item, n]) => ({ item, n })))
+    // `again` is the same text: a folded run reads as its added-up counts,
+    // not "..., more than once".
+    if (text) record(text, { key: `inv-gain:${run.id}`, windowMs, again: text })
+  }
+}
+
 /**
  * The fact line for a game's own notice (Stardew's new day, 10 PM). The
  * notice itself is written as an instruction to the model ("[A new day:
@@ -196,6 +263,7 @@ export function createSessionEventLog({ capacity = SESSION_EVENT_CAPACITY, now =
           // Numbers are blanked in action keys, so keep the newest wording
           // ("got 5/5 oak_log", not the "3/5" from the first pass).
           e.text = t
+          if (again) e.again = clip(again)
           return true
         }
         break

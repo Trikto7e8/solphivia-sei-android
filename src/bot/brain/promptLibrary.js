@@ -1315,8 +1315,21 @@ function isEarlierLine(line, sessionStartMs) {
   return Number.isFinite(at) && at < sessionStartMs
 }
 
-const OWN_GOALS_HEAD = 'Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:'
-const OWN_GOALS_AFTER_TASKS_HEAD = "Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:"
+// 261018 (pass 16): OWN_GOALS_KNOWN. Her own goal is set on the greeting turn,
+// usually without a word to the player, and is often written "with Alex", so
+// she talked about it as a shared plan the player had never heard of. Only the
+// on-hold head carries it: on the usual heads it made her start a new world
+// action right after a stop more often (claims probe stop_mid, 15/45 against
+// 7/45 base and 2/30 without it) for a small gain on goodbye lines.
+const OWN_GOALS_KNOWN = 'These are your own plans: the player knows about one only if the conversation shows you told them about it.'
+const OWN_GOALS_HEAD = `Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:`
+const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:`
+// 261018 (pass 16): the heads while she is stopped on the player's word (the
+// orchestrator's stay note). The usual heads say "work the next step of the
+// oldest one now", and on the chat turns after "actually stop" she said
+// "i'm still getting you those logs though" with nothing running.
+export const PLAYER_TASKS_ON_HOLD_HEAD = 'Tasks the player asked you to do. You stopped when the player told you to, and while your snapshot shows that hold line these are on hold: do not pick one back up until the player asks you to, and do not say you are still working on one. If the player called a task off, call clearGoal on it:'
+export const OWN_GOALS_ON_HOLD_HEAD = `Your own goals. While your snapshot shows the hold line, these wait too: do not start on one until the player asks you for something, and do not say you are working on one. Once a goal's finish condition is met, or the player says it is no longer wanted, call clearGoal on it. ${OWN_GOALS_KNOWN}`
 const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'
 
 // Render the per-loop heartbeat block: persisted goals (or a note that there are
@@ -1324,7 +1337,9 @@ const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not s
 // here (it moved to the cached system prefix, 260618); the heartbeat is now
 // literally "goal + frontier", the only parts that change as the bot plays.
 // `sessionStartMs` (optional) splits off player tasks from earlier sessions.
-export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null } = {}) {
+// `onHold` (pass 16): she stopped on the player's word, so this session's
+// tasks and her own goals get the on-hold heads.
+export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false } = {}) {
   const lvl = Number.isInteger(proactiveness) ? proactiveness : 1
   let goals
   let hasGoal = !!(goalsText && goalsText.trim())
@@ -1337,8 +1352,8 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
     const current = taskLines.filter((l) => !isEarlierLine(l, sessionStartMs))
     const earlier = taskLines.filter((l) => isEarlierLine(l, sessionStartMs))
     const parts = []
-    if (current.length) parts.push(`${PLAYER_TASKS_HEAD}\n${current.join('\n')}`)
-    if (own.length) parts.push(`${current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.join('\n')}`)
+    if (current.length) parts.push(`${onHold ? PLAYER_TASKS_ON_HOLD_HEAD : PLAYER_TASKS_HEAD}\n${current.join('\n')}`)
+    if (own.length) parts.push(`${onHold ? OWN_GOALS_ON_HOLD_HEAD : current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.join('\n')}`)
     else if (!current.length) parts.push(lvl === 2 ? NO_GOALS_AGENTIC : 'No active goals right now.')
     if (earlier.length) parts.push(`${PLAYER_TASKS_EARLIER_HEAD}\n${earlier.join('\n')}`)
     goals = parts.join('\n\n')
@@ -1348,7 +1363,7 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
   } else if (goalsText && goalsText.trim()) {
     const head = lvl === 0
       ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment. Once a task is finished, or the player says it is done or no longer wanted, call clearGoal on it:'
-      : OWN_GOALS_HEAD
+      : onHold ? OWN_GOALS_ON_HOLD_HEAD : OWN_GOALS_HEAD
     goals = `${head}\n${goalsText.trim()}`
   } else if (lvl === 2) {
     goals = NO_GOALS_AGENTIC

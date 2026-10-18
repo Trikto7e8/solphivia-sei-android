@@ -625,7 +625,7 @@ export function createSnapshotComposer({ bot }) {
       other.push(`hp -${prevHp - currHp}`)
     }
 
-    return { inv: invCapped, own: ownCapped, ownNames, other }
+    return { inv: invCapped, own: ownCapped, ownNames, other, unexplained }
   }
 
   return {
@@ -634,7 +634,19 @@ export function createSnapshotComposer({ bot }) {
       const currInv = inventory(bot)
       const currHp = Math.round(bot.health ?? 0)
       const now = Date.now()
-      const { inv, own, ownNames, other } = computeEvents(currInv, currHp, opts.recentActions, now)
+      const { inv, own, ownNames, other, unexplained } = computeEvents(currInv, currHp, opts.recentActions, now)
+      // 261018 (pass 16): items that came in without an action of hers (a
+      // gift, a pickup) go to the caller too, so the brain can write them into
+      // the conversation record. The banner below is shown on this one
+      // snapshot only; a later turn saw her own "i have zero items" line in
+      // the transcript and nothing after it saying that had changed.
+      // Only gear and food go to the record: blocks her own walking or a dig
+      // knocks loose (dirt, cobblestone) also count as unexplained and filled
+      // the 12 event lines that recall answers rely on (pass 16 review).
+      if (typeof opts.onUnexplainedGains === 'function') {
+        const gains = unexplained.filter((d) => d.n > 0 && isGearOrFood(d.item, isFood))
+        if (gains.length > 0) { try { opts.onUnexplainedGains(gains) } catch { /* never break a snapshot */ } }
+      }
 
       // Update inv/hp state AFTER computing — first call has no deltas.
       prevInventory = currInv

@@ -14,6 +14,8 @@
 //                    while her 8-log gather for the player runs. ok = gather
 //                    called again with count >= 10, or a setGoal with the new total.
 //   keep_progress    control: "how many you got so far?" mid-gather.
+//   mine_ask         "can you mine me 10 stone" with only a wooden pickaxe and
+//                    the stone pickaxe next (the compare's mine_stone fails).
 //                    ok = no stop and no new action.
 //   keep_nice        control: "nice, keep going" mid-gather. Same ok.
 //   forget_meet      errands-03 U10: "actually forget the logs, just meet me
@@ -159,6 +161,24 @@ const CASES = {
       return { ok: bad.length === 0 }
     },
   },
+  // The pass 17 compare's mine_stone failures: wooden pickaxe in hand, the
+  // stone pickaxe next, asked for 10 stone. ok = she goes for the stone
+  // without gathering logs first.
+  mine_ask: {
+    world: { inv: [['wooden_pickaxe', 1]], holding: 'wooden_pickaxe (59/59)', owner: NEAR, next: 'stone_pickaxe',
+      extra: ['pickaxe: wooden_pickaxe mines stone (it drops cobblestone) and coal ore. Iron, copper and lapis ore need a stone pickaxe.'],
+      blocks: ['  #1 grass_block x537 @111,70,-40'] },
+    history: [{ player: 'hey sui', say: 'yo alex. here we go',
+      act: { name: 'setGoal', input: { text: 'Build a starter base with alex: gather wood, make wooden then stone tools, get cobble and iron. Done when we have stone tools and a shelter.' } } }],
+    measure: { kind: 'chat', text: 'can you mine me 10 stone' },
+    judge: (r) => {
+      const acts = r.orderActsFull.filter((a) => !BRAIN.has(a.name))
+      const target = (a) => String(a.args?.name ?? a.args?.block ?? a.args?.item ?? '')
+      const firstWood = acts.findIndex((a) => /_log$/.test(target(a)))
+      const firstStone = acts.findIndex((a) => /stone/.test(target(a)))
+      return { ok: firstStone >= 0 && (firstWood < 0 || firstStone < firstWood), first: acts[0] ? `${acts[0].name}(${target(acts[0])})` : null }
+    },
+  },
 }
 
 function invOf(w) { return Object.fromEntries((w.inv ?? []).map(([n, c]) => [n, c])) }
@@ -174,7 +194,8 @@ function snapshot(w) {
     `holding: ${w.holding ?? '(empty hand)'}`,
     w.held ? getInFlightLineForSnapshot(w.held, Date.now(), { inventory: invOf(w) }) : 'idle: no action is running',
     `inventory (${(w.inv ?? []).filter(([, c]) => c > 0).length} of 36 slots used): ${inv}`,
-    'terrain at feet: 25 grass_block', 'nearby blocks:', ...BLOCKS,
+    ...(w.extra ?? []),
+    'terrain at feet: 25 grass_block', 'nearby blocks:', ...(w.blocks ?? BLOCKS),
     'nearby entities:', `  #4 ${PLAYER} @${o.x},${o.y},${o.z}`, ...(w.night ? ['  #5 zombie @108,71,-36'] : ['  #5 cow @121,71,-31']),
   ]
   if (w.next) {

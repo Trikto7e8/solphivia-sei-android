@@ -221,13 +221,23 @@ describe('recipe on the next: line', () => {
   })
 
   // 261018 (pass 17): the total in logs and the shortfall (work_session-02).
-  it('says how many logs the missing parts take and what is still short', () => {
+  it('says how many logs the missing planks and sticks take', () => {
     const pick = SPINE.find((n) => n.id === 'wood_pickaxe')
-    expect(recipeNote(pick, { oak_log: 7 })).toContain('What is missing takes 2 logs to make, and you have 7.')
-    expect(recipeNote(pick, { oak_log: 1 })).toContain('What is missing takes 2 logs to make, and you have 1, so you need 1 more first.')
-    expect(recipeNote(pick, { oak_planks: 3, stick: 2 })).not.toContain('What is missing')
+    expect(recipeNote(pick, { oak_log: 7 })).toContain('The planks and sticks for it take 2 logs, and you have 7.')
+    expect(recipeNote(pick, { oak_log: 1 })).toContain('The planks and sticks for it take 2 logs, and you have 1.')
+    expect(recipeNote(pick, { oak_planks: 3 })).toContain('The sticks for it take 1 log')
+    expect(recipeNote(pick, { oak_planks: 3, stick: 2 })).not.toContain(' for it take ')
     // 2 planks make the 4 sticks, so no logs are needed
-    expect(recipeNote(stone, { cobblestone: 2, oak_planks: 2 })).not.toContain('What is missing')
+    expect(recipeNote(stone, { cobblestone: 2, oak_planks: 2 })).not.toContain(' for it take ')
+  })
+
+  // The pass 17 eval: "what is missing ... so you need 1 more first" on the
+  // stone pickaxe sent her for logs when asked to mine stone. The note names
+  // the sticks and gives the totals only, with nothing about what comes first.
+  it('gives stick totals without telling her what to do first', () => {
+    const note = recipeNote(stone, { wooden_pickaxe: 1 })
+    expect(note).toContain('The sticks for it take 1 log, and you have 0.')
+    expect(note).not.toMatch(/\b(first|need)\b/)
   })
 
   it('is empty for a node without a recipe', () => {

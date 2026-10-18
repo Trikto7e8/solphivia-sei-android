@@ -46,6 +46,7 @@ import { KnowledgeDropZone } from '../components/KnowledgeDropZone';
 import { CompactKnowledgeModal } from '../components/CompactKnowledgeModal';
 import { FileTextIcon, TrashIcon } from '../components/icons';
 import type { VoiceParams } from '../lib/voicePicker';
+import { applyVoicePick, type OwnVoicePick } from '@shared/voiceIds';
 import type { Character } from '@shared/characterSchema';
 import { KNOWLEDGE_COMPACT_SUGGEST_BYTES } from '@shared/ipc';
 
@@ -92,6 +93,8 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
   // assigns a deterministic, roster-deduped pick on first use. 'none' = an
   // explicit silent companion; any other string pins that pool voice.
   const [voiceId, setVoiceId] = useState<string | null>(null);
+  // 261019: marker for a pick from "Your ElevenLabs voices" (null otherwise).
+  const [voiceOwn, setVoiceOwn] = useState<OwnVoicePick | null>(null);
   // Voice playground (260725): pitch/calmness the user tuned. VoicePicker
   // normalizes (drops default-valued keys), so any key present here is a real
   // user change and gets persisted as metadata.voicePitch / voiceStability.
@@ -288,8 +291,7 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
         // runtime assignment. Playground params persist only when the user
         // actually changed them (absent = engine default).
         metadata: {
-          ...latest.metadata,
-          ...(voiceId ? { voiceId } : {}),
+          ...(voiceId ? applyVoicePick(latest.metadata, voiceId, voiceOwn) : latest.metadata),
           ...(voiceParams.pitch !== undefined ? { voicePitch: voiceParams.pitch } : {}),
           ...(voiceParams.calmness !== undefined ? { voiceStability: voiceParams.calmness } : {}),
         },
@@ -637,7 +639,11 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
       >
         <VoicePicker
           value={voiceId}
-          onChange={setVoiceId}
+          valueOwn={voiceOwn}
+          onChange={(id, own) => {
+            setVoiceId(id);
+            setVoiceOwn(own);
+          }}
           params={voiceParams}
           onParamsChange={setVoiceParams}
         />

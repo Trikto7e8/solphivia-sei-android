@@ -2484,6 +2484,27 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return listPoolVoices();
   });
 
+  // The user's OWN ElevenLabs voices (261019): listed in main with the stored
+  // key (direct route only); the renderer gets names + labels, never the key
+  // or preview URLs. Never throws for upstream reasons (status field).
+  ipcMain.handle(IpcChannel.voice.ownList, async (_event, argsRaw: unknown) => {
+    const args = z.object({ refresh: z.boolean().optional() }).catch({}).parse(argsRaw ?? {});
+    const { listOwnVoices } = await import('./voice/ownVoices');
+    return listOwnVoices({ refresh: args.refresh === true });
+  });
+
+  // Own-voice sample: ElevenLabs' ready-made preview (fetched + disk-cached
+  // in main) when the voice has one, else the picker sample line synthesized
+  // through the key. Both paths re-check the id against the listed library.
+  ipcMain.handle(IpcChannel.voice.ownPreview, async (_event, argsRaw: unknown): Promise<ArrayBuffer> => {
+    const args = z.object({ voiceId: z.string().min(1).max(64) }).parse(argsRaw);
+    const { ownVoicePreviewBytes } = await import('./voice/ownVoices');
+    const bytes = await ownVoicePreviewBytes(args.voiceId);
+    if (bytes) return bytes;
+    const { voicePreviewTts } = await import('./voice/tts');
+    return await voicePreviewTts({ voiceId: args.voiceId });
+  });
+
   ipcMain.handle(IpcChannel.voice.preview, async (_event, argsRaw: unknown): Promise<ArrayBuffer> => {
     // Playground params (260725): calmness is optional and re-clamped inside
     // voicePreviewTts, so a stale renderer sending junk can only get a valid
@@ -2522,6 +2543,9 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const args = z.object({ key: z.string().min(8).max(200).nullable() }).parse(argsRaw);
     const { setElevenLabsKey } = await import('./voice/elevenLabsKeyStore');
     await setElevenLabsKey(args.key);
+    // A new (or removed) key names a different account: drop its voice list.
+    const { invalidateOwnVoices } = await import('./voice/ownVoices');
+    invalidateOwnVoices();
   });
 
   ipcMain.handle(IpcChannel.voice.elevenKeyStatus, async (): Promise<{ present: boolean }> => {

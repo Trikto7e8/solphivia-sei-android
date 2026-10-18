@@ -152,7 +152,8 @@
 /* ── Gender tabs (Feminine / Masculine / Neutral) ─────────────────────── */
 .tabs {
   display: flex;
-  gap: 22px;
+  flex-wrap: wrap;
+  column-gap: 22px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -285,4 +286,11 @@
     animation: none;
     opacity: 1;
   }
+}
+
+/* Own ElevenLabs voices tab (261019): intro line + Refresh on one row. */
+.ownHead {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-sm);
 }

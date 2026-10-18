@@ -199,6 +199,30 @@ describe('assignedVoiceId', () => {
     expect(mockSave).not.toHaveBeenCalled();
     expect(assignedVoiceId(makeCharacter({ metadata: { voiceId: 'not-a-voice-anywhere' } }))).toBeNull();
   });
+
+  // 261019: a voice from the user's own ElevenLabs account is outside the
+  // pool, but the voiceOwn marker makes it a deliberate pick that must never
+  // be re-rolled or "repaired" into a pool voice.
+  it('keeps an own-account voice pick (voiceOwn marker) instead of re-rolling', async () => {
+    mockSave.mockClear();
+    const ownId = 'aBcDeFgHiJkLmNoPqRsT';
+    const c = makeCharacter({ metadata: { voiceId: ownId, voiceOwn: { name: 'My Clone' } } });
+    expect(assignedVoiceId(c)).toBe(ownId);
+    expect(await resolveVoiceId(c)).toBe(ownId);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('an unknown id WITHOUT the marker still re-rolls as before', async () => {
+    mockSave.mockClear();
+    const c = makeCharacter({ metadata: { voiceId: 'aBcDeFgHiJkLmNoPqRsT' } });
+    expect(assignedVoiceId(c)).toBeNull();
+    const v = await resolveVoiceId(c);
+    expect(VOICES.some((p) => p.id === v)).toBe(true);
+    // a malformed id cannot hide behind a marker either
+    expect(
+      assignedVoiceId(makeCharacter({ metadata: { voiceId: '../bad id', voiceOwn: { name: 'x' } } })),
+    ).toBeNull();
+  });
 });
 
 describe('callState', () => {

@@ -28,22 +28,41 @@
  * longer reaches synthesis, so it no longer forces a live TTS fetch — a
  * pitch-only tune previews from the BUNDLED clip through the shifter: instant,
  * offline, no sign-in, no spend. Only calmness still changes the bytes.
+ *
+ * 261019: "Your ElevenLabs voices". When main has a direct ElevenLabs route
+ * (a stored BYOK key on the local backend), it lists the voices in the
+ * user's own account (cloned, designed, saved from the Voice Library) and
+ * they get their own tab. A pick reports its OwnVoicePick through onChange so
+ * the save site stamps the metadata.voiceOwn marker. Samples are ElevenLabs'
+ * own preview clips, fetched in main. A key refusal or a network failure is
+ * one quiet line; the built-in list is never affected. While the key route is
+ * active the pool tabs say that Sei's voices need a paid ElevenLabs plan
+ * through the key (ElevenLabs does not serve library voices over the API to
+ * free plans).
  */
 
 import React, { useEffect, useId, useRef, useState } from 'react';
 import { sei } from '../lib/ipcClient';
-import type { VoiceInfo } from '@shared/ipc';
+import type { OwnVoiceList, VoiceInfo } from '@shared/ipc';
 import {
   groupVoices,
   reduceSelection,
   isUnlistedVoice,
   assetPathFor,
   normalizeVoiceParams,
+  ownVoicePickFor,
+  ownVoiceCategoryLabel,
+  ownVoiceDetail,
+  ownVoicesView,
+  poolUsesOwnKey,
+  defaultVoiceTab,
+  OWN_TAB_KEY,
   PITCH_DEFAULT,
   CALMNESS_DEFAULT,
   NO_VOICE_ID,
-  type VoiceGroup,
+  type OwnVoicePick,
   type VoiceParams,
+  type VoiceTabKey,
 } from '../lib/voicePicker';
 import { attach as attachPitch, warm as warmPitchBus, whenReady as pitchReady } from '../lib/voice/pitchBus';
 import { useCreditsStore } from '../lib/stores/useCreditsStore';
@@ -54,7 +73,15 @@ import styles from './VoicePicker.module.css';
 export interface VoicePickerProps {
   /** Selected pool voice id, NO_VOICE_ID ('none') for silent, or null for Auto. */
   value: string | null;
-  onChange: (voiceId: string | null) => void;
+  /**
+   * `own` is the marker to persist for a pick from "Your ElevenLabs voices"
+   * (261019); null for every other selection. Save sites hand both to
+   * applyVoicePick (shared/voiceIds.ts).
+   */
+  onChange: (voiceId: string | null, own: OwnVoicePick | null) => void;
+  /** The stored own-voice marker for `value` (metadata.voiceOwn), so the
+   * "Current voice" row can name it when the own list cannot be read. */
+  valueOwn?: OwnVoicePick | null;
   /** Playground params; absent key = engine default (see lib/voicePicker.ts). */
   params: VoiceParams;
   /** Receives NORMALIZED params (default-valued keys already dropped). */
@@ -85,16 +112,21 @@ export function VoicePicker({
   onParamsChange,
   localTtsMode = false,
   previewCharacterId,
+  valueOwn = null,
 }: VoicePickerProps): React.ReactElement {
   const t = useT();
   const [voices, setVoices] = useState<VoiceInfo[]>([]);
+  /** The user's own ElevenLabs voices (261019); null = loading / not asked. */
+  const [ownList, setOwnList] = useState<OwnVoiceList | null>(null);
+  const [ownRefreshing, setOwnRefreshing] = useState(false);
+  const ownVoices = ownList?.status === 'ok' ? ownList.voices : [];
   const [playingId, setPlayingId] = useState<string | null>(null);
   const [loadingId, setLoadingId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   /** null = probing; false disables sample playback with the quiet hint. */
   const [samplesAvailable, setSamplesAvailable] = useState<boolean | null>(null);
   /** User-chosen tab; null = derive from the selection (else Feminine). */
-  const [chosenTab, setChosenTab] = useState<VoiceGroup['key'] | null>(null);
+  const [chosenTab, setChosenTab] = useState<VoiceTabKey | null>(null);
 
   // Non-reactive playback internals.
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -150,6 +182,9 @@ export function VoicePicker({
       .catch(() => {
         if (aliveRef.current) setError(t('Could not load the voice list.'));
       });
+    // Own ElevenLabs voices (261019). Separate from the pool on purpose: any
+    // failure here only changes the own-voice hint, never the built-in list.
+    loadOwnVoices(false);
     // Conversation language, for picking the bundled sample file. Best-effort:
     // a failed read leaves English, which always exists.
     void sei
@@ -181,6 +216,26 @@ export function VoicePicker({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  function loadOwnVoices(refresh: boolean): void {
+    if (refresh) setOwnRefreshing(true);
+    try {
+      void sei
+        .voiceListOwnVoices({ refresh })
+        .then((list) => {
+          if (aliveRef.current) setOwnList(list);
+        })
+        .catch(() => {
+          if (aliveRef.current) setOwnList({ status: 'error', voices: [] });
+        })
+        .finally(() => {
+          if (aliveRef.current) setOwnRefreshing(false);
+        });
+    } catch {
+      // Stale preload without the channel: behave as before (no own tab).
+      setOwnRefreshing(false);
+    }
+  }
 
   function stopPlayback(): void {
     const el = audioRef.current;
@@ -248,6 +303,22 @@ export function VoicePicker({
     });
   }
 
+  /** An own ElevenLabs voice at default calmness: ElevenLabs' own preview
+   * clip, fetched by main (it falls back to synthesizing the sample line
+   * through the key when the voice has no preview). Session-cached. */
+  async function playOwnPreview(voiceId: string): Promise<void> {
+    const key = `own|${voiceId}`;
+    let buf = cacheRef.current.get(key);
+    if (!buf) {
+      setLoadingId(voiceId);
+      buf = await sei.voiceOwnPreview({ voiceId });
+      cacheRef.current.set(key, buf);
+    }
+    if (!aliveRef.current) return;
+    const url = URL.createObjectURL(new Blob([buf], { type: 'audio/mpeg' }));
+    await startAudio(url, voiceId, pitch);
+  }
+
   /** Live TTS preview with the current params, session-cached per combo. Pitch
    * is not part of the key: it does not change the bytes any more, only how
    * they are played back. */
@@ -286,11 +357,22 @@ export function VoicePicker({
         const ok = await startAudio(assetPathFor(voiceId, langRef.current), voiceId, pitch);
         if (ok || !aliveRef.current) return;
       }
+      if (!tuned && ownVoices.some((v) => v.id === voiceId)) {
+        await playOwnPreview(voiceId);
+        return;
+      }
       await playTts(voiceId);
     } catch (err) {
       if (!aliveRef.current) return;
-      if (/VOICE_NO_SESSION/.test(String((err as Error)?.message ?? ''))) {
+      const msg = String((err as Error)?.message ?? '');
+      if (/VOICE_NO_SESSION/.test(msg)) {
         setSamplesAvailable(false);
+      } else if (/VOICE_NEEDS_PAID_PLAN/.test(msg)) {
+        setError(t('Free ElevenLabs plans cannot play this voice through your key. Pick one of your own voices.'));
+      } else if (/VOICE_ELEVEN_QUOTA/.test(msg)) {
+        setError(t('Your ElevenLabs account is out of credits.'));
+      } else if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) {
+        setError(t('ElevenLabs rejected your key. Check it in Settings.'));
       } else {
         setError(t('Sample unavailable right now.'));
       }
@@ -390,7 +472,10 @@ export function VoicePicker({
           role="radio"
           aria-checked={selected}
           className={styles.rowBody}
-          onClick={() => onChange(reduceSelection(value, id))}
+          onClick={() => {
+            const next = reduceSelection(value, id);
+            onChange(next, next === null ? null : ownVoicePickFor(next, ownVoices));
+          }}
         >
           <div className={styles.rowTitle}>{title}</div>
           <div className={styles.rowVibe}>{vibe}</div>
@@ -403,12 +488,20 @@ export function VoicePicker({
   //    containing the current selection, else the first group (Feminine when
   //    populated — GROUP_ORDER puts it first). Empty groups have no tab. ─────
   const groups = groupVoices(voices);
-  const selectedGroupKey = groups.find((g) => g.voices.some((v) => v.id === value))?.key ?? null;
-  const activeTab =
-    chosenTab !== null && groups.some((g) => g.key === chosenTab)
+  const ownView = ownVoicesView(ownList);
+  const ownTabShown = ownView === 'tab';
+  const tabKeys: VoiceTabKey[] = [
+    ...(ownTabShown ? [OWN_TAB_KEY as VoiceTabKey] : []),
+    ...groups.map((g) => g.key),
+  ];
+  const activeTab: VoiceTabKey | null =
+    chosenTab !== null && tabKeys.includes(chosenTab)
       ? chosenTab
-      : (selectedGroupKey ?? groups[0]?.key ?? null);
+      : defaultVoiceTab(value, groups, ownTabShown ? ownVoices : null);
   const activeGroup = groups.find((g) => g.key === activeTab) ?? null;
+  const unlisted = isUnlistedVoice(value, [...voices, ...ownVoices]);
+  // valueOwn only describes `value` when it is still the stored pick.
+  const unlistedOwn = unlisted && valueOwn ? valueOwn : null;
 
   return (
     <div className={styles.root} role="radiogroup" aria-label={t('Voice')}>
@@ -428,7 +521,7 @@ export function VoicePicker({
         role="radio"
         aria-checked={value === null}
         className={`${styles.optionCard} ${value === null ? styles.selected : ''}`}
-        onClick={() => onChange(null)}
+        onClick={() => onChange(null, null)}
       >
         <div className={styles.rowTitle}>{t('Auto: let Sei pick')}</div>
         <div className={styles.rowVibe}>
@@ -442,7 +535,7 @@ export function VoicePicker({
         role="radio"
         aria-checked={value === NO_VOICE_ID}
         className={`${styles.optionCard} ${value === NO_VOICE_ID ? styles.selected : ''}`}
-        onClick={() => onChange(reduceSelection(value, NO_VOICE_ID))}
+        onClick={() => onChange(reduceSelection(value, NO_VOICE_ID), null)}
       >
         <div className={styles.rowTitle}>{t('No voice')}</div>
         <div className={styles.rowVibe}>
@@ -450,7 +543,7 @@ export function VoicePicker({
         </div>
       </button>
 
-      {samplesOff && isUnlistedVoice(value, voices) ? (
+      {samplesOff && unlisted && !unlistedOwn ? (
         <div className={styles.hint}>
           {t('Sign in to play the current voice sample. Picking a voice still works.')}
         </div>
@@ -459,21 +552,49 @@ export function VoicePicker({
       {/* A voice assigned before the current pool curation: keep it visible
           and selected instead of silently dropping it (Edit companion).
           Rendered ABOVE the tabs so it shows from any tab. */}
-      {isUnlistedVoice(value, voices) && value ? (
+      {unlisted && value ? (
         <section className={styles.group}>
           <h3 className={styles.groupTitle}>{t('Current voice')}</h3>
-          {renderRow(
-            value,
-            t('Current voice'),
-            t('Assigned from an earlier voice pool.'),
-            t('current voice'),
-            false,
-          )}
+          {unlistedOwn
+            ? renderRow(
+                value,
+                unlistedOwn.name,
+                t('From your ElevenLabs account. It plays only with your ElevenLabs key.'),
+                unlistedOwn.name,
+                false,
+              )
+            : renderRow(
+                value,
+                t('Current voice'),
+                t('Assigned from an earlier voice pool.'),
+                t('current voice'),
+                false,
+              )}
         </section>
       ) : null}
 
-      {groups.length > 0 ? (
+      {ownView === 'hint' ? (
+        <div className={styles.hint} role="status">
+          {ownList?.status === 'bad_key'
+            ? t('Could not read your ElevenLabs voices. Check your ElevenLabs key in Settings.')
+            : t('Could not load your ElevenLabs voices right now.')}
+        </div>
+      ) : null}
+
+      {tabKeys.length > 0 ? (
         <div className={styles.tabs} role="tablist" aria-label={t('Voice group')}>
+          {ownTabShown ? (
+            <button
+              key={OWN_TAB_KEY}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === OWN_TAB_KEY}
+              className={activeTab === OWN_TAB_KEY ? `${styles.tab} ${styles.tabActive}` : styles.tab}
+              onClick={() => setChosenTab(OWN_TAB_KEY)}
+            >
+              {t('Your ElevenLabs voices')}
+            </button>
+          ) : null}
           {groups.map((g) => (
             <button
               key={g.key}
@@ -489,8 +610,44 @@ export function VoicePicker({
         </div>
       ) : null}
 
+      {activeTab !== OWN_TAB_KEY && activeGroup && poolUsesOwnKey(ownList) ? (
+        <div className={styles.hint}>
+          {t("Sei's voices play through your ElevenLabs key on paid ElevenLabs plans. On a free plan, use your own voices.")}
+        </div>
+      ) : null}
+
       <div className={styles.list}>
-        {activeGroup ? (
+        {activeTab === OWN_TAB_KEY && ownTabShown ? (
+          <section className={styles.group}>
+            <div className={styles.ownHead}>
+              <span className={styles.hint}>
+                {ownVoices.length === 0
+                  ? t('No voices in your ElevenLabs account yet. Voices you clone, design or save there show up here.')
+                  : t('Voices from your own ElevenLabs account. They play through your key.')}
+              </span>
+              <button
+                type="button"
+                className={styles.tunerReset}
+                onClick={() => loadOwnVoices(true)}
+                disabled={ownRefreshing}
+              >
+                {t('Refresh')}
+              </button>
+            </div>
+            {ownVoices.map((v) =>
+              renderRow(
+                v.id,
+                <>
+                  {v.name}
+                  <span className={styles.rowMeta}>{t(ownVoiceCategoryLabel(v.category))}</span>
+                </>,
+                ownVoiceDetail(v) || t('From your ElevenLabs account.'),
+                v.name,
+                false,
+              ),
+            )}
+          </section>
+        ) : activeGroup ? (
           <section className={styles.group}>
             {activeGroup.voices.map((v) =>
               renderRow(

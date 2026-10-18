@@ -121,6 +121,16 @@ export const ZH_MISC: Record<string, string> = {
   '[voice paused, out of credits]': '[语音已暂停，额度已用完]',
   '[voice unavailable, this voice is not in your ElevenLabs library]':
     '[语音不可用，这个声音不在你的 ElevenLabs 声音库中]',
+  // 261019: the user's own ElevenLabs account answered (direct key route).
+  '[voice unavailable, free ElevenLabs plans cannot use this voice]':
+    '[语音不可用，ElevenLabs 免费套餐无法使用这个声音]',
+  '[voice paused, your ElevenLabs account is out of credits]':
+    '[语音已暂停，你的 ElevenLabs 账户额度已用完]',
+  '[voice unavailable, ElevenLabs rejected your key]': '[语音不可用，ElevenLabs 拒绝了你的密钥]',
+  '[voice unavailable, this voice needs its ElevenLabs key]':
+    '[语音不可用，这个声音需要对应的 ElevenLabs 密钥]',
+  'This voice is from an ElevenLabs account and plays only with that key. Pick a different voice.':
+    '这个声音来自某个 ElevenLabs 账户，只能用该账户的密钥播放。请选择其他声音。',
   // 260816 local speech: the sherpa voice pack for this call is not downloaded.
   '[voice unavailable, download the local voice pack in Settings]':
     '[语音不可用，请在设置中下载本地语音包]',
@@ -334,6 +344,30 @@ export const ZH_MISC: Record<string, string> = {
   'Calmness': '平稳度',
   'Higher is steadier and more even. Lower is more dramatic.':
     '越高越平稳均匀，越低越富有戏剧性。',
+  // 261019: the user's own ElevenLabs voices in the picker.
+  'Your ElevenLabs voices': '你的 ElevenLabs 声音',
+  'Voices from your own ElevenLabs account. They play through your key.':
+    '来自你自己 ElevenLabs 账户的声音，通过你的密钥播放。',
+  'No voices in your ElevenLabs account yet. Voices you clone, design or save there show up here.':
+    '你的 ElevenLabs 账户里还没有声音。你在那里克隆、设计或收藏的声音会显示在这里。',
+  'Refresh': '刷新',
+  'Cloned voice': '克隆声音',
+  'Professional clone': '专业克隆',
+  'Designed voice': '设计的声音',
+  'Library voice': '声音库声音',
+  'Your voice': '你的声音',
+  'From your ElevenLabs account.': '来自你的 ElevenLabs 账户。',
+  'From your ElevenLabs account. It plays only with your ElevenLabs key.':
+    '来自你的 ElevenLabs 账户，只有使用你的 ElevenLabs 密钥才能播放。',
+  'Could not read your ElevenLabs voices. Check your ElevenLabs key in Settings.':
+    '无法读取你的 ElevenLabs 声音。请在设置中检查你的 ElevenLabs 密钥。',
+  'Could not load your ElevenLabs voices right now.': '暂时无法加载你的 ElevenLabs 声音。',
+  "Sei's voices play through your ElevenLabs key on paid ElevenLabs plans. On a free plan, use your own voices.":
+    'Sei 的声音在 ElevenLabs 付费套餐下可通过你的密钥播放。免费套餐请使用你自己的声音。',
+  'Free ElevenLabs plans cannot play this voice through your key. Pick one of your own voices.':
+    'ElevenLabs 免费套餐无法通过你的密钥播放这个声音。请选择你自己的声音。',
+  'Your ElevenLabs account is out of credits.': '你的 ElevenLabs 账户额度已用完。',
+  'ElevenLabs rejected your key. Check it in Settings.': 'ElevenLabs 拒绝了你的密钥。请在设置中检查。',
 
   // ── Small components (BrowseCard, IdTag, InfoTip, chrome, buttons) ─────
   'Open {name}': '打开 {name}',

@@ -14,7 +14,7 @@
  */
 import { rollVoice, mulberry32, VOICES } from 'soulcaster';
 import type { Character } from '../../shared/characterSchema';
-import { NO_VOICE_ID } from '../../shared/voiceIds';
+import { NO_VOICE_ID, ownVoiceOf } from '../../shared/voiceIds';
 import { listCharacters, saveCharacter } from '../characterStore';
 
 const VOICE_IDS = new Set((VOICES as Array<{ id: string }>).map((v) => v.id));
@@ -142,10 +142,22 @@ export function personaVoiceHints(personaText: string): {
   return { seeds, robot: ROBOT_RE.test(personaText) };
 }
 
-/** metadata.voiceId when it points at a pool (or legacy) voice, else null. */
+/**
+ * metadata.voiceId when it points at a pool (or legacy) voice, or at a voice
+ * the user picked from their OWN ElevenLabs account (261019, the
+ * `metadata.voiceOwn` marker, see shared/voiceIds.ts), else null.
+ *
+ * The own-voice branch is what keeps an explicit pick from being "repaired":
+ * a null here makes resolveVoiceId re-roll a pool voice and persist it over
+ * the user's choice. Whether the voice can actually PLAY on the active route
+ * is tts.ts's question (it fails with a clear sentinel), never a reason to
+ * swap the voice.
+ */
 export function assignedVoiceId(character: Character): string | null {
   const v = character.metadata?.voiceId;
-  return typeof v === 'string' && (VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v)) ? v : null;
+  if (typeof v !== 'string') return null;
+  if (VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v)) return v;
+  return ownVoiceOf(character.metadata) ? v : null;
 }
 
 /**

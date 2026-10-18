@@ -51,6 +51,8 @@ export const ZH_SCREENS_B: Record<string, string> = {
   "sorry :( i'm working to support other voice models. for now, tts only supports elevenlabs.":
     '抱歉 :( 我们正在努力支持其他语音模型。目前语音合成只支持 ElevenLabs。',
   'Your ElevenLabs key': '你的 ElevenLabs 密钥',
+  'Your own ElevenLabs voices show up in the voice picker once your key is saved.':
+    '保存密钥后，你自己的 ElevenLabs 声音会出现在声音选择器中。',
   'Remove': '移除',
   'Key cannot be empty.': '密钥不能为空。',
   'Failed to remove key. Try again.': '密钥移除失败，请重试。',

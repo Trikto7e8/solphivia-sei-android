@@ -412,8 +412,9 @@ describe('EditCharacterModal + VoicePicker (W5 local-TTS voice gating)', () => {
   it('G.3: the stored ElevenLabs voiceId is preserved untouched underneath', () => {
     const src = readFileSync(EDIT_MODAL_TSX, 'utf-8');
     // The deferred save still writes voiceId from state — which localTtsMode
-    // never mutates, since the picker that changes it is hidden.
-    expect(src.includes('metadata.voiceId = voiceId')).toBe(true);
+    // never mutates, since the picker that changes it is hidden. (261019:
+    // written through applyVoicePick, which also carries the own-voice marker.)
+    expect(src.includes('applyVoicePick(latest.metadata, voiceId, voiceOwn)')).toBe(true);
   });
 
   it('G.4: every W5 user string has a zh entry in the dedicated block', () => {

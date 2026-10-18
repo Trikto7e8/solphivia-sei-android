@@ -39,6 +39,17 @@ describe('voiceGenderFor', () => {
     expect(voiceGenderFor(undefined)).toBe('female');
     expect(voiceGenderFor(null)).toBe('female');
   });
+
+  // 261019: an own-account ElevenLabs voice is in neither table; its
+  // ElevenLabs gender label (metadata.voiceOwn.gender) picks the local voice.
+  it('uses the own-voice gender hint for ids outside the pool', () => {
+    expect(voiceGenderFor('aBcDeFgHiJkLmNoPqRsT', 'male')).toBe('male');
+    expect(voiceGenderFor('aBcDeFgHiJkLmNoPqRsT', 'female')).toBe('female');
+    expect(voiceGenderFor('aBcDeFgHiJkLmNoPqRsT', 'neutral')).toBe('female');
+    // the pool / legacy tables still win over a hint
+    expect(voiceGenderFor(firstOf('female').id, 'male')).toBe('female');
+    expect(voiceGenderFor('JBFqnCBsd6RMkjVDRZzb', 'female')).toBe('male');
+  });
 });
 
 describe('localVoiceFor', () => {

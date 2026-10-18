@@ -17,6 +17,12 @@
  * exhausted; TTS bills from the same ledger as LLM turns), VOICE_RATE_LIMITED
  * (429 — daily $ cap), VOICE_NOT_CONFIGURED, VOICE_NOT_IN_LIBRARY (direct
  * route: the voice is not in that ElevenLabs account), VOICE_TTS_FAILED.
+ * 261019, direct route only (the user's own ElevenLabs account answered):
+ * VOICE_NEEDS_PAID_PLAN (a free ElevenLabs plan cannot use Voice Library
+ * voices over the API), VOICE_ELEVEN_QUOTA (their ElevenLabs credits ran
+ * out, which is NOT Sei's credit wall), VOICE_ELEVEN_KEY_INVALID. And
+ * VOICE_OWN_NEEDS_KEY: a voice from the user's own ElevenLabs account on a
+ * route that is not their key (the proxy can only speak Sei's pool).
  */
 import { getClient } from '../auth/supabaseClient';
 import { getCharacter } from '../characterStore';
@@ -28,8 +34,9 @@ import { toSpokenRegister, toSpokenUtterance } from './spokenRegister';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from './audioTags';
 import { resolveVoiceId, isPoolVoiceId } from './voiceAssign';
 import { previewCacheKey, readCachedPreview, writeCachedPreview } from './previewCache';
-import { NO_VOICE_ID } from '../../shared/voiceIds';
+import { NO_VOICE_ID, ownVoiceOf } from '../../shared/voiceIds';
 import { resolveElevenLabsRoute, type ElevenLabsRoute } from './elevenLabsKeyStore';
+import { isOwnVoiceId } from './ownVoices';
 import type { SpeechPackId } from '../speech/packs';
 import { noteCreditWall } from '../creditWall';
 
@@ -78,6 +85,47 @@ const VOICE_NOT_IN_LIBRARY =
 function isVoiceNotFound(status: number, body: string): boolean {
   if (status !== 400 && status !== 404 && status !== 422) return false;
   return /voice_not_found|voice_does_not_exist|voice[ _]?id[^.]{0,80}(not found|does not exist)/i.test(body);
+}
+
+/**
+ * Pool voices on the user's own key (261019). Sei's curated pool is public
+ * ElevenLabs Voice Library voices. ElevenLabs' docs say a library voice can be
+ * used over the API WITHOUT saving it to My Voices first, but "Voice Library
+ * voices are not available via the API to free tier users". So on a paid
+ * plan the pool just works through the key, and on a free plan every pool
+ * clip is refused. Unverified live (no key on the build machine), so the
+ * match is on the body's wording and codes rather than one exact status.
+ * No em dash: user-visible copy.
+ */
+const VOICE_NEEDS_PAID_PLAN =
+  'VOICE_NEEDS_PAID_PLAN: free ElevenLabs plans cannot use library voices through the API. Pick one of your own voices, or upgrade your ElevenLabs plan.';
+const VOICE_ELEVEN_QUOTA = 'VOICE_ELEVEN_QUOTA: your ElevenLabs account is out of credits';
+const VOICE_ELEVEN_KEY_INVALID = 'VOICE_ELEVEN_KEY_INVALID: ElevenLabs rejected your key. Check it in Settings.';
+/** An own-account voice on a route that cannot speak it (cloud proxy). */
+const VOICE_OWN_NEEDS_KEY =
+  'VOICE_OWN_NEEDS_KEY: this voice is from an ElevenLabs account and plays only with that ElevenLabs key. Pick a different voice.';
+
+/**
+ * Map a DIRECT-route (the user's own ElevenLabs account) failure to a
+ * sentinel, or null for "no specific meaning, use the generic mapping".
+ * Must run before the generic 402 → VOICE_NO_CREDITS mapping: that copy
+ * talks about Sei's credits, which a BYOK user does not have.
+ */
+export function directElevenLabsError(status: number, body: string): string | null {
+  if (isVoiceNotFound(status, body)) return VOICE_NOT_IN_LIBRARY;
+  if (
+    (status === 402 || status === 403 || status === 401) &&
+    /free[ _-]?(users?|tier|plan)|library voices?|free_users_not_allowed/i.test(body)
+  ) {
+    return VOICE_NEEDS_PAID_PLAN;
+  }
+  // ElevenLabs reports quota as 401 quota_exceeded (long-standing) or 402
+  // insufficient_credits (current error table); both mean their own account.
+  if (/quota_exceeded|insufficient_credits|exceeds your quota/i.test(body) || status === 402) {
+    return VOICE_ELEVEN_QUOTA;
+  }
+  if (status === 401) return VOICE_ELEVEN_KEY_INVALID;
+  return null;
 }
 
 /**
@@ -345,6 +393,8 @@ async function synthesizeLocalClip(
   voiceId: string,
   language: ChatLanguage,
   characterId: string,
+  /** metadata.voiceOwn.gender for an own-account voice (261019). */
+  genderHint?: string,
 ): Promise<ArrayBuffer> {
   const speech = await import('../speech');
   const ready: SpeechPackId[] = [];
@@ -352,7 +402,7 @@ async function synthesizeLocalClip(
     if (id.startsWith('tts-') && (await speech.packReady(id))) ready.push(id);
   }
   const effLanguage = speech.detectSpokenLanguage(text, language);
-  const gender = speech.voiceGenderFor(voiceId);
+  const gender = speech.voiceGenderFor(voiceId, genderHint);
   const pick = speech.pickLocalVoice(gender, effLanguage, ready);
   if (!pick) {
     throw speech.packMissingError(
@@ -383,9 +433,10 @@ async function tryLocalFallbackClip(
   voiceId: string,
   language: ChatLanguage,
   characterId: string,
+  genderHint?: string,
 ): Promise<ArrayBuffer | null> {
   try {
-    return await synthesizeLocalClip(text, voiceId, language, characterId);
+    return await synthesizeLocalClip(text, voiceId, language, characterId, genderHint);
   } catch (err) {
     console.warn(`[sei/voice] local TTS fallback unavailable: ${(err as Error).message}`);
     return null;
@@ -415,6 +466,11 @@ async function fetchAudio(
   if (!res.ok) {
     clearTimeout(timeout);
     const text = await res.text().catch(() => '');
+    // Direct route (the user's own ElevenLabs account): its own vocabulary
+    // first (see directElevenLabsError), so a BYOK 402 never reads as Sei's
+    // credit wall and a free-plan refusal says what it is.
+    const directErr = direct ? directElevenLabsError(res.status, text) : null;
+    if (directErr) throw new Error(directErr);
     if (res.status === 402) {
       // 261005: the proxy's ledger is out. A direct (own ElevenLabs key) 402 is
       // the user's own account, not Sei's credit wall.
@@ -423,9 +479,6 @@ async function fetchAudio(
     }
     if (res.status === 429) throw new Error('VOICE_RATE_LIMITED: daily usage cap reached');
     if (res.status === 503) throw new Error('VOICE_NOT_CONFIGURED: voice service unavailable');
-    // Direct route only: the user's own account has no such voice (see
-    // VOICE_NOT_IN_LIBRARY). Actionable, so it gets its own sentinel.
-    if (direct && isVoiceNotFound(res.status, text)) throw new Error(VOICE_NOT_IN_LIBRARY);
     // Log a truncated excerpt for diagnosis; never bubble upstream bodies.
     console.warn(`[sei/voice] tts upstream ${res.status}: ${text.slice(0, 200)}`);
     throw new Error(`VOICE_TTS_FAILED: status ${res.status}`);
@@ -543,12 +596,17 @@ export async function voiceTts(args: {
   // Local TTS route (see localTtsSelected): same register conversion, no
   // proxy clip cap (the IPC boundary already bounds text length), WAV bytes
   // instead of mp3 — the renderer's blob playback sniffs the container.
+  const own = ownVoiceOf(character.metadata);
   if (await localTtsSelected()) {
     const localText = speechTextFor(args.text, language);
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
-    return await synthesizeLocalClip(localText, voiceId, language, args.characterId);
+    return await synthesizeLocalClip(localText, voiceId, language, args.characterId, own?.gender);
   }
   const route = await resolveElevenLabsRoute();
+  // An own-account voice (261019) on the proxy route: the proxy only speaks
+  // Sei's pool, so fail with the hint before any network instead of a
+  // generic 4xx. The pick itself is left alone (never swapped).
+  if (own && route.kind === 'proxy') throw new Error(VOICE_OWN_NEEDS_KEY);
   // BYOK on the ElevenLabs engine with no key stored (260908): before failing
   // with the setup hint, try any installed local voice pack — an accented or
   // substitute local voice beats a silent call, and the hint still shows when
@@ -556,7 +614,7 @@ export async function voiceTts(args: {
   if (route.kind === 'unconfigured') {
     const localText = speechTextFor(args.text, language);
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
-    const fallback = await tryLocalFallbackClip(localText, voiceId, language, args.characterId);
+    const fallback = await tryLocalFallbackClip(localText, voiceId, language, args.characterId, own?.gender);
     if (fallback) return fallback;
     throw new Error(NOT_CONFIGURED_BYOK);
   }
@@ -613,10 +671,11 @@ export async function voiceTtsStream(
   // streaming path while local TTS is selected (a WAV clip cannot ride the
   // audio/mpeg MSE pipeline), but any caller that does anyway degrades to a
   // whole-clip synthesis delivered as one chunk + done.
+  const own = ownVoiceOf(character.metadata);
   if (await localTtsSelected()) {
     const localText = speechTextFor(args.text, language);
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
-    const buf = await synthesizeLocalClip(localText, voiceId, language, args.characterId);
+    const buf = await synthesizeLocalClip(localText, voiceId, language, args.characterId, own?.gender);
     const streamId = `tts-${nextStreamSeq++}`;
     queueMicrotask(() => {
       sink({ streamId, chunk: buf });
@@ -625,6 +684,8 @@ export async function voiceTtsStream(
     return { streamId };
   }
   const route = await resolveElevenLabsRoute();
+  // Own-account voice on the proxy route (see voiceTts).
+  if (own && route.kind === 'proxy') throw new Error(VOICE_OWN_NEEDS_KEY);
   // Spoken register BEFORE the cap (see voiceTts / speechTextFor).
   const text = clipForRoute(speechTextFor(args.text, language), route);
   if (!text) throw new Error('VOICE_TTS_FAILED: empty text');
@@ -632,7 +693,7 @@ export async function voiceTtsStream(
   // sentinel (see voiceTts, 260908), degraded to one whole-clip chunk + done
   // exactly like the localTtsSelected branch.
   if (route.kind === 'unconfigured') {
-    const fallback = await tryLocalFallbackClip(text, voiceId, language, args.characterId);
+    const fallback = await tryLocalFallbackClip(text, voiceId, language, args.characterId, own?.gender);
     if (!fallback) throw new Error(NOT_CONFIGURED_BYOK);
     const streamId = `tts-${nextStreamSeq++}`;
     queueMicrotask(() => {
@@ -689,6 +750,9 @@ export async function voiceTtsStream(
   if (!res.ok || !res.body) {
     clearTimeout(timeout);
     const bodyText = await res.text().catch(() => '');
+    // Direct route vocabulary first (see fetchAudio / directElevenLabsError).
+    const directErr = route.kind === 'direct' && !res.ok ? directElevenLabsError(res.status, bodyText) : null;
+    if (directErr) throw new Error(directErr);
     if (res.status === 402) {
       // 261005: see fetchAudio; only the proxy route is Sei's credit wall.
       if (route.kind !== 'direct') noteCreditWall({ reason: 'depleted' }, { surface: 'voice', trigger: 'tts' });
@@ -696,10 +760,6 @@ export async function voiceTtsStream(
     }
     if (res.status === 429) throw new Error('VOICE_RATE_LIMITED: daily usage cap reached');
     if (res.status === 503) throw new Error('VOICE_NOT_CONFIGURED: voice service unavailable');
-    // Direct route only (see fetchAudio / VOICE_NOT_IN_LIBRARY).
-    if (route.kind === 'direct' && isVoiceNotFound(res.status, bodyText)) {
-      throw new Error(VOICE_NOT_IN_LIBRARY);
-    }
     console.warn(`[sei/voice] tts upstream ${res.status}: ${bodyText.slice(0, 200)}`);
     throw new Error(`VOICE_TTS_FAILED: status ${res.status}`);
   }
@@ -808,17 +868,24 @@ export async function voicePreviewTts(args: {
   // engine switch.
   if (await localTtsSelected()) {
     let voiceId = args.voiceId;
+    let genderHint: string | undefined;
     if (args.characterId) {
       const character = await getCharacter(args.characterId);
       if (character && character.metadata?.voiceId !== NO_VOICE_ID) {
         voiceId = await resolveVoiceId(character);
+        genderHint = ownVoiceOf(character.metadata)?.gender;
       }
     }
     const localText = speechTextFor(line, language) || line;
-    return await synthesizeLocalClip(localText, voiceId ?? '', language, args.characterId ?? '');
+    return await synthesizeLocalClip(localText, voiceId ?? '', language, args.characterId ?? '', genderHint);
   }
   const voiceId = args.voiceId ?? '';
-  if (!isPoolVoiceId(voiceId)) throw new Error('VOICE_TTS_FAILED: unknown voice');
+  // Closed allowlist: the curated pool, or (261019) a voice in the user's
+  // own ElevenLabs account as listed with the current direct key. Own voices
+  // only list on the direct route, so they never reach the proxy from here.
+  if (!isPoolVoiceId(voiceId) && !(await isOwnVoiceId(voiceId))) {
+    throw new Error('VOICE_TTS_FAILED: unknown voice');
+  }
   const calmness =
     typeof args.calmness === 'number' && Number.isFinite(args.calmness)
       ? Math.min(1, Math.max(0, args.calmness))

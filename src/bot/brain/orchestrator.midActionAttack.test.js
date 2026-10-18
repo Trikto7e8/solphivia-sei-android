@@ -202,7 +202,7 @@ describe('261011 mid-action attack delivery', () => {
     await flush()
     expect(provider.calls.length).toBe(2)
     const text = lastUserText(provider.calls[1])
-    expect(text).toContain('You said "going after the zombie now" to the player')
+    expect(text).toMatch(/Your last line to the player, \d+s ago, was "going after the zombie now"/)
     expect(text).not.toContain('You already told the player about this fight')
   })
 
@@ -214,7 +214,7 @@ describe('261011 mid-action attack delivery', () => {
     await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
     await orch.handleDispatch('sei:attacked', hit())
     await flush()
-    expect(lastUserText(provider.calls[1])).not.toContain('You said "')
+    expect(lastUserText(provider.calls[1])).not.toContain('Your last line to the player')
   })
 
   it('a reflex / defend heads-up does not open a window that swallows the next real hit', async () => {

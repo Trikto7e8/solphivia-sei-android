@@ -1531,7 +1531,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // now", a defend heads-up landed 0.3s later asking for "one short line so
   // they know you are coming", and nothing in that turn showed the line she
   // had just said, so she said it again in new words. Her last line is quoted
-  // and the turn decides whether it already covered this.
+  // and the turn is asked for a line that adds to it. Offering silence when
+  // the line already covered it was tried and cut a control case (her last
+  // line a joke) from 6/6 to 0-3/6 spoken, because she counted "they can see
+  // me fighting" as told (scripts/quality-eval/pass17-probe.mjs).
   const RECENT_LINE_TOLD_MS = 15_000
   function fightToldSuffix() {
     const now = Date.now()

@@ -40,10 +40,14 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
     expect(t).toMatch(/answer with one short say\(\)|stay silent/i)
     expect(t).not.toContain('KEEP GOING')
     expect(t).toContain('answer it and let the action carry on')
-    expect(t).toContain('If they ask you to come to them or follow them, call the action that takes you to them')
+    expect(t).toContain('If they ask you to come to them or follow them, or point out where they are, call the action that takes you to them')
     expect(t).toContain('If they ask you to stop or to stay where you are, call unfollow')
     expect(t).toContain('make the switch in this same turn, even when the current action is one they asked for')
     expect(t).toContain('asked for once you finish what you are doing now is not a switch')
+    // 261018 (pass 17): a changed count or item re-calls the action; a line
+    // that drops the job and asks for a new one calls only the new action.
+    expect(t).toContain('If they change the job you are on, like how many or which item, call that action again with the new details')
+    expect(t).toContain('call only the new action; calling unfollow and saying you will do it next leaves them waiting')
     expect(t).toContain('To stop, call unfollow')
     expect(t).toContain('call that action')
     // 260619 say()-leak fix: a player-addressed mid-action turn must STILL call

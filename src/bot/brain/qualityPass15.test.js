@@ -127,7 +127,7 @@ describe('a movement line mid-action is the model\'s call', () => {
     expect(provider.calls.length).toBe(2)
     const text = lastUserText(provider.calls[1])
     expect(text).toContain('跟我来')
-    expect(text).toContain('If they ask you to come to them or follow them, call the action that takes you to them')
+    expect(text).toContain('If they ask you to come to them or follow them, or point out where they are, call the action that takes you to them')
     expect(text).not.toContain('KEEP GOING')
     expect(aborted).toEqual(['gather'])
     expect(executed).toEqual(['gather', 'follow'])

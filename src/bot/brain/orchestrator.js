@@ -44,7 +44,7 @@ import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from './ne
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
-import { ownRepeatsNote } from './ownRepeats.js'
+import { ownRepeatsNote, recentOwnTurns } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
 import {
   describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
@@ -1535,10 +1535,25 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // the same fight is told it already warned the player (NUDGES.fightAlreadyTold).
   let _lastFightLineAt = 0
   const FIGHT_TOLD_WINDOW_MS = 30_000
+  // 261018 (pass 17): a line from any other turn counts too. night_social-01
+  // (pass 15 eval): her reply to "are you ok??" said "going after the zombie
+  // now", a defend heads-up landed 0.3s later asking for "one short line so
+  // they know you are coming", and nothing in that turn showed the line she
+  // had just said, so she said it again in new words. Her last line is quoted
+  // and the turn is asked for a line that adds to it. Offering silence when
+  // the line already covered it was tried and cut a control case (her last
+  // line a joke) from 6/6 to 0-3/6 spoken, because she counted "they can see
+  // me fighting" as told (scripts/quality-eval/pass17-probe.mjs).
+  const RECENT_LINE_TOLD_MS = 15_000
   function fightToldSuffix() {
-    const ago = Date.now() - _lastFightLineAt
-    if (!_lastFightLineAt || ago >= FIGHT_TOLD_WINDOW_MS) return ''
-    return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+    const now = Date.now()
+    const ago = now - _lastFightLineAt
+    if (_lastFightLineAt && ago < FIGHT_TOLD_WINDOW_MS) {
+      return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+    }
+    const last = recentOwnTurns(convoMemory?.recentChat?._internal?.selfLines, { now, turns: 1, withinMs: RECENT_LINE_TOLD_MS })[0]
+    if (!last?.text || !Number.isFinite(last.at)) return ''
+    return ' ' + NUDGES.recentLineTold(last.text.slice(0, 200), Math.max(1, Math.round((now - last.at) / 1000)))
   }
   // 261011: whether this companion has any history with the player: a memory
   // entry from a past session, or the in-app chat it was summoned from.
@@ -3357,7 +3372,17 @@ function maybeWarnByteCap(loop, warned) {
     // 261011: a loop that only TALKED holds the floor for the reply window in
     // every game (see replyWindowRemainingMs below). A loop that did world
     // work keeps the fast agentic cadence for resuming the goal.
-    _lastLoopTalkOnly = loop._saidThisLoop === true && loop._worldActed !== true
+    // 261018 (pass 17): unless its LAST turn only talked. Then the work is
+    // done and she ended the loop on a line to the player, so it is their
+    // turn. In the pass 15 compare the idle tick 5s later said the same line
+    // again: "got your six logs. want them, or should i keep chopping" then
+    // "six logs in the bag. want them now or should i turn em into a crafting
+    // table first" (work_session-04), "logs are at your feet alex, dock time"
+    // then "logs are at your feet. next up is a furnace" (errands-01). A last
+    // turn with stop in it keeps the fast cadence: stop with only a line
+    // ("ok coming") is how a move order went unstarted, and the idle tick
+    // is what starts it.
+    _lastLoopTalkOnly = loop._saidThisLoop === true && (loop._worldActed !== true || loop._lastTurnTalkOnly === true)
     // 260703-fix (b): finish any model-ordered batch tools stranded by an
     // abnormal teardown (see drainPendingToolsOnTeardown). No-op in the common
     // case (pending queue already drained → null), so it never double-executes.
@@ -4845,6 +4870,10 @@ function maybeWarnByteCap(loop, warned) {
       loop._responsesReceived = (loop._responsesReceived ?? 0) + 1
 
       const toolUses = resp.toolUses ?? []
+      // 261018 (pass 17): reset per turn, so a turn that returns before the
+      // tool predicates below (no tool calls at all) does not keep the value
+      // of the turn before it. Set for real at newSuspendingTools.
+      loop._lastTurnTalkOnly = false
 
       // Speech via the say() tool. The assistant's `text` output is a PRIVATE
       // scratchpad and never reaches chat (chat_mode 'full' surfaces it as
@@ -5008,6 +5037,9 @@ function maybeWarnByteCap(loop, warned) {
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
       if (newSuspendingTools.length > 0) loop._worldActed = true
+      // 261018 (pass 17): whether this turn only talked. The last turn's
+      // value decides the idle hold at teardown (see _lastLoopTalkOnly).
+      loop._lastTurnTalkOnly = saySpokenThisTurn && newSuspendingTools.length === 0 && !hasStop
       // 261012 (pass 5): a stop from the player starts the idle hold (see
       // playerStopAt); a player line answered with new work ends it. A bare
       // "stop" line counts even when the model answered it with end_loop,
@@ -5990,6 +6022,8 @@ function maybeWarnByteCap(loop, warned) {
     // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
     // "ok holding still alex"): the 5s cadence is for resuming work, and with
     // no work to resume an idle turn has nothing new to say.
+    // 261018 (pass 17): also after a loop that did work but ended on a
+    // talk-only turn (see teardownLoop).
     replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,

@@ -184,6 +184,39 @@ describe('261011 mid-action attack delivery', () => {
     await orch.handleDispatch('sei:attacked', hit())
     expect(lastUserText(provider.calls[1])).toContain('You already told the player about this fight')
   })
+  // 261018 (pass 17): night_social-01. Her reply said what she was doing and
+  // a defend heads-up landed right after; that turn now shows her the line.
+  it('a mid-action heads-up right after a reply quotes the line she just said', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([
+      { text: '', toolUses: [
+        { id: 's0', name: 'say', input: { text: 'going after the zombie now' } },
+        { id: 'g1', name: 'gather', input: { name: 'oak_log' } },
+      ] },
+      { text: '', toolUses: [] },
+    ])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('are you ok??'))
+    await orch.handleDispatch('sei:attacked', hit())
+    await flush()
+    expect(provider.calls.length).toBe(2)
+    const text = lastUserText(provider.calls[1])
+    expect(text).toMatch(/Your last line to the player, \d+s ago, was "going after the zombie now"/)
+    expect(text).not.toContain('You already told the player about this fight')
+  })
+
+  it('a heads-up with no line of hers in the last 15s quotes nothing', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const provider = makeProvider([gatherTurn, { text: '', toolUses: [] }])
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('grab some logs'))
+    await orch.handleDispatch('sei:attacked', hit())
+    await flush()
+    expect(lastUserText(provider.calls[1])).not.toContain('Your last line to the player')
+  })
+
   it('a reflex / defend heads-up does not open a window that swallows the next real hit', async () => {
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([gatherTurn, { text: '', toolUses: [] }])

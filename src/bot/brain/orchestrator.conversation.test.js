@@ -159,7 +159,7 @@ describe('the reply window: always in Stardew, after a talk-only loop everywhere
     expect(replyWindowApplies(null)).toBe(false)
   })
 
-  async function holdAfter(gameName, script) {
+  async function holdAfter(gameName, script, { completes = null } = {}) {
     _setTickIntervalForTests(10_000_000)
     const { orch } = makeOrch({
       adapter: makeAdapter({ gameName, executeAction: () => Promise.resolve('done') }),
@@ -167,6 +167,8 @@ describe('the reply window: always in Stardew, after a talk-only loop everywhere
     })
     orch.recordIncomingChat('newb', 'hey')
     await orch.handleDispatch('sei:chat_received', chat('hey'))
+    // The settle of a world action, as the FSM delivers it.
+    if (completes) await orch.handleDispatch('sei:action_complete', completes).catch(() => {})
     return orch.replyWindowRemainingMs()
   }
   const talkOnly = [{ text: '', toolUses: [say('t1', 'want to go fishing after this?')] }]
@@ -187,6 +189,54 @@ describe('the reply window: always in Stardew, after a talk-only loop everywhere
 
   it('does not hold it in Minecraft after a loop that did world work, so the agentic cadence resumes the goal', async () => {
     expect(await holdAfter('Minecraft', talkAndWork)).toBe(0)
+  })
+
+  // 261018 (pass 17): the work finished and her last turn was only a line to
+  // the player ("got your six logs. want them?"). The idle tick 5s later said
+  // it again in the pass 15 compare.
+  it('holds it in Minecraft when a loop that did work ended on a talk-only turn', async () => {
+    const workThenTalk = [
+      { text: '', toolUses: [{ id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
+      { text: '', toolUses: [say('t1', 'got your six logs. want them, or should i keep chopping')] },
+    ]
+    const completes = { name: 'gather', tool_use_id: 'g1', result: 'gathered 6/6 oak_log' }
+    expect(await holdAfter('Minecraft', workThenTalk, { completes })).toBeGreaterThan(REPLY_WINDOW_MS - 5000)
+  })
+
+  // A line said mid-action, on a turn that kept the loop alive, is not the
+  // loop's last turn when the settle turn after it calls nothing. That turn
+  // returns before the tool predicates, so the flag is reset per turn.
+  it('keeps the fast cadence when a mid-action line is followed by a silent settle turn', async () => {
+    _setTickIntervalForTests(10_000_000)
+    let release = null
+    let settled = null
+    const { orch } = makeOrch({
+      adapter: makeAdapter({ gameName: 'Minecraft', executeAction: () => new Promise((r) => { release = r }) }),
+      script: [
+        { text: '', toolUses: [say('t0', 'on it'), { id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
+        { text: '', toolUses: [say('t1', 'almost done, four so far')] },
+        { text: '', toolUses: [] },
+      ],
+      reenqueue: (event, data) => { if (event === 'sei:action_complete') settled = data },
+    })
+    orch.recordIncomingChat('newb', 'get some wood')
+    await orch.handleDispatch('sei:chat_received', chat('get some wood'))
+    orch.recordIncomingChat('newb', 'how many so far?')
+    await orch.handleDispatch('sei:chat_received', chat('how many so far?'))
+    release('gathered 6/6 oak_log')
+    await new Promise((r) => setTimeout(r, 20))
+    expect(settled?.tool_use_id).toBe('g1')
+    await orch.handleDispatch('sei:action_complete', settled)
+    expect(orch.replyWindowRemainingMs()).toBe(0)
+  })
+
+  it('keeps the fast cadence when that last turn called stop with its line', async () => {
+    const workThenStop = [
+      { text: '', toolUses: [{ id: 'g1', name: 'gather', input: { kind: 'wood' } }] },
+      { text: '', toolUses: [{ id: 's1', name: 'stop', input: {} }, say('t1', 'ok coming')] },
+    ]
+    const completes = { name: 'gather', tool_use_id: 'g1', result: 'gathered 6/6 oak_log' }
+    expect(await holdAfter('Minecraft', workThenStop, { completes })).toBe(0)
   })
 })
 

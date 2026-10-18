@@ -220,12 +220,39 @@ describe('recipe on the next: line', () => {
     expect(recipeNote(table, { oak_planks: 2, birch_planks: 2 })).toBe('Recipe: 4 planks. You have 4 planks.')
   })
 
+  // 261018 (pass 17): the total in logs and the shortfall (work_session-02).
+  it('says how many logs the missing planks and sticks take', () => {
+    const pick = SPINE.find((n) => n.id === 'wood_pickaxe')
+    expect(recipeNote(pick, { oak_log: 7 })).toContain('The planks and sticks for it take 2 logs, and you have 7.')
+    expect(recipeNote(pick, { oak_log: 1 })).toContain('The planks and sticks for it take 2 logs, and you have 1.')
+    expect(recipeNote(pick, { oak_planks: 3 })).toContain('The sticks for it take 1 log')
+    expect(recipeNote(pick, { oak_planks: 3, stick: 2 })).not.toContain(' for it take ')
+    // 2 planks make the 4 sticks, so no logs are needed
+    expect(recipeNote(stone, { cobblestone: 2, oak_planks: 2 })).not.toContain(' for it take ')
+  })
+
+  // The pass 17 eval: "what is missing ... so you need 1 more first" on the
+  // stone pickaxe sent her for logs when asked to mine stone. The note names
+  // the sticks and gives the totals only, with nothing about what comes first.
+  it('gives stick totals without telling her what to do first', () => {
+    const note = recipeNote(stone, { wooden_pickaxe: 1 })
+    expect(note).toContain('The sticks for it take 1 log, and you have 0.')
+    expect(note).not.toMatch(/\b(first|need)\b/)
+  })
+
   it('is empty for a node without a recipe', () => {
     expect(recipeNote(SPINE.find((n) => n.id === 'diamonds'), {})).toBe('')
   })
 })
 
 describe('in_flight progress wording', () => {
+  // 261018 (pass 17): work_session-05, a craft planned on logs mid-give.
+  it('says items in a running give are the player\'s, not hers', () => {
+    const line = getInFlightLineForSnapshot({ name: 'give', args: { item: 'oak_log', count: 6 }, startedAt: 0 }, 1800)
+    expect(line).toBe('in_flight: give(oak_log) started=1.8s ago, handing 6 oak_log to the player. Those are theirs now: your inventory line still shows them until the toss lands, so do not count them toward anything of yours')
+    expect(getInFlightLineForSnapshot({ name: 'give', args: { item: 'coal', player: 'Alex' }, startedAt: 0 }, 0)).toContain('handing all your coal to Alex')
+  })
+
   it('spells out a dig count instead of a fraction', () => {
     const line = getInFlightLineForSnapshot({ name: 'gather', args: { name: 'oak_log', count: 6 }, startedAt: 0, progress: { dug: 1, total: 6 } }, 1000)
     expect(line).toContain('broke 1 of the 6 blocks asked for so far')

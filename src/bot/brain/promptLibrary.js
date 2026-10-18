@@ -788,9 +788,16 @@ export const SESSION_END_CLAUSE = `That's for pausing a TASK. If instead they're
 // answered with "finishing the stone first" (probe: 1 of 30 started moving).
 // Pass 14 patched that with an English regex; this states both outcomes
 // evenly and lets the model read the line in any language.
+// 261018 (pass 17): three more outcomes from the pass 15 compare, stated the
+// same way. work_session-03 U10: "like 10 more" mid-gather was agreed to and
+// the old 8-log gather kept running ("I'll keep the gather running"), so a
+// changed count or item now re-calls the action. errands-03 U10: "forget the
+// logs, just meet me over here" got stop + "ok coming" and no movement until
+// an idle tick 5s later. move-order-probe come_over: "over here" was read as
+// "I see you" (0/6).
 export const WAIT_FOR_THEM = 'When they ask you to wait for them, they are the one coming to you: stop and stay where you are, and do not walk toward them.'
 export const midActionChoice = (stopTool) =>
-  `If it is chat, a question, a joke or encouragement, answer it and let the action carry on; you do not need to stop or restart it to reply. Read their whole line before you choose. If they ask you to come to them or follow them, call the action that takes you to them. If they ask you to go somewhere, call the action that takes you there. If they ask you to stop or to stay where you are, call ${stopTool}. If they ask for something else to be done, call that action. A new action replaces the current one, so make the switch in this same turn, even when the current action is one they asked for. Any of these asked for once you finish what you are doing now is not a switch: keep going, tell them you will, and record it with setGoal.`
+  `If it is chat, a question, a joke or encouragement, answer it and let the action carry on; you do not need to stop or restart it to reply. Read their whole line before you choose. If they ask you to come to them or follow them, or point out where they are, call the action that takes you to them. If they ask you to go somewhere, call the action that takes you there. If they ask you to stop or to stay where you are, call ${stopTool}. If they ask for something else to be done, call that action. If they change the job you are on, like how many or which item, call that action again with the new details, because the running one keeps its old ones. A new action replaces the current one, so make the switch in this same turn, even when the current action is one they asked for. When they drop the current job and ask for something new in the same line, call only the new action; calling ${stopTool} and saying you will do it next leaves them waiting. Any of these asked for once you finish what you are doing now is not a switch: keep going, tell them you will, and record it with setGoal.`
 
 // 260708: shared memory/goal capture cue for every variant that delivers a
 // player message (Lyra post-mortem: the player set an explicit session goal
@@ -909,6 +916,12 @@ export const NUDGES = {
   // back, stay put" line a dozen times.
   fightAlreadyTold: (sec) =>
     `You already told the player about this fight ${sec}s ago. Skip the warning this time unless something changed that they need to know, like your health dropping low, more of them arriving, or you pulling out. If you do speak, say what is new.`,
+
+  // 261018 (pass 17): a line she said in any other turn (a reply to the
+  // player, an idle line) moments before this heads-up. It asks for a line
+  // that adds to hers, not for silence: see fightToldSuffix in orchestrator.js.
+  recentLineTold: (line, sec) =>
+    `Your last line to the player, ${sec}s ago, was "${line}". They already heard it. Whatever you say now should tell them something that line did not, like what they should do or how the fight is going; do not say again what it already told them.`,
 
   capClose:
     'You hit the iteration cap and have to stop. Wrap up gracefully in your own voice by calling say once — under 12 words. Call only say, nothing else.',

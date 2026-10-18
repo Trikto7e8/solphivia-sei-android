@@ -142,6 +142,15 @@ export function getInFlightLineForSnapshot(entry, now = Date.now(), opts = {}) {
         : ` — placed ${completed} of ${p.total} so far${yPart}`
     }
   }
+  // 261018 (pass 17): a hand-over still running. work_session-05 (pass 15
+  // eval) composed a turn 1.8s into give(oak_log), read oak_log x6 in her
+  // inventory and the crafting table recipe on the next: line, and called
+  // craft; the logs were already on their way to the player.
+  if (!suffix && entry.name === 'give' && typeof entry.args?.item === 'string') {
+    const n = Number.isFinite(entry.args.count) ? `${entry.args.count} ` : 'all your '
+    const to = typeof entry.args.player === 'string' && entry.args.player.trim() ? entry.args.player.trim() : 'the player'
+    suffix = `, handing ${n}${entry.args.item} to ${to}. Those are theirs now: your inventory line still shows them until the toss lands, so do not count them toward anything of yours`
+  }
   return `in_flight: ${entry.name}(${argblurb}) started=${elapsed}s ago${suffix}`
 }
 

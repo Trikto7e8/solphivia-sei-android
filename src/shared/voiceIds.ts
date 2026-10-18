@@ -25,6 +25,19 @@ export const NO_VOICE_ID = 'none';
  */
 export const OWN_VOICE_KEY = 'voiceOwn';
 
+/**
+ * The Sei pool voice OTHER people hear for a character whose voice is the
+ * author's own ElevenLabs voice (261019). An own voice exists only in the
+ * author's ElevenLabs account, so an adopter of a shared character can never
+ * play it; main (voice/voiceAssign.ts resolveVoiceId) speaks for them with
+ * `metadata.voiceShared` when it is a valid pool id, else with a deterministic
+ * close match rolled from the character (the default, never persisted).
+ * Absent = that default. Meaningless beside a non-own voice, so applyVoicePick
+ * drops it with the own-voice marker. Every reader validates it against the
+ * pool; the proxy only ever receives pool ids.
+ */
+export const SHARED_VOICE_KEY = 'voiceShared';
+
 export interface OwnVoicePick {
   name: string;
   gender?: string;
@@ -74,6 +87,31 @@ export function applyVoicePick(
     };
   } else {
     delete next[OWN_VOICE_KEY];
+    // The voice for others only stands in for an own voice.
+    delete next[SHARED_VOICE_KEY];
   }
+  return next;
+}
+
+/** The stored voice-for-others id when it is well formed, else null. This is
+ * only a shape check: callers still validate it against the pool (main with
+ * isPoolVoiceId, the renderer against the listed pool). */
+export function sharedVoiceIdOf(metadata: Record<string, unknown> | undefined | null): string | null {
+  const v = metadata?.[SHARED_VOICE_KEY];
+  return isWellFormedVoiceId(v) ? v : null;
+}
+
+/**
+ * Set (pool id) or clear (null = the default close match) the voice others
+ * hear (returns a copy). Ignored unless the stored voice is an own-account
+ * pick: beside a pool voice the key would mean nothing.
+ */
+export function applySharedVoicePick(
+  metadata: Record<string, unknown> | undefined | null,
+  voiceId: string | null,
+): Record<string, unknown> {
+  const next: Record<string, unknown> = { ...(metadata ?? {}) };
+  if (voiceId !== null && isWellFormedVoiceId(voiceId) && ownVoiceOf(next)) next[SHARED_VOICE_KEY] = voiceId;
+  else delete next[SHARED_VOICE_KEY];
   return next;
 }

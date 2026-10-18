@@ -323,3 +323,10 @@
   accent-color: var(--accent);
   margin: 6px 0 4px;
 }
+
+/* 261019 — "Others will hear" under an own ElevenLabs voice. */
+.sharedVoice {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}

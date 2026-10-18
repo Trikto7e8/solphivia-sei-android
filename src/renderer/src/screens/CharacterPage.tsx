@@ -43,6 +43,7 @@ import { KnowledgeModal } from '../components/KnowledgeModal';
 import { PortraitVersionsModal } from '../components/PortraitVersionsModal';
 import { DeleteConfirmModal } from '../components/DeleteConfirmModal';
 import { ReportCompanionModal } from '../components/ReportCompanionModal';
+import { SharedVoiceChoice, SharedVoiceLabel } from '../components/SharedVoiceChoice';
 import { formatDate } from '../lib/formatDate';
 import { requestGameLaunch, openGame } from '../lib/gameLaunch';
 import { BackIcon, GearIcon, RotateIcon, FullscreenIcon } from '../components/icons';
@@ -50,6 +51,9 @@ import { pickPalette } from '../lib/portraitPalettes';
 import { portraitSrc } from '../lib/portraitSrc';
 import type { Character } from '@shared/characterSchema';
 import { cloudAvatarOf } from '@shared/characterSchema';
+import { ownVoiceOf, sharedVoiceIdOf } from '@shared/voiceIds';
+import { sharedVoiceMetadataToSave } from '../lib/sharedVoice';
+import { voicePitchRate } from '@shared/voicePitch';
 import styles from './CharacterPage.module.css';
 
 function fmtMs(ms: number): string {
@@ -178,6 +182,16 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
     () => ((character?.description ?? '').trim() !== '' ? 'description' : 'persona'),
   );
   const [shareConfirm, setShareConfirm] = useState<'going_public' | 'going_private' | null>(null);
+  // 261019 — "Others will hear" choice in the publish confirm, shown only when
+  // the voice is the author's own ElevenLabs voice. null = the close Sei
+  // voice main rolls for adopters; seeded from metadata.voiceShared each time
+  // the confirm opens.
+  const [shareVoice, setShareVoice] = useState<string | null>(null);
+  useEffect(() => {
+    if (shareConfirm === 'going_public') setShareVoice(sharedVoiceIdOf(character?.metadata));
+    // Seed on open only; later metadata refreshes must not reset the pick.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shareConfirm]);
   // Set when a publish attempt is blocked on a missing description: we open the
   // edit modal at Basic, and resume the publish once the modal closes with a
   // description present.
@@ -413,6 +427,17 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
     setSharePhase('working');
     setShareError(null);
     try {
+      // Store the "Others will hear" pick before publishing so the cloud row
+      // the moderation sync uploads already carries it.
+      if (target && ownVoiceOf(character.metadata)) {
+        const latest = (await sei.getCharacter(character.id)) ?? character;
+        const metadata = sharedVoiceMetadataToSave(latest.metadata, shareVoice);
+        if (metadata) {
+          await sei.saveCharacter({ ...latest, metadata }, { skipExpansion: true });
+          // Kept even if the publish then fails: the page label shows it.
+          await refreshCharacter(character.id);
+        }
+      }
       await sei.charsSetShared({ id: character.id, shared: target });
       await refreshCharacter(character.id);
       setSharePhase('success');
@@ -713,6 +738,17 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
                 </span>
               </div>
             ) : null}
+            {/* 261019 — an own ElevenLabs voice cannot play for anyone else;
+                tell the author which Sei voice others hear. */}
+            {canShare && ownVoiceOf(character.metadata) ? (
+              <div className={styles.shareVoiceRow}>
+                <SharedVoiceLabel
+                  characterId={character.id}
+                  value={sharedVoiceIdOf(character.metadata)}
+                  onChange={!viewOnly ? () => openEdit('voice') : undefined}
+                />
+              </div>
+            ) : null}
           </div>
         ) : (
           <div className={styles.pane}>
@@ -974,7 +1010,7 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
       {shareConfirm ? (
         <ModalShell
           title={null}
-          width={420}
+          width={shareConfirm === 'going_public' && ownVoiceOf(character.metadata) ? 460 : 420}
           escClose={sharePhase !== 'working'}
           scrimClose={sharePhase !== 'working'}
           onClose={closeShareModal}
@@ -1053,6 +1089,16 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
                   ? t('Companion memory will not be shared.')
                   : t('Other players will no longer be able to invite your companion. Are you sure?')}
               </p>
+              {shareConfirm === 'going_public' && ownVoiceOf(character.metadata) ? (
+                <div className={styles.confirmVoice}>
+                  <SharedVoiceChoice
+                    characterId={character.id}
+                    value={shareVoice}
+                    onChange={setShareVoice}
+                    pitch={voicePitchRate(character)}
+                  />
+                </div>
+              ) : null}
               <ModalFooter>
                 <Button kind="quiet" size="md" onClick={closeShareModal}>
                   {t('Cancel')}

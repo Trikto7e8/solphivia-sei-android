@@ -27,7 +27,15 @@ vi.mock('../characterStore', () => ({
   saveCharacter: mockSave,
 }));
 
-import { resolveVoiceId, assignedVoiceId, personaVoiceHints, ownVoicePickOf, ownVoiceHonored } from './voiceAssign';
+import {
+  resolveVoiceId,
+  assignedVoiceId,
+  personaVoiceHints,
+  ownVoicePickOf,
+  ownVoiceHonored,
+  closeSharedVoiceId,
+  sharedVoiceIdFor,
+} from './voiceAssign';
 
 function makeCharacter(overrides: Partial<Character> = {}): Character {
   return {
@@ -330,5 +338,89 @@ describe('own ElevenLabs voice on shared characters', () => {
     await resolveVoiceId(mine);
     expect(mockSave).toHaveBeenCalledTimes(1);
     mockList.mockResolvedValue([]);
+  });
+});
+
+describe('voice for others (metadata.voiceShared, 261019)', () => {
+  const ME = '11111111-1111-4111-8111-111111111111';
+  const AUTHOR = '22222222-2222-4222-8222-222222222222';
+  const OWN_ID = 'aBcDeFgHiJkLmNoPqRsT';
+  const pool = VOICES as Array<{ id: string; gender: string }>;
+  const ownMeta = (extra: Record<string, unknown> = {}, gender = 'female') => ({
+    voiceId: OWN_ID,
+    voiceOwn: { name: 'Author Clone', gender },
+    ...extra,
+  });
+
+  beforeEach(() => {
+    mockSave.mockClear();
+    mockList.mockClear();
+    mockAuth.mockReturnValue({ kind: 'signed_in', user: { id: ME } });
+  });
+
+  it('an adopter speaks with the voice the author chose, nothing persisted', async () => {
+    const chosen = pool.find((p) => p.gender === 'male')!.id; // any pool voice, even off-gender
+    const c = makeCharacter({ owner: AUTHOR, kind: 'world', metadata: ownMeta({ voiceShared: chosen }) });
+    expect(await resolveVoiceId(c)).toBe(chosen);
+    expect(mockSave).not.toHaveBeenCalled();
+    expect(mockList).not.toHaveBeenCalled();
+  });
+
+  it('missing, junk, legacy or own-account ids fall back to the close match', async () => {
+    const base = makeCharacter({ owner: AUTHOR, metadata: ownMeta() });
+    const fallback = closeSharedVoiceId(base);
+    expect(pool.find((p) => p.id === fallback)?.gender).toBe('female');
+    expect(await resolveVoiceId(base)).toBe(fallback);
+    for (const bad of [
+      undefined,
+      '',
+      42,
+      'not a voice id!',
+      'EXAVITQu4vr4xnSDxMaL', // legacy Sarah: not in the chooser, so not honored
+      'zZyYxXwWvVuUtTsSrRqQ', // well-formed but someone's own-account id
+      OWN_ID,
+    ]) {
+      const c = makeCharacter({ owner: AUTHOR, metadata: ownMeta({ voiceShared: bad }) });
+      expect(sharedVoiceIdFor(c)).toBeNull();
+      expect(await resolveVoiceId(c)).toBe(fallback);
+    }
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('the close match is the same roll the adopter makes and follows the own gender', () => {
+    const c = makeCharacter({ owner: AUTHOR, metadata: ownMeta({}, 'male') });
+    const v = closeSharedVoiceId(c);
+    expect(pool.find((p) => p.id === v)?.gender).toBe('male');
+    // an unsaved own pick: the override gender wins over the stored marker
+    const asFemale = closeSharedVoiceId(c, 'female');
+    expect(pool.find((p) => p.id === asFemale)?.gender).toBe('female');
+    // deterministic from the character alone
+    expect(closeSharedVoiceId(makeCharacter({ owner: ME, metadata: ownMeta({}, 'male') }))).toBe(v);
+  });
+
+  it('the author keeps their own voice even with a voice for others set', async () => {
+    const chosen = pool[0].id;
+    for (const owner of [ME, null]) {
+      const c = makeCharacter({ owner, metadata: ownMeta({ voiceShared: chosen }) });
+      expect(await resolveVoiceId(c)).toBe(OWN_ID);
+    }
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('a pool voice ignores a stale voiceShared', async () => {
+    const c = makeCharacter({ owner: AUTHOR, metadata: { voiceId: pool[1].id, voiceShared: pool[0].id } });
+    expect(await resolveVoiceId(c)).toBe(pool[1].id);
+  });
+
+  it('a re-roll over an unusable voice drops voiceShared with the stale marker', async () => {
+    mockList.mockResolvedValue([]);
+    // my own character whose own voice lost its marker shape: re-rolled + persisted
+    const c = makeCharacter({ owner: ME, metadata: { voiceId: OWN_ID, voiceShared: pool[0].id } });
+    await resolveVoiceId(c);
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    const saved = (mockSave.mock.calls[0] as unknown as [Character])[0];
+    expect(saved.metadata.voiceShared).toBeUndefined();
+    expect(saved.metadata.voiceOwn).toBeUndefined();
+    expect(pool.some((p) => p.id === saved.metadata.voiceId)).toBe(true);
   });
 });

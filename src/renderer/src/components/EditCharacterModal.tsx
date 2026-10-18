@@ -46,7 +46,14 @@ import { PortraitVersionsModal } from './PortraitVersionsModal';
 import { SkinEditor } from './SkinEditor';
 import { VoicePicker } from './VoicePicker';
 import type { VoiceParams } from '../lib/voicePicker';
-import { applyVoicePick, ownVoiceOf, type OwnVoicePick } from '@shared/voiceIds';
+import {
+  applySharedVoicePick,
+  applyVoicePick,
+  ownVoiceOf,
+  sharedVoiceIdOf,
+  type OwnVoicePick,
+} from '@shared/voiceIds';
+import { SharedVoiceChoice } from './SharedVoiceChoice';
 import { voicePitchRate, voiceStabilityFor } from '@shared/voicePitch';
 import type { Character } from '@shared/characterSchema';
 import styles from './EditCharacterModal.module.css';
@@ -124,6 +131,10 @@ export function EditCharacterModal({
   // persistVoiceSettings). These hold the last-persisted values.
   const [savedVoiceId, setSavedVoiceId] = useState<string | null>(voiceId);
   const [savedVoiceParams, setSavedVoiceParams] = useState<VoiceParams>(voiceParams);
+  // 261019: the Sei voice others hear while the voice is the author's own
+  // (metadata.voiceShared; null = the close match main rolls for adopters).
+  const [voiceShared, setVoiceShared] = useState<string | null>(() => sharedVoiceIdOf(character.metadata));
+  const [savedVoiceShared, setSavedVoiceShared] = useState<string | null>(voiceShared);
 
   // W5 (260817, china-compat): local-TTS gate for the Voice section. When the
   // user is BYOK with tts_engine 'local', the ElevenLabs voice picker and
@@ -203,6 +214,7 @@ export function EditCharacterModal({
   const personaDirty = personaMode === 'standard' ? standardDirty : expandedDirty;
   const voiceDirty =
     voiceId !== savedVoiceId ||
+    voiceShared !== savedVoiceShared ||
     voiceParams.pitch !== savedVoiceParams.pitch ||
     voiceParams.calmness !== savedVoiceParams.calmness;
   const busy = savingBasic || regenerating || savingAdvanced;
@@ -233,7 +245,7 @@ export function EditCharacterModal({
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canClose, basicDirty, name, description, voiceDirty, voiceId, voiceParams]);
+  }, [canClose, basicDirty, name, description, voiceDirty, voiceId, voiceShared, voiceParams]);
 
   // ── Persistence helpers ─────────────────────────────────────────────
   const persistBasic = async (): Promise<boolean> => {
@@ -331,7 +343,11 @@ export function EditCharacterModal({
       const latest = (await sei.getCharacter(character.id)) ?? character;
       // voiceId + the own-voice marker together (shared/voiceIds.ts): a pool
       // pick clears a stale marker, an own pick stamps it.
-      const metadata = applyVoicePick(latest.metadata, voiceId, voiceOwn);
+      // A pool pick clears voiceShared (applyVoicePick); an own pick keeps
+      // the "Others will hear" choice from this section.
+      const metadata = voiceOwn
+        ? applySharedVoicePick(applyVoicePick(latest.metadata, voiceId, voiceOwn), voiceShared)
+        : applyVoicePick(latest.metadata, voiceId, voiceOwn);
       const baked = { id: character.id, metadata: {} };
       if (voiceParams.pitch !== undefined) metadata.voicePitch = voiceParams.pitch;
       else if (voicePitchRate(baked) !== 1) metadata.voicePitch = 1;
@@ -343,6 +359,7 @@ export function EditCharacterModal({
       await refreshCharacter(character.id);
       setSavedVoiceId(voiceId);
       setSavedVoiceParams(voiceParams);
+      setSavedVoiceShared(voiceShared);
       onSaved?.(persisted);
       return true;
     } catch (err) {
@@ -593,6 +610,17 @@ export function EditCharacterModal({
                     localTtsMode={localTtsMode}
                     previewCharacterId={character.id}
                   />
+                  {voiceOwn && voiceId && !localTtsMode ? (
+                    <div className={styles.sharedVoice}>
+                      <SharedVoiceChoice
+                        characterId={character.id}
+                        ownGender={voiceOwn.gender}
+                        value={voiceShared}
+                        onChange={setVoiceShared}
+                        pitch={voiceParams.pitch ?? 1}
+                      />
+                    </div>
+                  ) : null}
                 </div>
               ) : null}
 

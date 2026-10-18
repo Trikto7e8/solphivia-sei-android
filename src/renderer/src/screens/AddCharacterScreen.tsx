@@ -46,7 +46,8 @@ import { KnowledgeDropZone } from '../components/KnowledgeDropZone';
 import { CompactKnowledgeModal } from '../components/CompactKnowledgeModal';
 import { FileTextIcon, TrashIcon } from '../components/icons';
 import type { VoiceParams } from '../lib/voicePicker';
-import { applyVoicePick, type OwnVoicePick } from '@shared/voiceIds';
+import { applySharedVoicePick, applyVoicePick, type OwnVoicePick } from '@shared/voiceIds';
+import { SharedVoiceChoice } from '../components/SharedVoiceChoice';
 import type { Character } from '@shared/characterSchema';
 import { KNOWLEDGE_COMPACT_SUGGEST_BYTES } from '@shared/ipc';
 
@@ -95,6 +96,9 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
   const [voiceId, setVoiceId] = useState<string | null>(null);
   // 261019: marker for a pick from "Your ElevenLabs voices" (null otherwise).
   const [voiceOwn, setVoiceOwn] = useState<OwnVoicePick | null>(null);
+  // 261019: when the voice is the user's own and they publish, the Sei voice
+  // other players hear (null = the close match main rolls; step 5 chooser).
+  const [voiceShared, setVoiceShared] = useState<string | null>(null);
   // Voice playground (260725): pitch/calmness the user tuned. VoicePicker
   // normalizes (drops default-valued keys), so any key present here is a real
   // user change and gets persisted as metadata.voicePitch / voiceStability.
@@ -290,8 +294,13 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
         // silent companion); Auto leaves it unset for the deterministic
         // runtime assignment. Playground params persist only when the user
         // actually changed them (absent = engine default).
+        // An own ElevenLabs voice also stores the Sei voice others hear
+        // (applySharedVoicePick drops it for any other voice).
         metadata: {
-          ...(voiceId ? applyVoicePick(latest.metadata, voiceId, voiceOwn) : latest.metadata),
+          ...applySharedVoicePick(
+            voiceId ? applyVoicePick(latest.metadata, voiceId, voiceOwn) : latest.metadata,
+            visibility === 'public' ? voiceShared : null,
+          ),
           ...(voiceParams.pitch !== undefined ? { voicePitch: voiceParams.pitch } : {}),
           ...(voiceParams.calmness !== undefined ? { voiceStability: voiceParams.calmness } : {}),
         },
@@ -682,6 +691,17 @@ export function AddCharacterScreen({ importFirst = false }: { importFirst?: bool
             No, keep private
           </Button>
         </div>
+        {visibility === 'public' && voiceOwn && voiceId && created ? (
+          <div style={{ marginTop: 18, maxWidth: 460 }}>
+            <SharedVoiceChoice
+              characterId={created.id}
+              ownGender={voiceOwn.gender}
+              value={voiceShared}
+              onChange={setVoiceShared}
+              pitch={voiceParams.pitch ?? 1}
+            />
+          </div>
+        ) : null}
         {error ? <ErrorRow message={error} /> : null}
       </QuestionShell>
     );

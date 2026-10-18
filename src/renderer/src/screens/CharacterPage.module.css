@@ -365,6 +365,13 @@
   font-family: var(--sans);
 }
 
+/* 261019 — "Voice for others: <name>" under the share box (own voice only). */
+.shareVoiceRow {
+  margin-top: 8px;
+  padding: 0 2px;
+  font-family: var(--sans);
+}
+
 /* ── Deploy row (mockup .deploy) — pinned to the bottom ──────────────── */
 .deploy {
   margin-top: auto;
@@ -455,6 +462,11 @@
   line-height: 1.5;
   color: var(--text-2);
   margin: 0;
+}
+
+.confirmVoice {
+  margin-top: 14px;
+  font-family: var(--sans);
 }
 
 .confirmTitleOk {

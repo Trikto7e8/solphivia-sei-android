@@ -2505,6 +2505,19 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return await voicePreviewTts({ voiceId: args.voiceId });
   });
 
+  // Voice for others (261019): the close pool voice an adopter hears for a
+  // character whose voice is the author's own ElevenLabs voice, when the
+  // author has not chosen one. Same roll resolveVoiceId uses on their side.
+  ipcMain.handle(IpcChannel.voice.sharedDefault, async (_event, argsRaw: unknown): Promise<{ voiceId: string }> => {
+    const args = z
+      .object({ characterId: z.string().uuid(), ownGender: z.string().max(20).optional() })
+      .parse(argsRaw);
+    const character = await getCharacter(args.characterId);
+    if (!character) throw new Error('Character not found');
+    const { closeSharedVoiceId } = await import('./voice/voiceAssign');
+    return { voiceId: closeSharedVoiceId(character, args.ownGender) };
+  });
+
   ipcMain.handle(IpcChannel.voice.preview, async (_event, argsRaw: unknown): Promise<ArrayBuffer> => {
     // Playground params (260725): calmness is optional and re-clamped inside
     // voicePreviewTts, so a stale renderer sending junk can only get a valid

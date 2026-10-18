@@ -4,7 +4,16 @@
  * clears it.
  */
 import { describe, it, expect } from 'vitest';
-import { NO_VOICE_ID, OWN_VOICE_KEY, applyVoicePick, isWellFormedVoiceId, ownVoiceOf } from './voiceIds';
+import {
+  NO_VOICE_ID,
+  OWN_VOICE_KEY,
+  SHARED_VOICE_KEY,
+  applySharedVoicePick,
+  applyVoicePick,
+  isWellFormedVoiceId,
+  ownVoiceOf,
+  sharedVoiceIdOf,
+} from './voiceIds';
 
 const OWN_ID = 'aBcDeFgHiJkLmNoPqRsT';
 
@@ -70,5 +79,41 @@ describe('applyVoicePick', () => {
     applyVoicePick(start, null);
     expect(start).toEqual({ voiceId: OWN_ID, voiceOwn: { name: 'My Clone' } });
     expect(applyVoicePick(undefined, OWN_ID, { name: 'A' })).toEqual({ voiceId: OWN_ID, voiceOwn: { name: 'A' } });
+  });
+});
+
+describe('voice for others (voiceShared)', () => {
+  const POOL_ID = 'pFZP5JQG7iQjIQuC4Bku';
+  const OTHER_POOL = 'Xb7hH8MSUJpSbSDYk0k2';
+  const own = { voiceId: OWN_ID, [OWN_VOICE_KEY]: { name: 'Clone' }, [SHARED_VOICE_KEY]: POOL_ID };
+
+  it('a non-own pick clears it with the own marker', () => {
+    for (const pick of [OTHER_POOL, NO_VOICE_ID, null]) {
+      const next = applyVoicePick(own, pick, null);
+      expect(next[SHARED_VOICE_KEY]).toBeUndefined();
+      expect(next[OWN_VOICE_KEY]).toBeUndefined();
+    }
+  });
+
+  it('an own pick keeps it', () => {
+    const next = applyVoicePick(own, 'zZyYxXwWvVuUtTsSrRqQ', { name: 'Other clone' });
+    expect(next[SHARED_VOICE_KEY]).toBe(POOL_ID);
+  });
+
+  it('applySharedVoicePick stores a choice only beside an own voice, null clears', () => {
+    const base = { voiceId: OWN_ID, [OWN_VOICE_KEY]: { name: 'Clone' } };
+    expect(applySharedVoicePick(base, OTHER_POOL)[SHARED_VOICE_KEY]).toBe(OTHER_POOL);
+    expect(applySharedVoicePick(own, null)[SHARED_VOICE_KEY]).toBeUndefined();
+    expect(applySharedVoicePick(base, 'not an id')[SHARED_VOICE_KEY]).toBeUndefined();
+    expect(applySharedVoicePick({ voiceId: POOL_ID }, OTHER_POOL)[SHARED_VOICE_KEY]).toBeUndefined();
+    // input untouched
+    expect(own[SHARED_VOICE_KEY]).toBe(POOL_ID);
+  });
+
+  it('sharedVoiceIdOf reads only well-formed ids', () => {
+    expect(sharedVoiceIdOf(own)).toBe(POOL_ID);
+    expect(sharedVoiceIdOf({ [SHARED_VOICE_KEY]: 7 })).toBeNull();
+    expect(sharedVoiceIdOf({ [SHARED_VOICE_KEY]: '../x' })).toBeNull();
+    expect(sharedVoiceIdOf(undefined)).toBeNull();
   });
 });

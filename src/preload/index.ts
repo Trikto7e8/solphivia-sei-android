@@ -410,6 +410,7 @@ const api: RendererApi = {
   voiceListVoices: () => ipcRenderer.invoke(IpcChannel.voice.list),
   voiceListOwnVoices: (args) => ipcRenderer.invoke(IpcChannel.voice.ownList, args ?? {}),
   voiceOwnPreview: (args) => ipcRenderer.invoke(IpcChannel.voice.ownPreview, args),
+  voiceSharedDefault: (args) => ipcRenderer.invoke(IpcChannel.voice.sharedDefault, args),
   voicePreview: (args) => ipcRenderer.invoke(IpcChannel.voice.preview, args),
   voicePreviewAvailable: () => ipcRenderer.invoke(IpcChannel.voice.previewAvailable),
   voiceElevenKeySet: (args) => ipcRenderer.invoke(IpcChannel.voice.elevenKeySet, args),

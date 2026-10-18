@@ -2447,6 +2447,15 @@ export interface RendererApi {
    */
   voiceOwnPreview(args: { voiceId: string }): Promise<ArrayBuffer>;
   /**
+   * The close Sei pool voice that others hear for this character when its
+   * voice is the author's own ElevenLabs voice and no voice for others was
+   * chosen (261019, voiceAssign closeSharedVoiceId). Deterministic from the
+   * character, so it matches what every adopter's app rolls. `ownGender`
+   * stands in for the stored marker's gender (an own voice picked in the
+   * editor but not saved yet).
+   */
+  voiceSharedDefault(args: { characterId: string; ownGender?: string }): Promise<{ voiceId: string }>;
+  /**
    * Speak the canned preview line in an arbitrary pool voice (picker).
    * `calmness` is ElevenLabs stability (clamped 0..1); omitting it keeps the
    * request byte-identical to the pre-playground shape, so existing disk-cache
@@ -3525,6 +3534,8 @@ export const IpcChannel = {
     ownList: 'voice:own-list',
     /** Invoke: sample bytes for one own voice ({voiceId}) → ArrayBuffer (261019). */
     ownPreview: 'voice:own-preview',
+    /** Invoke: default voice for others on an own-voice character ({characterId, ownGender?}) → {voiceId} (261019). */
+    sharedDefault: 'voice:shared-default',
     /** Invoke: preview an arbitrary pool voice ({voiceId}) → ArrayBuffer. */
     preview: 'voice:preview',
     /** Invoke: can voice samples synthesize right now? → boolean (260720). */

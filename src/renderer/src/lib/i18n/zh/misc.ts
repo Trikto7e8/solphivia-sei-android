@@ -403,4 +403,13 @@ export const ZH_MISC: Record<string, string> = {
     '你的 ChatGPT 登录已失效。请在设置中点击 Continue with ChatGPT 重新登录。',
   "ChatGPT plan use isn't turned on for this sign-in. Turn it on in Settings, then try again.":
     '这次登录没有开启 ChatGPT 套餐使用权限。请在设置中开启后重试。',
+  // 261019: own ElevenLabs voice on a shared character ("Others will hear").
+  "Your voice is from your ElevenLabs account, so others can't play it. Others will hear:":
+    '这个声音来自你的 ElevenLabs 账号，其他人无法播放。其他人会听到：',
+  'Voice others will hear': '其他人听到的声音',
+  'Closest Sei voice ({name})': '最接近的 Sei 声音（{name}）',
+  'Closest Sei voice': '最接近的 Sei 声音',
+  'Sei voice': 'Sei 声音',
+  'Voice for others: {name}': '其他人听到的声音：{name}',
+  'Voice for others: a Sei voice': '其他人听到的声音：一个 Sei 声音',
 };

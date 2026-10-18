@@ -14,7 +14,14 @@
  */
 import { rollVoice, mulberry32, VOICES } from 'soulcaster';
 import type { Character } from '../../shared/characterSchema';
-import { NO_VOICE_ID, OWN_VOICE_KEY, ownVoiceOf, type OwnVoicePick } from '../../shared/voiceIds';
+import {
+  NO_VOICE_ID,
+  OWN_VOICE_KEY,
+  SHARED_VOICE_KEY,
+  ownVoiceOf,
+  sharedVoiceIdOf,
+  type OwnVoicePick,
+} from '../../shared/voiceIds';
 import { listCharacters, saveCharacter } from '../characterStore';
 import { getCurrentAuthState } from '../auth/authState';
 
@@ -239,30 +246,13 @@ export function listPoolVoices(): Array<{
 }
 
 /**
- * Resolve (and persist, when newly assigned) the character's TTS voice id.
- * Never throws for assignment reasons — the fallback roll always lands on a
- * valid pool voice; only storage errors propagate from saveCharacter, and
- * those are swallowed too (an unsaved assignment just re-rolls to the same
- * deterministic pick next time).
+ * The deterministic fallback roll (260705): soulcaster's rollVoice tables,
+ * seeded from the character id, filtered by the character sheet and persona.
+ * `ownGender` (261019) fills in the voice gender when the sheet says nothing,
+ * so a stand-in for an own ElevenLabs voice keeps that voice's gender.
  */
-export async function resolveVoiceId(character: Character): Promise<string> {
-  // Explicit "no voice" pick (260720): never roll a fallback over it — doing
-  // so would persist a voice onto a companion the user made silent. Callers
-  // gate on the sentinel before resolving; this throw is the backstop.
-  if (character.metadata?.voiceId === NO_VOICE_ID) {
-    throw new Error('VOICE_DISABLED: this companion has no voice');
-  }
-  const assigned = assignedVoiceId(character);
-  if (assigned) return assigned;
-  // Another user's own ElevenLabs voice (261019, shared character): roll a
-  // pool voice to speak with, but never persist it. The author's metadata is
-  // the cloud copy's, and a cloud refresh would only overwrite the roll again.
-  const borrowed = isBorrowedOwnVoice(character);
-
+function rollFallbackVoice(character: Character, ownGender: string | undefined, taken: string[]): string {
   const sheet = (character.metadata?.soulcaster_sheet ?? {}) as SheetHints;
-  // A borrowed voice keeps the author's voice gender when the sheet says
-  // nothing (the marker carries the ElevenLabs gender label).
-  const ownGender = borrowed ? ownVoiceOf(character.metadata)?.gender : undefined;
   const gender =
     sheet.gender === 'male' || sheet.gender === 'female' || sheet.gender === 'other'
       ? sheet.gender
@@ -279,33 +269,86 @@ export async function resolveVoiceId(character: Character): Promise<string> {
   const background =
     typeof sheet.background === 'string' ? sheet.background : hints.robot ? 'robot' : 'human';
 
-  // Exclude voices the rest of the library already uses (assigned ones only —
-  // resolving them recursively would just be this same roll).
-  // A borrowed voice skips the exclusion list: it is never persisted, so it
-  // must come out the same every time from the character alone, not drift as
-  // the library changes.
-  let taken: string[] = [];
-  if (!borrowed) {
-    try {
-      taken = (await listCharacters())
-        .filter((c) => c.id !== character.id)
-        .map((c) => assignedVoiceId(c))
-        .filter((v): v is string => v !== null);
-    } catch {
-      // Library unreadable → roll without exclusions; still deterministic.
-    }
-  }
-
   const voice = rollVoice(
     { gender, age, background, personality_seeds: hints.seeds },
     { takenVoiceIds: taken, rng: mulberry32(seedFrom(character.id)) },
   ) as { id: string };
+  return voice.id;
+}
 
-  if (borrowed) return voice.id;
+/**
+ * The close Sei voice that stands in for an own ElevenLabs voice when someone
+ * else plays the character (261019): the fallback roll with the own voice's
+ * gender and NO roster exclusions, so it comes out the same on every device
+ * from the character alone (the author's preview and every adopter agree).
+ * `ownGender` overrides the stored marker's gender, for an own voice picked
+ * in the editor but not saved yet.
+ */
+export function closeSharedVoiceId(character: Character, ownGender?: string | null): string {
+  const gender = ownGender ?? ownVoiceOf(character.metadata)?.gender;
+  return rollFallbackVoice(character, gender ?? undefined, []);
+}
+
+/**
+ * The voice the author chose for others (metadata.voiceShared), only when it
+ * is a current pool voice: anything else (legacy, own-account, junk) falls
+ * back to the close match, so only pool ids ever reach the proxy. Current
+ * pool only, not legacy, so it agrees with the renderer's chooser, which
+ * lists listPoolVoices() and reads anything unlisted as the default.
+ */
+export function sharedVoiceIdFor(character: Pick<Character, 'metadata'>): string | null {
+  const id = sharedVoiceIdOf(character.metadata);
+  return id && VOICE_IDS.has(id) ? id : null;
+}
+
+/**
+ * Resolve (and persist, when newly assigned) the character's TTS voice id.
+ * Never throws for assignment reasons — the fallback roll always lands on a
+ * valid pool voice; only storage errors propagate from saveCharacter, and
+ * those are swallowed too (an unsaved assignment just re-rolls to the same
+ * deterministic pick next time).
+ */
+export async function resolveVoiceId(character: Character): Promise<string> {
+  // Explicit "no voice" pick (260720): never roll a fallback over it — doing
+  // so would persist a voice onto a companion the user made silent. Callers
+  // gate on the sentinel before resolving; this throw is the backstop.
+  if (character.metadata?.voiceId === NO_VOICE_ID) {
+    throw new Error('VOICE_DISABLED: this companion has no voice');
+  }
+  const assigned = assignedVoiceId(character);
+  if (assigned) return assigned;
+  // Another user's own ElevenLabs voice (261019, shared character): speak
+  // with the voice the author chose for others (metadata.voiceShared, pool
+  // ids only), else a close match rolled from the character. Never persist
+  // either: the author's metadata is the cloud copy's, and a cloud refresh
+  // would only overwrite it again.
+  if (isBorrowedOwnVoice(character)) {
+    return sharedVoiceIdFor(character) ?? closeSharedVoiceId(character);
+  }
+
+  // Exclude voices the rest of the library already uses (assigned ones only —
+  // resolving them recursively would just be this same roll).
+  let taken: string[] = [];
+  try {
+    taken = (await listCharacters())
+      .filter((c) => c.id !== character.id)
+      .map((c) => assignedVoiceId(c))
+      .filter((v): v is string => v !== null);
+  } catch {
+    // Library unreadable → roll without exclusions; still deterministic.
+  }
+
+  const voice = { id: rollFallbackVoice(character, undefined, taken) };
+
   try {
     // The rolled id is a pool voice, so any own-voice marker left beside the
-    // replaced id is stale by definition: drop it with the id it described.
-    const { [OWN_VOICE_KEY]: _staleOwn, ...rest } = character.metadata ?? {};
+    // replaced id is stale by definition: drop it (and the voice for others
+    // that stood in for it) with the id it described.
+    const {
+      [OWN_VOICE_KEY]: _staleOwn,
+      [SHARED_VOICE_KEY]: _staleShared,
+      ...rest
+    } = character.metadata ?? {};
     await saveCharacter({
       ...character,
       metadata: { ...rest, voiceId: voice.id },

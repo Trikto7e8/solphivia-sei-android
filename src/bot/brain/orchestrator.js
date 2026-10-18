@@ -3337,7 +3337,17 @@ function maybeWarnByteCap(loop, warned) {
     // 261011: a loop that only TALKED holds the floor for the reply window in
     // every game (see replyWindowRemainingMs below). A loop that did world
     // work keeps the fast agentic cadence for resuming the goal.
-    _lastLoopTalkOnly = loop._saidThisLoop === true && loop._worldActed !== true
+    // 261018 (pass 17): unless its LAST turn only talked. Then the work is
+    // done and she ended the loop on a line to the player, so it is their
+    // turn. In the pass 15 compare the idle tick 5s later said the same line
+    // again: "got your six logs. want them, or should i keep chopping" then
+    // "six logs in the bag. want them now or should i turn em into a crafting
+    // table first" (work_session-04), "logs are at your feet alex, dock time"
+    // then "logs are at your feet. next up is a furnace" (errands-01). A last
+    // turn with stop in it keeps the fast cadence: stop with only a line
+    // ("ok coming") is how a move order went unstarted, and the idle tick
+    // is what starts it.
+    _lastLoopTalkOnly = loop._saidThisLoop === true && (loop._worldActed !== true || loop._lastTurnTalkOnly === true)
     // 260703-fix (b): finish any model-ordered batch tools stranded by an
     // abnormal teardown (see drainPendingToolsOnTeardown). No-op in the common
     // case (pending queue already drained → null), so it never double-executes.
@@ -4988,6 +4998,9 @@ function maybeWarnByteCap(loop, warned) {
       // loop via startLongRunner (260514-gam universal-inflight).
       const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
       if (newSuspendingTools.length > 0) loop._worldActed = true
+      // 261018 (pass 17): whether this turn only talked. The last turn's
+      // value decides the idle hold at teardown (see _lastLoopTalkOnly).
+      loop._lastTurnTalkOnly = saySpokenThisTurn && newSuspendingTools.length === 0 && !hasStop
       // 261012 (pass 5): a stop from the player starts the idle hold (see
       // playerStopAt); a player line answered with new work ends it. A bare
       // "stop" line counts even when the model answered it with end_loop,
@@ -5970,6 +5983,8 @@ function maybeWarnByteCap(loop, warned) {
     // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
     // "ok holding still alex"): the 5s cadence is for resuming work, and with
     // no work to resume an idle turn has nothing new to say.
+    // 261018 (pass 17): also after a loop that did work but ended on a
+    // talk-only turn (see teardownLoop).
     replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,

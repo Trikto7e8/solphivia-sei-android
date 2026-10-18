@@ -213,6 +213,11 @@ export function createConvoMemory({ onLine = null } = {}) {
       // since I last spoke?", which is what separates a reply from talking to
       // yourself. See shouldSuppressIdleSay in orchestrator.js.
       lastPlayer: () => playerLines.length > 0 ? playerLines[playerLines.length - 1] : null,
+      // 261018: did anyone say a line that the transcript places after
+      // `fromMs` and no later than `toMs`? (Her lines go at sentAt.)
+      spokeBetween: (fromMs, toMs) =>
+        playerLines.some((l) => l.at > fromMs && l.at <= toMs) ||
+        selfLines.some((l) => { const t = l.sentAt ?? l.at; return t > fromMs && t <= toMs }),
       get playerSize() { return playerLines.length },
       get selfSize() { return selfLines.length },
       get eventSize() { return events.size },

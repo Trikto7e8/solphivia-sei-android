@@ -48,7 +48,7 @@ import { ownRepeatsNote } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
 import {
   describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
-  gameEventFact, describeInventoryGain,
+  gameEventFact, createInventoryGainRecorder,
   HIT_COALESCE_MS, ACTION_COALESCE_MS,
 } from './sessionEvents.js'
 import { logChatOut, logActionResult } from './log.js'
@@ -1137,6 +1137,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // 261011: every line also feeds the process-level session digest, which
   // main reads for the player-end "next time" check (sessionDigest.js).
   const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
+  // 261018 (pass 16): items that arrived without an action of hers, written
+  // into the conversation record from the snapshot (see snapshotText).
+  const recordInventoryGains = createInventoryGainRecorder({
+    record: (text, opts) => convoMemory.recentChat.pushEvent(text, opts),
+    spokeBetween: (from, to) => convoMemory.recentChat.spokeBetween(from, to),
+  })
   // 261012: the note naming a word her recent lines keep repeating, or null.
   // 261013: it also quotes her last line or two and names a phrase or opener
   // her recent lines share (ownRepeats.js), and rides silent check-ins too,
@@ -2154,10 +2160,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         hideNext: playerRequestOwed || playerTaskInGoals || !!note,
         // 261018 (pass 16): items that arrived without an action of hers go
         // into the conversation record (sessionEvents.describeInventoryGain).
-        onUnexplainedGains: (gains) => {
-          const t = describeInventoryGain(gains)
-          if (t) convoMemory.recentChat.pushEvent(t)
-        },
+        // A run of them with nothing said in between is one line.
+        onUnexplainedGains: recordInventoryGains,
       })
       if (typeof text === 'string') _repeatsContext.snapshot = text
       return note && typeof text === 'string' ? `${text}\n${note}` : text

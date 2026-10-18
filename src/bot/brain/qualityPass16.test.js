@@ -19,7 +19,8 @@ import { EventEmitter } from 'node:events'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { z } from 'zod'
 import { Vec3 } from 'vec3'
-import { describeInventoryGain } from './sessionEvents.js'
+import { describeInventoryGain, createInventoryGainRecorder, createSessionEventLog, ACTION_COALESCE_MS } from './sessionEvents.js'
+import { createConvoMemory } from './convoMemory.js'
 import { renderHeartbeat, PLAYER_TASKS_HEAD, PLAYER_TASKS_ON_HOLD_HEAD, OWN_GOALS_ON_HOLD_HEAD } from './promptLibrary.js'
 import { createSnapshotComposer } from '../adapter/minecraft/observers/snapshot.js'
 import { createOrchestrator, _setTickIntervalForTests } from './orchestrator.js'
@@ -39,6 +40,60 @@ describe('describeInventoryGain', () => {
     expect(describeInventoryGain([{ item: 'bread', n: -1 }])).toBeNull()
     expect(describeInventoryGain([])).toBeNull()
     expect(describeInventoryGain(null)).toBeNull()
+  })
+})
+
+describe('createInventoryGainRecorder (review: a busy stretch is one line)', () => {
+  it('adds up a run of arrivals with nothing said in between', () => {
+    let t = 1_000
+    const log = createSessionEventLog({ now: () => t })
+    const rec = createInventoryGainRecorder({ record: log.record, spokeBetween: () => false, now: () => t })
+    log.record('you used attackEntity: killed zombie (4 hits)')
+    for (let i = 0; i < 20; i++) {
+      t += 3_000
+      rec([{ item: 'dirt', n: 1 }, ...(i % 2 ? [{ item: 'cobblestone', n: 2 }] : [])])
+    }
+    expect(log.list().map((e) => e.text)).toEqual([
+      'you used attackEntity: killed zombie (4 hits)',
+      '20 dirt and 20 cobblestone came into your inventory',
+    ])
+  })
+
+  it('starts a new line after anyone speaks, and after the window', () => {
+    let t = 1_000
+    const log = createSessionEventLog({ now: () => t })
+    let spokeAt = null
+    const rec = createInventoryGainRecorder({
+      record: log.record, now: () => t,
+      spokeBetween: (from, to) => spokeAt != null && spokeAt > from && spokeAt <= to,
+    })
+    rec([{ item: 'dirt', n: 1 }])
+    t += 1_000; spokeAt = t
+    t += 1_000
+    rec([{ item: 'iron_sword', n: 1 }])
+    t += ACTION_COALESCE_MS + 1
+    rec([{ item: 'bread', n: 2 }])
+    rec([])
+    expect(log.list().map((e) => e.text)).toEqual([
+      '1 dirt came into your inventory',
+      '1 iron_sword came into your inventory',
+      '2 bread came into your inventory',
+    ])
+  })
+
+  it('with the real conversation memory, an arrival after her line sits after it', async () => {
+    const mem = createConvoMemory()
+    const rc = mem.recentChat
+    const rec = createInventoryGainRecorder({ record: rc.pushEvent, spokeBetween: rc.spokeBetween })
+    rec([{ item: 'dirt', n: 1 }])
+    await new Promise((r) => setTimeout(r, 5))
+    rc.pushSelf('Sui', 'i have zero items')
+    await new Promise((r) => setTimeout(r, 5))
+    rec([{ item: 'iron_sword', n: 1 }, { item: 'bread', n: 4 }])
+    const block = rc.formatConversationBlock()
+    expect(block.indexOf('game: 1 dirt came into your inventory')).toBeLessThan(block.indexOf('you: i have zero items'))
+    expect(block.indexOf('game: 1 iron_sword and 4 bread came into your inventory')).toBeGreaterThan(block.indexOf('you: i have zero items'))
+    expect(rc.eventSize).toBe(2)
   })
 })
 

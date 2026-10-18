@@ -32,9 +32,9 @@ import type { Character } from '../../shared/characterSchema';
 import { characterLanguage, clampChatLanguage, type ChatLanguage } from '../../shared/chatLanguage';
 import { toSpokenRegister, toSpokenUtterance } from './spokenRegister';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from './audioTags';
-import { resolveVoiceId, isPoolVoiceId } from './voiceAssign';
+import { resolveVoiceId, isPoolVoiceId, ownVoicePickOf } from './voiceAssign';
 import { previewCacheKey, readCachedPreview, writeCachedPreview } from './previewCache';
-import { NO_VOICE_ID, ownVoiceOf } from '../../shared/voiceIds';
+import { NO_VOICE_ID } from '../../shared/voiceIds';
 import { resolveElevenLabsRoute, type ElevenLabsRoute } from './elevenLabsKeyStore';
 import { isOwnVoiceId } from './ownVoices';
 import type { SpeechPackId } from '../speech/packs';
@@ -596,7 +596,7 @@ export async function voiceTts(args: {
   // Local TTS route (see localTtsSelected): same register conversion, no
   // proxy clip cap (the IPC boundary already bounds text length), WAV bytes
   // instead of mp3 — the renderer's blob playback sniffs the container.
-  const own = ownVoiceOf(character.metadata);
+  const own = ownVoicePickOf(character);
   if (await localTtsSelected()) {
     const localText = speechTextFor(args.text, language);
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
@@ -671,7 +671,7 @@ export async function voiceTtsStream(
   // streaming path while local TTS is selected (a WAV clip cannot ride the
   // audio/mpeg MSE pipeline), but any caller that does anyway degrades to a
   // whole-clip synthesis delivered as one chunk + done.
-  const own = ownVoiceOf(character.metadata);
+  const own = ownVoicePickOf(character);
   if (await localTtsSelected()) {
     const localText = speechTextFor(args.text, language);
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
@@ -873,7 +873,7 @@ export async function voicePreviewTts(args: {
       const character = await getCharacter(args.characterId);
       if (character && character.metadata?.voiceId !== NO_VOICE_ID) {
         voiceId = await resolveVoiceId(character);
-        genderHint = ownVoiceOf(character.metadata)?.gender;
+        genderHint = ownVoicePickOf(character)?.gender;
       }
     }
     const localText = speechTextFor(line, language) || line;

@@ -14,7 +14,7 @@
  */
 import { rollVoice, mulberry32, VOICES } from 'soulcaster';
 import type { Character } from '../../shared/characterSchema';
-import { NO_VOICE_ID, ownVoiceOf } from '../../shared/voiceIds';
+import { NO_VOICE_ID, OWN_VOICE_KEY, ownVoiceOf, type OwnVoicePick } from '../../shared/voiceIds';
 import { listCharacters, saveCharacter } from '../characterStore';
 
 const VOICE_IDS = new Set((VOICES as Array<{ id: string }>).map((v) => v.id));
@@ -161,6 +161,18 @@ export function assignedVoiceId(character: Character): string | null {
 }
 
 /**
+ * The own-account marker for the character's CURRENT voice, or null. A pool
+ * (or legacy) id is never an own voice, even if a stale `voiceOwn` survived
+ * beside it (a writer that set voiceId without applyVoicePick): treating it
+ * as one would refuse a perfectly playable pool voice on the proxy route.
+ */
+export function ownVoicePickOf(character: Character): OwnVoicePick | null {
+  const v = character.metadata?.voiceId;
+  if (typeof v === 'string' && (VOICE_IDS.has(v) || LEGACY_VOICE_IDS.has(v))) return null;
+  return ownVoiceOf(character.metadata);
+}
+
+/**
  * True when `id` is a curated-pool or legacy voice (defense at the IPC
  * boundary — still a closed allowlist, never an arbitrary id). Legacy ids
  * must pass so previewing an existing companion's voice keeps working.
@@ -236,9 +248,12 @@ export async function resolveVoiceId(character: Character): Promise<string> {
   ) as { id: string };
 
   try {
+    // The rolled id is a pool voice, so any own-voice marker left beside the
+    // replaced id is stale by definition: drop it with the id it described.
+    const { [OWN_VOICE_KEY]: _staleOwn, ...rest } = character.metadata ?? {};
     await saveCharacter({
       ...character,
-      metadata: { ...character.metadata, voiceId: voice.id },
+      metadata: { ...rest, voiceId: voice.id },
     });
   } catch (err) {
     console.warn(`[sei/voice] failed to persist voiceId for ${character.id}: ${(err as Error).message}`);

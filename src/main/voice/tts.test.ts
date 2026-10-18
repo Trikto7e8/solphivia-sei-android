@@ -474,6 +474,14 @@ describe('own ElevenLabs voices', () => {
     expect(fetchSpy.mock.calls[0][0]).toBe('https://api.sei.gg/tts/speech');
   });
 
+  it('a stale voiceOwn beside a POOL id does not trip the own-voice gate', async () => {
+    mockGetCharacter.mockResolvedValue({ ...CHAR, metadata: { voiceId: VOICE, voiceOwn: { name: 'Old Clone' } } });
+    mockResolveVoiceId.mockResolvedValue(VOICE);
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.sei.gg/tts/speech');
+  });
+
   it('preview allowlist: pool or a voice in the current account, nothing else', async () => {
     mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'byok-key' });
     fetchSpy.mockResolvedValue(okAudio());

@@ -225,6 +225,34 @@ export async function isOwnVoiceId(id: string, opts: { fetchImpl?: FetchLike } =
   }
 }
 
+/** The response body, or null once it passes `max` bytes (reading stops). */
+async function readCapped(res: Response, max: number): Promise<ArrayBuffer | null> {
+  if (!res.body) {
+    const buf = await res.arrayBuffer();
+    return buf.byteLength > max ? null : buf;
+  }
+  const reader = res.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > max) {
+      await reader.cancel().catch(() => {});
+      return null;
+    }
+    chunks.push(value);
+  }
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.byteLength;
+  }
+  return out.buffer;
+}
+
 /**
  * ElevenLabs' ready-made sample for one own voice, fetched in main and
  * disk-cached (keyed on the preview URL, which changes when the voice is
@@ -252,8 +280,11 @@ export async function ownVoicePreviewBytes(
     if (!res.ok) return null;
     const len = Number(res.headers.get('content-length') ?? '0');
     if (len > PREVIEW_MAX_BYTES) return null;
-    const buf = await res.arrayBuffer();
-    if (buf.byteLength === 0 || buf.byteLength > PREVIEW_MAX_BYTES) return null;
+    // Content-Length is optional (chunked responses carry none), so the cap
+    // is enforced while reading: past it the download is cancelled instead
+    // of being buffered whole and then thrown away.
+    const buf = await readCapped(res, PREVIEW_MAX_BYTES);
+    if (!buf || buf.byteLength === 0) return null;
     await writeCachedPreview(key, buf);
     return buf;
   } catch (err) {

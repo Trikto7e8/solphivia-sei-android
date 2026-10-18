@@ -310,4 +310,25 @@ describe('ownVoicePreviewBytes', () => {
     expect(await ownVoicePreviewBytes(CLONED.voice_id, { fetchImpl: throwing })).toBeNull();
     expect(mockWriteCached).not.toHaveBeenCalled();
   });
+
+  it('caps a body with no Content-Length while reading, and cancels it', async () => {
+    const list: FetchLike = async () => page([CLONED]);
+    let pulled = 0;
+    let cancelled = false;
+    const chunk = new Uint8Array(1024 * 1024);
+    const endless = new ReadableStream<Uint8Array>({
+      pull(ctrl) {
+        pulled += 1;
+        ctrl.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const big: FetchLike = async (url) => (url === CLONED.preview_url ? new Response(endless) : list(url));
+    expect(await ownVoicePreviewBytes(CLONED.voice_id, { fetchImpl: big })).toBeNull();
+    expect(cancelled).toBe(true);
+    expect(pulled).toBeLessThan(10);
+    expect(mockWriteCached).not.toHaveBeenCalled();
+  });
 });

@@ -25,7 +25,7 @@ vi.mock('../characterStore', () => ({
   saveCharacter: mockSave,
 }));
 
-import { resolveVoiceId, assignedVoiceId, personaVoiceHints } from './voiceAssign';
+import { resolveVoiceId, assignedVoiceId, personaVoiceHints, ownVoicePickOf } from './voiceAssign';
 
 function makeCharacter(overrides: Partial<Character> = {}): Character {
   return {
@@ -222,6 +222,25 @@ describe('assignedVoiceId', () => {
     expect(
       assignedVoiceId(makeCharacter({ metadata: { voiceId: '../bad id', voiceOwn: { name: 'x' } } })),
     ).toBeNull();
+  });
+
+  it('a re-roll drops the stale voiceOwn marker with the id it described', async () => {
+    mockSave.mockClear();
+    const c = makeCharacter({ metadata: { voiceId: 'bad-id!', voiceOwn: { name: 'Gone' }, voicePitch: 1.1 } });
+    const v = await resolveVoiceId(c);
+    expect(VOICES.some((p) => p.id === v)).toBe(true);
+    const saved = (mockSave.mock.calls as unknown as Array<[Character]>)[0][0];
+    expect(saved.metadata.voiceId).toBe(v);
+    expect(saved.metadata).not.toHaveProperty('voiceOwn');
+    expect(saved.metadata.voicePitch).toBe(1.1);
+  });
+
+  it('ownVoicePickOf: a pool id is never an own voice, even with a stale marker', () => {
+    const pool = (VOICES as Array<{ id: string }>)[0].id;
+    expect(ownVoicePickOf(makeCharacter({ metadata: { voiceId: pool, voiceOwn: { name: 'Old' } } }))).toBeNull();
+    expect(
+      ownVoicePickOf(makeCharacter({ metadata: { voiceId: 'aBcDeFgHiJkLmNoPqRsT', voiceOwn: { name: 'Mine', gender: 'male' } } })),
+    ).toEqual({ name: 'Mine', gender: 'male' });
   });
 });
 

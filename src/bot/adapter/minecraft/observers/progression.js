@@ -213,14 +213,80 @@ export function recipeNote(node, items = {}) {
   const station = node.station ? ` at a ${node.station.replace(/_/g, ' ')}` : ''
   const held = Object.keys(recipe).map((name) => { const n = count(name); return `${n} ${plural(name, n)}` })
   let note = `Recipe: ${parts.join(' + ')}${station}. You have ${held.join(', ')}`
-  const short = (name) => name in recipe && count(name) < recipe[name]
-  if (short('stick') || short('planks')) {
-    let logs = 0
-    for (const [k, v] of Object.entries(items ?? {})) if (k.endsWith('_log') || k.endsWith('_stem')) logs += Number(v) || 0
+  const wood = logsForRecipe(node, items)
+  if (wood) {
+    const { logs, need } = wood
     if (!('planks' in recipe)) note += `, ${count('planks')} planks`
     note += `, ${logs} ${logs === 1 ? 'log' : 'logs'} (craft makes planks from logs and sticks from planks on the way: 1 log is 4 planks, 2 planks are 4 sticks)`
+    // 261018 (pass 17): the total. work_session-02 (pass 15 eval) read
+    // "0 planks, 0 sticks, 7 logs" for the wooden pickaxe, gave the player 6
+    // of the 7 logs while saying "i'm making the pickaxe", then called craft
+    // with 1 log and it failed. Nothing said the pickaxe takes 2.
+    const logWord = need === 1 ? 'log' : 'logs'
+    if (need > 0) {
+      note += need <= logs
+        ? `. What is missing takes ${need} ${logWord} to make, and you have ${logs}`
+        : `. What is missing takes ${need} ${logWord} to make, and you have ${logs}, so you need ${need - logs} more first`
+    }
   }
   return `${note}.`
+}
+
+const PLANKS_PER_LOG = 4
+const STICKS_PER_CRAFT = 4
+const PLANKS_PER_STICK_CRAFT = 2
+
+/**
+ * 261018 (pass 17): how many logs the rest of a recipe takes when its planks
+ * or sticks are short, counting the planks and sticks already held. Null when
+ * the recipe has neither part or both are covered.
+ *
+ * @returns {{ need: number, logs: number } | null}
+ */
+export function logsForRecipe(node, items = {}) {
+  const recipe = node?.recipe
+  if (!recipe || typeof recipe !== 'object') return null
+  let planks = 0
+  let sticks = 0
+  let logs = 0
+  for (const [k, v] of Object.entries(items ?? {})) {
+    const n = Number(v) || 0
+    if (k.endsWith('_planks')) planks += n
+    else if (k === 'stick') sticks += n
+    else if (k.endsWith('_log') || k.endsWith('_stem')) logs += n
+  }
+  const stickShort = Math.max(0, (recipe.stick ?? 0) - sticks)
+  const plankDemand = (recipe.planks ?? 0) + Math.ceil(stickShort / STICKS_PER_CRAFT) * PLANKS_PER_STICK_CRAFT
+  if (stickShort === 0 && planks >= (recipe.planks ?? 0)) return null
+  const need = Math.ceil(Math.max(0, plankDemand - planks) / PLANKS_PER_LOG)
+  return { need, logs }
+}
+
+/**
+ * 261018 (pass 17): what a hand-over leaves short for her next milestone, for
+ * the give result. Only when the given item feeds that recipe (the item
+ * itself, or wood that becomes its planks or sticks) and she no longer has
+ * enough. '' otherwise.
+ */
+export function nextNeedAfterGive(node, items = {}, given = '') {
+  const recipe = node?.recipe
+  if (!recipe || typeof recipe !== 'object' || !given) return ''
+  const label = node.label ?? 'your next step'
+  const isWood = given.endsWith('_log') || given.endsWith('_stem') || given.endsWith('_planks') || given === 'stick'
+  if (isWood && ('planks' in recipe || 'stick' in recipe)) {
+    const wood = logsForRecipe(node, items)
+    if (wood && wood.need > wood.logs) {
+      return `your next step (${label}) takes ${wood.need} ${wood.need === 1 ? 'log' : 'logs'} to make and you have ${wood.logs}, so you need ${wood.need - wood.logs} more for it`
+    }
+    return ''
+  }
+  if (given in recipe) {
+    const have = Number(items?.[given]) || 0
+    if (have < recipe[given]) {
+      return `your next step (${label}) takes ${recipe[given]} ${given} and you have ${have}, so you need ${recipe[given] - have} more for it`
+    }
+  }
+  return ''
 }
 
 // 261012 (pass 4a): what her best pickaxe can mine, for the snapshot line

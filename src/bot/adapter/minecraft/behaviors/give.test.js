@@ -54,6 +54,23 @@ describe('giveAction', () => {
     expect(r).toBe('gave 8 coal to Alex, tossed at their feet; you have 0 coal left')
   })
 
+  // 261018 (pass 17): work_session-02. The give still happens; the result
+  // says what it leaves short for her next milestone.
+  it('says when the hand-over leaves her short for her next milestone', async () => {
+    const { bot, items } = makeBot({ inv: [{ name: 'crafting_table', count: 1 }, { name: 'oak_log', count: 7 }] })
+    const d = deps(bot, items)
+    const r = await giveAction({ item: 'oak_log', count: 6 }, bot, cfg, d)
+    expect(d.dropped).toEqual([{ item: 'oak_log', count: 6 }])
+    expect(r).toBe('gave 6 oak_log to Alex, tossed at their feet; you have 1 oak_log left. Note: your next step (get a wooden pickaxe) takes 2 logs to make and you have 1, so you need 1 more for it')
+  })
+
+  it('adds nothing when she still has enough for her next milestone', async () => {
+    const { bot, items } = makeBot({ inv: [{ name: 'crafting_table', count: 1 }, { name: 'oak_log', count: 7 }] })
+    const d = deps(bot, items)
+    const r = await giveAction({ item: 'oak_log', count: 3 }, bot, cfg, d)
+    expect(r).toBe('gave 3 oak_log to Alex, tossed at their feet; you have 4 oak_log left')
+  })
+
   it('gives only the count asked for, capped at what she has', async () => {
     const { bot, items } = makeBot()
     const d = deps(bot, items)

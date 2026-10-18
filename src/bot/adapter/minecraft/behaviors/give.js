@@ -14,6 +14,7 @@ import { goTo as realGoTo } from './pathfind.js'
 import { dropItemAction as realDrop } from './drop.js'
 import { resolveOwner } from '../observers/snapshot.js'
 import { beginGivenToss } from '../observers/givenDrops.js'
+import { nextMilestone, readProgressionState, nextNeedAfterGive } from '../observers/progression.js'
 
 /** Within this many blocks a toss lands at their feet. */
 export const HAND_RANGE = 3
@@ -70,6 +71,21 @@ export function resolveRecipient(bot, who, config) {
     if (name.toLowerCase() === lc) return { username: name, player: p }
   }
   return null
+}
+
+// 261018 (pass 17): what the hand-over leaves short for her next milestone.
+// work_session-02 (pass 15 eval): she gave 6 of her 7 logs, told the player
+// "i'm making the pickaxe", and the craft failed on the 1 log left. The give
+// itself is still hers to decide; this only says what it cost.
+function nextStepNote(bot, item) {
+  try {
+    const state = readProgressionState(bot)
+    const { node } = nextMilestone(state)
+    const need = nextNeedAfterGive(node, state.items, item)
+    return need ? `. Note: ${need}` : ''
+  } catch {
+    return ''
+  }
 }
 
 /**
@@ -141,7 +157,7 @@ export async function giveAction(args, bot, config, _deps) {
     toss.commit(Number(m[1]))
     const left = countOf(bot, item)
     const tail = res.slice(m[0].length - 1).replace(new RegExp(`^ ${item}`), '')
-    return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left`
+    return `gave ${m[1]} ${item} to ${name}, tossed at their feet${tail}; you have ${left} ${item} left${nextStepNote(bot, item)}`
   }
   return `could not give ${item}: ${res}`
 }

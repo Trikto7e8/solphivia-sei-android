@@ -134,6 +134,21 @@ describe('snapshot composer reports items that arrived without an action of hers
     expect(seen.length).toBe(1)
   })
 
+  it('leaves blocks picked up on the way out of the record, keeps gear and food', () => {
+    const inv = []
+    const c = createSnapshotComposer({ bot: fakeBot(inv) })
+    const seen = []
+    const onUnexplainedGains = (g) => seen.push(g)
+    c.next({ onUnexplainedGains })
+    const now = Date.now()
+    inv.push({ name: 'dirt', count: 1 }, { name: 'cobblestone', count: 6 })
+    c.next({ onUnexplainedGains, recentActions: [{ name: 'goTo', startedAt: now - 5000, endedAt: null }] })
+    expect(seen).toEqual([])
+    inv.push({ name: 'stone_pickaxe', count: 1 }, { name: 'bread', count: 2 })
+    c.next({ onUnexplainedGains, recentActions: [{ name: 'goTo', startedAt: now - 5000, endedAt: null }] })
+    expect(seen).toEqual([[{ item: 'stone_pickaxe', n: 1 }, { item: 'bread', n: 2 }]])
+  })
+
   it('a throwing callback never breaks the snapshot', () => {
     const inv = []
     const c = createSnapshotComposer({ bot: fakeBot(inv) })

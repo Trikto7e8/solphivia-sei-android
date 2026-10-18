@@ -640,8 +640,11 @@ export function createSnapshotComposer({ bot }) {
       // the conversation record. The banner below is shown on this one
       // snapshot only; a later turn saw her own "i have zero items" line in
       // the transcript and nothing after it saying that had changed.
+      // Only gear and food go to the record: blocks her own walking or a dig
+      // knocks loose (dirt, cobblestone) also count as unexplained and filled
+      // the 12 event lines that recall answers rely on (pass 16 review).
       if (typeof opts.onUnexplainedGains === 'function') {
-        const gains = unexplained.filter((d) => d.n > 0)
+        const gains = unexplained.filter((d) => d.n > 0 && isGearOrFood(d.item, isFood))
         if (gains.length > 0) { try { opts.onUnexplainedGains(gains) } catch { /* never break a snapshot */ } }
       }
 

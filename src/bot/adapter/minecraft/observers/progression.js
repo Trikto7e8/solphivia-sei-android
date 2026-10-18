@@ -228,7 +228,8 @@ export function recipeNote(node, items = {}) {
     // in hand she went for logs (the pass 4a failure again). The note now
     // names the wood parts and gives the two totals with no shortfall clause
     // (pass17-probe mine_ask: 3/8 with it, 7/8 with "before you can craft
-    // it", 8/8 with totals only; give_then_ask stayed 8/8).
+    // it", 7/8 with totals only and the miss an explore() for stone;
+    // give_then_ask stayed 8/8).
     const logWord = need === 1 ? 'log' : 'logs'
     if (need > 0) {
       const { planks } = woodHeld(items)

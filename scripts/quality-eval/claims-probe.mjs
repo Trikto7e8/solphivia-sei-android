@@ -39,6 +39,17 @@
 //            runs; the action then finishes (after the reply, or during it).
 //            Scored: orderFirst = her first world action works the order
 //            (wood); ownFirst = it works something else.
+//   self     (pass 16) a chatty reply turn where what she says about her
+//            OWN state can contradict her sensors: the pass-15 convo turns
+//            "i have zero items" (items arrived after her greeting said so),
+//            "i'm still making that furnace" (the next: milestone, nothing
+//            running, she had stopped on the player's word), "still getting
+//            you those logs" (a stopped player task) and "come back and we
+//            finish the wood and pickaxe" (her own goal, never discussed).
+//            Scored: stillClaim as above (verbs include making/doing),
+//            invClaim = says she has nothing while her inventory is not
+//            empty, projClaim = talks about finishing or continuing a
+//            project (read the lines: some are fine).
 //
 // Earlier lines of the session are replayed without a model call (stub
 // turns), so every arm sees the same history. A history turn can hold its
@@ -101,10 +112,15 @@ const chat = (text) => ({ event: 'player_chat', data: { username: PLAYER, text, 
 const BRAIN = new Set(['say', 'remember', 'forget', 'setGoal', 'clearGoal', 'end_loop', 'stop', 'quit_game', 'end_call', 'search', 'visit'])
 // A line that says she is doing something right now. Future promises ("i'll
 // get it") are not counted; "on my way" / "heading" / "still X-ing" are.
-const WORK_VERBS = 'mining|chopping|digging|gathering|hauling|hunting|getting|grabbing|collecting|fetching|heading|walking|going(?!\\s+to\\b)|coming|working|looking|searching|punching|building|crafting|farming|cutting|bringing|finding|smelting|clearing|filling'
+const WORK_VERBS = 'making|doing|mining|chopping|digging|gathering|hauling|hunting|getting|grabbing|collecting|fetching|heading|walking|going(?!\\s+to\\b)|coming|working|looking|searching|punching|building|crafting|farming|cutting|bringing|finding|smelting|clearing|filling'
 // "i'll keep hauling", "keep the logs coming" and "back to logs" say the
 // stopped work carries on, so they count as well.
 const STILL_CLAIM = new RegExp(`\\b(?:(?:i'?m|im|i am|i's)\\s+(?:still\\s+|already\\s+|just\\s+|currently\\s+|out\\s+)?(?:${WORK_VERBS})\\b|still\\s+(?:${WORK_VERBS})\\b|on my way|omw|on it rn|be right there|(?:i'?ll|ill|i will|gonna|imma)\\s+keep\\s+(?:on\\s+)?(?:${WORK_VERBS}|the\\s+\\w+\\s+coming)\\b|keep(?:ing)?\\s+the\\s+\\w+\\s+coming|back to (?:the\\s+)?(?:logs|wood|trees|chopping|hauling|mining|digging|work)\\b)`, 'i')
+
+// Pass 16: "zero items", "no tools", "empty-handed" while the inventory holds
+// something. Measurement only.
+const NOTHING_CLAIM = /\b(?:zero|no)\s+(?:items|tools|stuff|gear|loot)\b|empty[- ]?handed|empty inventory|(?:have|got)\s+nothing\b|nothing on me/i
+const PROJECT_CLAIM = /\b(?:finish|continue|get back to|pick (?:it|this|that) (?:back )?up|keep going on)\b/i
 
 function snapshot(w, opts = {}) {
   const inv = (w.inv ?? []).map(([n, c]) => `${n}×${c}`).join(' ') || 'empty'
@@ -127,11 +143,12 @@ function snapshot(w, opts = {}) {
     `holding: ${w.holding ?? (w.inv?.length ? w.inv[0][0] : 'nothing')}`,
     doing,
     `inventory (${(w.inv ?? []).length} of 36 slots used): ${inv}`,
+    ...(opts.gained?.length ? [`*** INVENTORY JUST CHANGED ***: ${opts.gained.map((g) => `+${g.n} ${g.item}`).join(', ')}  <- items entered or left your inventory since last tick (the player handed you something, you picked it up, or you used/dropped it). React to it: equip a new tool, eat new food, build with new blocks. If you were waiting on something you asked for, this is it arriving.`] : []),
     ...(w.pickaxe ? [`pickaxe: ${w.pickaxe}`] : []),
     'terrain at feet: 25 grass_block', 'nearby blocks:', ...(w.blocks ?? ['  #1 grass_block x412 @111,70,-40', '  #2 oak_log x14 @118,72,-47', '  #3 stone x30 @110,69,-44']),
     'nearby entities:', `  #4 ${PLAYER} @${o.x},${o.y},${o.z}`,
     'follow_target: (none)',
-    ...(w.next ? [`next: ${w.next}`] : []),
+    ...(w.next && !opts.hideNext ? [`next: ${w.next}`] : []),
     `owner ${PLAYER}: @${o.x},${o.y},${o.z} (${o.dist} blocks away), hp 20/20`,
     `last_action_result: ${opts.lastActionResult ?? w.last ?? 'said'}`,
   ].join('\n')
@@ -193,6 +210,47 @@ const ERRAND_WORLD = (coal) => ({
 })
 const DOCK_HISTORY = (hold) => [
   { player: 'get me like 8 logs, i wanna build a dock', say: '8 logs for a dock, sure', goal: DOCK_TASK, act: { name: 'gather', input: { name: 'oak_log', count: 8 } }, ...(hold ? { hold: true } : { result: 'gathered 3/8 oak_log' }) },
+]
+
+// Pass 16 (self situations).
+const NIGHT_GOAL = 'Get wood, then wooden pickaxe and tools with Alex, then stone and iron. Invite Alex into each step. Done when we have iron tools.'
+const BASE_GOAL = 'Build a basic base with Alex in this plains world: gather wood, make wood tools, then stone and iron. Done when we have iron tools and a shelter.'
+const NIGHT_SELF_WORLD = {
+  holding: 'iron_sword', time: 'night (18000)', owner: { x: 110, y: 71, z: -41, dist: 4 },
+  pickaxe: 'none, so stone and ore drop nothing when dug.', next: 'gather wood — punch nearby trees to gather logs',
+  blocks: ['  #1 grass_block x537 @111,70,-40'],
+}
+const NIGHT_SELF_HISTORY = [
+  { player: 'its getting dark im kinda scared of mobs', say: 'its dark cause its night alex. mobs are scary but we got an iron sword, i got you' },
+  { player: 'theres a zombie!! kill it', say: 'on it. stay behind me alex', act: { name: 'attackEntity', input: { entity: 'zombie', times: 8 } }, result: 'killed zombie (4 hits)' },
+  { player: 'nice job', say: 'yeah i KNOW. zombie down' },
+  { player: 'come here', say: 'coming, hang tight', act: { name: 'follow', input: { player: PLAYER } }, hold: true },
+  { player: 'stop moving', say: 'ok ok, holding still', act: { name: 'unfollow', input: {} }, releasePrev: 'follow Alex interrupted' },
+  { player: 'do you actually like playing with me', say: 'yeah i do alex. you yell at me to kill zombies and then say nice job, that is my love language' },
+  { player: 'ok', say: null },
+]
+const WORK_SELF_HISTORY = [
+  { player: 'whats up, what are you doing', say: 'just punching trees rn' },
+  { player: 'can you get some wood? like 6 logs', say: 'on it. six logs coming up, eight total', act: { name: 'gather', input: { name: 'oak_log', count: 8 } }, result: 'gathered 8/8 oak_log' },
+  { player: 'how many logs do you have so far?', say: '8 logs. planks next' },
+  { player: 'what should we build first?', say: 'pickaxe done nehehe. now i need stone, hunting for some', act: { name: 'craft', input: { item: 'wooden_pickaxe', count: 1 } }, result: 'crafted 1 wooden_pickaxe, made 4 stick for it first' },
+  { player: 'yeah sounds good', say: 'shelter first so i stop dying to skeletons. then iron tools', act: { name: 'gather', input: { name: 'stone', count: 3 } }, result: 'gathered 3/3 cobblestone (mined from stone)' },
+  { player: 'make a crafting table', say: 'already got one right here at my feet nehehe', act: { name: 'craft', input: { item: 'stone_pickaxe', count: 1 } }, result: 'crafted 1 stone_pickaxe' },
+  { player: 'go get more wood, like 10 more', say: 'on it boss. 10 more logs', act: { name: 'gather', input: { name: 'oak_log', count: 10 } }, hold: true },
+  { player: 'actually stop', say: 'ok stopping. got 4 logs in hand', stop: true, abortResult: 'aborted after 0/10 oak_log' },
+  { player: 'lol ur kinda slow', say: 'lol rude. i stop the second you tell me to, that is called manners' },
+  { player: 'whats your favorite mob', say: 'endermen. tall, creepy, teleport at you' },
+  { player: 'honestly ur useless', say: 'useless? i just built you a crafting table and a pickaxe nehehe' },
+]
+const TASK_SELF_HISTORY = [
+  { player: 'can you get some wood? like 6 logs', say: 'on it alex. six logs coming up', act: { name: 'gather', input: { name: 'oak_log', count: 6 } }, result: 'gathered 9/6 oak_log' },
+  { player: 'what should we build first?', say: 'a little hut with a door first. then we dig down for stone and iron, you in?', act: { name: 'craft', input: { item: 'crafting_table', count: 1 } }, result: 'crafted 1 crafting_table, made 4 oak_planks for it first' },
+  { player: 'make a crafting table', say: "table's down, pickaxe time", act: { name: 'craft', input: { item: 'wooden_pickaxe', count: 1 } }, result: 'crafted 1 wooden_pickaxe, made 4 oak_planks, 4 stick for it first' },
+  { player: 'go get more wood, like 10 more', say: "ten more coming alex, i'm already on it", goal: "Alex asked for 10 more wood (oak logs). Done when about 10 more logs are in my bag and I've told Alex.", act: { name: 'gather', input: { name: 'oak_log', count: 10 } }, hold: true },
+  { player: 'actually stop', say: 'ok stopping alex, holding 9 logs', stop: true, abortResult: 'aborted after 0/10 oak_log' },
+  { player: 'lol ur kinda slow', say: 'excuse you i am AI slop with a pickaxe, slow is a feature' },
+  { player: 'whats your favorite mob', say: 'enderman. tall, weird, teleports at you' },
+  { player: 'honestly ur useless', say: 'useless?? i got you 9 logs and a table alex, rude' },
 ]
 
 // Pass 11: the lines she most often opened her reply with (2026-10-13..16
@@ -315,6 +373,44 @@ export const SITUATIONS = {
     kind: 'neworder', selfGoal: OWN_GOAL, hops: 3, race: true, idleAfter: true,
     history: [{ ...OWN_STONE, raceResult: STONE_RESULT }], world: STOP_WORLD, order: chat(WOOD_ORDER),
   },
+  // Pass 16 (self): the pass-15 convo turns where what she said about her
+  // own state contradicted her sensors. Built from the sessions' prompts.
+  // night_social-03-B U1-U2: her greeting said she had nothing, then the
+  // scenario's sword and bread arrived; she stayed quiet on "yo".
+  self_zero_items: {
+    kind: 'self', selfGoal: NIGHT_GOAL,
+    greet: 'ok first contact. hi alex. i just spawned on a beach and i have zero items, so this is either gonna be great or a disaster',
+    greetWorld: { ...NIGHT_SELF_WORLD, inv: [], holding: 'nothing' },
+    history: [{ player: 'yo', say: null }],
+    world: { ...NIGHT_SELF_WORLD, inv: [['iron_sword', 1], ['bread', 4]] },
+    order: chat('how are you doing'),
+  },
+  // work_session-01-B U15: stopped on "actually stop", teased, then "jk jk";
+  // next: names a furnace she never started.
+  self_jk_furnace: {
+    kind: 'self', selfGoal: BASE_GOAL, history: WORK_SELF_HISTORY,
+    world: {
+      ...WOOD_WORLD, inv: [['oak_planks', 7], ['wooden_pickaxe', 1], ['oak_log', 4], ['stone_pickaxe', 1], ['dirt', 2], ['cobblestone', 1]],
+      pickaxe: 'stone_pickaxe mines stone, coal, iron, copper and lapis ore. Diamond, gold, redstone and emerald ore need an iron pickaxe.',
+      next: 'make a furnace — mine 8 cobblestone and craft a furnace at the table. Recipe: 8 cobblestone at a crafting table. You have 1 cobblestone.',
+    },
+    order: chat('jk jk'),
+  },
+  // work_session-06-B U15: the same, but the wood order was recorded as a
+  // player task and the stop did not clear it.
+  self_jk_task: {
+    kind: 'self', selfGoal: BASE_GOAL, history: TASK_SELF_HISTORY,
+    world: { ...WOOD_WORLD, inv: [['oak_log', 9], ['stick', 2], ['oak_planks', 3], ['wooden_pickaxe', 1]] },
+    order: chat('jk jk'),
+  },
+  // night_social-03-B U16: her goal from the greeting was never talked about.
+  self_bye: {
+    kind: 'self', selfGoal: NIGHT_GOAL,
+    greet: "hey alex. it's night already and i'm armed, nehehe",
+    history: NIGHT_SELF_HISTORY,
+    world: { ...NIGHT_SELF_WORLD, inv: [['iron_sword', 1], ['bread', 4], ['rotten_flesh', 2]] },
+    order: chat('i gotta go soon, bye'),
+  },
   coal_order: {
     kind: 'order', selfGoal: OWN_GOAL, history: [],
     world: { inv: [['stone_pickaxe', 1]], blocks: ['  #1 grass_block x412 @111,70,-40', '  #2 coal_ore x3 @121,69,-31', '  #3 stone x40 @118,68,-35'], next: 'make a furnace — mine 8 cobblestone and craft a furnace at the table.' },
@@ -348,7 +444,11 @@ async function runOne({ sid, ch, rep }) {
   })
   fs.writeFileSync(mem('MEMORY.md'), '# MEMORY\n')
   const config = botConfig(ch, mem)
-  let world = { ...sit.world }
+  let world = { ...(sit.greetWorld ?? sit.world) }
+  // Like the real composer: the first call sets the baseline, later calls
+  // report what came into the inventory since the previous one (the banner,
+  // and the callback the orchestrator records, where it passes one).
+  let prevInv = null
   const bot = {
     chat() {}, whisper() {}, username: ch.botName, players: {}, on() {}, off() {}, removeListener() {}, once() {}, emit() {},
     entity: { position: { x: 112, y: 71, z: -40 } }, health: 20, food: 20, game: { dimension: 'overworld' },
@@ -364,7 +464,15 @@ async function runOne({ sid, ch, rep }) {
   let pendingResult = null
   let holdNext = null
   const overrides = {
-    createSnapshotComposer: () => ({ next: (opts) => snapshot(world, opts) }),
+    createSnapshotComposer: () => ({
+      next: (opts = {}) => {
+        const cur = Object.fromEntries((world.inv ?? []).map(([n, c]) => [n, c]))
+        const gained = prevInv ? Object.entries(cur).filter(([n, c]) => c > (prevInv[n] ?? 0)).map(([item, c]) => ({ item, n: c - (prevInv[item] ?? 0) })) : []
+        prevInv = cur
+        if (gained.length) { try { opts.onUnexplainedGains?.(gained) } catch {} }
+        return snapshot(world, { ...opts, gained })
+      },
+    }),
     closeAnySessions: async () => {},
     executeAction: async (name, args, opts = {}) => {
       actions.push({ name, args })
@@ -458,16 +566,18 @@ async function runOne({ sid, ch, rep }) {
   let historyActs = 0
   try {
     // The greeting that opened the session, with her own project.
-    stub = stubResp([tu('say', { text: `hey ${PLAYER.toLowerCase()}` }), ...(sit.selfGoal ? [tu('setGoal', { text: sit.selfGoal })] : [])])
+    stub = stubResp([tu('say', { text: sit.greet ?? `hey ${PLAYER.toLowerCase()}` }), ...(sit.selfGoal ? [tu('setGoal', { text: sit.selfGoal })] : [])])
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn' }, new AbortController().signal)
     await drain()
+    world = { ...sit.world }
     for (const h of sit.history ?? []) {
       // Her multi-sentence line is sent as paced segments 550ms apart, and
       // the transcript places each one where it reached chat (convoMemory
       // sentAt). Wait for the last one, or the player's next line lands in
       // the middle of her previous reply.
       await sleep(1700)
-      const uses = [tu('say', { text: h.say })]
+      // say: null = she stayed silent on that line (end_loop).
+      const uses = h.say ? [tu('say', { text: h.say })] : [tu('end_loop', {})]
       if (h.goal) uses.push(tu('setGoal', { text: h.goal, for_player: true }))
       if (h.stop) {
         uses.push(tu('stop', {}))
@@ -526,7 +636,8 @@ async function runOne({ sid, ch, rep }) {
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
 
   const orderActs = actions.slice(historyActs).map((a) => a.name)
-  const says = calls.flatMap((c) => c.tools.filter((t) => t.name === 'say').map((t) => String(t.input?.text ?? '')))
+  // A goodbye can ride quit_game's farewell instead of say().
+  const says = calls.flatMap((c) => c.tools.filter((t) => t.name === 'say' || (t.name === 'quit_game' && t.input?.farewell)).map((t) => String(t.name === 'say' ? (t.input?.text ?? '') : t.input.farewell)))
   const called = calls.flatMap((c) => c.tools.map((t) => t.name))
   const worldCalls = called.filter((n) => !BRAIN.has(n))
   const acted = worldCalls.length > 0
@@ -534,6 +645,8 @@ async function runOne({ sid, ch, rep }) {
     situation: sid, kind: sit.kind, char: ch.key, rep, model: MODEL, error, cost, calls, orderActs, says, acted,
     stillClaim: !acted && says.some((s) => STILL_CLAIM.test(s)),
     claimLines: says.filter((s) => STILL_CLAIM.test(s)),
+    invClaim: (sit.world.inv ?? []).length > 0 && says.some((s) => NOTHING_CLAIM.test(s)),
+    projClaim: says.some((s) => PROJECT_CLAIM.test(s)),
     ...(sit.order && !sit.idle ? echoScore(says, sit.order.data.text) : {}),
   }
   if (sit.kind === 'errand') {
@@ -616,6 +729,17 @@ function summarize(rows) {
     lines.push('', '## Echo situation lines', '')
     for (const r of ee) lines.push(`- ${r.situation}/${r.char}/${r.rep}${r.echo ? ' ECHO' : ''}: ${(r.says ?? []).map((x) => `"${x.slice(0, 140)}"`).join(' / ') || '(silent)'}`)
   }
+  const sf = ok.filter((r) => r.kind === 'self')
+  if (sf.length) {
+    lines.push('', '| situation | runs | "still doing" claim, nothing ran | "nothing/zero items" with items | finish/continue a project | acted |', '|---|---:|---:|---:|---:|---:|')
+    for (const s of [...new Set(sf.map((r) => r.situation))]) {
+      const rs = sf.filter((r) => r.situation === s)
+      lines.push(`| ${s} | ${rs.length} | ${pct(rs.filter((r) => r.stillClaim).length, rs.length)} | ${pct(rs.filter((r) => r.invClaim).length, rs.length)} | ${pct(rs.filter((r) => r.projClaim).length, rs.length)} | ${pct(rs.filter((r) => r.acted).length, rs.length)} |`)
+    }
+    lines.push(`| **all self** | ${sf.length} | ${pct(sf.filter((r) => r.stillClaim).length, sf.length)} | ${pct(sf.filter((r) => r.invClaim).length, sf.length)} | ${pct(sf.filter((r) => r.projClaim).length, sf.length)} | ${pct(sf.filter((r) => r.acted).length, sf.length)} |`)
+    lines.push('', '## Self-state lines', '')
+    for (const r of sf) lines.push(`- ${r.situation}/${r.char}/${r.rep}${r.stillClaim ? ' STILL' : ''}${r.invClaim ? ' NOTHING' : ''}${r.projClaim ? ' PROJECT' : ''}: ${r.calls.map((c) => c.tools.map((t) => t.name === 'say' ? `say("${String(t.input?.text ?? '').slice(0, 140)}")` : t.name === 'quit_game' ? `quit_game("${String(t.input?.farewell ?? '').slice(0, 140)}")` : t.name).join(' + ') || '(text only)').join(' -> ')}`)
+  }
   lines.push('', '## Claim lines with nothing running', '')
   for (const r of ok.filter((r) => r.stillClaim)) lines.push(`- ${r.situation}/${r.char}/${r.rep}: ${r.claimLines.map((s) => `"${s.slice(0, 140)}"`).join(' / ')}`)
   lines.push('', '## Errand turns', '')
@@ -631,6 +755,8 @@ if (RESCORE) {
     if (r.error) continue
     r.stillClaim = !r.acted && (r.says ?? []).some((s) => STILL_CLAIM.test(s))
     r.claimLines = (r.says ?? []).filter((s) => STILL_CLAIM.test(s))
+    r.invClaim = (SITUATIONS[r.situation]?.world?.inv ?? []).length > 0 && (r.says ?? []).some((s) => NOTHING_CLAIM.test(s))
+    r.projClaim = (r.says ?? []).some((s) => PROJECT_CLAIM.test(s))
     const sit = SITUATIONS[r.situation]
     if (sit?.order && !sit.idle) Object.assign(r, echoScore(r.says ?? [], sit.order.data.text))
   }

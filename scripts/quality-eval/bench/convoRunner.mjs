@@ -6,12 +6,36 @@ import fs from 'node:fs'
 import path from 'node:path'
 import { startCompanion, companionName, PLAYER } from '../lib/companionProc.mjs'
 import { cmds } from '../lib/server.mjs'
-import { walkTo, distTo } from '../lib/player.mjs'
+import { walkTo, distTo, connectPlayer } from '../lib/player.mjs'
 import { arenaReset, playersReset } from './arena.mjs'
 import { waitQuiet } from './runner.mjs'
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const TAIL_MS = 20000
+
+/**
+ * 261018 (pass 16): put the companion's body in its scenario state (items,
+ * position, time of day) BEFORE the companion joins. The scenario's `give`
+ * and `tp` need the bot online, and they used to run after the companion had
+ * spawned, so her first-contact greeting was generated from the previous
+ * session's spot with an empty inventory ("i just spawned on a beach and i
+ * have zero items", then an iron sword and bread appeared). A stand-in client
+ * logs in under her name, the commands run, and it logs out; the server saves
+ * that player data, and the companion spawns into it.
+ */
+async function stageBody(bot, script) {
+  const stand = await connectPlayer({ username: bot })
+  try {
+    await cmds([...playersReset([PLAYER, bot]), ...script.start({ bot, playerName: PLAYER })])
+    // Let the given items reach the client, then the save on logout has them.
+    await sleep(1500)
+  } finally {
+    const ended = new Promise((r) => { stand.once('end', r); setTimeout(r, 5000) })
+    try { stand.quit() } catch {}
+    await ended
+  }
+  await sleep(1000)
+}
 
 export async function runConvoSession(script, { rep, pbot, botRepo, outDir, ref = 'HEAD' }) {
   const bot = companionName()
@@ -21,6 +45,7 @@ export async function runConvoSession(script, { rep, pbot, botRepo, outDir, ref 
   fs.writeFileSync(pPath, '')
   const rec = (ev) => fs.appendFileSync(pPath, JSON.stringify({ t: Date.now(), ...ev }) + '\n')
   await cmds([...arenaReset(), ...(script.world || [])])
+  await stageBody(bot, script)
   const comp = await startCompanion({ sessDir, mode: 'brain', botRepo, tag: `qe-${script.id}` })
   const onMsg = (msg, position) => {
     if (position === 'chat') return
@@ -30,7 +55,6 @@ export async function runConvoSession(script, { rep, pbot, botRepo, outDir, ref 
   pbot.on('message', onMsg)
   const t0wall = Date.now()
   try {
-    await cmds([...playersReset([PLAYER, bot]), ...script.start({ bot, playerName: PLAYER })])
     await waitQuiet(comp)
     rec({ kind: 'session_start', scenario: script.id })
     for (let i = 0; i < script.lines.length; i++) {

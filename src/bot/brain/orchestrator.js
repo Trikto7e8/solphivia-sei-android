@@ -48,7 +48,7 @@ import { ownRepeatsNote } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
 import {
   describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
-  gameEventFact,
+  gameEventFact, describeInventoryGain,
   HIT_COALESCE_MS, ACTION_COALESCE_MS,
 } from './sessionEvents.js'
 import { logChatOut, logActionResult } from './log.js'
@@ -683,6 +683,9 @@ export async function composeSeedBlocks({
   // before it are from an earlier session; renderHeartbeat asks before
   // working them. Omitted = every task is treated as this session's.
   sessionStartMs = null,
+  // 261018 (pass 16): true while she is stopped on the player's word; the
+  // heartbeat then says her tasks and goals wait instead of "work it now".
+  goalsOnHold = false,
   voiceCall = false,
   logger = console,
 }) {
@@ -841,7 +844,7 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs }),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -2123,6 +2126,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (gamePaused) return pausedNotice()
     try {
       const w = worldRegistry?.current?.() ?? null
+      // Read first: it also expires the note.
+      const note = stayNoteText()
       const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
@@ -2141,11 +2146,20 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // observer fn and a `world` opt would shadow it.
         worldTag: w ? `#${w.num}${w.label ? ` ${w.label}` : ''}` : null,
         // 261017 (pass 14): something the player asked for comes first, so
-        // her own next milestone is left out of this snapshot.
-        hideNext: playerRequestOwed || playerTaskInGoals,
+        // her own next milestone is left out of this snapshot. 261018 (pass
+        // 16): so does a stop on the player's word (the stay note). On the
+        // chat turns after "actually stop" she read "next: make a furnace" as
+        // what she was doing ("i'm still making that furnace", 1 cobblestone,
+        // nothing running).
+        hideNext: playerRequestOwed || playerTaskInGoals || !!note,
+        // 261018 (pass 16): items that arrived without an action of hers go
+        // into the conversation record (sessionEvents.describeInventoryGain).
+        onUnexplainedGains: (gains) => {
+          const t = describeInventoryGain(gains)
+          if (t) convoMemory.recentChat.pushEvent(t)
+        },
       })
       if (typeof text === 'string') _repeatsContext.snapshot = text
-      const note = stayNoteText()
       return note && typeof text === 'string' ? `${text}\n${note}` : text
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
@@ -3112,6 +3126,8 @@ function maybeWarnByteCap(loop, warned) {
           companions,
           frontierText: progFrontierText,
           sessionStartMs: sessionStartedAt,
+          // 261018 (pass 16): she stopped on the player's word (stay note).
+          goalsOnHold: !!stayNote,
           voiceCall: voiceCallActive,
           logger,
         })

@@ -151,6 +151,32 @@ export function describeDeathEvent(evt) {
   return 'you died'
 }
 
+/** Item kinds named in one inventory line; the rest are counted. */
+const GAIN_KINDS_MAX = 4
+
+/**
+ * 261018 (pass 16): the event line for items that came into her inventory
+ * without an action of hers (the player handed them over, or she walked over
+ * them), or null. In the scripted convo her greeting said "i have zero items",
+ * a sword and bread arrived a moment later, and on the next reply she said
+ * "kinda thriving for a thing with zero items" with both in her inventory: the
+ * change was shown on one snapshot only, while her own line stayed in the
+ * transcript. Written here, the arrival sits after that line in time order.
+ *
+ * @param {Array<{item:string, n:number}>} gains  positive counts
+ * @returns {string|null}
+ */
+export function describeInventoryGain(gains) {
+  const list = (Array.isArray(gains) ? gains : [])
+    .filter((g) => g && typeof g.item === 'string' && g.item && Number.isFinite(g.n) && g.n > 0)
+  if (!list.length) return null
+  const named = list.slice(0, GAIN_KINDS_MAX).map((g) => `${g.n} ${g.item}`)
+  const more = list.length - named.length
+  if (more > 0) named.push(`${more} other kind${more === 1 ? '' : 's'} of item`)
+  const joined = named.length === 1 ? named[0] : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`
+  return `${joined} came into your inventory`
+}
+
 /**
  * The fact line for a game's own notice (Stardew's new day, 10 PM). The
  * notice itself is written as an instruction to the model ("[A new day:

@@ -1370,6 +1370,11 @@ export function SettingsScreen(): React.ReactElement {
                   )}
                 </div>
                 {elevenKeyError ? <div className={styles.errorRow}>{elevenKeyError}</div> : null}
+                {/* 261019: the voice picker lists the account's own voices
+                    (cloned, designed, saved) through this key. */}
+                <p className={styles.helper}>
+                  {t('Your own ElevenLabs voices show up in the voice picker once your key is saved.')}
+                </p>
                 {/* Local backend + no ElevenLabs key: the cloud voice pool (and
                     the "Let Sei pick" auto-assign) has nothing to play through.
                     Say so here instead of letting companions go silent. */}

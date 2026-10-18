@@ -586,6 +586,16 @@ function friendlyError(err: unknown): string {
   // empty — the `name` is the reliable signal (NotAllowedError / NotFoundError).
   const name = (err as { name?: string })?.name ?? '';
   if (/VOICE_NO_SESSION/.test(msg)) return t('Sign in to use voice calls.');
+  // 261019: the user's OWN ElevenLabs account answered (direct key route).
+  // Checked before the Sei-credit copy: a BYOK user has no Sei credits.
+  if (/VOICE_NEEDS_PAID_PLAN/.test(msg)) {
+    return t('Free ElevenLabs plans cannot play this voice through your key. Pick one of your own voices.');
+  }
+  if (/VOICE_ELEVEN_QUOTA/.test(msg)) return t('Your ElevenLabs account is out of credits.');
+  if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) return t('ElevenLabs rejected your key. Check it in Settings.');
+  if (/VOICE_OWN_NEEDS_KEY/.test(msg)) {
+    return t('This voice is from an ElevenLabs account and plays only with that key. Pick a different voice.');
+  }
   if (/VOICE_NO_CREDITS/.test(msg)) {
     // 260926: say when free play comes back, not just that it is gone.
     const base = t("You've used this week's credits. Upgrade or top up to keep calling.");
@@ -746,6 +756,16 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         // BYOK key + a curated-pool voice: every clip fails until they add the
         // voice to their own ElevenLabs library or pick another one (260726).
         set({ callNotice: t('[voice unavailable, this voice is not in your ElevenLabs library]') });
+      } else if (/VOICE_NEEDS_PAID_PLAN/.test(msg)) {
+        // 261019: free ElevenLabs plan + a Voice Library (pool) voice.
+        set({ callNotice: t('[voice unavailable, free ElevenLabs plans cannot use this voice]') });
+      } else if (/VOICE_ELEVEN_QUOTA/.test(msg)) {
+        set({ callNotice: t('[voice paused, your ElevenLabs account is out of credits]') });
+      } else if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) {
+        set({ callNotice: t('[voice unavailable, ElevenLabs rejected your key]') });
+      } else if (/VOICE_OWN_NEEDS_KEY/.test(msg)) {
+        // An own-account voice on the cloud path (the proxy speaks Sei's pool only).
+        set({ callNotice: t('[voice unavailable, this voice needs its ElevenLabs key]') });
       } else if (/VOICE_PACK_MISSING/.test(msg)) {
         // Local TTS (260816): NO installed voice pack can speak this line
         // (main already falls back to any installed pack, 260908). The

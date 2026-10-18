@@ -16,16 +16,18 @@ import { buildSystemBlocks } from '../chat/chatPrompts';
 import { setCallActive, isCallActive } from './callState';
 import type { Character } from '../../shared/characterSchema';
 
-const { mockList, mockSave } = vi.hoisted(() => ({
+const { mockList, mockSave, mockAuth } = vi.hoisted(() => ({
   mockList: vi.fn(async () => [] as unknown[]),
   mockSave: vi.fn(async () => {}),
+  mockAuth: vi.fn((): { kind: string; user?: { id: string } } => ({ kind: 'signed_out' })),
 }));
+vi.mock('../auth/authState', () => ({ getCurrentAuthState: mockAuth }));
 vi.mock('../characterStore', () => ({
   listCharacters: mockList,
   saveCharacter: mockSave,
 }));
 
-import { resolveVoiceId, assignedVoiceId, personaVoiceHints } from './voiceAssign';
+import { resolveVoiceId, assignedVoiceId, personaVoiceHints, ownVoicePickOf, ownVoiceHonored } from './voiceAssign';
 
 function makeCharacter(overrides: Partial<Character> = {}): Character {
   return {
@@ -199,6 +201,49 @@ describe('assignedVoiceId', () => {
     expect(mockSave).not.toHaveBeenCalled();
     expect(assignedVoiceId(makeCharacter({ metadata: { voiceId: 'not-a-voice-anywhere' } }))).toBeNull();
   });
+
+  // 261019: a voice from the user's own ElevenLabs account is outside the
+  // pool, but the voiceOwn marker makes it a deliberate pick that must never
+  // be re-rolled or "repaired" into a pool voice.
+  it('keeps an own-account voice pick (voiceOwn marker) instead of re-rolling', async () => {
+    mockSave.mockClear();
+    const ownId = 'aBcDeFgHiJkLmNoPqRsT';
+    const c = makeCharacter({ metadata: { voiceId: ownId, voiceOwn: { name: 'My Clone' } } });
+    expect(assignedVoiceId(c)).toBe(ownId);
+    expect(await resolveVoiceId(c)).toBe(ownId);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it('an unknown id WITHOUT the marker still re-rolls as before', async () => {
+    mockSave.mockClear();
+    const c = makeCharacter({ metadata: { voiceId: 'aBcDeFgHiJkLmNoPqRsT' } });
+    expect(assignedVoiceId(c)).toBeNull();
+    const v = await resolveVoiceId(c);
+    expect(VOICES.some((p) => p.id === v)).toBe(true);
+    // a malformed id cannot hide behind a marker either
+    expect(
+      assignedVoiceId(makeCharacter({ metadata: { voiceId: '../bad id', voiceOwn: { name: 'x' } } })),
+    ).toBeNull();
+  });
+
+  it('a re-roll drops the stale voiceOwn marker with the id it described', async () => {
+    mockSave.mockClear();
+    const c = makeCharacter({ metadata: { voiceId: 'bad-id!', voiceOwn: { name: 'Gone' }, voicePitch: 1.1 } });
+    const v = await resolveVoiceId(c);
+    expect(VOICES.some((p) => p.id === v)).toBe(true);
+    const saved = (mockSave.mock.calls as unknown as Array<[Character]>)[0][0];
+    expect(saved.metadata.voiceId).toBe(v);
+    expect(saved.metadata).not.toHaveProperty('voiceOwn');
+    expect(saved.metadata.voicePitch).toBe(1.1);
+  });
+
+  it('ownVoicePickOf: a pool id is never an own voice, even with a stale marker', () => {
+    const pool = (VOICES as Array<{ id: string }>)[0].id;
+    expect(ownVoicePickOf(makeCharacter({ metadata: { voiceId: pool, voiceOwn: { name: 'Old' } } }))).toBeNull();
+    expect(
+      ownVoicePickOf(makeCharacter({ metadata: { voiceId: 'aBcDeFgHiJkLmNoPqRsT', voiceOwn: { name: 'Mine', gender: 'male' } } })),
+    ).toEqual({ name: 'Mine', gender: 'male' });
+  });
 });
 
 describe('callState', () => {
@@ -209,5 +254,81 @@ describe('callState', () => {
     expect(isCallActive('b')).toBe(false);
     setCallActive('a', false);
     expect(isCallActive('a')).toBe(false);
+  });
+});
+
+// 261019 review: a shared (World) character is cached with its AUTHOR's
+// metadata verbatim, so an adopter would inherit a voice from the author's own
+// ElevenLabs account that nobody else can speak and they cannot change.
+describe('own ElevenLabs voice on shared characters', () => {
+  const ME = '11111111-1111-4111-8111-111111111111';
+  const AUTHOR = '22222222-2222-4222-8222-222222222222';
+  const OWN_ID = 'aBcDeFgHiJkLmNoPqRsT';
+  const ownMeta = (gender?: string) => ({ voiceId: OWN_ID, voiceOwn: { name: 'Author Clone', ...(gender ? { gender } : {}) } });
+
+  beforeEach(() => {
+    mockSave.mockClear();
+    mockList.mockClear();
+    mockAuth.mockReturnValue({ kind: 'signed_in', user: { id: ME } });
+  });
+
+  it('own character (owner = me, or legacy null owner) keeps its own voice', async () => {
+    for (const owner of [ME, null]) {
+      const c = makeCharacter({ owner, metadata: ownMeta('male') });
+      expect(ownVoiceHonored(c)).toBe(true);
+      expect(await resolveVoiceId(c)).toBe(OWN_ID);
+      expect(ownVoicePickOf(c)).toEqual({ name: 'Author Clone', gender: 'male' });
+    }
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it("adopted character with the author's own voice: a pool voice, nothing persisted", async () => {
+    const c = makeCharacter({ owner: AUTHOR, kind: 'world', metadata: ownMeta() });
+    expect(ownVoiceHonored(c)).toBe(false);
+    expect(assignedVoiceId(c)).toBeNull();
+    expect(ownVoicePickOf(c)).toBeNull(); // so tts never raises VOICE_OWN_NEEDS_KEY for it
+    const v = await resolveVoiceId(c);
+    expect(VOICES.some((p) => p.id === v)).toBe(true);
+    expect(mockSave).not.toHaveBeenCalled();
+    // stable across calls without reading the library (the roll is never saved)
+    expect(await resolveVoiceId(c)).toBe(v);
+    expect(mockList).not.toHaveBeenCalled();
+    // the author's metadata is untouched
+    expect(c.metadata).toEqual(ownMeta());
+  });
+
+  it("the borrowed pool voice keeps the author's voice gender", async () => {
+    const pool = VOICES as Array<{ id: string; gender: string }>;
+    for (const gender of ['male', 'female']) {
+      const c = makeCharacter({ owner: AUTHOR, metadata: ownMeta(gender) });
+      const v = await resolveVoiceId(c);
+      expect(pool.find((p) => p.id === v)?.gender).toBe(gender);
+    }
+  });
+
+  it('signed out, an owner-stamped row is not treated as mine (matches CharacterPage)', async () => {
+    mockAuth.mockReturnValue({ kind: 'signed_out' });
+    const c = makeCharacter({ owner: ME, metadata: ownMeta() });
+    expect(ownVoiceHonored(c)).toBe(false);
+    expect(VOICES.some((p) => p.id === c.metadata.voiceId)).toBe(false);
+    await resolveVoiceId(c);
+    expect(mockSave).not.toHaveBeenCalled();
+    // a bundled default is never an own-voice owner either
+    expect(ownVoiceHonored({ owner: null, is_default: true })).toBe(false);
+  });
+
+  it('adopted character with a pool voice is unchanged', async () => {
+    const c = makeCharacter({ owner: AUTHOR, metadata: { voiceId: VOICES[2].id } });
+    expect(assignedVoiceId(c)).toBe(VOICES[2].id);
+    expect(await resolveVoiceId(c)).toBe(VOICES[2].id);
+    expect(mockSave).not.toHaveBeenCalled();
+  });
+
+  it("other people's own voices are not 'taken' when rolling for my characters", async () => {
+    mockList.mockResolvedValue([makeCharacter({ id: '33333333-3333-4333-8333-333333333333', owner: AUTHOR, metadata: ownMeta() })]);
+    const mine = makeCharacter({ owner: ME });
+    await resolveVoiceId(mine);
+    expect(mockSave).toHaveBeenCalledTimes(1);
+    mockList.mockResolvedValue([]);
   });
 });

@@ -46,6 +46,7 @@ import { PortraitVersionsModal } from './PortraitVersionsModal';
 import { SkinEditor } from './SkinEditor';
 import { VoicePicker } from './VoicePicker';
 import type { VoiceParams } from '../lib/voicePicker';
+import { applyVoicePick, ownVoiceOf, type OwnVoicePick } from '@shared/voiceIds';
 import { voicePitchRate, voiceStabilityFor } from '@shared/voicePitch';
 import type { Character } from '@shared/characterSchema';
 import styles from './EditCharacterModal.module.css';
@@ -97,6 +98,14 @@ export function EditCharacterModal({
   const [voiceId, setVoiceId] = useState<string | null>(
     typeof character.metadata?.voiceId === 'string' ? (character.metadata.voiceId as string) : null,
   );
+  // 261019: the own-ElevenLabs-voice marker that rides with voiceId (null for
+  // pool / Auto / No voice). Seeded from metadata so a params-only save keeps
+  // an own pick marked; replaced on every picker selection.
+  const [voiceOwn, setVoiceOwn] = useState<OwnVoicePick | null>(() => ownVoiceOf(character.metadata));
+  const onVoiceChange = (id: string | null, own: OwnVoicePick | null): void => {
+    setVoiceId(id);
+    setVoiceOwn(own);
+  };
   // Voice playground (260725): pitch/calmness sliders, seeded from the
   // EFFECTIVE values, not just the metadata keys — a character with a baked
   // code default (Sui: pitch 1.224, calmness 0.85 in shared/voicePitch.ts)
@@ -320,9 +329,9 @@ export function EditCharacterModal({
     setError(null);
     try {
       const latest = (await sei.getCharacter(character.id)) ?? character;
-      const metadata = { ...(latest.metadata ?? {}) };
-      if (voiceId === null) delete metadata.voiceId;
-      else metadata.voiceId = voiceId;
+      // voiceId + the own-voice marker together (shared/voiceIds.ts): a pool
+      // pick clears a stale marker, an own pick stamps it.
+      const metadata = applyVoicePick(latest.metadata, voiceId, voiceOwn);
       const baked = { id: character.id, metadata: {} };
       if (voiceParams.pitch !== undefined) metadata.voicePitch = voiceParams.pitch;
       else if (voicePitchRate(baked) !== 1) metadata.voicePitch = 1;
@@ -577,7 +586,8 @@ export function EditCharacterModal({
                   </p>
                   <VoicePicker
                     value={voiceId}
-                    onChange={setVoiceId}
+                    valueOwn={voiceOwn}
+                    onChange={onVoiceChange}
                     params={voiceParams}
                     onParamsChange={setVoiceParams}
                     localTtsMode={localTtsMode}

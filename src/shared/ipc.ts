@@ -615,6 +615,41 @@ export interface VoiceInfo {
   vibe: string;
 }
 
+/**
+ * One voice from the user's OWN ElevenLabs account (261019), listed by main
+ * with the stored BYOK key (GET /v2/voices). Renderer-safe: no key, no
+ * preview URL (main fetches preview bytes itself, see voiceOwnPreview).
+ */
+export interface OwnVoiceInfo {
+  /** ElevenLabs voice id, persisted as metadata.voiceId when picked. */
+  id: string;
+  /** The name the user gave it in ElevenLabs. */
+  name: string;
+  /** ElevenLabs category: 'cloned' | 'generated' | 'professional' | ... */
+  category: string;
+  /** From the voice's ElevenLabs labels, when present. */
+  gender?: string;
+  age?: string;
+  accent?: string;
+  description?: string;
+  /** ElevenLabs has a ready-made sample for this voice (no synthesis needed). */
+  hasPreview: boolean;
+}
+
+/**
+ * Result of voice:own-list (261019).
+ *   - ok:          the list (may be empty).
+ *   - unavailable: no direct ElevenLabs route (no key stored, cloud backend,
+ *                  or a key that the active backend does not use).
+ *   - bad_key:     ElevenLabs refused the key (401: wrong key, or a scoped key
+ *                  without the Voices read permission).
+ *   - error:       network or upstream failure; the built-in list still works.
+ */
+export interface OwnVoiceList {
+  status: 'ok' | 'unavailable' | 'bad_key' | 'error';
+  voices: OwnVoiceInfo[];
+}
+
 /** One voice:tts-chunk push (streaming TTS, 260705). Exactly one terminal
  * field is eventually sent per stream: done:true after the last chunk, or
  * error (sentinel-prefixed message) on a mid-stream failure. */
@@ -2400,6 +2435,18 @@ export interface RendererApi {
   /** The curated voice pool (labels + vibe blurbs) for the creation picker. */
   voiceListVoices(): Promise<VoiceInfo[]>;
   /**
+   * Voices in the user's own ElevenLabs account (261019), fetched in main with
+   * the stored key (briefly cached; `refresh` bypasses the cache). Never
+   * throws for upstream reasons: failures come back as a status.
+   */
+  voiceListOwnVoices(args?: { refresh?: boolean }): Promise<OwnVoiceList>;
+  /**
+   * Sample bytes for one of the user's own ElevenLabs voices: ElevenLabs'
+   * ready-made preview when the voice has one (fetched in main), else the
+   * picker's sample line synthesized through the user's key.
+   */
+  voiceOwnPreview(args: { voiceId: string }): Promise<ArrayBuffer>;
+  /**
    * Speak the canned preview line in an arbitrary pool voice (picker).
    * `calmness` is ElevenLabs stability (clamped 0..1); omitting it keeps the
    * request byte-identical to the pre-playground shape, so existing disk-cache
@@ -3474,6 +3521,10 @@ export const IpcChannel = {
     callEnded: 'voice:call-ended',
     /** Invoke: curated voice pool for the creation picker → VoiceInfo[]. */
     list: 'voice:list',
+    /** Invoke: the user's own ElevenLabs voices → OwnVoiceList (261019). */
+    ownList: 'voice:own-list',
+    /** Invoke: sample bytes for one own voice ({voiceId}) → ArrayBuffer (261019). */
+    ownPreview: 'voice:own-preview',
     /** Invoke: preview an arbitrary pool voice ({voiceId}) → ArrayBuffer. */
     preview: 'voice:preview',
     /** Invoke: can voice samples synthesize right now? → boolean (260720). */

@@ -8,12 +8,18 @@
  *   - NO_VOICE_ID   → silent companion: metadata.voiceId = 'none'; TTS never
  *                     synthesizes for them.
  *   - any other id  → pinned pool voice: metadata.voiceId = that id.
+ *   - an own voice  → (261019) a voice from the user's own ElevenLabs
+ *                     account: metadata.voiceId = its id PLUS the
+ *                     metadata.voiceOwn marker (shared/voiceIds.ts
+ *                     applyVoicePick), which keeps the runtime from treating
+ *                     it as unknown and re-rolling it.
  */
-import type { VoiceInfo } from '@shared/ipc';
-import { NO_VOICE_ID } from '@shared/voiceIds';
+import type { OwnVoiceInfo, OwnVoiceList, VoiceInfo } from '@shared/ipc';
+import { NO_VOICE_ID, applyVoicePick, type OwnVoicePick } from '@shared/voiceIds';
 import { CHAT_LANGUAGE_CODES } from '@shared/chatLanguage';
 
-export { NO_VOICE_ID };
+export { NO_VOICE_ID, applyVoicePick };
+export type { OwnVoicePick };
 
 export type VoiceSelection = string | null;
 
@@ -59,11 +65,14 @@ export function reduceSelection(current: VoiceSelection, clickedId: string): Voi
 }
 
 /**
- * True when `selection` names a voice the picker's pool does not list — a
- * legacy id assigned before the 260707 pool curation. The picker renders a
- * dedicated "Current voice" row for it so editing never silently drops it.
+ * True when `selection` names a voice the picker does not list — a legacy id
+ * assigned before the 260707 pool curation, or (261019) an own ElevenLabs
+ * voice whose list cannot be read right now (key removed, cloud backend,
+ * voice deleted in ElevenLabs). The picker renders a dedicated "Current
+ * voice" row for it so editing never silently drops it. Pass the pool AND the
+ * own-voice list.
  */
-export function isUnlistedVoice(selection: VoiceSelection, voices: VoiceInfo[]): boolean {
+export function isUnlistedVoice(selection: VoiceSelection, voices: Array<{ id: string }>): boolean {
   return (
     selection !== null && selection !== NO_VOICE_ID && !voices.some((v) => v.id === selection)
   );
@@ -108,4 +117,81 @@ export function normalizeVoiceParams(p: VoiceParams): VoiceParams {
   if (p.pitch !== undefined && p.pitch !== PITCH_DEFAULT) out.pitch = p.pitch;
   if (p.calmness !== undefined && p.calmness !== CALMNESS_DEFAULT) out.calmness = p.calmness;
   return out;
+}
+
+// ── Own ElevenLabs voices (261019) ─────────────────────────────────────────
+
+/** Tab key for the "Your ElevenLabs voices" tab (beside the gender groups). */
+export const OWN_TAB_KEY = 'own';
+export type VoiceTabKey = VoiceGroup['key'] | typeof OWN_TAB_KEY;
+
+/** The marker to persist when `id` is picked from the own-voice list, or null
+ * for any other selection (pool voice, Auto, No voice). */
+export function ownVoicePickFor(id: VoiceSelection, own: OwnVoiceInfo[]): OwnVoicePick | null {
+  if (id === null) return null;
+  const v = own.find((x) => x.id === id);
+  if (!v) return null;
+  return { name: v.name, ...(v.gender ? { gender: v.gender } : {}) };
+}
+
+/** English UI label for an ElevenLabs voice category (callers pass it through
+ * t()). Unknown categories get the generic label rather than a raw token. */
+export function ownVoiceCategoryLabel(category: string): string {
+  switch (category) {
+    case 'cloned':
+      return 'Cloned voice';
+    case 'professional':
+      return 'Professional clone';
+    case 'generated':
+      return 'Designed voice';
+    case 'famous':
+    case 'high_quality':
+      return 'Library voice';
+    default:
+      return 'Your voice';
+  }
+}
+
+/** One-line detail under an own voice: its ElevenLabs description, else its
+ * labels ("female, young, american"). Data from the user's account, shown as
+ * written. Empty string when ElevenLabs has nothing. */
+export function ownVoiceDetail(v: OwnVoiceInfo): string {
+  if (v.description) return v.description;
+  return [v.gender, v.age, v.accent].filter((x): x is string => !!x).join(', ');
+}
+
+/**
+ * What the picker shows for the own-voice list state:
+ *   - 'tab'    → render the "Your ElevenLabs voices" tab (it may be empty,
+ *                then it carries the "nothing here yet" hint).
+ *   - 'hint'   → no tab, one quiet line (key refused / list unreadable).
+ *   - 'none'   → nothing at all (no direct key route, or still loading).
+ * The built-in list renders in every case.
+ */
+export function ownVoicesView(list: OwnVoiceList | null): 'tab' | 'hint' | 'none' {
+  if (!list) return 'none';
+  if (list.status === 'ok') return 'tab';
+  if (list.status === 'bad_key' || list.status === 'error') return 'hint';
+  return 'none';
+}
+
+/** Whether Sei's pool voices are being spoken through the user's own key
+ * (the own-voice list is reachable, i.e. the direct route is active), which
+ * is when the free-plan hint above the pool applies. */
+export function poolUsesOwnKey(list: OwnVoiceList | null): boolean {
+  return list !== null && list.status !== 'unavailable';
+}
+
+/** Default tab: the tab holding the selection, else the own tab when it has
+ * voices (a user who brought a key came for those), else the first group. */
+export function defaultVoiceTab(
+  value: VoiceSelection,
+  groups: VoiceGroup[],
+  own: OwnVoiceInfo[] | null,
+): VoiceTabKey | null {
+  if (own && value !== null && own.some((v) => v.id === value)) return OWN_TAB_KEY;
+  const g = groups.find((x) => x.voices.some((v) => v.id === value));
+  if (g) return g.key;
+  if (own && own.length > 0) return OWN_TAB_KEY;
+  return groups[0]?.key ?? (own ? OWN_TAB_KEY : null);
 }

@@ -250,6 +250,9 @@ export async function attackEntityAction(args, bot, config) {
     // killed the 4 hp player in that gap.
     while (result.died && ctx.used < ctx.budget && HOSTILE_MOBS.has(name) && !signal?.aborted) {
       if (Number.isFinite(bot.health) && bot.health <= CRITICAL_HP) break
+      // Past the action's hard cap a next target would time out before its
+      // first swing and read as "timeout attacking zombie" on a mob in reach.
+      if (Date.now() + SWING_DELAY_MS >= ctx.hardDeadline) break
       const next = pickHostileForOwner(bot, (e) => !NO_AUTO_ENGAGE.has(e.name), {
         ownerRadius: CHAIN_OWNER_RADIUS, excludeIds: deadIds,
       }) ?? nearestTagged(bot, ctx)
@@ -315,6 +318,11 @@ export function continueAttack(bot, running, use) {
   const run = bot?._seiAttackRun
   if (!run?.open) return null
   const ctx = run.ctx
+  // An attack that is being torn down (stop, pause, preempt) or is about to
+  // hit its hard cap cannot keep going: let the call start a fresh attack
+  // instead of answering "it keeps going" for a fight that is ending.
+  if (ctx.signal?.aborted) return null
+  if (Date.now() + SWING_DELAY_MS >= ctx.hardDeadline) return null
   const live = bot.entities?.[ctx.currentId]
   if (!live || ctx.deadIds.has(ctx.currentId) || isDeadEntity(bot, live)) return null
   const args = use.input ?? {}

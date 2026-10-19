@@ -245,6 +245,37 @@ describe('continueAttack (261019)', () => {
     expect(after).toBeNull()
   })
 
+  it('repeat calls never carry one attack past three timeout windows', async () => {
+    const bot = withLookup(fightBot())
+    const replies = []
+    // Every swing is followed by a repeat call asking for 10 more.
+    bot.attack.mockImplementation(() => {
+      replies.push(continueAttack(bot, running, again({ entity: 'zombie', times: 10 })))
+    })
+    const t0 = Date.now()
+    const r = await attackEntityAction({ entity_id: 7, times: 2, timeout_ms: 700 }, bot, {})
+    const ms = Date.now() - t0
+    // Hard cap 3 x 700 ms; the last swing check lands one swing delay after it at most.
+    expect(ms).toBeLessThan(3 * 700 + 700)
+    expect(r).toMatch(/^timeout after \d+\/\d+ hits on zombie/)
+    expect(bot.attack.mock.calls.length).toBeLessThanOrEqual(4)
+    // Near the cap the repeat call is not folded in (it starts a fresh attack).
+    expect(replies.at(-1)).toBeNull()
+  }, 10_000)
+
+  it('does not take over an attack that is being aborted', async () => {
+    const bot = withLookup(fightBot())
+    const ac = new AbortController()
+    let after
+    bot.attack.mockImplementationOnce(() => {
+      ac.abort()
+      after = continueAttack(bot, running, again({ entity: 'zombie' }))
+    })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, { signal: ac.signal })
+    expect(after).toBeNull()
+    expect(r).toMatch(/^aborted after 1\/\d+ hits on zombie/)
+  })
+
   it('a name that now points at another mob (the one on the player) still switches', async () => {
     const bot = withLookup(fightBot())
     bot.entities[9] = { id: 9, name: 'zombie', type: 'hostile', position: new Vec3(10, 64, 0), height: 1.95 }

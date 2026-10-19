@@ -177,14 +177,21 @@ describe('attackEntity pursuit keeps its goal (261012)', () => {
 describe('continueAttack (261019)', () => {
   const running = { name: 'attackEntity', input: { entity: 'zombie', times: 2 } }
   const again = (input) => ({ name: 'attackEntity', input })
+  // A name lookup like the live bot's: nearest matching entity.
+  const withLookup = (bot) => {
+    bot.nearestEntity = (match) => Object.values(bot.entities)
+      .filter((e) => match(e))
+      .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0] ?? null
+    return bot
+  }
 
   it('is null when no attack is running', () => {
-    const bot = fightBot()
+    const bot = withLookup(fightBot())
     expect(continueAttack(bot, running, again({ entity: 'zombie' }))).toBeNull()
   })
 
   it('extends the swing budget of the running fight and says so', async () => {
-    const bot = fightBot()
+    const bot = withLookup(fightBot())
     let reply
     // The repeat call lands between swings, as a model turn would.
     bot.attack.mockImplementationOnce(() => setTimeout(() => {
@@ -200,7 +207,7 @@ describe('continueAttack (261019)', () => {
   })
 
   it('never shrinks the budget', async () => {
-    const bot = fightBot()
+    const bot = withLookup(fightBot())
     bot.attack.mockImplementationOnce(() => setTimeout(() => {
       continueAttack(bot, running, again({ entity: 'zombie', times: 1 }))
     }, 50))
@@ -209,7 +216,7 @@ describe('continueAttack (261019)', () => {
   })
 
   it('does not take over a call on another mob, another id, or another action', async () => {
-    const bot = fightBot()
+    const bot = withLookup(fightBot())
     const seen = []
     bot.attack.mockImplementationOnce(() => setTimeout(() => {
       seen.push(continueAttack(bot, running, again({ entity: 'skeleton' })))
@@ -225,7 +232,7 @@ describe('continueAttack (261019)', () => {
   })
 
   it('does not take over once the mob is dead', async () => {
-    const bot = fightBot()
+    const bot = withLookup(fightBot())
     const handlers = {}
     bot.on = (ev, fn) => { (handlers[ev] ??= []).push(fn) }
     bot.removeListener = (ev, fn) => { handlers[ev] = (handlers[ev] ?? []).filter((h) => h !== fn) }
@@ -236,5 +243,20 @@ describe('continueAttack (261019)', () => {
     })
     await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
     expect(after).toBeNull()
+  })
+
+  it('a name that now points at another mob (the one on the player) still switches', async () => {
+    const bot = withLookup(fightBot())
+    bot.entities[9] = { id: 9, name: 'zombie', type: 'hostile', position: new Vec3(10, 64, 0), height: 1.95 }
+    bot._seiOwnerNames = ['alex']
+    bot.players = { Alex: { entity: { username: 'Alex', position: new Vec3(11, 64, 0) } } }
+    const seen = []
+    bot.attack.mockImplementationOnce(() => setTimeout(() => {
+      seen.push(continueAttack(bot, running, again({ entity: 'zombie' })))
+      seen.push(continueAttack(bot, running, again({ entity_id: 7 })))
+    }, 50))
+    await attackEntityAction({ entity_id: 7, times: 2 }, bot, {})
+    expect(seen[0]).toBeNull()
+    expect(seen[1]).toMatch(/already on that zombie/)
   })
 })

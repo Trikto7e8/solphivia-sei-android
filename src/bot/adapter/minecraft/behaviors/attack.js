@@ -323,16 +323,15 @@ export function continueAttack(bot, running, use) {
   return `your attackEntity is already on that ${label} (${ctx.used} ${ctx.used === 1 ? 'swing' : 'swings'} so far), so it keeps going with up to ${left} more instead of starting over. Its result comes when the fight ends.`
 }
 
+// The repeat call is on the running fight when a fresh attackEntity with the
+// same arguments would pick the same mob: same id or #handle, or a name whose
+// lookup (owner-threat first, then nearest) lands on it. With two zombies
+// around, "zombie" can point at the one on the player; that call still
+// switches targets as before.
 function sameFight(bot, live, args) {
-  if (typeof args.entity_id === 'number') return args.entity_id === live.id
-  if (typeof args.target === 'string' && args.target.startsWith('#')) {
-    return resolveEntity({ target: args.target }, bot)?.id === live.id
-  }
-  const asked = typeof args.target === 'string' && args.target ? args.target : args.entity
-  if (typeof asked !== 'string' || !asked) return false
-  const want = asked.toLowerCase()
-  if (live.username) return live.username.toLowerCase() === want
-  return (live.name ?? '').toLowerCase() === want
+  let picked = null
+  try { picked = resolveEntity(args, bot) } catch { picked = null }
+  return !!picked && picked.id === live.id
 }
 
 // After a kill, attackEntity moves on to a hostile within this many blocks of

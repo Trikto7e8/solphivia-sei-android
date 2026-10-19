@@ -1531,6 +1531,27 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // currentLoop === null and opens a fresh loop with the attack seed
   // addendum.
   let pendingAttack = null
+  // 261019 (pass 19): she died and her death turn has not started yet. The
+  // adapter reports the death the moment health hits 0 (noteDeath) and queues
+  // the death turn itself only after the respawn, so the turn sees her real
+  // state. In between, any turn still being written was planned by the body
+  // that died (combat_night eval: "eating bread" and "i'm at 4 hp" after the
+  // death, an eat call for bread that lay on the ground), so it is dropped.
+  // `life` counts deaths, so a hit queued in her previous life is dropped too.
+  let deathPending = false
+  let life = 0
+  const DEATH_PENDING_MAX_MS = 10_000
+  /** Player lines that arrived while deathPending with no loop open. */
+  let deathHeld = []
+  function flushDeathHeld() {
+    const held = deathHeld
+    deathHeld = []
+    for (const h of held) {
+      try { reenqueue(h.event, h.data, 1 /* Priority.P1_CHAT */) } catch (err) {
+        logger.warn?.(`[sei/orch] re-sending a held player line failed: ${err && err.message}`)
+      }
+    }
+  }
   // 261011: when the bot last spoke during an attack turn, so the next hit in
   // the same fight is told it already warned the player (NUDGES.fightAlreadyTold).
   let _lastFightLineAt = 0
@@ -2596,11 +2617,36 @@ function maybeWarnByteCap(loop, warned) {
       logger.info?.('[sei/orch] stay note cleared: she died')
       stayNote = null
     }
+    // 261019 (pass 19): the death turn is here, so turns may run again, and
+    // player lines that arrived in between follow it. Only once the death
+    // turn really opens: with a loop still open, the branch below tears it
+    // down and re-fires sei:death, and lines released now would be answered
+    // ahead of the death turn (or be torn down by it).
+    if (event === 'sei:death' && currentLoop === null) {
+      deathPending = false
+      flushDeathHeld()
+    }
+    // A hit from before she died: that body and that fight are gone.
+    if (event === 'sei:attacked' && Number.isFinite(data?._life) && data._life !== life) {
+      logger.info?.(`[sei/orch] dropped ${event} from before her death`)
+      return
+    }
     // 260502-h6i: chat events arrive from src/behaviors/chat.js as
     // `sei:chat_received` with an `playerSpoke` flag. The legacy `player_chat`
     // shape is preserved for backwards-compat.
     const { isPlayerChat } = classifyChatEvent(event, data)
     const isIdle     = event === 'idle' || event === 'sei:idle'
+    // 261019 (pass 19): a player line between her death and the death turn
+    // would open a turn that runIterations skips, losing the line. Hold it
+    // and re-send it right after the death turn. Also with a loop open: a
+    // loop suspended on an action would fold it in through handleActionTick,
+    // whose turn runIterations skips too, and the death teardown then drops
+    // the loop with the line in it.
+    if (deathPending && (isPlayerChat || event === 'player_chat' || event === 'sei:chat_received')) {
+      logger.info?.('[sei/orch] player line held until the death turn')
+      deathHeld.push({ event, data })
+      return
+    }
 
     // 261011: a NEW player line, attack or death preempts whatever is left of
     // a previous turn's drained batch, exactly as it preempts a live action.
@@ -2739,7 +2785,16 @@ function maybeWarnByteCap(loop, warned) {
         // the mid-action frame now asks keep-or-switch evenly, so the model
         // reads the line in whatever language it came in.
         if (currentLoop.inFlight && !currentLoop._llmCallInFlight && !currentLoop.isTerminal) {
-          await handleActionTick(currentLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          // 261020 (pass 19): if she dies while the reply to this line is
+          // being written, noteDeath holds the line for after the death turn.
+          const tickLoop = currentLoop
+          const delivering = { event, data }
+          tickLoop._deliveringLine = delivering
+          try {
+            await handleActionTick(tickLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          } finally {
+            if (tickLoop._deliveringLine === delivering) tickLoop._deliveringLine = null
+          }
           return
         }
         // 260611: ACCUMULATE, don't overwrite — mirrors handlePreempt's
@@ -4752,6 +4807,13 @@ function maybeWarnByteCap(loop, warned) {
 
       const signal = loop.abortController.signal
 
+      // 261019 (pass 19): she died and the death turn is coming; nothing this
+      // loop would plan now fits the body that respawned.
+      if (deathPending) {
+        logger.info?.(`[sei/orch] turn skipped: she died, waiting for the death turn (loop=${loop.id})`)
+        return
+      }
+
       // Passive-look cadence: every x-th personality call gets the bot's POV
       // attached (runIterations is the single funnel for all turn types, so
       // this one hook covers new loops, in-flight ticks, and continuations).
@@ -4766,6 +4828,10 @@ function maybeWarnByteCap(loop, warned) {
         resp = await callPersonality(loop, signal)
       } catch (err) {
         if (err && (err.name === 'AbortError' || signal.aborted)) {
+          // 261019 (pass 19): aborted because she died (noteDeath). The death
+          // turn tears this loop down; a player line folded meanwhile stays in
+          // pendingInterrupt and is re-sent by that teardown.
+          if (deathPending) return
           // 260505-twx: if the abort was caused by an incoming attack,
           // drop the entire loop. The handleDispatch finally block will
           // re-fire the attack as a fresh dispatch, which opens a new
@@ -4873,12 +4939,20 @@ function maybeWarnByteCap(loop, warned) {
         // Rate-limited; bail.
         return
       }
+      // 261019 (pass 19): she died while this turn was being written. Its
+      // lines and actions were planned by the body that died, so none of it
+      // runs; the death turn speaks for her.
+      if (deathPending) {
+        logger.info?.(`[sei/orch] turn discarded: she died while it was being written (loop=${loop.id})`)
+        return
+      }
 
       // Append assistant turn raw (preserves tool_use blocks 1:1)
       loop.appendAssistant(buildAssistantContent(resp))
       // 260708: the trigger has now been seen and answered by at least one
       // model response — an attack teardown no longer needs to preserve it.
       loop._respondedOnce = true
+      loop._deliveringLine = null
       // 260909: a server-side web search that ran long stops with
       // `pause_turn`; the assistant content (kept intact above, server blocks
       // included) goes back as-is and the model is called again to finish.
@@ -5854,7 +5928,7 @@ function maybeWarnByteCap(loop, warned) {
     if (!loop._replaySay) loop._earlySay = null
     const onSay = voiceCallActive && typeof onSeiChatReply === 'function'
       ? (text, toolUseId) => {
-          if (loop._earlySay) return
+          if (loop._earlySay || deathPending) return
           loop._earlySay = { id: toolUseId, text, result: _emitSayLine(loop, text) }
         }
       : undefined
@@ -5974,6 +6048,10 @@ function maybeWarnByteCap(loop, warned) {
       // mineflayer's auto-attack interval keeps swinging meanwhile, and the next
       // throttled hit re-wakes a fresh reaction once this one settles.
       if (loop._triggerEvent === 'sei:attacked') return true
+      // 261019 (pass 19): same for her death turn. It already sees the mob in
+      // the snapshot, and tearing it down for the hit would lose the death
+      // framing (what she lost, where it lies).
+      if (loop._triggerEvent === 'sei:death' && !loop._respondedOnce) return true
       // 261011: same for a real hit delivered mid-action (handleActionTick)
       // whose reaction call is still parked: tearing it down would discard
       // the reaction AND abort the action the delivery path exists to keep.
@@ -5997,6 +6075,51 @@ function maybeWarnByteCap(loop, warned) {
       return false
     }
     return false
+  }
+
+  /**
+   * 261019 (pass 19): the adapter saw her die (health 0). Called the moment it
+   * happens, before the respawn; the death turn itself is queued after the
+   * respawn so it sees her real state. Until that turn starts, deathPending
+   * drops whatever turn is being written (see runIterations), and `life`
+   * moves on so a hit queued before the death is dropped at dispatch.
+   * A parked LLM call is aborted now instead of being left to finish.
+   */
+  function noteDeath() {
+    deathPending = true
+    life++
+    // Backstop: the death turn normally clears this within a couple of
+    // seconds. If it never comes (a disconnect mid-respawn), turns resume.
+    const lifeAtDeath = life
+    const t = setTimeout(() => {
+      if (life !== lifeAtDeath || !deathPending) return
+      deathPending = false
+      flushDeathHeld()
+    }, DEATH_PENDING_MAX_MS)
+    t.unref?.()
+    const loop = currentLoop
+    // A player line whose reply was still being written is not lost with the
+    // turn: hold it for after the death turn, like a line that arrives now.
+    // (_respondedOnce: a reply already went out, or the line is now held, so
+    // no other teardown path re-sends it.)
+    if (loop && !loop._respondedOnce) {
+      const trig = loop._triggerData
+      const trigText = String(trig?.text ?? trig?.message ?? '').trim()
+      if (trigText && trig?.playerSpoke === true && classifyChatEvent(loop._triggerEvent, trig).isPlayerChat) {
+        loop._respondedOnce = true
+        deathHeld.push({ event: loop._triggerEvent, data: trig })
+        logger.info?.(`[sei/orch] unanswered player line held until the death turn (loop=${loop.id})`)
+      }
+    }
+    // Same for a line delivered mid-action whose reply was being written.
+    if (loop && loop._deliveringLine) {
+      deathHeld.push(loop._deliveringLine)
+      loop._deliveringLine = null
+      logger.info?.(`[sei/orch] mid-action player line held until the death turn (loop=${loop.id})`)
+    }
+    if (loop && loop._llmCallInFlight) {
+      try { loop.abortController.abort() } catch {}
+    }
   }
 
   /**
@@ -6038,6 +6161,9 @@ function maybeWarnByteCap(loop, warned) {
     handleDispatch,
     handlePreempt,
     abortActive,
+    noteDeath,
+    /** How many times she has died this session (stamps queued hits). */
+    get life() { return life },
     get currentLoop()    { return currentLoop },
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,

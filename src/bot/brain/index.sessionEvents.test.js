@@ -86,6 +86,28 @@ describe('brain/index.js records game events', () => {
     await brain.stop?.()
   })
 
+  // 261019 (pass 19): the death report now comes after the respawn and
+  // carries the game's death message and the moment she died.
+  it('a death carries the game death message, and the cause window is measured from diedAt', async () => {
+    const { adapter, handlers } = makeAdapter()
+    const brain = await start({ config: makeConfig(), adapter, logger: quiet })
+    handlers().onAttacked({ attackerKind: 'hostile_mob', attackerLabel: 'zombie' })
+    handlers().onDeath({ pos: null, diedAt: Date.now() + 40_000, deathText: 'Sui fell from a high place', lost: [] })
+    const death = orch.recordGameEvent.mock.calls.find((c) => c[0] === 'death')
+    expect(death[1]).toEqual({ deathText: 'Sui fell from a high place' })
+    await brain.stop?.()
+  })
+
+  it('a mob hitting the player is not taken as what killed her', async () => {
+    const { adapter, handlers } = makeAdapter()
+    const brain = await start({ config: makeConfig(), adapter, logger: quiet })
+    handlers().onAttacked({ attackerKind: 'defend', attackerLabel: 'zombie' })
+    handlers().onDeath({ pos: null })
+    const death = orch.recordGameEvent.mock.calls.find((c) => c[0] === 'death')
+    expect(death[1]).toEqual({})
+    await brain.stop?.()
+  })
+
   it('a Stardew new-day notice is recorded as a fact, not as chat or instructions', async () => {
     vi.useFakeTimers()
     try {

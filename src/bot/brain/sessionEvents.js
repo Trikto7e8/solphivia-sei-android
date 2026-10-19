@@ -143,6 +143,9 @@ export function describeAttackEvent(evt) {
  * @returns {string}
  */
 export function describeDeathEvent(evt) {
+  // 261019 (pass 19): the game's own death message names the real cause
+  // ("Sui drowned while trying to escape Drowned"), so it wins.
+  if (typeof evt?.deathText === 'string' && evt.deathText) return `you died (${evt.deathText})`
   const la = evt?.lastAttack
   if (la && la.label) {
     const by = la.kind === 'player' ? String(la.label) : mobName(la.label)

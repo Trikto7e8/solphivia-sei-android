@@ -121,3 +121,23 @@ describe('every acting action ends follow mode', () => {
     expect(getFollowTargetLabel()).toBe('Shawn')
   })
 })
+
+// 261019 (quality pass 19): the follow result claimed "still trailing them"
+// without checking.
+describe('follow result on interrupt says whether the trail goes on', () => {
+  it('still trailing when the target is kept, ended when something dropped it', async () => {
+    const registry = createDefaultRegistry()
+    const bot = fakeBot()
+    bot.players = { Shawn: { entity: { position: { x: 1, y: 64, z: 1 } }, username: 'Shawn' } }
+    let ctl = new AbortController()
+    let p = registry.execute('follow', { player: 'Shawn' }, bot, { signal: ctl.signal })
+    ctl.abort()
+    expect(String(await p)).toBe('follow Shawn interrupted (still trailing them)')
+
+    ctl = new AbortController()
+    p = registry.execute('follow', { player: 'Shawn' }, bot, { signal: ctl.signal })
+    setFollowTarget(null)
+    ctl.abort()
+    expect(String(await p)).toBe('follow Shawn ended (no longer following them)')
+  })
+})

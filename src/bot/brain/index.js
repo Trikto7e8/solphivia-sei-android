@@ -296,7 +296,8 @@ export async function start({ config, adapter, logger = console, onTerminalError
       // this, sei:death carries only the position and the model has no idea
       // what killed it — live failure: Sui died mid-PvP-spar with Marv and
       // said "i have literally no idea what just happened".
-      if (evt?.attackerKind !== 'reflex') {
+      // 261019: 'defend' is a mob hitting the PLAYER, not her.
+      if (evt?.attackerKind !== 'reflex' && evt?.attackerKind !== 'defend') {
         _lastAttack = {
           label: evt?.attackerLabel ?? 'something',
           kind: evt?.attackerKind ?? 'mob',
@@ -313,7 +314,21 @@ export async function start({ config, adapter, logger = console, onTerminalError
       // 261014: a "game:" line in the transcript (reflex warnings are skipped
       // inside; repeat hits fold into one line).
       try { orchestrator.recordGameEvent?.('attacked', evt) } catch {}
+      // 261019 (pass 19): which of her lives this hit belongs to, so one that
+      // is still queued when she dies is dropped instead of answered after
+      // the respawn.
+      if (evt && typeof evt === 'object') {
+        const l = orchestrator.life
+        if (Number.isFinite(l)) evt._life = l
+      }
       queue.enqueue(attackedPriority(evt), 'sei:attacked', evt)
+    },
+    // 261019 (pass 19): the moment she dies, before the respawn. The death
+    // turn (onDeath) comes after the respawn; until then the orchestrator
+    // drops any turn the dead body was still writing. Optional: adapters that
+    // only report the death itself skip it.
+    onDying: () => {
+      try { orchestrator.noteDeath?.() } catch {}
     },
     onDeath: (evt) => {
       // The player killed the bot (or it fell/burned/etc). Enqueue a real
@@ -327,7 +342,10 @@ export async function start({ config, adapter, logger = console, onTerminalError
       // null if the entity position was unreadable).
       // 260708: attach the last real hit when it was recent — the death prompt
       // renders it as the cause (deathAddendum in adapter/minecraft/prompts.js).
-      const sinceMs = _lastAttack ? Date.now() - _lastAttack.at : Infinity
+      // 261019 (pass 19): measured from the moment she died. The Minecraft
+      // adapter reports the death after the respawn, a second or so later.
+      const diedAt = Number.isFinite(evt?.diedAt) ? evt.diedAt : Date.now()
+      const sinceMs = _lastAttack ? diedAt - _lastAttack.at : Infinity
       const lastAttack = sinceMs <= DEATH_CAUSE_WINDOW_MS
         ? {
             label: _lastAttack.label,
@@ -336,10 +354,16 @@ export async function start({ config, adapter, logger = console, onTerminalError
             secondsBefore: Math.max(1, Math.round(sinceMs / 1000)),
           }
         : null
-      try { orchestrator.recordGameEvent?.('death', lastAttack ? { lastAttack } : {}) } catch {}
+      const deathText = typeof evt?.deathText === 'string' && evt.deathText ? evt.deathText : null
+      try { orchestrator.recordGameEvent?.('death', { ...(lastAttack ? { lastAttack } : {}), ...(deathText ? { deathText } : {}) }) } catch {}
       queue.enqueue(Priority.P1_CHAT, 'sei:death', {
         pos: evt?.pos ?? null,
         ...(lastAttack ? { lastAttack } : {}),
+        // 261019 (pass 19): what she lost and the game's death message, for
+        // the death framing (adapter/minecraft/prompts.js deathAddendum).
+        ...(Array.isArray(evt?.lost) ? { lost: evt.lost } : {}),
+        ...(evt?.keptAll === true ? { keptAll: true } : {}),
+        ...(deathText ? { deathText } : {}),
       })
     },
     onSpawn: () => {

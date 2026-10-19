@@ -35,6 +35,17 @@
 //                   (2-thick shell), axe + pickaxe, the player on its roof:
 //                   goTo the player must NOT break a single plank, and must
 //                   say it could not get there (261016 review)
+//   hit_walk_goto   261019: a zombie next to her, the player 20 blocks east on
+//                   open ground: goTo the player must get there through the
+//                   hits (base: "cant_reach" when the 1s retaliation exit
+//                   stopped the pathfinder)
+//   follow_hit      follow the player, a zombie hits her, then the player
+//                   moves 20 blocks: is she still trailing them?
+//   death_recover   she dies 15 blocks from spawn with a sword and bread,
+//                   respawns, then goTo the death spot + pickup
+//   beach_hole_a/b/c the combat_night holes on the natural beach: goTo from
+//                   where she was stuck. natural: no arena, so run these
+//                   alone right after the reset (--cases beach_hole_a,...)
 //
 // Shaft and follow cases only count as success on the SURFACE next to the
 // player: tunnelling along under the player's feet is not "reached".
@@ -47,7 +58,7 @@ import { serverCtl, cmds, itemCount } from './lib/server.mjs'
 import { connectPlayer, distTo, entityOf } from './lib/player.mjs'
 import { startCompanion, companionName, PLAYER } from './lib/companionProc.mjs'
 import { Vec3 } from 'vec3'
-import { WORLD_RULES, arenaReset, playersReset, tp, tree, S, P, Y, A } from './bench/arena.mjs'
+import { WORLD_RULES, arenaReset, playersReset, tp, tree, zombie, S, P, Y, A } from './bench/arena.mjs'
 const A_FLOOR = A.floor
 
 const argv = process.argv.slice(2)
@@ -376,6 +387,83 @@ CASES.plank_room = {
   },
 }
 
+// 261019 (quality pass 19). A mob hit used to stop whatever walk was running.
+const FAR = { x: S.x + 20, y: Y, z: S.z }
+CASES.hit_walk_goto = {
+  give: [],
+  async run(ctx) {
+    await cmds([tp(PLAYER, FAR, S), zombie(S.x + 1, S.z + 1)])
+    await sleep(2500) // the zombie closes in and lands a hit or two
+    const t0 = Date.now()
+    const r = await ctx.exec('goTo', { x: FAR.x, y: Y, z: FAR.z, range: 2 }, { timeoutMs: 60000 })
+    const ms = Date.now() - t0
+    const pr = await ctx.comp.probe()
+    const d = distTo(ctx.pbot, ctx.bot)
+    return { result: r.result, ms, pos: pr?.pos, hp: pr?.hp, dist: Number(d.toFixed(1)), success: /^reached/.test(String(r.result)) && onSurfaceNear(pr?.pos, d) }
+  },
+}
+CASES.follow_hit = {
+  give: [],
+  async run(ctx) {
+    const h = ctx.comp.execStart('follow', { player: PLAYER })
+    await sleep(1500)
+    await cmds([zombie(S.x + 1, S.z + 1)])
+    await sleep(5000) // hit, retaliation, its exit
+    await cmds(['kill @e[type=zombie]', tp(PLAYER, FAR, S)])
+    const t0 = Date.now()
+    let reachedMs = null
+    while (Date.now() - t0 < 20000) {
+      await sleep(500)
+      if (distTo(ctx.pbot, ctx.bot) <= 5) { reachedMs = Date.now() - t0; break }
+    }
+    ctx.comp.abort(h.id)
+    const done = await h.done
+    const d = distTo(ctx.pbot, ctx.bot)
+    return { result: done?.result ?? (reachedMs != null ? 'trailing' : 'not trailing'), ms: reachedMs ?? 20000, dist: Number(d.toFixed(1)), success: reachedMs != null }
+  },
+}
+CASES.death_recover = {
+  give: ['stone_sword', 'bread 5', 'oak_planks 12'],
+  async run(ctx) {
+    const spot = { x: S.x + 15, y: Y, z: S.z + 3 }
+    await cmds([tp(ctx.bot, spot)])
+    await sleep(1500)
+    await cmds([`kill ${ctx.bot}`])
+    await sleep(4000) // respawn at the world spawn (S) and settle
+    const t0 = Date.now()
+    const g = await ctx.exec('goTo', { x: spot.x, y: Y, z: spot.z, range: 2 }, { timeoutMs: 60000 })
+    const p = await ctx.exec('pickup', {}, { timeoutMs: 60000 })
+    const ms = Date.now() - t0
+    const pr = await ctx.comp.probe()
+    const inv = JSON.stringify(pr?.inv ?? '')
+    const ok = /stone_sword/.test(inv) && /bread/.test(inv)
+    return { result: `${g.result} | ${p.result}`, ms, inv: pr?.inv, success: ok }
+  },
+}
+
+// 261019: the combat_night holes on the natural beach (free-play world, no
+// arena). goTo from where she was stuck to where she was going.
+function beachHole(from, to) {
+  return {
+    natural: true,
+    give: [],
+    async run(ctx) {
+      await cmds([`tp ${ctx.bot} ${from.x + 0.5} ${from.y} ${from.z + 0.5}`, `tp ${PLAYER} ${to.x + 0.5} ${to.y} ${to.z + 0.5}`])
+      await sleep(2500)
+      const start = await ctx.comp.probe()
+      const t0 = Date.now()
+      const r = await ctx.exec('goTo', { x: to.x, y: to.y, z: to.z, range: 2 }, { timeoutMs: 90000 })
+      const ms = Date.now() - t0
+      const pr = await ctx.comp.probe()
+      const d = distTo(ctx.pbot, ctx.bot)
+      return { result: r.result, ms, start: start?.pos, pos: pr?.pos, dist: Number(d.toFixed(1)), success: d <= 4.5 && Number(pr?.pos?.y) >= to.y - 1.5 }
+    },
+  }
+}
+CASES.beach_hole_a = beachHole({ x: 169, y: 62, z: 12 }, { x: 184, y: 64, z: 10 })
+CASES.beach_hole_b = beachHole({ x: 155, y: 61, z: 13 }, { x: 177, y: 64, z: 9 })
+CASES.beach_hole_c = beachHole({ x: 153, y: 61, z: 12 }, { x: 168, y: 64, z: 3 })
+
 async function main() {
   const which = (opt('cases', null) || Object.keys(CASES).join(',')).split(',').filter(Boolean)
   const bot = companionName()
@@ -393,7 +481,9 @@ async function main() {
         if (!c) throw new Error(`unknown case ${id}`)
         // The shaft cases dig below the 8-layer arena floor into seed
         // terrain; restore the whole column region each trial.
-        await cmds([...arenaReset(), ...(c.world || [])])
+        // natural cases play on the seed terrain the free-play scenarios use
+        // (the arena overwrites it): run them alone, right after the reset.
+        await cmds([...(c.natural ? ['kill @e[type=!player]', 'time set 1000', 'weather clear'] : arenaReset()), ...(c.world || [])])
         const sessDir = path.join('/tmp', `qe-repro-${id}-${rep}`)
         let comp
         try {

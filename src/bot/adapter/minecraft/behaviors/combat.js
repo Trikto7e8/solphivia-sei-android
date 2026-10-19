@@ -1,5 +1,5 @@
 import pkg from 'mineflayer-pathfinder'
-import { stopFollow, startFollow } from './follow.js'
+import { pauseFollow, startFollow } from './follow.js'
 import { pursuitMovements } from './attack.js'
 import { createThrottle } from '../../../brain/debounce.js'
 import { HOSTILE_MOBS, NO_MELEE_DEFEND, NO_AUTO_ENGAGE } from './hostiles.js'
@@ -193,7 +193,8 @@ export function startCombat(bot, config) {
     if (canMelee) {
       payload.engaged = true
       if (_target?.id !== target.id) {
-        stopFollow()
+        // 261019: pause the trail, keep its target (resumed in stopAttacking).
+        pauseFollow()
         _pursueTargetId = target.id
         // Claim the deliberate-target flag so reflex.js stops kiting the mob we
         // are walking INTO (same contract attack.js uses).
@@ -379,7 +380,13 @@ export function startCombat(bot, config) {
       try {
         // Zombies face their target — inverting their yaw is cheaper and more reliable
         // than computing ours from bot position (which may still be stale).
-        if (Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
+        // 261019 (pass 19): not while an action's walk is moving the body
+        // (a goTo the player asked for, resumed through the fight). The
+        // pathfinder steers by yaw, so turning to the mob every 250ms walked
+        // her sideways off the route until the walk gave up as "stuck".
+        // She still swings at a mob in reach.
+        const walking = !_pursue && bot._seiActionActive > 0 && bot.pathfinder?.isMoving?.()
+        if (!walking && Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
         bot.attack(live)
         bot.swingArm()
         noteCombat(bot)
@@ -396,14 +403,23 @@ export function startCombat(bot, config) {
     clearTimeout(_exitTimer)
     _attackLoop = null
     _target = null
+    const pursuedId = _pursueTargetId
     // Release the deliberate-target flag so reflex.js resumes its own kiting,
     // and only if it is still OURS (a later engagement's flag must survive).
     if (_pursue && bot._seiOffensiveTarget === _pursueTargetId) bot._seiOffensiveTarget = null
     _pursue = false
     _pursueTargetId = null
     _pursueMovesSet = false // startFollow below puts the follow movements back
-    try { bot.pathfinder?.stop() } catch (_) {}
-    startFollow(bot, config)
+    // 261019 (quality pass 19): stop the pathfinder only when the goal is this
+    // engagement's own pursuit (or there is none). Retaliation never sets a
+    // goal, and its 1s exit used to stop whatever walk was running: a goTo or
+    // pickup hit by a zombie on the way failed as "cant_reach (closest=3.4m)"
+    // on open ground, and a creeper flee lost its goal the same way.
+    const g = bot.pathfinder?.goal
+    const ownPursuit = pursuedId != null && g instanceof goals.GoalFollow && g.entity?.id === pursuedId
+    const foreign = g != null && !ownPursuit
+    if (!foreign) { try { bot.pathfinder?.stop() } catch (_) {} }
+    startFollow(bot, config, { keepMovements: foreign })
   }
 
   bot.on('entityHurt', (entity, source) => {
@@ -488,7 +504,9 @@ export function startCombat(bot, config) {
     // knockback above; reflex.js circle-strafes the opponent for positioning.
     if (!isPlayer || bot._seiPvp) {
       if (_target?.id !== target.id) {
-        stopFollow()
+        // 261019 (pass 19): pause the trail but keep who she follows.
+        // stopFollow() here forgot the follow target on every mob hit.
+        pauseFollow()
         startAttacking(target)
       }
       clearTimeout(_exitTimer)

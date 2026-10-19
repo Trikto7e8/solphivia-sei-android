@@ -10,6 +10,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // mineflayer-pathfinder resets a path after 3.5s without reaching the next
 // node and then re-plans the SAME path, so a wedged bot loops until timeout.
 export const STUCK_RESETS_TO_GIVE_UP = 2
+// mineflayer-pathfinder resets the path as 'stuck' after this long without
+// reaching a new node.
+const PATH_STUCK_WINDOW_MS = 3500
 
 /**
  * Blocks a walk may spend as scaffolding (towers, bridges, climbOut pillars):
@@ -171,6 +174,46 @@ export function stopPathfinderDig(bot) {
  * @param {number} [budgetMs]
  * @returns {Promise<'clear'|'aborted'|'timeout'>}
  */
+/** goto() rejections that mean another consumer took the pathfinder, not a failed path. */
+export function isInterruption(err) {
+  return err?.name === 'GoalChanged' || err?.name === 'PathStopped'
+}
+
+/** How many times one goTo walks on after an interruption (opts.resume). */
+export const MAX_RESUMES = 3
+const BODY_FREE_POLL_MS = 150
+const BODY_FREE_STEADY_POLLS = 2
+
+/**
+ * Is something else steering the body right now? A safety reflex or survival
+ * takeover, a player-knockback stagger, a fight that walks (combat.js defend
+ * pursuit, attack.js), or another goal the pathfinder is still walking.
+ */
+export function bodyBusy(bot) {
+  if (bot._seiReflexActive || bot._seiSurvivalActive || bot._seiCriticalRetreat) return true
+  if (bot._seiStaggerUntil != null && Date.now() < bot._seiStaggerUntil) return true
+  if (bot._seiOffensiveTarget != null) return true
+  try { if (bot.pathfinder?.goal && bot.pathfinder.isMoving?.()) return true } catch {}
+  return false
+}
+
+/**
+ * 261019: wait until bodyBusy() has been false for a couple of polls. The
+ * caller's own timeout and abort still bound the wait (`isSettled`).
+ * @returns {Promise<'clear'|'aborted'|'timeout'>}
+ */
+export async function waitForBodyFree(bot, signal, isSettled = () => false, budgetMs = Infinity) {
+  let steady = 0
+  const deadline = Date.now() + budgetMs
+  while (true) {
+    if (signal?.aborted || isSettled()) return 'aborted'
+    if (Date.now() >= deadline) return 'timeout'
+    steady = bodyBusy(bot) ? 0 : steady + 1
+    if (steady >= BODY_FREE_STEADY_POLLS) return 'clear'
+    await sleep(BODY_FREE_POLL_MS)
+  }
+}
+
 export async function waitForReflexClear(bot, signal, budgetMs = 12000) {
   if (!bot?._seiReflexActive) return 'clear'
   const deadline = Date.now() + budgetMs
@@ -268,6 +311,15 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   const stuckPromise = new Promise((resolve) => { resolveStuck = resolve })
   const onPathReset = (reason) => {
     if (reason !== 'stuck' || settled) return
+    // 261019 (pass 19): only resets of OUR route count. While a resumable walk
+    // waits out a fight, the fight's own pursuit goal re-plans and gets stuck
+    // on the mob; those resets said "stuck at ..." for a walk on open ground.
+    const current = bot.pathfinder?.goal
+    if (current !== undefined && current !== goal) return
+    // Nor a reset whose stall window held a fight: swinging back at a mob
+    // pins the body for a moment, which says nothing about the route.
+    const fought = bot._seiLastCombatAt
+    if (Number.isFinite(fought) && Date.now() - fought < PATH_STUCK_WINDOW_MS) return
     stuckResets++
     if (stuckResets >= STUCK_RESETS_TO_GIVE_UP) {
       settled = true
@@ -305,6 +357,7 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   // abort. A GoalChanged rejection while the reflex is active is the flee taking
   // over, NOT a cant_reach: loop and re-issue once it clears so an in-flight
   // goTo pauses and then continues to its original destination.
+  let resumes = 0
   const navigate = async () => {
     while (true) {
       if (settled) return 'aborted' // goTo already resolved — don't touch pathfinder again
@@ -318,9 +371,25 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
       try {
         await bot.pathfinder.goto(goal)
         return 'reached'
-      } catch {
+      } catch (err) {
         if (settled) return 'aborted' // race already settled — do not re-issue goto
         if (bot._seiReflexActive) continue // flee took the goal — yield & resume
+        // 261019 (quality pass 19): the walk was cut off but she already
+        // stands in range ("goTo aborted even though Alex was 1.7 blocks
+        // away" with range 2).
+        if (endedAtGoal(bot, goal, x, y, z, range, opts)) return 'reached'
+        // 261019: something else took the pathfinder for a moment (a mob hit
+        // and the fight that followed, a drowning swim-up, a defend
+        // engagement) and dropped or replaced our goal. That is not "can't
+        // reach": wait until the body is free and walk on, within the same
+        // time budget. Opt-in, so walks that are steps of a bigger action
+        // keep failing fast.
+        if (opts.resume && isInterruption(err) && resumes < MAX_RESUMES) {
+          resumes++
+          const w = await waitForBodyFree(bot, signal, () => settled)
+          if (settled || w === 'aborted') return 'aborted'
+          continue
+        }
         return cantReachWithDistance()
       }
     }
@@ -378,6 +447,9 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   if (result === 'reached' && !endedAtGoal(bot, goal, x, y, z, range, opts)) {
     return composeVerticalHint(bot, x, y, z, cantReachWithDistance())
   }
+  // 261019: the clock ran out with her already in range (a slow last step,
+  // or a resumed walk that arrived as the budget ended).
+  if (result === 'timeout' && endedAtGoal(bot, goal, x, y, z, range, opts)) return 'reached'
   return composeVerticalHint(bot, x, y, z, result)
 }
 

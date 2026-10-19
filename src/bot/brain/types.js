@@ -68,11 +68,17 @@
  * @property {(evt: { attacker: Player|null, attackerLabel: string,
  *                    attackerKind: AttackerKind, pvp?: boolean,
  *                    [k: string]: any }) => void}                                  onAttacked
- * @property {(evt: { pos: {x:number,y:number,z:number}|null }) => void}             onDeath
+ * @property {(evt: { pos: {x:number,y:number,z:number}|null, diedAt?: number,
+ *                    lost?: Array<{item:string,n:number}>, keptAll?: boolean,
+ *                    deathText?: string }) => void}                                 onDeath
  *   The bot died and respawned. Enqueued at P1_CHAT as 'sei:death' with the
  *   last real hit attached (`lastAttack`) when one landed within 30s; the
  *   adapter's eventAddendum('sei:death', data) supplies the framing. Optional
- *   for adapters whose game has no death.
+ *   for adapters whose game has no death. 261019: Minecraft reports it after
+ *   the respawn, with what she lost and the game's death message.
+ * @property {() => void}                                                            [onDying]
+ *   261019: the instant of death, before the respawn and the onDeath report.
+ *   The brain drops the turn the dying body was still writing. Optional.
  * @property {() => void}                                                            onSpawn
  *   The body is in the world. Fires the world-identity resolve
  *   (getWorldIdentity), the settle-delayed first idle tick (greeting), and

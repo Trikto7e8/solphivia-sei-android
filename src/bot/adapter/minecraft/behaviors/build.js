@@ -413,6 +413,10 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
  * @param {{from:{x:number,y:number,z:number}, to:{x:number,y:number,z:number}, block:string, hollow?:boolean}} args
  * @param {object} bot
  * @param {{signal?:AbortSignal, onProgress?:(p:{placed:number,skipped:number,total:number,currentY:number})=>void}} [config]
+ * @param {{goTo?:Function, partial?:boolean}} [deps]
+ *   partial (261019, shelter only, never from the model's arguments): build
+ *   as much of the span as this block covers and stop when it runs out,
+ *   instead of refusing up front. shelter() then goes on with another kind.
  */
 export async function buildAction(args, bot, config, deps = {}) {
   const signal = config?.signal
@@ -469,8 +473,9 @@ export async function buildAction(args, bot, config, deps = {}) {
     return `built NOTHING: all ${total} cells of that span are ALREADY solid, so you are building into terrain. Pick a clear span: a wall starts on the first air layer above the ground, which is your own y when you stand on that ground.`
   }
   const have = invCount()
-  if (have < needed) {
-    return `you only have ${have} ${args.block}, and that span needs ${needed} (${total} cells, ${total - needed} already solid). Gather more ${args.block} (or ask the player for some), or build a smaller span you can finish.`
+  if (have < needed && !deps.partial) {
+    // 261019 (pass 19): the exact shortfall, so the same call is not retried.
+    return `you only have ${have} ${args.block}, and that span needs ${needed} (${total} cells, ${total - needed} already solid), ${needed - have} short. Gather at least ${needed - have} more ${args.block} (or ask the player for some), or build a smaller span you can finish.`
   }
 
   let placed = 0, skippedSolid = 0, skippedFail = 0
@@ -527,6 +532,11 @@ export async function buildAction(args, bot, config, deps = {}) {
 
     const ref = pickReferenceFace(bot, c)
     if (!ref) return 'noref'
+    // 261019 (pass 19): the server refuses a block where a body stands. That
+    // used to read as "could not reach or place", and she retried the same
+    // 1-cell build with the player (or herself) still in the cell.
+    const body = bodyInCell(bot, c)
+    if (body) return { body }
 
     const r = await placeBlockAction(
       {
@@ -543,34 +553,52 @@ export async function buildAction(args, bot, config, deps = {}) {
     return typeof r === 'string' && r.startsWith('placed ') ? 'placed' : 'failed'
   }
 
+  // Cells skipped because someone stood in them, by who.
+  const bodies = new Map()
+  function noteBody(r) {
+    if (r?.body) bodies.set(r.body, (bodies.get(r.body) ?? 0) + 1)
+  }
+  function bodyNote() {
+    if (!bodies.size) return ''
+    const n = [...bodies.values()].reduce((a, b) => a + b, 0)
+    const who = [...bodies.keys()].join(' and ')
+    return ` ${n} of them had ${who} standing in them; a block cannot go where a body is, so move out of the span (or wait for them to) and build again.`
+  }
+
+  const ranOut = () => deps.partial === true && invCount() === 0
   let deferred = []
   for (const c of cells) {
     if (signal?.aborted) return abortedMsg()
+    if (ranOut()) break
     const r = await tryCell(c)
     if (r === 'aborted') return abortedMsg()
     if (r?.halt) return r.halt
     if (r === 'placed') placed++
     else if (r === 'solid') skippedSolid++
     else if (r === 'noref') { deferred.push(c); continue }
-    else skippedFail++
+    // She stands in it herself: try it again after the rest, when the walks
+    // to the other cells have moved her.
+    else if (r?.body === 'you') { deferred.push(c); continue }
+    else { skippedFail++; noteBody(r) }
     progress(c)
   }
 
   // 261012: retry the cells that had nothing to attach to, now that their
   // neighbors may be down. Keeps going while a pass places something, so a
   // solid roof fills in from its edges toward the middle.
-  while (deferred.length) {
+  while (deferred.length && !ranOut()) {
     const next = []
     const placedBefore = placed
     for (const c of deferred) {
       if (signal?.aborted) return abortedMsg()
+      if (ranOut()) { next.push(c); continue }
       const r = await tryCell(c)
       if (r === 'aborted') return abortedMsg()
       if (r?.halt) return r.halt
       if (r === 'placed') placed++
       else if (r === 'solid') skippedSolid++
       else if (r === 'noref') { next.push(c); continue }
-      else skippedFail++
+      else { skippedFail++; noteBody(r) }
       progress(c)
     }
     deferred = next
@@ -614,11 +642,42 @@ export async function buildAction(args, bot, config, deps = {}) {
         ? ` They are floating: the ground under them is at y=${ground}, so start the span at y=${ground + 1}, the air layer right on top of the ground.`
         : ' They are floating with no block below or beside them. Start the span next to a solid block so the first cell has something to attach to (a walkway starts at the block under your own feet).'
       const rest = skippedFail - floating.length
-      return `${head} ${floating.length} of them had nothing to place against.${fix}${rest > 0 ? ` The other ${rest} could not be reached or placed; walk near them and call build again on that span.` : ''}`
+      return `${head} ${floating.length} of them had nothing to place against.${fix}${bodyNote()}${rest > 0 ? ` The other ${rest} could not be reached or placed; walk near them and call build again on that span.` : ''}`
+    }
+    const inBody = [...bodies.values()].reduce((a, b) => a + b, 0)
+    if (inBody > 0) {
+      const rest = skippedFail - inBody
+      return `built ${placed} placed, ${skippedFail} cells FAILED, ${skippedSolid} were already solid, of ${total}. The build is incomplete: those ${skippedFail} cells are still missing.${bodyNote()}${rest > 0 ? ` The other ${rest} could not be reached or placed; walk near them and call build again on that span.` : ''}`
     }
     return `built ${placed} placed, ${skippedFail} cells FAILED (could not reach or place them), ${skippedSolid} were already solid, of ${total}. The build is incomplete: those ${skippedFail} cells are still missing. Walk near the unbuilt part and call build again on that span to finish it.`
   }
   return `built ${placed} placed, ${skippedSolid} skipped (already solid), of ${total} cells`
+}
+
+/**
+ * 261019 (quality pass 19). Who stands in a build cell: "you" for the bot
+ * itself, a player's name, or a mob's name; null when the cell is clear.
+ * Item drops, arrows and other non-living entities do not block a place.
+ */
+export function bodyInCell(bot, c) {
+  const hits = (e, w, h) => {
+    const p = e?.position
+    if (!p || ![p.x, p.y, p.z].every(Number.isFinite)) return false
+    const hw = w / 2
+    return p.x + hw > c.x && p.x - hw < c.x + 1 &&
+      p.z + hw > c.z && p.z - hw < c.z + 1 &&
+      p.y + h > c.y && p.y < c.y + 1
+  }
+  if (hits(bot.entity, 0.6, 1.8)) return 'you'
+  for (const e of Object.values(bot.entities ?? {})) {
+    if (!e || e === bot.entity) continue
+    const living = e.type === 'player' || e.type === 'mob' || e.type === 'hostile' || e.type === 'animal' || e.kind === 'Hostile mobs' || !!e.username
+    if (!living) continue
+    const w = Number.isFinite(e.width) && e.width > 0 ? e.width : 0.6
+    const h = Number.isFinite(e.height) && e.height > 0 ? e.height : 1.8
+    if (hits(e, w, h)) return e.username ?? e.name ?? 'a mob'
+  }
+  return null
 }
 
 /**

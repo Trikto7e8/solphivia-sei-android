@@ -72,7 +72,8 @@ describe('pickupAction', () => {
     const { bot, goTo, walked } = makeBot([dropEntity(1, 'stick', 30, 64, 0)])
     const res = await pickupAction({}, bot, {}, deps(goTo))
     expect(walked).toEqual([])
-    expect(res).toBe('no dropped items within 16m')
+    // 261019: and where the nearest one really is.
+    expect(res).toBe('no dropped items on the ground within 16m; the nearest is 30m away at 30,64,0; goTo near it first, or pickup with a larger maxDistance (up to 32)')
   })
 
   it('reports honestly when it walked to a drop but nothing was collected', async () => {
@@ -88,7 +89,7 @@ describe('pickupAction', () => {
     const { bot, goTo, walked } = makeBot([dropEntity(1, 'stick', 1, 70, 0)])
     const res = await pickupAction({}, bot, {}, deps(goTo))
     expect(walked).toEqual([])
-    expect(res).toBe('no dropped items within 16m')
+    expect(res).toBe('no dropped items on the ground within 16m; the nearest is 6 blocks above you at 1,70,0; get up there first')
   })
 
   it('stops when aborted', async () => {
@@ -105,6 +106,16 @@ describe('pickupAction', () => {
     const opts = []
     const goTo = async (_b, x, y, z, _r, _ms, _sig, o) => { walked.push([x, y, z]); opts.push(o); return 'reached' }
     await pickupAction({}, bot, {}, deps(goTo))
-    expect(opts).toEqual([{ canPlace: false }, { canDig: false, canPlace: false }])
+    expect(opts).toEqual([{ canPlace: false, resume: true }, { canDig: false, canPlace: false, resume: true }])
+  })
+})
+
+// 261019 (quality pass 19): "no stone_sword within 4m" while the sword was
+// already in her inventory sent her looking for it again.
+describe('pickup when the item is already in the inventory (261019)', () => {
+  it('says she already has it', async () => {
+    const { bot, goTo } = makeBot([], [{ name: 'stone_sword', count: 1 }])
+    const res = await pickupAction({ item: 'stone_sword', maxDistance: 4 }, bot, {}, deps(goTo))
+    expect(res).toBe('no stone_sword on the ground within 4m; you already have 1 stone_sword in your inventory')
   })
 })

@@ -9,7 +9,7 @@ import { z } from 'zod'
 import mcDataLib from 'minecraft-data'
 import { Vec3 } from 'vec3'
 import { createRegistry } from '../../registry.js'
-import { goTo } from './behaviors/pathfind.js'
+import { goTo, waitForBodyFree } from './behaviors/pathfind.js'
 import { climbOut, escapeUp, findOpenColumn, isPassable, MIN_PIT_DEPTH } from './behaviors/climbOut.js'
 import { noteUnreachable, isUnreachable, isUnreachableResult } from './behaviors/unreachable.js'
 import { resolveTerm } from './loose-terms.js'
@@ -259,6 +259,126 @@ function noteUnreachableTarget(bot, args, result) {
   } catch {}
 }
 
+/**
+ * The walk behind goTo(x,y,z): out of a hole first, then the walk, then a
+ * climb-and-retry when the walk failed far below the target.
+ */
+async function goToCoords(bot, target, range, timeoutMs, signal) {
+  // 261015: out of a self-dug shaft first. The pathfinder's tower climbs
+  // about a block per 5s (see climbOut.js), so from a 1x1 shaft a 12s
+  // walk to the surface timed out every time.
+  // 261019 (pass 19): a swim-up or a creeper flee that takes the body for a
+  // moment used to end the whole goTo ("aborted (a reflex took over while
+  // climbing out of a hole)" three times in one night). Wait for it to let go
+  // and climb again; only the action's own abort ends the goTo here.
+  let climb = await climbOut(bot, target, { signal })
+  for (let i = 0; i < CLIMB_YIELD_RETRIES && climb.status === 'aborted' && climb.why === 'yielded' && !signal?.aborted; i++) {
+    const w = await waitForBodyFree(bot, signal, () => false, CLIMB_YIELD_WAIT_MS)
+    if (w !== 'clear') break
+    climb = await climbOut(bot, target, { signal })
+  }
+  if (climb.status === 'aborted') return climbAborted(climb)
+  if (climb.status === 'failed') return climb.line
+  // 260513-wkd: pass through the signal so loop-level abort halts the
+  // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
+  // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
+  // 261019 (pass 19): resume: a mob hit or a swim-up that takes the
+  // pathfinder for a moment no longer ends the walk as cant_reach.
+  const walkOpts = { resume: true }
+  let r = await goTo(bot, target.x, target.y, target.z, range, timeoutMs, signal, walkOpts)
+  let up = climb
+  let esc = null
+  // 261015: the walk failed and the target is well above her: she is in
+  // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
+  // Climb by hand and walk once more.
+  // 261017 (pass 12): also after climbOut "climbed". In the 261016
+  // errands eval it climbed two blocks to a mined-out pocket in the wall,
+  // the walk timed out 13 blocks down, and this fallback never ran.
+  if (isUnreachableResult(r) && wellBelow(bot, target.y)) {
+    esc = await escapeUp(bot, target, { signal, goTo })
+    if (esc.status === 'aborted') return climbAborted(esc)
+    if (esc.status === 'failed') return [`${esc.line}.`, climbSummary(climb, null).trim()].filter(Boolean).join(' ')
+    if (esc.status === 'climbed') {
+      up = esc
+      r = await goTo(bot, target.x, target.y, target.z, range, timeoutMs, signal, walkOpts)
+    }
+  }
+  noteUnreachableTarget(bot, target, r)
+  // 261017: say plainly when she is still down in the hole. The old line
+  // was "timeout — unreachable — try build to Y=71 (first pillared out of
+  // the 2-deep hole you were in)" while she stood 13 blocks underground,
+  // and she told the player "almost there".
+  // Only when she really is shut in: on open ground below a cliff a failed
+  // walk is not a hole.
+  if (isUnreachableResult(r) && wellBelow(bot, target.y) && !findOpenColumn(bot, target.y, target).open) {
+    // Review: end with what to do, so she does not just call goTo again
+    // (each try costs up to ~50s of climbing and walking).
+    return [`${stripVerticalHint(r)}: ${stillInHole(bot, target.y)}.`, climbSummary(climb, esc).trim(), HOLE_NEXT_STEP]
+      .filter(Boolean).join(' ')
+  }
+  if (up.status === 'climbed') {
+    const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
+    return up === climb
+      ? `${r} (first ${how} out of the ${up.depth}-deep hole you were in)`
+      : `${r} (the first walk failed, so you ${how} ${up.depth} blocks up out of the hole and walked again)`
+  }
+  return r
+}
+
+const CLIMB_YIELD_RETRIES = 2
+const CLIMB_YIELD_WAIT_MS = 8000
+
+/** The live entity of a player by username (exact, then case-insensitive). */
+function resolvePlayer(bot, name) {
+  const players = bot?.players ?? {}
+  if (players[name]) return { username: name, entity: players[name].entity ?? null }
+  const lower = name.toLowerCase()
+  for (const u of Object.keys(players)) {
+    if (u.toLowerCase() === lower) return { username: u, entity: players[u].entity ?? null }
+  }
+  return null
+}
+
+const PLAYER_WALK_LEGS = 3
+
+function fmtPos(p) {
+  return `${Math.floor(p.x)},${Math.floor(p.y)},${Math.floor(p.z)}`
+}
+
+/**
+ * 261019 (quality pass 19): goTo(player). Walks to where the player is at
+ * the start of each leg; when they moved on during the walk, walks again
+ * (a few legs at most). The result says how far from them she ended.
+ */
+export async function goToPlayer(bot, name, range, timeoutMs, signal) {
+  const who = resolvePlayer(bot, name)
+  if (!who) return `no such player: ${name}`
+  let r = null
+  for (let leg = 0; leg < PLAYER_WALK_LEGS; leg++) {
+    const ent = resolvePlayer(bot, who.username)?.entity
+    const at = ent?.position
+    if (!at || ![at.x, at.y, at.z].every(Number.isFinite)) {
+      return `can't see ${who.username} from here (too far away or not loaded). Ask where they are, or goTo the last place you saw them`
+    }
+    r = await goToCoords(bot, { x: Math.floor(at.x), y: Math.floor(at.y), z: Math.floor(at.z) }, range, timeoutMs, signal)
+    if (signal?.aborted || String(r).startsWith('aborted')) return r
+    const now = resolvePlayer(bot, who.username)?.entity?.position
+    const me = bot.entity?.position
+    if (!now || !me) return r
+    const d = Math.hypot(now.x - me.x, now.y - me.y, now.z - me.z)
+    if (d <= range + 1) return `reached ${who.username} (${d.toFixed(1)}m away)`
+    if (!String(r).startsWith('reached')) {
+      return `${r}. ${who.username} is at ${fmtPos(now)}, ${d.toFixed(1)}m from you`
+    }
+    // Reached where they were, but they moved on: walk again.
+  }
+  const now = resolvePlayer(bot, who.username)?.entity?.position
+  const me = bot.entity?.position
+  if (!now || !me) return r
+  const d = Math.hypot(now.x - me.x, now.y - me.y, now.z - me.z)
+  return `${who.username} kept moving: you are ${d.toFixed(1)}m from them (they are at ${fmtPos(now)}). follow them to keep up`
+}
+
 export function createDefaultRegistry({ visionEnabled = false } = {}) {
   const registry = createRegistry()
 
@@ -295,11 +415,19 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
   registry.register(
     'goTo',
     z.object({
-      x: z.number(),
-      y: z.number(),
-      z: z.number(),
+      x: z.number().optional(),
+      y: z.number().optional(),
+      z: z.number().optional(),
+      // 261019 (quality pass 19): walk to a player where they are NOW. The
+      // model copied player coords out of an older snapshot or misread them
+      // ("walked to a spot about 28 blocks from Alex").
+      player: z.string().optional(),
       range: z.number().min(0).default(1),
-    }),
+    }).refine(
+      (a) => (typeof a.player === 'string' && a.player.trim().length > 0)
+          || (typeof a.x === 'number' && typeof a.y === 'number' && typeof a.z === 'number'),
+      { message: 'must specify player, or x,y,z' }
+    ),
     async (args, bot, config) => {
       // 260607: an explicit goTo is a "relocate and stay" command — it ends
       // follow mode. Without this, the 1s follow tick (follow.js) would
@@ -308,6 +436,9 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // follow intact so the bot resumes trailing after them.
       setFollowTarget(null)
       const timeoutMs = config?.pathfinder_timeout_ms ?? 12000
+      if (typeof args.player === 'string' && args.player.trim()) {
+        return goToPlayer(bot, args.player.trim(), Math.max(args.range, 2), timeoutMs, config?.signal)
+      }
       // Default range:2 when target matches a known player's position.
       // Only kicks in when the LLM omitted range
       // (Zod default fired range=1) and the coords align with a player.
@@ -315,54 +446,7 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       if (range <= 1 && isCoordsAtKnownPlayer(bot, args.x, args.y, args.z)) {
         range = 2
       }
-      // 261015: out of a self-dug shaft first. The pathfinder's tower climbs
-      // about a block per 5s (see climbOut.js), so from a 1x1 shaft a 12s
-      // walk to the surface timed out every time.
-      const climb = await climbOut(bot, { x: args.x, y: args.y, z: args.z }, { signal: config?.signal })
-      if (climb.status === 'aborted') return climbAborted(climb)
-      if (climb.status === 'failed') return climb.line
-      // 260513-wkd: pass through config.signal so loop-level abort halts the
-      // pathfind via bot.pathfinder.stop() rather than waiting for the 12s
-      // wall-clock timeout. Returns 'aborted' on abort (distinct from timeout).
-      let r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
-      let up = climb
-      let esc = null
-      // 261015: the walk failed and the target is well above her: she is in
-      // a hole that is not a clean 1x1 shaft (an ore pocket off the bottom).
-      // Climb by hand and walk once more.
-      // 261017 (pass 12): also after climbOut "climbed". In the 261016
-      // errands eval it climbed two blocks to a mined-out pocket in the wall,
-      // the walk timed out 13 blocks down, and this fallback never ran.
-      const target = { x: args.x, y: args.y, z: args.z }
-      if (isUnreachableResult(r) && wellBelow(bot, args.y)) {
-        esc = await escapeUp(bot, target, { signal: config?.signal, goTo })
-        if (esc.status === 'aborted') return climbAborted(esc)
-        if (esc.status === 'failed') return [`${esc.line}.`, climbSummary(climb, null).trim()].filter(Boolean).join(' ')
-        if (esc.status === 'climbed') {
-          up = esc
-          r = await goTo(bot, args.x, args.y, args.z, range, timeoutMs, config?.signal)
-        }
-      }
-      noteUnreachableTarget(bot, args, r)
-      // 261017: say plainly when she is still down in the hole. The old line
-      // was "timeout — unreachable — try build to Y=71 (first pillared out of
-      // the 2-deep hole you were in)" while she stood 13 blocks underground,
-      // and she told the player "almost there".
-      // Only when she really is shut in: on open ground below a cliff a failed
-      // walk is not a hole.
-      if (isUnreachableResult(r) && wellBelow(bot, args.y) && !findOpenColumn(bot, args.y, target).open) {
-        // Review: end with what to do, so she does not just call goTo again
-        // (each try costs up to ~50s of climbing and walking).
-        return [`${stripVerticalHint(r)}: ${stillInHole(bot, args.y)}.`, climbSummary(climb, esc).trim(), HOLE_NEXT_STEP]
-          .filter(Boolean).join(' ')
-      }
-      if (up.status === 'climbed') {
-        const how = up.how === 'pillar' ? 'pillared' : 'dug a staircase'
-        return up === climb
-          ? `${r} (first ${how} out of the ${up.depth}-deep hole you were in)`
-          : `${r} (the first walk failed, so you ${how} ${up.depth} blocks up out of the hole and walked again)`
-      }
-      return r
+      return goToCoords(bot, { x: args.x, y: args.y, z: args.z }, range, timeoutMs, config?.signal)
     }
   )
 
@@ -690,12 +774,18 @@ export function createDefaultRegistry({ visionEnabled = false } = {}) {
       // tick, and only `unfollow` or an explicit relocate (goTo) clears it. A
       // chat-wake therefore leaves the bot following while the model answers; a
       // real task-switch (goTo / unfollow) ends it cleanly.
-      if (signal.aborted) return `follow ${label} interrupted (still trailing them)`
+      // 261019 (pass 19): say whether the trail really goes on. It used to
+      // claim "still trailing them" even when something had dropped the
+      // target (a mob hit cleared it until this pass).
+      const interrupted = () => getFollowTargetLabel() === label
+        ? `follow ${label} interrupted (still trailing them)`
+        : `follow ${label} ended (no longer following them)`
+      if (signal.aborted) return interrupted()
       await new Promise(resolve => {
         const onAbort = () => { signal.removeEventListener('abort', onAbort); resolve() }
         signal.addEventListener('abort', onAbort)
       })
-      return `follow ${label} interrupted (still trailing them)`
+      return interrupted()
     }
   )
 

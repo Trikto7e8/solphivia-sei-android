@@ -151,10 +151,12 @@ describe('buildAction — walks to out-of-reach cells (260709)', () => {
   it('builds all four walls when the walk step can move the bot', async () => {
     const { bot, blocks } = makeWorld()
     wirePlaceMock(bot, blocks)
-    // Walk mock: teleport the bot next to the requested column (1.5 blocks
-    // south so it never stands inside the wall cell).
+    // Walk mock: teleport the bot next to the requested column, one block
+    // inside the ring so it never stands inside a wall cell (261019: a body
+    // in a cell is now reported instead of attempted).
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
     const walkMock = vi.fn(async (b, x, y, z) => {
-      b.entity.position = new Vec3(x + 0.5, 68, z + 2)
+      b.entity.position = new Vec3(clamp(x, -37, -33) + 0.5, 68, clamp(z, -31, -27) + 0.5)
       return 'reached'
     })
     const r = await buildAction(
@@ -618,5 +620,68 @@ describe('buildAction — grass and snow are built over, not counted as solid (2
     for (const x of [-38, -37, -36]) expect(blocks.get(`${x},68,-32`)).toBe('oak_planks')
     // Every place went against the sand below, not a plant beside it.
     for (const call of placeBlockAction.mock.calls) expect(call[0].against.y).toBe(67)
+  })
+})
+
+// 261019 (quality pass 19): she retried the same 1-cell build three times
+// with "0 placed, could not reach or place" while a body stood in the cell.
+describe('buildAction: a body in the cell (261019)', () => {
+  it('names who stands in the cell instead of "could not reach or place"', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    bot.entities = { 7: { id: 7, type: 'player', username: 'Alex', position: new Vec3(-37.5, 68, -31.5), width: 0.6, height: 1.8 } }
+    const walkMock = vi.fn(async () => 'reached')
+    bot.entity.position = new Vec3(-36.5, 68, -30.5)
+    const r = await buildAction(
+      { from: { x: -38, y: 68, z: -32 }, to: { x: -38, y: 68, z: -32 }, block: 'oak_planks' },
+      bot, {}, { goTo: walkMock },
+    )
+    expect(r).toContain('1 cells FAILED')
+    expect(r).toContain('had Alex standing in them')
+    expect(r).not.toContain('could not reach or place them')
+  })
+
+  it('bodyInCell: herself, a player, and not a dropped item', async () => {
+    const { bodyInCell } = await import('./build.js')
+    const bot = { entity: { position: new Vec3(0.5, 64, 0.5) }, entities: {} }
+    expect(bodyInCell(bot, { x: 0, y: 65, z: 0 })).toBe('you')
+    expect(bodyInCell(bot, { x: 0, y: 66, z: 0 })).toBe(null)
+    bot.entities = { 2: { type: 'object', name: 'item', position: new Vec3(3.5, 64, 0.5) }, 3: { type: 'player', username: 'Alex', position: new Vec3(5.5, 64, 0.5) } }
+    expect(bodyInCell(bot, { x: 3, y: 64, z: 0 })).toBe(null)
+    expect(bodyInCell(bot, { x: 5, y: 64, z: 0 })).toBe('Alex')
+  })
+})
+
+// 261019 (pass 19): shelter builds one part from several block kinds, so a
+// short kind places what it has and says it ran out instead of refusing.
+describe('buildAction: partial mode (261019)', () => {
+  function countedBot(n) {
+    const { bot, blocks } = makeWorld()
+    let left = n
+    bot.inventory = { items: () => (left > 0 ? [{ name: 'oak_planks', count: left }] : []) }
+    wirePlaceMock(bot, blocks)
+    const inner = placeBlockAction.getMockImplementation()
+    placeBlockAction.mockImplementation(async (args) => {
+      const r = await inner(args)
+      if (r.startsWith('placed')) left--
+      return r
+    })
+    bot.entity.position = new Vec3(-37.5, 68, -31.5)
+    return bot
+  }
+  const span = { from: { x: -40, y: 68, z: -32 }, to: { x: -36, y: 68, z: -32 }, block: 'oak_planks' }
+
+  it('without partial, refuses up front when short', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached') })
+    expect(placeBlockAction).not.toHaveBeenCalled()
+    expect(r).toMatch(/oak_planks/)
+  })
+
+  it('with partial, places what she has and reports running out', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached'), partial: true })
+    expect(placeBlockAction).toHaveBeenCalledTimes(3)
+    expect(r).toMatch(/^built 3 of ~5 needed, then ran out of oak_planks/)
   })
 })

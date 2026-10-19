@@ -413,6 +413,10 @@ export async function scaffoldUp(bot, blockName, targetY, config) {
  * @param {{from:{x:number,y:number,z:number}, to:{x:number,y:number,z:number}, block:string, hollow?:boolean}} args
  * @param {object} bot
  * @param {{signal?:AbortSignal, onProgress?:(p:{placed:number,skipped:number,total:number,currentY:number})=>void}} [config]
+ * @param {{goTo?:Function, partial?:boolean}} [deps]
+ *   partial (261019, shelter only, never from the model's arguments): build
+ *   as much of the span as this block covers and stop when it runs out,
+ *   instead of refusing up front. shelter() then goes on with another kind.
  */
 export async function buildAction(args, bot, config, deps = {}) {
   const signal = config?.signal
@@ -469,7 +473,7 @@ export async function buildAction(args, bot, config, deps = {}) {
     return `built NOTHING: all ${total} cells of that span are ALREADY solid, so you are building into terrain. Pick a clear span: a wall starts on the first air layer above the ground, which is your own y when you stand on that ground.`
   }
   const have = invCount()
-  if (have < needed) {
+  if (have < needed && !deps.partial) {
     // 261019 (pass 19): the exact shortfall, so the same call is not retried.
     return `you only have ${have} ${args.block}, and that span needs ${needed} (${total} cells, ${total - needed} already solid), ${needed - have} short. Gather at least ${needed - have} more ${args.block} (or ask the player for some), or build a smaller span you can finish.`
   }
@@ -561,9 +565,11 @@ export async function buildAction(args, bot, config, deps = {}) {
     return ` ${n} of them had ${who} standing in them; a block cannot go where a body is, so move out of the span (or wait for them to) and build again.`
   }
 
+  const ranOut = () => deps.partial === true && invCount() === 0
   let deferred = []
   for (const c of cells) {
     if (signal?.aborted) return abortedMsg()
+    if (ranOut()) break
     const r = await tryCell(c)
     if (r === 'aborted') return abortedMsg()
     if (r?.halt) return r.halt
@@ -580,11 +586,12 @@ export async function buildAction(args, bot, config, deps = {}) {
   // 261012: retry the cells that had nothing to attach to, now that their
   // neighbors may be down. Keeps going while a pass places something, so a
   // solid roof fills in from its edges toward the middle.
-  while (deferred.length) {
+  while (deferred.length && !ranOut()) {
     const next = []
     const placedBefore = placed
     for (const c of deferred) {
       if (signal?.aborted) return abortedMsg()
+      if (ranOut()) { next.push(c); continue }
       const r = await tryCell(c)
       if (r === 'aborted') return abortedMsg()
       if (r?.halt) return r.halt

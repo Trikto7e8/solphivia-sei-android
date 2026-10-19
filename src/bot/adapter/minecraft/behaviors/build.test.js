@@ -651,3 +651,37 @@ describe('buildAction: a body in the cell (261019)', () => {
     expect(bodyInCell(bot, { x: 5, y: 64, z: 0 })).toBe('Alex')
   })
 })
+
+// 261019 (pass 19): shelter builds one part from several block kinds, so a
+// short kind places what it has and says it ran out instead of refusing.
+describe('buildAction: partial mode (261019)', () => {
+  function countedBot(n) {
+    const { bot, blocks } = makeWorld()
+    let left = n
+    bot.inventory = { items: () => (left > 0 ? [{ name: 'oak_planks', count: left }] : []) }
+    wirePlaceMock(bot, blocks)
+    const inner = placeBlockAction.getMockImplementation()
+    placeBlockAction.mockImplementation(async (args) => {
+      const r = await inner(args)
+      if (r.startsWith('placed')) left--
+      return r
+    })
+    bot.entity.position = new Vec3(-37.5, 68, -31.5)
+    return bot
+  }
+  const span = { from: { x: -40, y: 68, z: -32 }, to: { x: -36, y: 68, z: -32 }, block: 'oak_planks' }
+
+  it('without partial, refuses up front when short', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached') })
+    expect(placeBlockAction).not.toHaveBeenCalled()
+    expect(r).toMatch(/oak_planks/)
+  })
+
+  it('with partial, places what she has and reports running out', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached'), partial: true })
+    expect(placeBlockAction).toHaveBeenCalledTimes(3)
+    expect(r).toMatch(/^built 3 of ~5 needed, then ran out of oak_planks/)
+  })
+})

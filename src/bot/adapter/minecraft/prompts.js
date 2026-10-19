@@ -104,18 +104,18 @@ function lostSentence(data) {
 export function deathAddendum(data) {
   const p = data?.pos
   const cause = deathCauseSentence(data)
-  if (data?.keptAll === true) return DEATH_ADDENDUM_KEPT.replace('{cause}', cause)
-  if (Array.isArray(data?.lost) && data.lost.length === 0) return DEATH_ADDENDUM_EMPTY.replace('{cause}', cause)
+  if (data?.keptAll === true) return DEATH_ADDENDUM_KEPT.replace('{cause}', () => cause)
+  if (Array.isArray(data?.lost) && data.lost.length === 0) return DEATH_ADDENDUM_EMPTY.replace('{cause}', () => cause)
   const lost = lostSentence(data)
   if (p && Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)) {
     return DEATH_ADDENDUM_WITH_POS
-      .replace('{cause}', cause)
-      .replace('{lost}', lost)
+      .replace('{cause}', () => cause)
+      .replace('{lost}', () => lost)
       .replace('{x}', String(Math.round(p.x)))
       .replace('{y}', String(Math.round(p.y)))
       .replace('{z}', String(Math.round(p.z)))
   }
-  return DEATH_ADDENDUM_NO_POS.replace('{cause}', cause).replace('{lost}', lost)
+  return DEATH_ADDENDUM_NO_POS.replace('{cause}', () => cause).replace('{lost}', () => lost)
 }
 
 // Wrap the shared eventAddendum so a 'sei:death' event gets its framing (the

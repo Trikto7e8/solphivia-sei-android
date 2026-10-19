@@ -169,4 +169,19 @@ describe('sei:death framing with the lost items (pass 19)', () => {
     expect(t).toContain('The game reported: "Sui drowned while trying to escape Drowned".')
     expect(t).not.toContain('The last thing that hit you')
   })
+
+  it('a death message with $ patterns (a name-tagged mob) is quoted as-is', () => {
+    const text = "Sui was slain by $&$' Bob $`"
+    for (const data of [
+      { pos: { x: 1, y: 2, z: 3 }, deathText: text, lost: [{ item: 'bread', n: 1 }] },
+      { pos: null, deathText: text, lost: [{ item: 'bread', n: 1 }] },
+      { pos: null, deathText: text, lost: [] },
+      { pos: null, deathText: text, keptAll: true, lost: [] },
+    ]) {
+      const t = eventAddendum('sei:death', data)
+      expect(t).toContain(`The game reported: "${text}".`)
+      expect(t).not.toContain('{cause}')
+      expect(t).not.toContain('{lost}')
+    }
+  })
 })

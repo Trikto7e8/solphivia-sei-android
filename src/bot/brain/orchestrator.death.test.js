@@ -146,3 +146,97 @@ describe('sei:death delivery through the orchestrator (260703)', () => {
     expect(deathReenq[2]).toBe(1) // Priority.P1_CHAT
   })
 })
+
+// 261019 (quality pass 19): combat_night eval. A turn the dying body was still
+// writing finished after the death ("i'm at 7 hp, two skeletons on me", an eat
+// call for bread lying on the ground), and hits queued before the death were
+// answered after the respawn. noteDeath() (health 0) now blocks every turn
+// until the death turn itself starts.
+describe('the window between dying and the death turn (pass 19)', () => {
+  const flush = () => new Promise((r) => setTimeout(r, 0))
+
+  it('a turn that finishes after the death is discarded: no line, no actions', async () => {
+    const { adapter, captured } = makeAdapter()
+    let release
+    const stale = new Promise((r) => { release = r })
+    const provider = makeProvider([
+      // Ignores its abort signal, like a response already on the wire.
+      () => stale,
+      { text: '', toolUses: [] },
+    ])
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    const p = orch.handleDispatch('sei:chat_received', chat('you ok?'))
+    await flush()
+    orch.noteDeath()
+    release({ text: '', toolUses: [
+      { id: 's1', name: 'say', input: { text: "i'm at 7 hp, two skeletons on me" } },
+      { id: 'g1', name: 'goTo', input: { x: 1, y: 2, z: 3 } },
+    ] })
+    await p
+    expect(adapter.chat).not.toHaveBeenCalled()
+    expect(captured.executed).not.toContain('goTo')
+
+    // The death turn runs normally.
+    await orch.handleDispatch('sei:death', { pos: { x: 5, y: 64, z: 5 }, lost: [{ item: 'bread', n: 3 }] })
+    const seed = JSON.stringify(provider.calls.at(-1).messages ?? provider.calls.at(-1))
+    expect(seed).toContain('You DIED')
+    expect(seed).toContain('bread x3')
+  })
+
+  it('a parked LLM call is aborted at the death', async () => {
+    const { adapter } = makeAdapter()
+    let seenSignal = null
+    const provider = makeProvider([
+      (args) => new Promise((_, rej) => {
+        seenSignal = args.signal
+        args.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e) }, { once: true })
+      }),
+      { text: '', toolUses: [] },
+    ])
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    const p = orch.handleDispatch('sei:chat_received', chat('watch out'))
+    await flush()
+    expect(seenSignal?.aborted).toBe(false)
+    orch.noteDeath()
+    expect(seenSignal.aborted).toBe(true)
+    await p
+    expect(adapter.chat).not.toHaveBeenCalled()
+  })
+
+  it('a hit queued in her previous life is dropped; one from this life is answered', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    const oldLife = orch.life
+    orch.noteDeath()
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    const after = provider.calls.length
+    await orch.handleDispatch('sei:attacked', { attackerKind: 'mob', attackerLabel: 'zombie', _life: oldLife })
+    expect(provider.calls.length).toBe(after)
+    await orch.handleDispatch('sei:attacked', { attackerKind: 'mob', attackerLabel: 'zombie', _life: orch.life })
+    expect(provider.calls.length).toBeGreaterThan(after)
+  })
+
+  it('a player line in the window is held and re-sent after the death turn', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const reenqueue = vi.fn()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue, _anthropicOverride: provider })
+    orch.noteDeath()
+    const line = chat('noooo sui')
+    await orch.handleDispatch('sei:chat_received', line)
+    expect(provider.calls.length).toBe(0)
+    expect(reenqueue).not.toHaveBeenCalled()
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    expect(reenqueue).toHaveBeenCalledWith('sei:chat_received', line, 1)
+  })
+
+  it('an idle tick in the window opens no turn', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    orch.noteDeath()
+    await orch.handleDispatch('sei:idle', { quietMs: 60_000 })
+    expect(provider.calls.length).toBe(0)
+  })
+})

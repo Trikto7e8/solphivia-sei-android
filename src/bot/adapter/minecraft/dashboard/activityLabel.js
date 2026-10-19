@@ -60,6 +60,8 @@ export function activityLabel(name, args) {
     case 'unfollow':
       return 'standing by...'
     case 'goTo': {
+      const who = typeof args?.player === 'string' && args.player.trim() ? args.player.trim() : null
+      if (who) return `walking to ${who}...`
       const x = num(args, 'x')
       const z = num(args, 'z')
       return x != null && z != null ? `walking to ${x}, ${z}...` : 'walking somewhere...'

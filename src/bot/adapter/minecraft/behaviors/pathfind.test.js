@@ -279,3 +279,80 @@ describe('companionMovements scaffolding (261015)', () => {
     expect(m.scafoldingBlocks).not.toContain(mcData.itemsByName.sand.id)
   })
 })
+
+// 261019 (quality pass 19): a goTo cut off by another consumer of the
+// pathfinder (a mob hit and its fight, a swim-up, a defend engagement) was
+// reported as cant_reach. With opts.resume it waits for the body to be free
+// and walks on; and a cut-off walk that already stands in range is reached.
+describe('goTo after an interruption (261019)', () => {
+  function interruptBot(startAt = { x: 0, y: 0, z: 0 }) {
+    const bot = {}
+    bot.entity = { position: { ...startAt } }
+    bot.registry = mcData
+    const calls = []
+    bot.pathfinder = {
+      goal: null,
+      isMoving: () => false,
+      setMovements: () => {},
+      stop: vi.fn(),
+      goto: vi.fn(() => new Promise((resolve, reject) => { calls.push({ resolve, reject }) })),
+    }
+    const named = (name) => { const e = new Error(name); e.name = name; return e }
+    return { bot, calls, named }
+  }
+
+  it('without resume, an interruption is still cant_reach', async () => {
+    const { bot, calls, named } = interruptBot()
+    const p = goTo(bot, 20, 0, 0, 1, 5000)
+    calls[0].reject(named('PathStopped'))
+    expect(await p).toMatch(/^cant_reach/)
+  })
+
+  it('with resume, it waits until the fight is over and walks on', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bot, calls, named } = interruptBot()
+      const p = goTo(bot, 20, 0, 0, 1, 20_000, undefined, { resume: true })
+      // A defend engagement takes the body.
+      bot._seiOffensiveTarget = 42
+      calls[0].reject(named('GoalChanged'))
+      await vi.advanceTimersByTimeAsync(2000)
+      expect(bot.pathfinder.goto).toHaveBeenCalledTimes(1)
+      bot._seiOffensiveTarget = null
+      await vi.advanceTimersByTimeAsync(400)
+      expect(bot.pathfinder.goto).toHaveBeenCalledTimes(2)
+      bot.entity.position = { x: 20, y: 0, z: 0 }
+      calls[1].resolve()
+      expect(await p).toBe('reached')
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a real NoPath is not resumed', async () => {
+    const { bot, calls, named } = interruptBot()
+    const p = goTo(bot, 20, 0, 0, 1, 5000, undefined, { resume: true })
+    calls[0].reject(named('NoPath'))
+    expect(await p).toMatch(/^cant_reach/)
+    expect(bot.pathfinder.goto).toHaveBeenCalledTimes(1)
+  })
+
+  it('gives up after a few interruptions', async () => {
+    vi.useFakeTimers()
+    try {
+      const { bot, calls, named } = interruptBot()
+      const p = goTo(bot, 20, 0, 0, 1, 60_000, undefined, { resume: true })
+      for (let i = 0; i < 4; i++) {
+        calls[i].reject(named('PathStopped'))
+        await vi.advanceTimersByTimeAsync(400)
+      }
+      expect(await p).toMatch(/^cant_reach/)
+      expect(bot.pathfinder.goto).toHaveBeenCalledTimes(4)
+    } finally { vi.useRealTimers() }
+  })
+
+  it('a cut-off walk that already stands in range is reached', async () => {
+    const { bot, calls, named } = interruptBot({ x: 18.3, y: 0, z: 0 })
+    const p = goTo(bot, 20, 0, 0, 2, 5000)
+    calls[0].reject(named('PathStopped'))
+    expect(await p).toBe('reached')
+  })
+})

@@ -63,6 +63,8 @@ const CLIMB_BUDGET_MS = 20000
 // to GoalFollow for a while instead of re-running the same climb every tick.
 const CLIMB_RETRY_MS = 30000
 let _climbFailedAt = 0
+// 261019: startFollow({keepMovements}) left another walk's movements in place.
+let _movementsOwed = false
 
 function cancelClimb() {
   if (_climb) { try { _climb.abort() } catch {} }
@@ -127,7 +129,7 @@ function resolveTargetEntity() {
  * they finish. follow.js itself does not consume the signal — the registry
  * handler owns the long-running lifecycle.
  */
-export function startFollow(bot, config) {
+export function startFollow(bot, config, { keepMovements = false } = {}) {
   _bot = bot
   // Resolve the minecraft adapter slice — the caller passes the top-level
   // config, but follow_range lives at config.adapter.minecraft.follow_range.
@@ -139,7 +141,11 @@ export function startFollow(bot, config) {
   _config = { follow_range: range }
 
   if (!bot.hasPlugin(pathfinder)) bot.loadPlugin(pathfinder)
-  bot.pathfinder.setMovements(followMovements(bot))
+  // 261019: keepMovements leaves a walk that owns the pathfinder (a goTo,
+  // a reflex flee) on its own movements; the tick puts the trail's back
+  // when it next installs GoalFollow.
+  _movementsOwed = keepMovements
+  if (!keepMovements) bot.pathfinder.setMovements(followMovements(bot))
 
   // No default target — the LLM decides whether to call follow(player) on the
   // join event. Hardcoding it caused the body to drift toward the player
@@ -222,6 +228,10 @@ export function startFollow(bot, config) {
       }
     }
     if (!bot.pathfinder.isMoving() && !yielding) {
+      if (_movementsOwed) {
+        _movementsOwed = false
+        try { bot.pathfinder.setMovements(followMovements(bot)) } catch {}
+      }
       bot.pathfinder.setGoal(new goals.GoalFollow(ent, _config.follow_range), true)
     }
     // No-progress tracking: stuck = not moving AND still far from the target
@@ -251,6 +261,22 @@ export function startFollow(bot, config) {
     }
     _lastPos = pos.clone()
   }, 1000)
+}
+
+/**
+ * 261019 (quality pass 19): stop the trail's tick for a moment WITHOUT
+ * forgetting who she follows. combat.js used stopFollow() whenever a mob hit
+ * her, which cleared the target for good: after one zombie hit she stopped
+ * trailing the player while the follow action still said "still trailing
+ * them" (combat_night eval: follow_target "(none)" for most of each night).
+ * startFollow() resumes the tick with the target intact.
+ */
+export function pauseFollow() {
+  cancelClimb()
+  clearInterval(_interval)
+  _interval = null
+  _stuck = null
+  _lastPos = null
 }
 
 export function stopFollow() {

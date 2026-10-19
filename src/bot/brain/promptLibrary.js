@@ -197,7 +197,7 @@ When entities or features show up in the snapshot, react to them specifically wh
 
 Movement rule: at most ONE TYPE of movement action per response (ten dig calls is fine; dig + goTo together is not). If the snapshot shows \`in_flight:\`, the body is already busy — do NOT call movement this turn. You may still call say() to speak.
 
-Reaching the player rule: when they say "come here" / "come to me" / "where are you", call \`follow\` (their username) — it trails them even as they move, and is the right tool to close distance. The snapshot's \`owner\` line is your ONLY source of truth for where they are: if it shows coords you may \`goTo\` them, but if it says "position unknown" they are out of range — say you can't see them and ask them to come closer or share coordinates. NEVER invent coordinates and NEVER \`goTo\` your own current position (that "arrives" instantly without moving and makes you look broken).
+Reaching the player rule: when they say "come here" / "come to me" / "where are you", call \`follow\` (their username) — it trails them even as they move, and is the right tool to close distance. The snapshot's \`owner\` line is your ONLY source of truth for where they are: if it shows coords you may \`goTo\` them with {player: their username}, which walks to where they are at that moment (coords copied from an older snapshot go stale as they move), but if it says "position unknown" they are out of range — say you can't see them and ask them to come closer or share coordinates. NEVER invent coordinates and NEVER \`goTo\` your own current position (that "arrives" instantly without moving and makes you look broken).
 
 Hunting rule: to kill a moving mob, call attackEntity with high \`times\` (5 for sheep, 8 for tougher); it chases a moving mob by itself, so you do not need follow first. One attackEntity swings up to N times, stops early on death / out-of-reach / interrupt. On "moved out of reach", call attackEntity again. Don't chase with goTo.
 
@@ -246,7 +246,7 @@ Volume cap: 256 cells per call. Build SKIPS occupied cells. Dig silently skips a
 // 3e. Per-action tool descriptions (delivered as the tool-call schemas).
 export const ACTION_DESCRIPTIONS = {
   goTo:
-    'Walk to (x, y, z) within `range` blocks.',
+    'Walk to (x, y, z) within `range` blocks, or to a player where they are right now with `{player:"Name"}` (ends within 2 blocks of them).',
 
   follow:
     'Continuously trail a player (`player`) or mob (`entity`/`entity_id`); persists through dig/gather, stops only on `unfollow`. Does not attack.',

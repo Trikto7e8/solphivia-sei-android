@@ -64,6 +64,7 @@ export async function pickupAction(args, bot, config, _deps) {
   let seen = 0
   // 261017 (pass 14): items she tossed to the player stay theirs.
   const left = new Map()
+  let skipped = null // { d, pos, above } nearest drop out of range or too high
 
   for (let i = 0; i < MAX_ITEMS; i++) {
     if (signal?.aborted) break
@@ -74,13 +75,19 @@ export async function pickupAction(args, bot, config, _deps) {
     for (const e of Object.values(bot.entities ?? {})) {
       if (!isItemEntity(e) || !e.position || e.isValid === false) continue
       if (attempted.has(e.id)) continue
-      if (e.position.y > here.y + ABOVE_LIMIT) continue
       if (want) {
         const it = droppedItemName(e)
         if (!it || it.name !== want) continue
       }
       const d = e.position.distanceTo(here)
-      if (d > maxDistance) continue
+      // 261019 (pass 19): remember the nearest one left out, so "nothing
+      // here" can say where the closest one actually is.
+      if (e.position.y > here.y + ABOVE_LIMIT || d > maxDistance) {
+        if (!givenDropFor(bot, e) && (!skipped || d < skipped.d)) {
+          skipped = { d, pos: e.position, above: e.position.y > here.y + ABOVE_LIMIT ? Math.round(e.position.y - here.y) : 0 }
+        }
+        continue
+      }
       const given = givenDropFor(bot, e)
       if (given) {
         if (!left.has(e.id)) left.set(e.id, given)
@@ -95,7 +102,9 @@ export async function pickupAction(args, bot, config, _deps) {
     // block's drop usually sits in the hole it left. goTo cancels a dig the
     // pathfinder leaves running when the walk ends.
     const it = droppedItemName(best)
-    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal, dropWalkOpts(it?.name))
+    // 261019 (pass 19): resume, so a mob hit on the way does not end the
+    // walk to the drop.
+    await goTo(bot, Math.floor(best.position.x), Math.floor(best.position.y), Math.floor(best.position.z), 0, WALK_MS, signal, { ...dropWalkOpts(it?.name), resume: true })
     if (signal?.aborted) break
     await sleep(SETTLE_MS)
   }
@@ -111,6 +120,20 @@ export async function pickupAction(args, bot, config, _deps) {
     const g = [...left.values()][0]
     return `nothing picked up: the ${g.item} on the ground is what you gave ${g.to ?? 'the player'}, left there for them`
   }
-  if (seen === 0) return `no ${what} within ${maxDistance}m`
+  if (seen === 0) {
+    // 261019 (pass 19): "no stone_sword within 4m" while the sword was
+    // already in her inventory (auto-collected on the walk) sent her looking
+    // for it again. Say what she has and where the nearest drop really is.
+    const parts = [`no ${what} on the ground within ${maxDistance}m`]
+    const have = want ? (before?.get(want) ?? 0) : 0
+    if (have > 0) parts.push(`you already have ${have} ${want} in your inventory`)
+    if (skipped) {
+      const at = `${Math.floor(skipped.pos.x)},${Math.floor(skipped.pos.y)},${Math.floor(skipped.pos.z)}`
+      parts.push(skipped.above > 0
+        ? `the nearest is ${skipped.above} blocks above you at ${at}; get up there first`
+        : `the nearest is ${skipped.d.toFixed(0)}m away at ${at}; goTo near it first${maxDistance < 32 ? ', or pickup with a larger maxDistance (up to 32)' : ''}`)
+    }
+    return parts.join('; ')
+  }
   return `could not pick up the ${what} (walked to ${seen}, nothing reached your inventory; they may be out of reach or your inventory is full)`
 }

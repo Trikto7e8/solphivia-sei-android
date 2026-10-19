@@ -93,7 +93,23 @@ export async function shelterAction(args, bot, config) {
   const notes = []
 
   // 1. Four hollow walls across the full height range.
-  const wallBlock = pickBlock(bot, material, cellsNeeded(bot, wallFrom, wallTo, true))
+  const wallNeed = cellsNeeded(bot, wallFrom, wallTo, true)
+  const wallBlock = pickBlock(bot, material, wallNeed)
+  // 261019 (quality pass 19): too few blocks of any one kind for the walls.
+  // The build's own refusal ended with "or build a smaller span", which a 3x3
+  // shelter (the smallest) cannot do, and did not count the roof, so she
+  // retried the same shelter with 18 of 20 dirt. Say the exact shortfall for
+  // the whole shelter, before any walking.
+  const haveWall = invCount(bot, wallBlock)
+  if (haveWall < wallNeed) {
+    const roofNeed = cellsNeeded(bot, roofFrom, roofTo, false)
+    const short = wallNeed - haveWall
+    const smaller = size > 3
+      ? `, or ask for a smaller shelter (size ${size - 1} or 3)`
+      : ' (3x3 is the smallest shelter, so it will not fit in fewer blocks)'
+    const roof = roofNeed > 0 ? ` After the walls, the roof needs ${roofNeed} more of any full block.` : ''
+    return `no shelter built: the walls need ${wallNeed} blocks of one kind and you have ${haveWall} ${wallBlock}, ${short} short.${roof} Gather at least ${short} more ${wallBlock} (or ask the player for some) before trying again${smaller}.`
+  }
   if (wallBlock !== material) notes.push(`walls in ${wallBlock}, not enough ${material}`)
   const wallsRes = await buildAction({ from: wallFrom, to: wallTo, block: wallBlock, hollow: true }, bot, config)
   if (isAborted(wallsRes)) return abortedAt('walls', wallsRes)

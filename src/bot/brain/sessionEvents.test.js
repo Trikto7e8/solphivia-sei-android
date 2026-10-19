@@ -92,6 +92,8 @@ describe('describeAttackEvent / describeDeathEvent', () => {
   })
   it('names the last hit on a death when there was one', () => {
     expect(describeDeathEvent({ lastAttack: { label: 'skeleton', kind: 'hostile_mob' } })).toBe('you died (last hit by a skeleton)')
+    // 261019 (pass 19): the game's own death message names the real cause.
+    expect(describeDeathEvent({ deathText: 'Sui drowned', lastAttack: { label: 'skeleton', kind: 'hostile_mob' } })).toBe('you died (Sui drowned)')
     expect(describeDeathEvent({})).toBe('you died')
   })
 })

@@ -13,6 +13,7 @@ import { startCombat } from './combat.js'
 vi.mock('./follow.js', () => ({
   startFollow: vi.fn(),
   stopFollow: vi.fn(),
+  pauseFollow: vi.fn(),
 }))
 
 const vec = (x, y, z) => ({

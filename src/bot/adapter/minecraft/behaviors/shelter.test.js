@@ -104,10 +104,24 @@ describe('shelterAction', () => {
     expect(res).toContain('roof in cobblestone, not enough oak_planks')
   })
 
-  it('keeps the asked material when nothing else covers the part, so build reports the shortfall', async () => {
+  // 261019 (pass 19): the shortfall is reported up front, for the whole
+  // shelter, without walking or placing anything.
+  it('keeps the asked material when nothing else covers the part, and reports the exact shortfall', async () => {
     const inv = [{ name: 'oak_planks', count: 10 }, { name: 'diamond_block', count: 64 }]
-    await shelterAction({ size: 3, material: 'oak_planks' }, makeBot({ inv }), {})
-    expect(buildAction.mock.calls[0][0].block).toBe('oak_planks')
+    const r = await shelterAction({ size: 3, material: 'oak_planks' }, makeBot({ inv }), {})
+    expect(buildAction).not.toHaveBeenCalled()
+    expect(r).toMatch(/^no shelter built: the walls need (\d+) blocks of one kind and you have 10 oak_planks, (\d+) short\./)
+    const [, need, short] = r.match(/need (\d+) blocks.*?, (\d+) short/)
+    expect(Number(need) - 10).toBe(Number(short))
+    expect(r).toContain('3x3 is the smallest shelter')
+    expect(r).not.toContain('smaller span')
+    expect(r).not.toContain('\u2014')
+  })
+
+  it('a bigger shelter that does not fit suggests a smaller size', async () => {
+    const inv = [{ name: 'cobblestone', count: 5 }]
+    const r = await shelterAction({ size: 5 }, makeBot({ inv }), {})
+    expect(r).toContain('ask for a smaller shelter (size 4 or 3)')
   })
 
   it('defaults material to cobblestone and size to 3', async () => {

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { Vec3 } from 'vec3'
-import { weakWeaponNote, attackEntityAction, goneResult, CRITICAL_HP } from './attack.js'
+import { weakWeaponNote, attackEntityAction, goneResult, CRITICAL_HP, continueAttack } from './attack.js'
 
 function makeBot({ held = null, items = [] } = {}) {
   return {
@@ -169,5 +169,125 @@ describe('attackEntity pursuit keeps its goal (261012)', () => {
     expect(set.length).toBeGreaterThanOrEqual(2)
     bot.entities[7].position = new Vec3(1, 64, 0)
     expect(await p).toMatch(/attacked zombie 1×|killed|zombie/)
+  })
+})
+
+// 261019 (pass 18): a repeat attackEntity on the mob the running attack is
+// fighting extends that attack instead of restarting it.
+describe('continueAttack (261019)', () => {
+  const running = { name: 'attackEntity', input: { entity: 'zombie', times: 2 } }
+  const again = (input) => ({ name: 'attackEntity', input })
+  // A name lookup like the live bot's: nearest matching entity.
+  const withLookup = (bot) => {
+    bot.nearestEntity = (match) => Object.values(bot.entities)
+      .filter((e) => match(e))
+      .sort((a, b) => a.position.distanceTo(bot.entity.position) - b.position.distanceTo(bot.entity.position))[0] ?? null
+    return bot
+  }
+
+  it('is null when no attack is running', () => {
+    const bot = withLookup(fightBot())
+    expect(continueAttack(bot, running, again({ entity: 'zombie' }))).toBeNull()
+  })
+
+  it('extends the swing budget of the running fight and says so', async () => {
+    const bot = withLookup(fightBot())
+    let reply
+    // The repeat call lands between swings, as a model turn would.
+    bot.attack.mockImplementationOnce(() => setTimeout(() => {
+      reply = continueAttack(bot, running, again({ entity: 'zombie', times: 3 }))
+    }, 50))
+    const r = await attackEntityAction({ entity_id: 7, times: 2 }, bot, {})
+    expect(reply).toMatch(/^your attackEntity is already on that zombie \(1 swing so far\), so it keeps going with up to 3 more/)
+    // 1 swing before the repeat call + 3 more, not the original 2.
+    expect(bot.attack).toHaveBeenCalledTimes(4)
+    expect(r).toMatch(/attacked zombie 4×/)
+    // Closed once the action returns.
+    expect(continueAttack(bot, running, again({ entity: 'zombie' }))).toBeNull()
+  })
+
+  it('never shrinks the budget', async () => {
+    const bot = withLookup(fightBot())
+    bot.attack.mockImplementationOnce(() => setTimeout(() => {
+      continueAttack(bot, running, again({ entity: 'zombie', times: 1 }))
+    }, 50))
+    await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(bot.attack).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not take over a call on another mob, another id, or another action', async () => {
+    const bot = withLookup(fightBot())
+    const seen = []
+    bot.attack.mockImplementationOnce(() => setTimeout(() => {
+      seen.push(continueAttack(bot, running, again({ entity: 'skeleton' })))
+      seen.push(continueAttack(bot, running, again({ entity_id: 99 })))
+      seen.push(continueAttack(bot, running, again({})))
+      seen.push(continueAttack(bot, { name: 'gather' }, again({ entity: 'zombie' })))
+      seen.push(continueAttack(bot, running, { name: 'goTo', input: {} }))
+      seen.push(continueAttack(bot, running, again({ entity_id: 7 })))
+    }, 50))
+    await attackEntityAction({ entity_id: 7, times: 2 }, bot, {})
+    expect(seen.slice(0, 5)).toEqual([null, null, null, null, null])
+    expect(seen[5]).toMatch(/already on that zombie/)
+  })
+
+  it('does not take over once the mob is dead', async () => {
+    const bot = withLookup(fightBot())
+    const handlers = {}
+    bot.on = (ev, fn) => { (handlers[ev] ??= []).push(fn) }
+    bot.removeListener = (ev, fn) => { handlers[ev] = (handlers[ev] ?? []).filter((h) => h !== fn) }
+    let after
+    bot.attack.mockImplementationOnce(() => {
+      for (const h of handlers.entityDead ?? []) h({ id: 7 })
+      after = continueAttack(bot, running, again({ entity: 'zombie' }))
+    })
+    await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(after).toBeNull()
+  })
+
+  it('repeat calls never carry one attack past three timeout windows', async () => {
+    const bot = withLookup(fightBot())
+    const replies = []
+    // Every swing is followed by a repeat call asking for 10 more.
+    bot.attack.mockImplementation(() => {
+      replies.push(continueAttack(bot, running, again({ entity: 'zombie', times: 10 })))
+    })
+    const t0 = Date.now()
+    const r = await attackEntityAction({ entity_id: 7, times: 2, timeout_ms: 700 }, bot, {})
+    const ms = Date.now() - t0
+    // Hard cap 3 x 700 ms; the last swing check lands one swing delay after it at most.
+    expect(ms).toBeLessThan(3 * 700 + 700)
+    expect(r).toMatch(/^timeout after \d+\/\d+ hits on zombie/)
+    expect(bot.attack.mock.calls.length).toBeLessThanOrEqual(4)
+    // Near the cap the repeat call is not folded in (it starts a fresh attack).
+    expect(replies.at(-1)).toBeNull()
+  }, 10_000)
+
+  it('does not take over an attack that is being aborted', async () => {
+    const bot = withLookup(fightBot())
+    const ac = new AbortController()
+    let after
+    bot.attack.mockImplementationOnce(() => {
+      ac.abort()
+      after = continueAttack(bot, running, again({ entity: 'zombie' }))
+    })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, { signal: ac.signal })
+    expect(after).toBeNull()
+    expect(r).toMatch(/^aborted after 1\/\d+ hits on zombie/)
+  })
+
+  it('a name that now points at another mob (the one on the player) still switches', async () => {
+    const bot = withLookup(fightBot())
+    bot.entities[9] = { id: 9, name: 'zombie', type: 'hostile', position: new Vec3(10, 64, 0), height: 1.95 }
+    bot._seiOwnerNames = ['alex']
+    bot.players = { Alex: { entity: { username: 'Alex', position: new Vec3(11, 64, 0) } } }
+    const seen = []
+    bot.attack.mockImplementationOnce(() => setTimeout(() => {
+      seen.push(continueAttack(bot, running, again({ entity: 'zombie' })))
+      seen.push(continueAttack(bot, running, again({ entity_id: 7 })))
+    }, 50))
+    await attackEntityAction({ entity_id: 7, times: 2 }, bot, {})
+    expect(seen[0]).toBeNull()
+    expect(seen[1]).toMatch(/already on that zombie/)
   })
 })

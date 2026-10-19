@@ -413,6 +413,9 @@ export function startReflex(bot, config) {
     try {
       bot.emit('sei:reflex', {
         threat: creeper.name,
+        // 261019: the live entity, so a turn written after it blew up or
+        // left can say so (observers/staleAttacker.js).
+        entity: creeper,
         threatLabel: creeper.name,
         // noticed: did a positive telegraph fire (fuse/ignite) vs a distance-only flee
         noticed: creeperPanic(creeper),

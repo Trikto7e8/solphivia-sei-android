@@ -37,6 +37,13 @@ export const ADAPTER_DEFAULTS = Object.freeze({
   wikiHosts: Object.freeze(['minecraft.wiki']),
   prefilterToolBatch: () => [],
   postProcessToolBatch: () => ({ nudge: null }),
+  // 261019 (pass 18): a call that only continues the running action (the
+  // same fight) gets this result instead of replacing it. Needs the game's
+  // runtime, so the default continues nothing.
+  continueRunningAction: () => null,
+  // The actions whose run IS the answer to being hit: a hit that lands while
+  // one runs never tears it down (handlePreempt).
+  fightActions: Object.freeze(['attackEntity']),
   // 261015: no hand-over action, so a clearGoal never waits on one.
   handOverResult: () => null,
   surfaceBaseline: () => MINECRAFT_BASELINE,
@@ -107,6 +114,8 @@ export function resolveAdapterCaps(adapter, config) {
     visionActions: new Set(pick('visionActions')),
     prefilterToolBatch: pick('prefilterToolBatch'),
     postProcessToolBatch: pick('postProcessToolBatch'),
+    continueRunningAction: pick('continueRunningAction'),
+    fightActions: new Set(pick('fightActions')),
     handOverResult: pick('handOverResult'),
     surfaceBaseline: pick('surfaceBaseline'),
     sessionEndClause: pick('sessionEndClause'),

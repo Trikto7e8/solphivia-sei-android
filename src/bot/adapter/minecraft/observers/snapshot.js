@@ -9,6 +9,7 @@ import { surveyBlocks } from './veins.js'
 import { nearbyEntities, droppedItemName, isDeadEntity, trackEntityDeaths } from './entities.js'
 import { givenDropFor } from './givenDrops.js'
 import { HOSTILE_MOBS } from '../behaviors/hostiles.js'
+import { CRITICAL_HP } from '../behaviors/attack.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getCraftableEntries } from './craftable.js'
 import { getFollowTargetLabel, getFollowStuckInfo } from '../behaviors/follow.js'
@@ -192,6 +193,13 @@ export function composeSnapshot(bot, opts = {}) {
 
   // Vitals
   lines.push(`hp: ${v.hp}/20  food: ${v.food}/20  xp: lvl ${v.xp.level}`)
+  // 261019 (pass 18): the attackEntity refusal line before she tries it. In
+  // the combat_night eval she called attackEntity again right after it refused
+  // at low health (on another mob, or after eating and expecting the bread to
+  // heal her at once).
+  if (Number.isFinite(v.hp) && v.hp > 0 && v.hp <= CRITICAL_HP) {
+    lines.push(`low health: attackEntity will not start a mob fight at ${CRITICAL_HP} hp or less. Health comes back on its own over time while your food bar is nearly full; eating does not heal you at once.`)
+  }
   if (v.sleeping) lines.push('status: sleeping')
 
   // Holding

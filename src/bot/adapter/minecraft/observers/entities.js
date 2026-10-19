@@ -48,14 +48,80 @@ export function droppedItemName(entity) {
 // her announce "another one coming" and swing at nothing. The ids are kept
 // on the bot so every observer (snapshot, aggro tally, name targeting, the
 // owner-threat watch) agrees on what is still alive.
+//
+// 261019 (pass 18): deaths are also kept for RECENT_LOSS_MS after the corpse
+// is gone (id, name, where, when), so a turn that was written while the mob
+// was alive can be told it has died since (attackEntity's no-target result,
+// the stale attack-event text). A mob that left the entity table without a
+// death (a creeper that exploded, a despawn, out of range) is kept the same
+// way with died:false.
+const RECENT_LOSS_MS = 30_000
+// Entity types that are never a mob she fought: dropped items, arrows, xp,
+// boats and the like ('other' and 'projectile' in minecraft-data 1.21,
+// 'object'/'orb'/'global' in older tables). Without this every item pickup
+// and every arrow in a skeleton fight was kept as a "disappeared" entry.
+const NOT_A_MOB = new Set(['object', 'orb', 'global', 'other', 'projectile', 'player'])
+
 export function trackEntityDeaths(bot) {
   if (!bot || bot._seiDeadEntityIds) return
   const ids = new Set()
   bot._seiDeadEntityIds = ids
+  const recent = new Map()
+  bot._seiRecentLosses = recent
+  const note = (e, died) => {
+    const now = Date.now()
+    for (const [id, d] of recent) if (now - d.at > RECENT_LOSS_MS) recent.delete(id)
+    const p = e.position
+    recent.set(e.id, { name: e.name ?? null, at: now, died, pos: p ? { x: p.x, y: p.y, z: p.z } : null })
+  }
   try {
-    bot.on?.('entityDead', (e) => { if (e?.id != null) ids.add(e.id) })
-    bot.on?.('entityGone', (e) => { if (e?.id != null) ids.delete(e.id) })
+    bot.on?.('entityDead', (e) => {
+      if (e?.id == null) return
+      ids.add(e.id)
+      note(e, true)
+    })
+    bot.on?.('entityGone', (e) => {
+      if (e?.id == null) return
+      const dead = ids.delete(e.id) || recent.get(e.id)?.died === true
+      if (!dead && !e.username && !NOT_A_MOB.has(e.type)) note(e, false)
+    })
   } catch { /* a stub bot without events: nothing is ever marked dead */ }
+}
+
+/**
+ * When the server reported this entity id dead within `withinMs`, the age of
+ * that death in ms; otherwise null. Keeps working after the corpse is gone.
+ */
+export function msSinceDeath(bot, id, withinMs = RECENT_LOSS_MS) {
+  const d = id == null ? null : bot?._seiRecentLosses?.get(id)
+  if (!d?.died) return null
+  const age = Date.now() - d.at
+  return age <= withinMs ? age : null
+}
+
+/**
+ * The most recent mob with this name that died or left the entity table
+ * within `withinMs`, within `maxDist` blocks of her when both positions are
+ * known. Returns { id, age, died } or null.
+ */
+export function recentLossByName(bot, name, { withinMs = 10_000, maxDist = 16 } = {}) {
+  const want = String(name ?? '').toLowerCase()
+  const recent = bot?._seiRecentLosses
+  if (!want || !recent) return null
+  const me = bot?.entity?.position
+  const now = Date.now()
+  let best = null
+  for (const [id, d] of recent) {
+    if ((d.name ?? '').toLowerCase() !== want) continue
+    const age = now - d.at
+    if (age > withinMs) continue
+    if (me && d.pos) {
+      const dist = Math.hypot(d.pos.x - me.x, d.pos.y - me.y, d.pos.z - me.z)
+      if (!(dist <= maxDist)) continue
+    }
+    if (!best || age < best.age) best = { id, age, died: d.died }
+  }
+  return best
 }
 
 /** True once the server has reported this entity dead (it may still be listed). */

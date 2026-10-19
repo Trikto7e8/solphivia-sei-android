@@ -230,6 +230,18 @@
  *   toolUses[i]). May return a one-shot `nudge` appended to the next user
  *   turn (it outranks the brain's silence nudge). Minecraft: the per-loop
  *   goTo cant_reach dedup → cantReachNudge. Default: no nudge.
+ * @property {(running: {name: string, input?: any}, use: {id: string, name: string, input?: any}) => string | null} [continueRunningAction]
+ *   Asked for each world tool in a batch while an action is running (not
+ *   when the batch calls stop). A string means the call is the SAME work as
+ *   the running action: the adapter has folded it in, the call does not
+ *   execute or abort the running one, and the string is its result. null =
+ *   a new action that replaces the running one as usual. Only honored when
+ *   every world tool in the batch continues. Minecraft (261019): attackEntity
+ *   on the mob the running attackEntity is fighting. Default: always null.
+ * @property {string[]}                                                    [fightActions]
+ *   Actions whose run is the body's answer to being hit. A hit that lands
+ *   while one runs and a mid-action call is parked is swallowed instead of
+ *   tearing the action down. Default `['attackEntity']`.
  * @property {(name: string, resultText: string) => boolean | null}       [handOverResult]
  *   For an action that hands items to the player: true when its result says
  *   the items were handed over, false when not. null for every other action.

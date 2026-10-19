@@ -48,14 +48,66 @@ export function droppedItemName(entity) {
 // her announce "another one coming" and swing at nothing. The ids are kept
 // on the bot so every observer (snapshot, aggro tally, name targeting, the
 // owner-threat watch) agrees on what is still alive.
+//
+// 261019 (pass 18): deaths are also kept for RECENT_DEATH_MS after the corpse
+// is gone (id, name, where, when), so a turn that was written while the mob
+// was alive can be told it has died since (attackEntity's no-target result,
+// the stale attack-event text).
+const RECENT_DEATH_MS = 30_000
+
 export function trackEntityDeaths(bot) {
   if (!bot || bot._seiDeadEntityIds) return
   const ids = new Set()
   bot._seiDeadEntityIds = ids
+  const recent = new Map()
+  bot._seiRecentDeaths = recent
   try {
-    bot.on?.('entityDead', (e) => { if (e?.id != null) ids.add(e.id) })
+    bot.on?.('entityDead', (e) => {
+      if (e?.id == null) return
+      ids.add(e.id)
+      const now = Date.now()
+      for (const [id, d] of recent) if (now - d.at > RECENT_DEATH_MS) recent.delete(id)
+      const p = e.position
+      recent.set(e.id, { name: e.name ?? null, at: now, pos: p ? { x: p.x, y: p.y, z: p.z } : null })
+    })
     bot.on?.('entityGone', (e) => { if (e?.id != null) ids.delete(e.id) })
   } catch { /* a stub bot without events: nothing is ever marked dead */ }
+}
+
+/**
+ * When the server reported this entity id dead within `withinMs`, the age of
+ * that death in ms; otherwise null. Keeps working after the corpse is gone.
+ */
+export function msSinceDeath(bot, id, withinMs = RECENT_DEATH_MS) {
+  const d = id == null ? null : bot?._seiRecentDeaths?.get(id)
+  if (!d) return null
+  const age = Date.now() - d.at
+  return age <= withinMs ? age : null
+}
+
+/**
+ * The most recent death of a mob with this name within `withinMs`, and within
+ * `maxDist` blocks of her when both positions are known. Returns { id, age }
+ * or null.
+ */
+export function recentDeathByName(bot, name, { withinMs = 10_000, maxDist = 16 } = {}) {
+  const want = String(name ?? '').toLowerCase()
+  const recent = bot?._seiRecentDeaths
+  if (!want || !recent) return null
+  const me = bot?.entity?.position
+  const now = Date.now()
+  let best = null
+  for (const [id, d] of recent) {
+    if ((d.name ?? '').toLowerCase() !== want) continue
+    const age = now - d.at
+    if (age > withinMs) continue
+    if (me && d.pos) {
+      const dist = Math.hypot(d.pos.x - me.x, d.pos.y - me.y, d.pos.z - me.z)
+      if (!(dist <= maxDist)) continue
+    }
+    if (!best || age < best.age) best = { id, age }
+  }
+  return best
 }
 
 /** True once the server has reported this entity dead (it may still be listed). */

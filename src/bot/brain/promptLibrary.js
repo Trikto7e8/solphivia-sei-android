@@ -433,6 +433,18 @@ export const DEFEND_ADDENDUM = (label, data) => {
   return text
 }
 
+// 261019 (pass 18): the mob a hit, defend or heads-up event is about died (or
+// left her view) between the event and the turn that reads it. combat_night
+// eval: a threat event read after the kill still said "Call attackEntity on it
+// now", and the call came back "no zombie within 16 blocks". The adapter swaps
+// in this text when the mob is gone at the time the turn is written. `{label}`
+// (the mob), `{who}` ("you" or the player's name), `{fate}` (what became of it).
+export const STALE_ATTACKER_ADDENDUM_TEXT = `A {label} went for {who} a moment ago, and it {fate} since then, so there is nothing to attack for it. Check nearby entities in your snapshot for anything still there before you act, and if you speak, talk about how things are now.`
+export const STALE_ATTACKER_DIED = 'has died'
+export const STALE_ATTACKER_GONE = 'has gone out of sight'
+export const staleAttackerAddendum = (label, who, died) =>
+  fillTemplate(STALE_ATTACKER_ADDENDUM_TEXT, { label, who, fate: died ? STALE_ATTACKER_DIED : STALE_ATTACKER_GONE })
+
 // Editable prose for the idle-tick framing (EVENT_GUIDANCE['sei:idle']). The
 // function computes the dynamic `{quiet}` (how long it's been quiet) and picks a
 // `{stuck}` nudge by Looking mode; the wording lives here so it is tunable.

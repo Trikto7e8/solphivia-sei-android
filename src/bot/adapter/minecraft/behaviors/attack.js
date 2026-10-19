@@ -2,7 +2,7 @@
 import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle, nearestNamedEntityBeyondBound, handleForEntity, pickHostileForOwner, ownerEntityOf } from '../observers/targeting.js'
 import { HOSTILE_MOBS, NO_AUTO_ENGAGE } from './hostiles.js'
-import { isDeadEntity } from '../observers/entities.js'
+import { isDeadEntity, recentDeathByName } from '../observers/entities.js'
 import { reason } from '../../../brain/errStrings.js'
 import { equipBestWeapon } from './weaponSelect.js'
 import { companionMovements } from './pathfind.js'
@@ -19,6 +19,9 @@ const PURSUE_FOLLOW_RANGE = 2
 const PURSUE_POLL_MS = 100       // pursuit loop cadence: re-check distance / re-assert goal
 const SWING_DELAY_MS = 600       // matches mob attack cooldown; faster spams hits without damage
 const DEATH_PACKET_WAIT_MS = 250 // after the last swing, before calling the target alive
+// A repeat call for the same fight gives the current target a fresh timeout
+// window, but one attackEntity never runs past this many windows in total.
+const MAX_ACTION_WINDOWS = 3
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 
@@ -61,6 +64,9 @@ function inStaggerWindow(bot) {
  * and to a player-knockback stagger window, re-asserting once either clears. The
  * caller's finally releases sprint + the goal.
  *
+ * `deadline` is an epoch ms, or a function returning one (read every poll, so
+ * a running attack that is extended mid-chase keeps chasing).
+ *
  * Returns 'reached' | 'gone' | 'timeout' | 'aborted'.
  */
 async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
@@ -68,7 +74,7 @@ async function pursueUntilInReach(bot, entityId, reach, deadline, signal) {
   let ourGoal = null
   while (true) {
     if (signal?.aborted) return 'aborted'
-    if (Date.now() > deadline) return 'timeout'
+    if (Date.now() > (typeof deadline === 'function' ? deadline() : deadline)) return 'timeout'
     const live = bot.entities?.[entityId]
     if (!live || !live.position) return 'gone'
     const dist = bot.entity?.position?.distanceTo?.(live.position)
@@ -147,6 +153,19 @@ export function fartherNote(asked, bot) {
   return `. The nearest ${asked} is ${Math.round(far.distance)} blocks away at ${at}. ${how}`
 }
 
+// 261019 (pass 18): when a mob of that name died next to her moments ago,
+// say so. In the combat_night eval most "no zombie within 16 blocks" results
+// came from a turn written while the zombie was alive (her own swings, the
+// chained fight or the player finished it during the model call), and the
+// bare result read as a failed attack.
+export function justDiedNote(asked, bot) {
+  let d = null
+  try { d = recentDeathByName(bot, asked) } catch { d = null }
+  if (!d) return ''
+  const s = Math.max(1, Math.round(d.age / 1000))
+  return `: the ${asked} that was near you died ${s}s ago, before this call, so that fight is already over`
+}
+
 export async function attackEntityAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
@@ -156,7 +175,7 @@ export async function attackEntityAction(args, bot, config) {
     if (isStaleHandle(args)) return 'stale target'
     const asked = typeof args?.entity === 'string' ? args.entity : (typeof args?.target === 'string' && !args.target.startsWith('#') ? args.target : null)
     if (!asked) return 'target gone'
-    return `no ${asked} within 16 blocks to attack${fartherNote(asked, bot)}`
+    return `no ${asked} within 16 blocks to attack${justDiedNote(asked, bot)}${fartherNote(asked, bot)}`
   }
 
   // Refuse Players unless PvP mode is ON (bot._seiPvp, toggled by the setPvp
@@ -193,12 +212,14 @@ export async function attackEntityAction(args, bot, config) {
   }
   const times = clampTimes(args.times)
   const timeoutMs = args.timeout_ms ?? config?.attack_timeout_ms ?? DEFAULT_TIMEOUT_MS
+  const actionStartedAt = Date.now()
   // 261011 quality pass 2: death is only what the server says (entityDead),
   // tracked per entity id so a follow-on target (below) has its own record.
   const deadIds = new Set()
   const onDead = (e) => { if (e?.id != null) deadIds.add(e.id) }
   try { bot.on?.('entityDead', onDead) } catch (_) {}
   let currentId = entity.id
+  let run = null
   try {
     // Set anti-stuck movements once for the whole engagement (pursueUntilInReach
     // installs GoalFollow against these). goTo resets movements on its next call.
@@ -206,26 +227,37 @@ export async function attackEntityAction(args, bot, config) {
     // Owner defense: the first target is a hostile and the owner is known.
     // Then a second hostile near her gets one hit on the way (see tagOther).
     const ownerMode = mobTarget && HOSTILE_MOBS.has(name) && ownerEntityOf(bot) != null
-    const ctx = { bot, signal, timeoutMs, startHp, deadIds, ownerMode, tagged: new Set([entity.id]), tags: 0 }
-    let result = await fightOne(entity, times, ctx)
+    // 261019 (pass 18): `budget` is the swings this whole action may take
+    // (first target plus any it chains to) and `used` the swings so far. Both
+    // live on ctx so a repeat call for the same fight can add swings and a
+    // fresh time window (extendAttackRun) instead of aborting and restarting.
+    const ctx = {
+      bot, signal, timeoutMs, startHp, deadIds, ownerMode, tagged: new Set([entity.id]), tags: 0,
+      budget: times, used: 0, fightStartedAt: actionStartedAt,
+      hardDeadline: actionStartedAt + timeoutMs * MAX_ACTION_WINDOWS,
+      currentId,
+    }
+    run = { open: true, ctx, name, mobTarget }
+    bot._seiAttackRun = run
+    let result = await fightOne(entity, ctx)
     // 261012 (pass 4a): a kill with swings left over while the player still
     // has a hostile on them goes straight on to that one. In the
     // protect_player eval the turn after the first kill took 1-2s (once it
     // only said "zombie's dead, you good?" and ended), and the second zombie
     // killed the 4 hp player in that gap.
-    let left = times - result.hits
-    while (result.died && left > 0 && HOSTILE_MOBS.has(name) && !signal?.aborted) {
+    while (result.died && ctx.used < ctx.budget && HOSTILE_MOBS.has(name) && !signal?.aborted) {
       if (Number.isFinite(bot.health) && bot.health <= CRITICAL_HP) break
       const next = pickHostileForOwner(bot, (e) => !NO_AUTO_ENGAGE.has(e.name), {
         ownerRadius: CHAIN_OWNER_RADIUS, excludeIds: deadIds,
       }) ?? nearestTagged(bot, ctx)
       if (!next || next.id === currentId) break
       currentId = next.id
+      ctx.currentId = next.id
       ctx.tagged.add(next.id)
-      const r = await fightOne(next, left, ctx)
+      const r = await fightOne(next, ctx)
       result = { ...r, text: `${result.text}. Then went for the next ${next.name ?? 'mob'}: ${r.text}` }
-      left -= r.hits
     }
+    run.open = false
     if (ctx.tags > 0) {
       const one = ctx.tags === 1
       result = { ...result, text: `${result.text}. You also hit ${one ? 'another hostile' : `${ctx.tags} other hostiles`} once on the way, so ${one ? 'it should be' : 'they should be'} coming after you now` }
@@ -253,8 +285,54 @@ export async function attackEntityAction(args, bot, config) {
       try { bot.pathfinder?.setGoal?.(null) } catch (_) {}
     }
     if (bot._seiOffensiveTarget === currentId) bot._seiOffensiveTarget = null
+    if (run) run.open = false
+    if (bot._seiAttackRun === run) bot._seiAttackRun = null
     try { bot.removeListener?.('entityDead', onDead) } catch (_) {}
   }
+}
+
+/**
+ * 261019 (quality pass 18): a repeat attackEntity call for the fight that is
+ * already running. In the combat_night eval she aborted her own running
+ * attack 27 times in 10 runs by calling attackEntity again from a mid-action
+ * turn (a player line or a hit), nearly always on the mob it was already
+ * on. Each restart threw away the swing rhythm, and some came back as "no
+ * zombie within 16 blocks" because the first call had already killed it.
+ *
+ * Same fight means the mob the run is on now: by #handle, entity_id, or its
+ * name (a player's username in a spar). For that, the running attack gets
+ * the new call's swings added (up to the same 10 cap) and a fresh timeout
+ * window, and this returns the result line for the repeat call. Anything
+ * else returns null, and the new call replaces the running one as before.
+ *
+ * @returns {string|null}
+ */
+export function continueAttack(bot, running, use) {
+  if (running?.name !== 'attackEntity' || use?.name !== 'attackEntity') return null
+  const run = bot?._seiAttackRun
+  if (!run?.open) return null
+  const ctx = run.ctx
+  const live = bot.entities?.[ctx.currentId]
+  if (!live || ctx.deadIds.has(ctx.currentId) || isDeadEntity(bot, live)) return null
+  const args = use.input ?? {}
+  if (!sameFight(bot, live, args)) return null
+  ctx.budget = Math.max(ctx.budget, ctx.used + clampTimes(args.times))
+  ctx.fightStartedAt = Date.now()
+  const label = live.username ?? live.name ?? 'mob'
+  const left = ctx.budget - ctx.used
+  return `your attackEntity is already on that ${label} (${ctx.used} ${ctx.used === 1 ? 'swing' : 'swings'} so far), so it keeps going with up to ${left} more instead of starting over. Its result comes when the fight ends.`
+}
+
+function sameFight(bot, live, args) {
+  if (typeof args.entity_id === 'number') return args.entity_id === live.id
+  if (typeof args.target === 'string' && args.target.startsWith('#')) {
+    return resolveEntity({ target: args.target }, bot)?.id === live.id
+  }
+  const asked = typeof args.target === 'string' && args.target ? args.target : args.entity
+  if (typeof asked !== 'string' || !asked) return false
+  const want = asked.toLowerCase()
+  if (live.username) return live.username.toLowerCase() === want
+  return (live.name ?? '').toLowerCase() === want
 }
 
 // After a kill, attackEntity moves on to a hostile within this many blocks of
@@ -325,18 +403,23 @@ function nearestTagged(bot, ctx) {
 }
 
 /**
- * Swing at one entity up to `times` times: chase it into reach, swing, stop on
+ * Swing at one entity until the action's swing budget (ctx.budget) is spent:
+ * chase it into reach, swing, stop on
  * death, a lost target, the timeout, an abort or critical health. Returns the
  * result text, the swings landed and whether the server reported its death.
  */
-async function fightOne(entity, times, ctx) {
+async function fightOne(entity, ctx) {
   const { bot, signal, timeoutMs, startHp, deadIds } = ctx
   const name = entity.name ?? entity.displayName ?? 'entity'
   const mobTarget = !(entity.type === 'player' || entity.username)
   const entityId = entity.id
   const isPlayerTarget = entity.type === 'player' || entity.username != null
-  const startedAt = Date.now()
+  ctx.fightStartedAt = Date.now()
+  // Read live: extendAttackRun moves both the budget and the window.
+  const deadline = () => Math.min(ctx.fightStartedAt + timeoutMs, ctx.hardDeadline)
   let hits = 0
+  // The swings planned for this target: those landed plus what the budget has left.
+  const of = () => hits + Math.max(0, ctx.budget - ctx.used)
   const died = () => deadIds.has(entityId)
   const done = (text) => ({ text, hits, died: died() })
 
@@ -351,12 +434,23 @@ async function fightOne(entity, times, ctx) {
   // refreshes on each swing below and decays ~10s after the last blow.
   if (isPlayerTarget && bot._seiPvp) bot._seiPvpOpponent = { id: entityId, at: Date.now() }
 
-  for (let i = 0; i < times; i++) {
-    if (signal?.aborted) {
-      return done(hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted')
+  while (true) {
+    if (ctx.used >= ctx.budget) {
+      // The swings are spent. The last one can be the killing one: give the
+      // death packet a moment so a kill is not reported as "still alive".
+      if (!isPlayerTarget && !died()) await sleepOrAbort(DEATH_PACKET_WAIT_MS, signal)
+      if (!isPlayerTarget && (died() || !bot.entities?.[entityId])) return done(goneResult(name, hits, died()))
+      if (signal?.aborted) return done(`aborted after ${hits}/${of()} hits on ${name}`)
+      // A repeat call for this fight may have added swings during that wait.
+      if (ctx.used >= ctx.budget) break
+      const waited = await sleepOrAbort(SWING_DELAY_MS - DEATH_PACKET_WAIT_MS, signal)
+      if (waited === 'aborted') return done(`aborted after ${hits}/${of()} hits on ${name}`)
     }
-    if (Date.now() - startedAt > timeoutMs) {
-      return done(hits ? `timeout after ${hits}/${times} hits on ${name}` : `timeout attacking ${name}`)
+    if (signal?.aborted) {
+      return done(hits ? `aborted after ${hits}/${of()} hits on ${name}` : 'aborted')
+    }
+    if (Date.now() > deadline()) {
+      return done(hits ? `timeout after ${hits}/${of()} hits on ${name}` : `timeout attacking ${name}`)
     }
 
     // A dead mob stays in the entity table for its ~1s death animation;
@@ -371,13 +465,12 @@ async function fightOne(entity, times, ctx) {
       // Chase the LIVE entity with a dynamic follow goal until in reach. The
       // overall timeout (deadline) is the ONLY give-up condition — no more
       // single-budget surrender on a kiting mob.
-      const deadline = startedAt + timeoutMs
       const res = await pursueUntilInReach(bot, entityId, REACH, deadline, signal)
-      if (res === 'aborted') return done(hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted')
+      if (res === 'aborted') return done(hits ? `aborted after ${hits}/${of()} hits on ${name}` : 'aborted')
       if (res === 'gone') return done(goneResult(name, hits, died()))
       if (res === 'timeout') {
         return done(hits
-          ? `${hits}/${times} hits, then ${name} kept its distance until time ran out`
+          ? `${hits}/${of()} hits, then ${name} kept its distance until time ran out`
           : `couldn't catch ${name} — it kept its distance`)
       }
       // res === 'reached'
@@ -387,21 +480,21 @@ async function fightOne(entity, times, ctx) {
 
     // Owner defense: before the next swing at this mob (it already took one
     // and is after her now), give a second hostile near her one hit too.
-    if (i > 0 && ctx.ownerMode) {
+    if (hits > 0 && ctx.ownerMode) {
       const tagged = await tagOther(entityId, ctx)
-      if (signal?.aborted) return done(`aborted after ${hits}/${times} hits on ${name}`)
+      if (signal?.aborted) return done(`aborted after ${hits}/${of()} hits on ${name}`)
       if (tagged) {
         const waited = await sleepOrAbort(SWING_DELAY_MS, signal)
-        if (waited === 'aborted') return done(`aborted after ${hits}/${times} hits on ${name}`)
+        if (waited === 'aborted') return done(`aborted after ${hits}/${of()} hits on ${name}`)
         if (died()) return done(goneResult(name, hits, true))
         live = bot.entities?.[entityId]
         if (!live) return done(goneResult(name, hits, died()))
         const d2 = bot.entity?.position?.distanceTo?.(live.position)
         if (typeof d2 === 'number' && d2 > REACH) {
-          const res = await pursueUntilInReach(bot, entityId, REACH, startedAt + timeoutMs, signal)
-          if (res === 'aborted') return done(`aborted after ${hits}/${times} hits on ${name}`)
+          const res = await pursueUntilInReach(bot, entityId, REACH, deadline, signal)
+          if (res === 'aborted') return done(`aborted after ${hits}/${of()} hits on ${name}`)
           if (res === 'gone') return done(goneResult(name, hits, died()))
-          if (res === 'timeout') return done(`${hits}/${times} hits, then ${name} kept its distance until time ran out`)
+          if (res === 'timeout') return done(`${hits}/${of()} hits, then ${name} kept its distance until time ran out`)
           live = bot.entities?.[entityId]
           if (!live) return done(goneResult(name, hits, died()))
         }
@@ -411,13 +504,13 @@ async function fightOne(entity, times, ctx) {
     // Stop trading hits once this fight has brought her to critical health.
     const hp = bot.health
     if (mobTarget && Number.isFinite(hp) && hp <= CRITICAL_HP && hp < startHp) {
-      return done(`${hits}/${times} hits on ${name}, then stopped: you are down to ${Math.round(hp)} health. ${CRITICAL_ADVICE}`)
+      return done(`${hits}/${of()} hits on ${name}, then stopped: you are down to ${Math.round(hp)} health. ${CRITICAL_ADVICE}`)
     }
     // Re-equip before every swing: auto-eat or a placed block may have
     // changed the hand since the first one (no-op when already held).
     if (mobTarget && !bot.autoEat?.isEating) {
       try { await equipBestWeapon(bot) } catch {}
-      if (signal?.aborted) return done(hits ? `aborted after ${hits}/${times} hits on ${name}` : 'aborted')
+      if (signal?.aborted) return done(hits ? `aborted after ${hits}/${of()} hits on ${name}` : 'aborted')
     }
 
     try {
@@ -426,28 +519,25 @@ async function fightOne(entity, times, ctx) {
       noteCombat(bot)
       bot.swingArm?.()
       hits++
+      ctx.used++
       // Refresh the PvP opponent lock on every swing so the reflex keeps
       // kiting this player through the exchange (decays ~10s after the last).
       if (isPlayerTarget && bot._seiPvp) bot._seiPvpOpponent = { id: entityId, at: Date.now() }
     } catch (err) {
       const r = reason(err)
       return done(hits
-        ? `${hits}/${times} hits then attack failed (${name}): ${r ?? 'unknown'}`
+        ? `${hits}/${of()} hits then attack failed (${name}): ${r ?? 'unknown'}`
         : (r ? `attack failed (${name}): ${r}` : `attack failed (${name})`))
     }
 
-    if (i < times - 1) {
+    if (ctx.used < ctx.budget) {
       const waited = await sleepOrAbort(SWING_DELAY_MS, signal)
-      if (waited === 'aborted') return done(`aborted after ${hits}/${times} hits on ${name}`)
+      if (waited === 'aborted') return done(`aborted after ${hits}/${of()} hits on ${name}`)
     }
   }
 
   // A spar against a player is a running exchange, not a completed task: frame
   // the result so the model keeps fighting instead of narrating an ending.
-  // The last swing can be the killing one: give the death packet a moment
-  // so a kill is not reported as "still alive".
-  if (!isPlayerTarget && !died()) await sleepOrAbort(DEATH_PACKET_WAIT_MS, signal)
-  if (!isPlayerTarget && (died() || !bot.entities?.[entityId])) return done(goneResult(name, hits, died()))
   if (isPlayerTarget) return done(`attacked ${name} ${hits}× — they're still standing and the spar is still ON; keep it going (attack again, reposition, trash-talk) until they say stop`)
   return done(`attacked ${name} ${hits}× (target still alive)${weakWeaponNote(bot)}`)
 }

@@ -308,6 +308,11 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
   const stuckPromise = new Promise((resolve) => { resolveStuck = resolve })
   const onPathReset = (reason) => {
     if (reason !== 'stuck' || settled) return
+    // 261019 (pass 19): only resets of OUR route count. While a resumable walk
+    // waits out a fight, the fight's own pursuit goal re-plans and gets stuck
+    // on the mob; those resets said "stuck at ..." for a walk on open ground.
+    const current = bot.pathfinder?.goal
+    if (current !== undefined && current !== goal) return
     stuckResets++
     if (stuckResets >= STUCK_RESETS_TO_GIVE_UP) {
       settled = true

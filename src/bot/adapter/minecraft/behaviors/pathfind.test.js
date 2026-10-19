@@ -177,6 +177,26 @@ describe('goTo stuck bail (261011)', () => {
     expect(bot.listenerCount('path_reset')).toBe(0)
   })
 
+  // 261019 (pass 19): a resumable walk waiting out a fight heard the fight's
+  // own pursuit getting stuck on the mob, and gave up on open ground.
+  it('ignores stuck resets while another goal holds the pathfinder', async () => {
+    vi.useFakeTimers()
+    try {
+      const bot = makeEmitterBot()
+      const pursuit = { name: 'GoalFollow' }
+      let current
+      Object.defineProperty(bot.pathfinder, 'goal', { get: () => current, configurable: true })
+      bot.pathfinder.goto = vi.fn(async (g) => { current = g; await new Promise(() => {}) })
+      const p = goTo(bot, 10, 0, 10, 1, 1000)
+      current = pursuit
+      for (let i = 0; i < STUCK_RESETS_TO_GIVE_UP; i++) bot.emit('path_reset', 'stuck')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await p).toBe('timeout')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('one stuck reset is not enough to give up', async () => {
     vi.useFakeTimers()
     try {

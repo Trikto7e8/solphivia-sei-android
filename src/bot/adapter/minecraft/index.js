@@ -19,6 +19,8 @@ import { sessionActionStats, classifyActionOutcome } from '../../brain/actionSta
 import { createSnapshotComposer } from './observers/snapshot.js'
 import { getProgression as readProgression } from './observers/progression.js'
 import { setWorldPaused } from './behaviors/pause.js'
+import { continueAttack } from './behaviors/attack.js'
+import { staleAttackerText } from './observers/staleAttacker.js'
 import { minecraftVocabulary } from './vocabulary.js'
 import { closeContainerSession } from './behaviors/container.js'
 import { closeFurnaceSession } from './behaviors/furnace.js'
@@ -172,7 +174,9 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false, act
     capabilityParagraph: () => capabilityParagraph(config?.vision?.mode),
     actionRules: () => actionRules(config?.vision?.mode),
     cuboidGrammar,
-    eventAddendum: (event, data) => eventAddendum(event, data, config?.vision?.mode),
+    // 261019: an attack event whose mob died or left view before this turn
+    // gets plain "it is gone" text instead of "attack it now".
+    eventAddendum: (event, data) => staleAttackerText(bot, event, data) ?? eventAddendum(event, data, config?.vision?.mode),
     cantReachNudge,
     // 261013: item, block and mob names for the brain's repeat note
     // (vocabulary.js), so it never names the job as a habit.
@@ -269,6 +273,10 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false, act
     progressActions: (name, args) => name === 'build' || name === 'gather' || (name === 'dig' && !!args?.to),
     visionActions: ['look'],
     prefilterToolBatch,
+    // 261019 (pass 18): attackEntity again on the fight already running
+    // tops it up instead of restarting it (behaviors/attack.js).
+    continueRunningAction: (running, use) => continueAttack(bot, running, use),
+    fightActions: ['attackEntity'],
     postProcessToolBatch: (toolUses, results, loopState) =>
       postProcessToolBatch(toolUses, results, loopState, cantReachNudge),
     // give hands items over; its success line starts "gave N item to ...".

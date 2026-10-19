@@ -124,7 +124,7 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
     if (!payload) return
     try {
       handlers.onAttacked?.({
-        attacker: payload.threat ?? null,
+        attacker: payload.entity ?? payload.threat ?? null,
         attackerLabel: payload.threatLabel
           ?? payload.threat?.name
           ?? 'a threat',

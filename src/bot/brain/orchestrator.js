@@ -3972,6 +3972,37 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 261019 (pass 18): the world tools in a batch that only continue the
+   * running action, as Map<tool_use_id, result text>. Asks the adapter
+   * (continueRunningAction) per tool, and keeps the answers only when every
+   * world tool in the batch continues: a batch with new work replaces the
+   * running action anyway. Empty with stop, or when nothing is running.
+   */
+  function continuedToolUses(loop, actingTools, hasStop) {
+    const out = new Map()
+    const running = loop.inFlight
+    if (!running || hasStop || actingTools.length === 0) return out
+    if (caps.backgroundActions[running.name]) return out
+    for (const u of actingTools) {
+      let text = null
+      try {
+        text = caps.continueRunningAction({ name: running.name, input: running.input }, u)
+      } catch (err) {
+        logger.warn?.(`[sei/orch] continueRunningAction threw: ${err?.message ?? err}`)
+        text = null
+      }
+      if (typeof text !== 'string' || !text.trim()) return new Map()
+      out.set(u.id, text)
+    }
+    logger.info?.(`[sei/orch] ${[...out.keys()].length} call(s) continue the running ${running.name} instead of restarting it (loop=${loop.id})`)
+    return out
+  }
+
+  function continuedResult(use, continued) {
+    return { type: 'tool_result', tool_use_id: use.id, content: continued.get(use.id), is_error: false }
+  }
+
+  /**
    * 260514-gam: dispatch a single non-inline tool_use via startLongRunner,
    * register it on the loop as in_flight, stash _pendingActionUse /
    * _pendingResults / _pendingByteWarn / _pendingToolUses (the remaining
@@ -5094,11 +5125,23 @@ function maybeWarnByteCap(loop, warned) {
       // newSuspendingTools = every non-inline-metadata tool. INLINE_METADATA
       // is {remember, forget, end_loop}; everything else suspends the
       // loop via startLongRunner (260514-gam universal-inflight).
-      const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
-      if (newSuspendingTools.length > 0) loop._worldActed = true
+      const actingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+      // 261019 (pass 18): a world tool that only continues the running action
+      // (contract v2 continueRunningAction; Minecraft: attackEntity on the
+      // mob the running attack is fighting). Measured in the combat_night
+      // eval: 27 of her attacks in 10 runs were aborted by her own repeat
+      // call from a mid-action turn, on the same mob. Such a call takes no
+      // part in the R-gate below (nothing is aborted or started); its slot
+      // gets the adapter's line. Only when EVERY world tool in the batch
+      // continues: anything new replaces the running action as before (a
+      // top-up the adapter already made goes with it). Not with stop, which
+      // ends the running action.
+      const continued = continuedToolUses(loop, actingTools, hasStop)
+      const newSuspendingTools = actingTools.filter(u => !continued.has(u.id))
+      if (actingTools.length > 0) loop._worldActed = true
       // 261018 (pass 17): whether this turn only talked. The last turn's
       // value decides the idle hold at teardown (see _lastLoopTalkOnly).
-      loop._lastTurnTalkOnly = saySpokenThisTurn && newSuspendingTools.length === 0 && !hasStop
+      loop._lastTurnTalkOnly = saySpokenThisTurn && actingTools.length === 0 && !hasStop
       // 261012 (pass 5): a stop from the player starts the idle hold (see
       // playerStopAt); a player line answered with new work ends it. A bare
       // "stop" line counts even when the model answered it with end_loop,
@@ -5113,7 +5156,7 @@ function maybeWarnByteCap(loop, warned) {
         const line = loop._lastPlayerLine.text
         // The idle hold keeps its pre-pass-14 trigger: any action but unfollow
         // ends it. The stay note below lets stationary actions through.
-        if (newSuspendingTools.some(u => u.name !== 'unfollow') || setsGoal) playerStopAt = 0
+        if (actingTools.some(u => u.name !== 'unfollow') || setsGoal) playerStopAt = 0
         else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
         // 261018 (pass 15): her own choice to stop or unfollow in answer to
         // this line leaves the stay note for later turns (see stayNote). Not
@@ -5121,8 +5164,8 @@ function maybeWarnByteCap(loop, warned) {
         // not for a teammate's line (_lastPlayerLine is null for those). A
         // goal set from the line ends it here; a world action ends it in
         // startLongRunner, on any turn.
-        const calledUnfollow = newSuspendingTools.some(u => u.name === 'unfollow')
-        const newWork = newSuspendingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
+        const calledUnfollow = actingTools.some(u => u.name === 'unfollow')
+        const newWork = actingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
         if (newWork) {
           if (stayNote) logger.info?.(`[sei/orch] stay note cleared: new work from the player's line (loop=${loop.id})`)
           stayNote = null
@@ -5147,7 +5190,7 @@ function maybeWarnByteCap(loop, warned) {
         const line = loop._lastPlayerLine
         loop._unansweredNudgeText = actionsOnlyNudge
         logger.info?.(`[sei/orch] player line left unspoken (actions only) — re-delivering once (loop=${loop.id})`)
-        if (newSuspendingTools.length > 0) {
+        if (actingTools.length > 0) {
           try {
             reenqueue('sei:action_tick', { playerMessage: line.text, who: line.who, unanswered: true })
           } catch (err) {
@@ -5213,7 +5256,7 @@ function maybeWarnByteCap(loop, warned) {
       // action is cancelled and no completion turn is owed after it.
       // Not on a group call's line to someone else ("lyra stop"): that turn
       // is often silent on purpose (_groupVoiceLine, as the unanswered retry).
-      const unheededPlayerStop = !hasStop && !hasEndLoop && newSuspendingTools.length === 0 &&
+      const unheededPlayerStop = !hasStop && !hasEndLoop && actingTools.length === 0 &&
         _p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text, { wordsOnly: true })
       if (unheededPlayerStop) logger.info?.(`[sei/orch] player said stop and the reply started nothing: treating it as stop (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? loop._settleOwed ?? 'none'})`)
       // 261016: a reply that started nothing while an action runs (or just
@@ -5224,7 +5267,7 @@ function maybeWarnByteCap(loop, warned) {
       // unanswered-line nudge covers it, so no "you answered" claim here.
       // 261017 (pass 14): a list, oldest first. A later question answered in
       // words ("whats ur favorite block") used to replace the order before it.
-      if (_p1Trigger && (newSuspendingTools.length > 0 || hasStop || unheededPlayerStop)) loop._replyDeferred = null
+      if (_p1Trigger && (actingTools.length > 0 || hasStop || unheededPlayerStop)) loop._replyDeferred = null
       else if (_p1Trigger && !loop._groupVoiceLine && loop._spokeThisLoop && loop._lastPlayerLine?.text &&
                (loop.inFlight || loopAwaitsSettle(loop))) {
         const text = loop._lastPlayerLine.text
@@ -5271,6 +5314,7 @@ function maybeWarnByteCap(loop, warned) {
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
+          if (continued.has(u.id)) { results[i] = continuedResult(u, continued); continue }
           if (u.name === 'end_loop') {
             results[i] = { type: 'tool_result', tool_use_id: u.id, content: runningName ? `turn ended; ${runningName} keeps running` : 'turn ended', is_error: false }
             continue
@@ -5358,7 +5402,7 @@ function maybeWarnByteCap(loop, warned) {
 
       // Process tool_uses. Single-layer: every movement tool fires from the
       // same combined response — no separate movement layer.
-      const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
+      const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name) && !continued.has(u.id))
 
       // Contract v2 prefilterToolBatch: the adapter names the tool_uses in
       // this batch that must NOT execute and the result they get instead
@@ -5391,6 +5435,8 @@ function maybeWarnByteCap(loop, warned) {
           // result so the dispatch loop skips it and the batched-queue drain
           // never enqueues it — speech is resolved before any action runs.
           results[k] = sayResults.get(uk.id)
+        } else if (continued.has(uk.id)) {
+          results[k] = continuedResult(uk, continued)
         } else if (_prefilled.has(uk.id)) {
           const p = _prefilled.get(uk.id)
           results[k] = {
@@ -5995,6 +6041,16 @@ function maybeWarnByteCap(loop, warned) {
       // whose reaction call is still parked: tearing it down would discard
       // the reaction AND abort the action the delivery path exists to keep.
       if (loop._midActionAttackIsHit) return true
+      // 261019 (pass 18): and while the running action IS the fight (the
+      // adapter's fightActions; Minecraft: attackEntity), a hit that lands
+      // during a mid-action call (a player line, a check-in) is part of
+      // that fight. Tearing the loop down here aborted the running attack
+      // and started a fresh reaction turn, which usually called the same
+      // attack again (combat_night eval: "aborted after 2/8 hits" with the
+      // mob still on her). Swallow it; the attack keeps swinging, and the
+      // next throttled hit reaches the loop through the mid-action delivery
+      // once this call settles.
+      if (loop.inFlight && caps.fightActions.has(loop.inFlight.name)) return true
       // Otherwise (attacked mid-task — gathering/digging/following): unblock now
       // so the queued P0 attack drives the existing teardown/reseed and the new
       // threat preempts the task. 261011: flagged so handleDispatch tears this

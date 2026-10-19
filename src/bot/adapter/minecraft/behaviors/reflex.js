@@ -489,6 +489,16 @@ export function startReflex(bot, config) {
         releaseStrafe()
         return
       }
+      // 261019 (pass 19): nor while an action's walk is moving her (a goTo,
+      // a pickup walk). The strafe looks at the mob every tick and runs
+      // after the pathfinder, so its yaw wins, and its "forward" once the
+      // mob fell 4 blocks behind walked her back to it: the walk circled the
+      // zombie until it gave up as "stuck" (pathing-repro hit_walk_goto, 3
+      // of 8). Walking on is the better dodge; she outpaces a zombie.
+      if (bot._seiActionActive > 0 && bot.pathfinder?.isMoving?.()) {
+        releaseStrafe()
+        return
+      }
       return doMeleeStrafe(threat)
     }
   }

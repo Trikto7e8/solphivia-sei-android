@@ -242,6 +242,23 @@ describe('startReflex pulse responses (no pathfinder goal contention)', () => {
     dispose()
   })
 
+  // 261019 (pass 19): the strafe's look + forward fought an action's walk
+  // and circled her around the zombie until the goTo gave up as stuck.
+  it('does not strafe while an action walk is moving her, and does when she stands', () => {
+    const bot = makeBot()
+    bot.entities[2] = { id: 2, name: 'zombie', position: { x: 3, y: 0, z: 0 } }
+    bot._seiActionActive = 1
+    let moving = true
+    bot.pathfinder.isMoving = () => moving
+    const dispose = startReflex(bot, cfg())
+    bot.emit('physicsTick')
+    expect(['left', 'right', 'forward', 'back'].some((s) => bot._controls[s] === true)).toBe(false)
+    moving = false
+    bot.emit('physicsTick')
+    expect(['left', 'right'].some((s) => bot._controls[s] === true)).toBe(true)
+    dispose()
+  })
+
   it('releases leftover strafe control states once the melee mob is gone', () => {
     const bot = makeBot()
     bot.entities[2] = { id: 2, name: 'zombie', position: { x: 3, y: 0, z: 0 } }

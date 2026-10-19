@@ -10,6 +10,9 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 // mineflayer-pathfinder resets a path after 3.5s without reaching the next
 // node and then re-plans the SAME path, so a wedged bot loops until timeout.
 export const STUCK_RESETS_TO_GIVE_UP = 2
+// mineflayer-pathfinder resets the path as 'stuck' after this long without
+// reaching a new node.
+const PATH_STUCK_WINDOW_MS = 3500
 
 /**
  * Blocks a walk may spend as scaffolding (towers, bridges, climbOut pillars):
@@ -313,6 +316,10 @@ export async function goTo(bot, x, y, z, range = 1, timeoutMs = 12000, signal = 
     // on the mob; those resets said "stuck at ..." for a walk on open ground.
     const current = bot.pathfinder?.goal
     if (current !== undefined && current !== goal) return
+    // Nor a reset whose stall window held a fight: swinging back at a mob
+    // pins the body for a moment, which says nothing about the route.
+    const fought = bot._seiLastCombatAt
+    if (Number.isFinite(fought) && Date.now() - fought < PATH_STUCK_WINDOW_MS) return
     stuckResets++
     if (stuckResets >= STUCK_RESETS_TO_GIVE_UP) {
       settled = true

@@ -380,7 +380,13 @@ export function startCombat(bot, config) {
       try {
         // Zombies face their target — inverting their yaw is cheaper and more reliable
         // than computing ours from bot position (which may still be stale).
-        if (Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
+        // 261019 (pass 19): not while an action's walk is moving the body
+        // (a goTo the player asked for, resumed through the fight). The
+        // pathfinder steers by yaw, so turning to the mob every 250ms walked
+        // her sideways off the route until the walk gave up as "stuck".
+        // She still swings at a mob in reach.
+        const walking = !_pursue && bot._seiActionActive > 0 && bot.pathfinder?.isMoving?.()
+        if (!walking && Number.isFinite(live.yaw)) bot.look(live.yaw + Math.PI, 0, true)
         bot.attack(live)
         bot.swingArm()
         noteCombat(bot)

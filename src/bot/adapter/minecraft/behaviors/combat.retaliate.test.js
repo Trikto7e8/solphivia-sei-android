@@ -71,4 +71,30 @@ describe('retaliation keeps the walk and the follow target', () => {
     expect(bot.pathfinder.stop).toHaveBeenCalledTimes(1)
     expect(startFollow).toHaveBeenCalledWith(bot, cfg, { keepMovements: false })
   })
+
+  // A goTo resumed through the fight: turning to the mob every 250ms fought
+  // the pathfinder's steering and walked her off the route (pathing-repro
+  // hit_walk_goto ended "stuck" 12 blocks off the line).
+  it('swings without turning while an action walk is moving her', () => {
+    vi.useFakeTimers()
+    const bot = makeBot()
+    startCombat(bot, cfg)
+    bot._seiActionActive = 1
+    bot.pathfinder.isMoving = () => true
+    bot.emit('entityHurt', bot.entity, bot._zombie)
+    vi.advanceTimersByTime(600)
+    expect(bot.attack).toHaveBeenCalled()
+    expect(bot.look).not.toHaveBeenCalled()
+  })
+
+  it('still turns to the mob when standing still', () => {
+    vi.useFakeTimers()
+    const bot = makeBot()
+    startCombat(bot, cfg)
+    bot._seiActionActive = 1
+    bot.pathfinder.isMoving = () => false
+    bot.emit('entityHurt', bot.entity, bot._zombie)
+    vi.advanceTimersByTime(600)
+    expect(bot.look).toHaveBeenCalled()
+  })
 })

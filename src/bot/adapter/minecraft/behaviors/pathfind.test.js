@@ -197,6 +197,20 @@ describe('goTo stuck bail (261011)', () => {
     }
   })
 
+  it('ignores a stuck reset whose stall window held a fight', async () => {
+    vi.useFakeTimers()
+    try {
+      const bot = makeEmitterBot()
+      const p = goTo(bot, 10, 0, 10, 1, 1000)
+      bot._seiLastCombatAt = Date.now() - 1000
+      for (let i = 0; i < STUCK_RESETS_TO_GIVE_UP; i++) bot.emit('path_reset', 'stuck')
+      await vi.advanceTimersByTimeAsync(1000)
+      expect(await p).toBe('timeout')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('one stuck reset is not enough to give up', async () => {
     vi.useFakeTimers()
     try {

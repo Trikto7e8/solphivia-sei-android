@@ -56,6 +56,11 @@ export function droppedItemName(entity) {
 // death (a creeper that exploded, a despawn, out of range) is kept the same
 // way with died:false.
 const RECENT_LOSS_MS = 30_000
+// Entity types that are never a mob she fought: dropped items, arrows, xp,
+// boats and the like ('other' and 'projectile' in minecraft-data 1.21,
+// 'object'/'orb'/'global' in older tables). Without this every item pickup
+// and every arrow in a skeleton fight was kept as a "disappeared" entry.
+const NOT_A_MOB = new Set(['object', 'orb', 'global', 'other', 'projectile', 'player'])
 
 export function trackEntityDeaths(bot) {
   if (!bot || bot._seiDeadEntityIds) return
@@ -78,7 +83,7 @@ export function trackEntityDeaths(bot) {
     bot.on?.('entityGone', (e) => {
       if (e?.id == null) return
       const dead = ids.delete(e.id) || recent.get(e.id)?.died === true
-      if (!dead && !e.username && e.type !== 'object' && e.type !== 'orb') note(e, false)
+      if (!dead && !e.username && !NOT_A_MOB.has(e.type)) note(e, false)
     })
   } catch { /* a stub bot without events: nothing is ever marked dead */ }
 }

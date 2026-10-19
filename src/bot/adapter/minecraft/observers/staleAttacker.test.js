@@ -45,6 +45,12 @@ describe('recent deaths (entities.js)', () => {
     expect(recentLossByName(bot, 'creeper')).toMatchObject({ id: 9, died: false })
     bot.emit('entityGone', { id: 10, name: 'item', type: 'object', position: new Vec3(1, 64, 0) })
     expect(recentLossByName(bot, 'item')).toBeNull()
+    // minecraft-data 1.21 types: items are 'other', arrows 'projectile'.
+    bot.emit('entityGone', { id: 11, name: 'item', type: 'other', position: new Vec3(1, 64, 0) })
+    bot.emit('entityGone', { id: 12, name: 'arrow', type: 'projectile', position: new Vec3(1, 64, 0) })
+    expect(recentLossByName(bot, 'item')).toBeNull()
+    expect(recentLossByName(bot, 'arrow')).toBeNull()
+    expect(bot._seiRecentLosses.size).toBe(1)
   })
 
   it('a death far from her does not count for the name lookup', () => {

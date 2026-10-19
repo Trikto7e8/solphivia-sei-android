@@ -231,6 +231,85 @@ describe('the window between dying and the death turn (pass 19)', () => {
     expect(reenqueue).toHaveBeenCalledWith('sei:chat_received', line, 1)
   })
 
+  // 261020 (review of pass 19): the turn discarded at the death must not take
+  // the player's line with it.
+  it('the line a discarded turn was answering is re-sent after the death turn', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([
+      (args) => new Promise((_, rej) => {
+        args.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e) }, { once: true })
+      }),
+      { text: '', toolUses: [] },
+    ])
+    const reenqueue = vi.fn()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue, _anthropicOverride: provider })
+    const line = chat('watch out')
+    const p = orch.handleDispatch('sei:chat_received', line)
+    await flush()
+    orch.noteDeath()
+    await p
+    expect(orch.currentLoop).toBeNull()
+    expect(reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')).toHaveLength(0)
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    const resent = reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')
+    expect(resent).toHaveLength(1)
+    expect(resent[0][1]).toBe(line)
+    expect(resent[0][2]).toBe(1)
+  })
+
+  it('a line delivered mid-action whose reply was being written is re-sent after the death turn', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'tu1', name: 'follow', input: { player: 'Steve' } }] },
+      (args) => new Promise((_, rej) => {
+        args.signal.addEventListener('abort', () => { const e = new Error('aborted'); e.name = 'AbortError'; rej(e) }, { once: true })
+      }),
+      { text: '', toolUses: [] },
+    ])
+    const reenqueue = vi.fn()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('follow me'))
+    expect(orch.currentLoop?.inFlight?.name).toBe('follow')
+    const line = chat('grab the bread')
+    const p = orch.handleDispatch('sei:chat_received', line)
+    await flush()
+    expect(provider.calls.length).toBe(2)
+    orch.noteDeath()
+    await p
+    // The death lands with the follow loop still open: it is torn down and
+    // the death re-fired; the held line must wait for that re-fired turn.
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    expect(orch.currentLoop).toBeNull()
+    expect(reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')).toHaveLength(0)
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    const resent = reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')
+    expect(resent).toHaveLength(1)
+    expect(resent[0][1]).toBe(line)
+  })
+
+  it('a line that lands mid-action in the window is held, not folded into the dying loop', async () => {
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'tu1', name: 'follow', input: { player: 'Steve' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const reenqueue = vi.fn()
+    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('follow me'))
+    expect(orch.currentLoop?.inFlight?.name).toBe('follow')
+    orch.noteDeath()
+    const line = chat('noooo sui')
+    await orch.handleDispatch('sei:chat_received', line)
+    expect(provider.calls.length).toBe(1)
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    expect(reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')).toHaveLength(0)
+    expect(reenqueue.mock.calls.filter((c) => c[0] === 'sei:death')).toHaveLength(1)
+    await orch.handleDispatch('sei:death', { pos: null, lost: [] })
+    const resent = reenqueue.mock.calls.filter((c) => c[0] === 'sei:chat_received')
+    expect(resent).toHaveLength(1)
+    expect(resent[0][1]).toBe(line)
+  })
+
   it('an idle tick in the window opens no turn', async () => {
     const { adapter } = makeAdapter()
     const provider = makeProvider([{ text: '', toolUses: [] }])

@@ -2618,8 +2618,11 @@ function maybeWarnByteCap(loop, warned) {
       stayNote = null
     }
     // 261019 (pass 19): the death turn is here, so turns may run again, and
-    // player lines that arrived in between follow it.
-    if (event === 'sei:death') {
+    // player lines that arrived in between follow it. Only once the death
+    // turn really opens: with a loop still open, the branch below tears it
+    // down and re-fires sei:death, and lines released now would be answered
+    // ahead of the death turn (or be torn down by it).
+    if (event === 'sei:death' && currentLoop === null) {
       deathPending = false
       flushDeathHeld()
     }
@@ -2635,9 +2638,11 @@ function maybeWarnByteCap(loop, warned) {
     const isIdle     = event === 'idle' || event === 'sei:idle'
     // 261019 (pass 19): a player line between her death and the death turn
     // would open a turn that runIterations skips, losing the line. Hold it
-    // and re-send it right after the death turn. (With a loop open, the
-    // interrupt path already keeps it in pendingInterrupt.)
-    if (deathPending && isPlayerChat && currentLoop === null) {
+    // and re-send it right after the death turn. Also with a loop open: a
+    // loop suspended on an action would fold it in through handleActionTick,
+    // whose turn runIterations skips too, and the death teardown then drops
+    // the loop with the line in it.
+    if (deathPending && (isPlayerChat || event === 'player_chat' || event === 'sei:chat_received')) {
       logger.info?.('[sei/orch] player line held until the death turn')
       deathHeld.push({ event, data })
       return
@@ -2780,7 +2785,16 @@ function maybeWarnByteCap(loop, warned) {
         // the mid-action frame now asks keep-or-switch evenly, so the model
         // reads the line in whatever language it came in.
         if (currentLoop.inFlight && !currentLoop._llmCallInFlight && !currentLoop.isTerminal) {
-          await handleActionTick(currentLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          // 261020 (pass 19): if she dies while the reply to this line is
+          // being written, noteDeath holds the line for after the death turn.
+          const tickLoop = currentLoop
+          const delivering = { event, data }
+          tickLoop._deliveringLine = delivering
+          try {
+            await handleActionTick(tickLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          } finally {
+            if (tickLoop._deliveringLine === delivering) tickLoop._deliveringLine = null
+          }
           return
         }
         // 260611: ACCUMULATE, don't overwrite — mirrors handlePreempt's
@@ -4938,6 +4952,7 @@ function maybeWarnByteCap(loop, warned) {
       // 260708: the trigger has now been seen and answered by at least one
       // model response — an attack teardown no longer needs to preserve it.
       loop._respondedOnce = true
+      loop._deliveringLine = null
       // 260909: a server-side web search that ran long stops with
       // `pause_turn`; the assistant content (kept intact above, server blocks
       // included) goes back as-is and the model is called again to finish.
@@ -6083,6 +6098,25 @@ function maybeWarnByteCap(loop, warned) {
     }, DEATH_PENDING_MAX_MS)
     t.unref?.()
     const loop = currentLoop
+    // A player line whose reply was still being written is not lost with the
+    // turn: hold it for after the death turn, like a line that arrives now.
+    // (_respondedOnce: a reply already went out, or the line is now held, so
+    // no other teardown path re-sends it.)
+    if (loop && !loop._respondedOnce) {
+      const trig = loop._triggerData
+      const trigText = String(trig?.text ?? trig?.message ?? '').trim()
+      if (trigText && trig?.playerSpoke === true && classifyChatEvent(loop._triggerEvent, trig).isPlayerChat) {
+        loop._respondedOnce = true
+        deathHeld.push({ event: loop._triggerEvent, data: trig })
+        logger.info?.(`[sei/orch] unanswered player line held until the death turn (loop=${loop.id})`)
+      }
+    }
+    // Same for a line delivered mid-action whose reply was being written.
+    if (loop && loop._deliveringLine) {
+      deathHeld.push(loop._deliveringLine)
+      loop._deliveringLine = null
+      logger.info?.(`[sei/orch] mid-action player line held until the death turn (loop=${loop.id})`)
+    }
     if (loop && loop._llmCallInFlight) {
       try { loop.abortController.abort() } catch {}
     }

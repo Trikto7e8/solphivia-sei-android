@@ -2,8 +2,9 @@
 import pkg from 'mineflayer-pathfinder'
 import { resolveEntity, isStaleHandle, nearestNamedEntityBeyondBound, handleForEntity, pickHostileForOwner, ownerEntityOf } from '../observers/targeting.js'
 import { HOSTILE_MOBS, NO_AUTO_ENGAGE } from './hostiles.js'
-import { isDeadEntity, recentDeathByName } from '../observers/entities.js'
+import { isDeadEntity, recentLossByName } from '../observers/entities.js'
 import { reason } from '../../../brain/errStrings.js'
+import { staleGoneWhy } from '../../../brain/promptLibrary.js'
 import { equipBestWeapon } from './weaponSelect.js'
 import { companionMovements } from './pathfind.js'
 import { followMovements } from './follow.js'
@@ -153,17 +154,19 @@ export function fartherNote(asked, bot) {
   return `. The nearest ${asked} is ${Math.round(far.distance)} blocks away at ${at}. ${how}`
 }
 
-// 261019 (pass 18): when a mob of that name died next to her moments ago,
-// say so. In the combat_night eval most "no zombie within 16 blocks" results
-// came from a turn written while the zombie was alive (her own swings, the
-// chained fight or the player finished it during the model call), and the
-// bare result read as a failed attack.
+// 261019 (pass 18): when a mob of that name died or vanished next to her
+// moments ago, say so. In the combat_night eval most "no zombie within 16
+// blocks" results came from a turn written while the mob was there (her own
+// swings, the chained fight or the player finished it during the model call,
+// or a creeper blew up), and the bare result read as a failed attack.
 export function justDiedNote(asked, bot) {
   let d = null
-  try { d = recentDeathByName(bot, asked) } catch { d = null }
+  try { d = recentLossByName(bot, asked) } catch { d = null }
   if (!d) return ''
   const s = Math.max(1, Math.round(d.age / 1000))
-  return `: the ${asked} that was near you died ${s}s ago, before this call, so that fight is already over`
+  return d.died
+    ? `: the ${asked} that was near you died ${s}s ago, before this call, so that fight is already over`
+    : `: the ${asked} that was near you disappeared ${s}s ago, before this call (${staleGoneWhy(asked)}), so there is nothing there to hit`
 }
 
 export async function attackEntityAction(args, bot, config) {

@@ -4,7 +4,7 @@
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { EventEmitter } from 'node:events'
 import { Vec3 } from 'vec3'
-import { trackEntityDeaths, msSinceDeath, recentDeathByName } from './entities.js'
+import { trackEntityDeaths, msSinceDeath, recentLossByName } from './entities.js'
 import { staleAttackerText } from './staleAttacker.js'
 import { justDiedNote, attackEntityAction } from '../behaviors/attack.js'
 
@@ -29,18 +29,28 @@ describe('recent deaths (entities.js)', () => {
     expect(bot._seiDeadEntityIds.has(7)).toBe(false)
     vi.advanceTimersByTime(2000)
     expect(msSinceDeath(bot, 7)).toBe(2000)
-    expect(recentDeathByName(bot, 'Zombie')).toEqual({ id: 7, age: 2000 })
-    expect(recentDeathByName(bot, 'skeleton')).toBeNull()
+    expect(recentLossByName(bot, 'Zombie')).toEqual({ id: 7, age: 2000, died: true })
+    expect(recentLossByName(bot, 'skeleton')).toBeNull()
     vi.advanceTimersByTime(9000)
-    expect(recentDeathByName(bot, 'zombie')).toBeNull() // past the 10s name window
+    expect(recentLossByName(bot, 'zombie')).toBeNull() // past the 10s name window
     vi.advanceTimersByTime(20000)
     expect(msSinceDeath(bot, 7)).toBeNull()
+  })
+
+  it('a mob that left without dying is kept as gone, not dead', () => {
+    const bot = makeBot()
+    const c = { id: 9, name: 'creeper', type: 'hostile', position: new Vec3(3, 64, 0) }
+    bot.emit('entityGone', c)
+    expect(msSinceDeath(bot, 9)).toBeNull()
+    expect(recentLossByName(bot, 'creeper')).toMatchObject({ id: 9, died: false })
+    bot.emit('entityGone', { id: 10, name: 'item', type: 'object', position: new Vec3(1, 64, 0) })
+    expect(recentLossByName(bot, 'item')).toBeNull()
   })
 
   it('a death far from her does not count for the name lookup', () => {
     const bot = makeBot()
     bot.emit('entityDead', zombie(8, 40))
-    expect(recentDeathByName(bot, 'zombie')).toBeNull()
+    expect(recentLossByName(bot, 'zombie')).toBeNull()
   })
 })
 
@@ -62,7 +72,17 @@ describe('staleAttackerText', () => {
     const z = zombie()
     z.isValid = false
     const t = staleAttackerText(bot, 'sei:attacked', { attacker: z, attackerLabel: 'zombie', attackerKind: 'mob' })
-    expect(t).toMatch(/^A zombie went for you a moment ago, and it has gone out of sight since then/)
+    expect(t).toBe('A zombie went for you a moment ago, and it is not there anymore (it despawned or moved out of range), so there is nothing to attack for it. Check nearby entities in your snapshot for anything still there before you act, and if you speak, talk about how things are now.')
+  })
+
+  it('a creeper heads-up after it blew up says it most likely exploded', () => {
+    const bot = makeBot()
+    const c = { id: 9, name: 'creeper', type: 'hostile', position: new Vec3(3, 64, 0), isValid: true }
+    const data = { attacker: c, attackerLabel: 'creeper', attackerKind: 'reflex', noticed: true, count: 1 }
+    expect(staleAttackerText(bot, 'sei:attacked', data)).toBeNull()
+    bot.emit('entityGone', c)
+    c.isValid = false
+    expect(staleAttackerText(bot, 'sei:attacked', data)).toMatch(/^A creeper went for you a moment ago, and it is not there anymore \(it most likely exploded\)/)
   })
 
   it('still works after the corpse left the entity table', () => {
@@ -95,6 +115,13 @@ describe('attackEntity no-target result names a mob that just died (261019)', ()
     expect(justDiedNote('zombie', bot)).toBe(': the zombie that was near you died 1s ago, before this call, so that fight is already over')
     const r = await attackEntityAction({ entity: 'zombie' }, bot, {})
     expect(r).toBe('no zombie within 16 blocks to attack: the zombie that was near you died 1s ago, before this call, so that fight is already over')
+  })
+
+  it('says a creeper near her most likely exploded', async () => {
+    const bot = makeBot()
+    bot.emit('entityGone', { id: 9, name: 'creeper', type: 'hostile', position: new Vec3(3, 64, 0) })
+    bot.nearestEntity = () => null
+    expect(await attackEntityAction({ entity: 'creeper' }, bot, {})).toBe('no creeper within 16 blocks to attack: the creeper that was near you disappeared 1s ago, before this call (it most likely exploded), so there is nothing there to hit')
   })
 
   it('is unchanged when nothing of that name died', async () => {

@@ -49,28 +49,37 @@ export function droppedItemName(entity) {
 // on the bot so every observer (snapshot, aggro tally, name targeting, the
 // owner-threat watch) agrees on what is still alive.
 //
-// 261019 (pass 18): deaths are also kept for RECENT_DEATH_MS after the corpse
+// 261019 (pass 18): deaths are also kept for RECENT_LOSS_MS after the corpse
 // is gone (id, name, where, when), so a turn that was written while the mob
 // was alive can be told it has died since (attackEntity's no-target result,
-// the stale attack-event text).
-const RECENT_DEATH_MS = 30_000
+// the stale attack-event text). A mob that left the entity table without a
+// death (a creeper that exploded, a despawn, out of range) is kept the same
+// way with died:false.
+const RECENT_LOSS_MS = 30_000
 
 export function trackEntityDeaths(bot) {
   if (!bot || bot._seiDeadEntityIds) return
   const ids = new Set()
   bot._seiDeadEntityIds = ids
   const recent = new Map()
-  bot._seiRecentDeaths = recent
+  bot._seiRecentLosses = recent
+  const note = (e, died) => {
+    const now = Date.now()
+    for (const [id, d] of recent) if (now - d.at > RECENT_LOSS_MS) recent.delete(id)
+    const p = e.position
+    recent.set(e.id, { name: e.name ?? null, at: now, died, pos: p ? { x: p.x, y: p.y, z: p.z } : null })
+  }
   try {
     bot.on?.('entityDead', (e) => {
       if (e?.id == null) return
       ids.add(e.id)
-      const now = Date.now()
-      for (const [id, d] of recent) if (now - d.at > RECENT_DEATH_MS) recent.delete(id)
-      const p = e.position
-      recent.set(e.id, { name: e.name ?? null, at: now, pos: p ? { x: p.x, y: p.y, z: p.z } : null })
+      note(e, true)
     })
-    bot.on?.('entityGone', (e) => { if (e?.id != null) ids.delete(e.id) })
+    bot.on?.('entityGone', (e) => {
+      if (e?.id == null) return
+      const dead = ids.delete(e.id) || recent.get(e.id)?.died === true
+      if (!dead && !e.username && e.type !== 'object' && e.type !== 'orb') note(e, false)
+    })
   } catch { /* a stub bot without events: nothing is ever marked dead */ }
 }
 
@@ -78,21 +87,21 @@ export function trackEntityDeaths(bot) {
  * When the server reported this entity id dead within `withinMs`, the age of
  * that death in ms; otherwise null. Keeps working after the corpse is gone.
  */
-export function msSinceDeath(bot, id, withinMs = RECENT_DEATH_MS) {
-  const d = id == null ? null : bot?._seiRecentDeaths?.get(id)
-  if (!d) return null
+export function msSinceDeath(bot, id, withinMs = RECENT_LOSS_MS) {
+  const d = id == null ? null : bot?._seiRecentLosses?.get(id)
+  if (!d?.died) return null
   const age = Date.now() - d.at
   return age <= withinMs ? age : null
 }
 
 /**
- * The most recent death of a mob with this name within `withinMs`, and within
- * `maxDist` blocks of her when both positions are known. Returns { id, age }
- * or null.
+ * The most recent mob with this name that died or left the entity table
+ * within `withinMs`, within `maxDist` blocks of her when both positions are
+ * known. Returns { id, age, died } or null.
  */
-export function recentDeathByName(bot, name, { withinMs = 10_000, maxDist = 16 } = {}) {
+export function recentLossByName(bot, name, { withinMs = 10_000, maxDist = 16 } = {}) {
   const want = String(name ?? '').toLowerCase()
-  const recent = bot?._seiRecentDeaths
+  const recent = bot?._seiRecentLosses
   if (!want || !recent) return null
   const me = bot?.entity?.position
   const now = Date.now()
@@ -105,7 +114,7 @@ export function recentDeathByName(bot, name, { withinMs = 10_000, maxDist = 16 }
       const dist = Math.hypot(d.pos.x - me.x, d.pos.y - me.y, d.pos.z - me.z)
       if (!(dist <= maxDist)) continue
     }
-    if (!best || age < best.age) best = { id, age }
+    if (!best || age < best.age) best = { id, age, died: d.died }
   }
   return best
 }

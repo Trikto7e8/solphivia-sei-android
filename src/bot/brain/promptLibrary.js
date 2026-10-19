@@ -439,11 +439,14 @@ export const DEFEND_ADDENDUM = (label, data) => {
 // now", and the call came back "no zombie within 16 blocks". The adapter swaps
 // in this text when the mob is gone at the time the turn is written. `{label}`
 // (the mob), `{who}` ("you" or the player's name), `{fate}` (what became of it).
-export const STALE_ATTACKER_ADDENDUM_TEXT = `A {label} went for {who} a moment ago, and it {fate} since then, so there is nothing to attack for it. Check nearby entities in your snapshot for anything still there before you act, and if you speak, talk about how things are now.`
-export const STALE_ATTACKER_DIED = 'has died'
-export const STALE_ATTACKER_GONE = 'has gone out of sight'
+export const STALE_ATTACKER_ADDENDUM_TEXT = `A {label} went for {who} a moment ago, and {fate}, so there is nothing to attack for it. Check nearby entities in your snapshot for anything still there before you act, and if you speak, talk about how things are now.`
+export const STALE_ATTACKER_DIED = 'it has died since then'
+export const STALE_ATTACKER_GONE = 'it is not there anymore ({why})'
+export const STALE_GONE_CREEPER = 'it most likely exploded'
+export const STALE_GONE_OTHER = 'it despawned or moved out of range'
+export const staleGoneWhy = (label) => (label === 'creeper' ? STALE_GONE_CREEPER : STALE_GONE_OTHER)
 export const staleAttackerAddendum = (label, who, died) =>
-  fillTemplate(STALE_ATTACKER_ADDENDUM_TEXT, { label, who, fate: died ? STALE_ATTACKER_DIED : STALE_ATTACKER_GONE })
+  fillTemplate(STALE_ATTACKER_ADDENDUM_TEXT, { label, who, fate: died ? STALE_ATTACKER_DIED : fillTemplate(STALE_ATTACKER_GONE, { why: staleGoneWhy(label) }) })
 
 // Editable prose for the idle-tick framing (EVENT_GUIDANCE['sei:idle']). The
 // function computes the dynamic `{quiet}` (how long it's been quiet) and picks a

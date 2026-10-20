@@ -1209,6 +1209,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // and again when the give landed. That turn now gets the short check-in
   // form ('result'), only while her newest line is fresh, and once per line
   // per loop: a long gather does not re-quote the same line on every result.
+  // Idle seeds keep the light idle form (no quote). Quoting a fresh line on
+  // the seed was tried in this pass and is the pass 6a silence again: in the
+  // persona eval it raised silent items 7 -> 15 and misattributions 10 -> 21
+  // against pass 19, mostly on the idle and failed_action situations.
   // Only these result notes mark a line as noted. A reply turn's quote does
   // not: when the reply turn calls an action and no say() (the hello that
   // crossed theirs), the result turn after it is where the second hello
@@ -1219,32 +1223,6 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       const at = convoMemory.recentChat._internal.selfLines.at(-1)?.at
       return Number.isFinite(at) ? at : null
     } catch { return null }
-  }
-  const ownLineFresh = () => {
-    const at = newestOwnLineAt()
-    return at != null && Date.now() - at <= RESULT_REPEATS_FRESH_MS
-  }
-  // The seed's own_repeats note. A turn of her own (no player line) gets the
-  // quote only while her newest line is fresh: an idle tick 7 s after "dock
-  // better be sick" opened with it again in 5 of 8 probe runs. Without a
-  // fresh line it stays the light idle form (pass 6a: a quote on every idle
-  // tick made her go silent).
-  // Review fix: the seed quotes a given line once per session, not once per
-  // loop. Each idle tick is its own loop, so at the 5s agentic cadence the
-  // per-loop mark let the same line be quoted on every tick of its 45s
-  // window, which is the pass 6a pattern. An attack seed keeps the idle
-  // form: its fightToldSuffix already quotes her recent line (pass 17).
-  let _seedQuotedLineAt = null
-  function seedRepeatsText(loop, { playerMessageText, greetedTurn, attackTurn = false }) {
-    const at = newestOwnLineAt()
-    const quote = !attackTurn && ownLineFresh() && at !== _seedQuotedLineAt
-    const mode = playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : (quote ? 'result' : 'idle')
-    const t = ownRepeatsText(mode)
-    if (t && mode === 'result' && at != null) {
-      _seedQuotedLineAt = at
-      if (loop) loop._ownLinesNotedAt = at
-    }
-    return t
   }
   function resultRepeatsTail(loop) {
     const at = newestOwnLineAt()
@@ -3284,7 +3262,7 @@ function maybeWarnByteCap(loop, warned) {
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
-          ownRepeatsText: seedRepeatsText(loop, { playerMessageText, greetedTurn, attackTurn: isSafetyEvent }),
+          ownRepeatsText: ownRepeatsText(playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : 'idle'),
           playerMessageText,
           companions,
           frontierText: progFrontierText,

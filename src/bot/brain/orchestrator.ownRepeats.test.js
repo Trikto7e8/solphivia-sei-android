@@ -78,51 +78,23 @@ const REPLY_ASK = 'do not reuse a joke, comeback, greeting, offer or plan from y
 afterEach(() => { vi.restoreAllMocks() })
 
 describe('own_repeats wording by kind of turn', () => {
-  it('idle seed gets no quote once her line is old, a player line the full ask', async () => {
+  it('idle seed gets no quote, a player line the full ask', async () => {
     _setTickIntervalForTests(10_000_000)
     const { orch, provider } = makeOrch([
       { text: '', toolUses: [say('t1', 'want to go fishing after this?')] },
       { text: '', toolUses: [say('t2', "i'll get the oak trees, keep an eye on me?")] },
       { text: '', toolUses: [say('t3', 'ok!')] },
     ])
-    const t0 = Date.now()
-    const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
-    try {
-      orch.recordIncomingChat('newb', 'hey')
-      await orch.handleDispatch('sei:chat_received', chat('hey'))
-      now.mockReturnValue(t0 + 60_000)
-      await orch.handleDispatch('sei:idle', { quietMs: 60_000 })
-      expect(JSON.stringify(provider.calls[1].blocks)).toContain('want to go fishing after this?')
-      expect(blockText(provider.calls[1], 'own_repeats')).toBe('')
+    orch.recordIncomingChat('newb', 'hey')
+    await orch.handleDispatch('sei:chat_received', chat('hey'))
+    await orch.handleDispatch('sei:idle', { quietMs: 20_000 })
+    expect(JSON.stringify(provider.calls[1].blocks)).toContain('want to go fishing after this?')
+    expect(blockText(provider.calls[1], 'own_repeats')).toBe('')
 
-      orch.recordIncomingChat('newb', 'sure')
-      await orch.handleDispatch('sei:chat_received', chat('sure'))
-      const reply = blockText(provider.calls[2], 'own_repeats')
-      expect(reply).toContain(REPLY_ASK)
-    } finally { now.mockRestore() }
-  })
-
-  // 261020 (pass 20): an idle tick seconds after her line opened with that
-  // line again ("dock better be sick"); while it is fresh the seed quotes it
-  // in the short form.
-  it('idle seed quotes a fresh line of hers in the short form', async () => {
-    _setTickIntervalForTests(10_000_000)
-    const { orch, provider } = makeOrch([
-      { text: '', toolUses: [say('t1', 'dock better be sick')] },
-      { text: '', toolUses: [] },
-    ])
-    const t0 = Date.now()
-    const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
-    try {
-      orch.recordIncomingChat('newb', 'thanks')
-      await orch.handleDispatch('sei:chat_received', chat('thanks'))
-      now.mockReturnValue(t0 + 7_000)
-      await orch.handleDispatch('sei:idle', { quietMs: 7_000 })
-      const idle = blockText(provider.calls[1], 'own_repeats')
-      expect(idle).toContain('"dock better be sick"')
-      expect(idle).toContain('so if you say something now, make it new.')
-      expect(idle).not.toContain(REPLY_ASK)
-    } finally { now.mockRestore() }
+    orch.recordIncomingChat('newb', 'sure')
+    await orch.handleDispatch('sei:chat_received', chat('sure'))
+    const reply = blockText(provider.calls[2], 'own_repeats')
+    expect(reply).toContain(REPLY_ASK)
   })
 
   it('a silent check-in mid-action gets the short form', async () => {

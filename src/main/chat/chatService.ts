@@ -69,6 +69,12 @@ export interface ChatDeps {
   /** Task 4 — true when the character's bot is fully spawned in-world right now. */
   isInGame?: (characterId: string) => boolean;
   /**
+   * 261020 (review): the game of the character's live play session, or null.
+   * A chat quit_game whose plan leaves next_time_game out labels the plan
+   * with it, matching the tag main gives the plan at game end.
+   */
+  liveGame?: (characterId: string) => GameId | null;
+  /**
    * Task 4 — route a message INTO the live game session (shared brain + prompt
    * cache). Returns false if no session took it, so the caller can fall back to
    * the standalone chat brain.
@@ -321,15 +327,18 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
  * the goodbye note to the tag, so a call's Minecraft plan offers Minecraft
  * and is not raised as a task in Stardew. Left out (or 'none'), the plan has
  * no game: a game greeting raises it as talk, not as a task there.
+ * Delta review: a quit from a live game passes `liveGame`, the label for a
+ * plan that leaves the field out, because main tags that plan with the
+ * session's game (goodbyePlanPlace); the line and the tag must agree.
  */
-async function honorNextStep(characterId: string, input: unknown): Promise<NextStepHookResult> {
+async function honorNextStep(characterId: string, input: unknown, liveGame: GameId | null = null): Promise<NextStepHookResult> {
   const fields = input as { next_time?: unknown; next_time_for_player?: unknown; next_time_game?: unknown } | null;
   const step = normalizeNextStep(fields?.next_time);
   if (!step) return { hook: false, line: null, game: null };
   const game = parsePlanGameField(fields?.next_time_game);
   const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player), game };
   if (!turnMayWrite(characterId, 'next_time')) return result;
-  const label = game && game !== 'none' ? PLAN_GAMES[game] : undefined;
+  const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : liveGame ? PLAN_GAMES[liveGame] : undefined;
   try {
     const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step, label), undefined, {
       section: 'app',
@@ -1249,8 +1258,10 @@ async function sendChatMessageImpl(
           quitCalled = true;
           // 261008: only a live world has a session for bot_session_ended to
           // close; otherwise the note would wait for an unrelated one.
-          const nextStepHook = await honorNextStep(args.characterId, toolUse.input);
-          if (deps.isInGame?.(args.characterId)) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
+          const inGame = deps.isInGame?.(args.characterId) ?? false;
+          const liveGame = inGame ? (deps.liveGame?.(args.characterId) ?? null) : null;
+          const nextStepHook = await honorNextStep(args.characterId, toolUse.input, liveGame);
+          if (inGame) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
           deps.leaveGame?.(args.characterId);
           note =
             'You have left the Minecraft world and logged off. You are back in chat only now — ' +

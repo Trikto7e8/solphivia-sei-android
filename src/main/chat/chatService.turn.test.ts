@@ -678,6 +678,39 @@ describe('end_call next_time_game (261020 review)', () => {
     expect(note.nextStepHook).toBe(true);
     expect(note.nextStepGame).toBeUndefined();
   });
+
+  // Delta review: main tags a chat quit's plan with the live session's game
+  // when the field is left out (goodbyePlanPlace), so the memory line says so too.
+  it('a chat quit_game that leaves the field out labels the plan with the live game', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok heading out, parsnips next time' },
+        { type: 'tool_use', id: 'tu_quit', name: 'quit_game', input: { next_time: 'plant the parsnips' } },
+      ],
+    });
+    const d: ChatDeps = { ...deps(), isInGame: () => true, liveGame: () => 'stardew' };
+    await sendChatMessage({ characterId: CHAR, text: 'you can head off' }, d);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time in Stardew Valley: plant the parsnips');
+    const note = consumeGoodbye(CHAR, 'game');
+    expect(note.nextStepHook).toBe(true);
+    expect(note.nextStepGame).toBeUndefined();
+    expect(d.leaveGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('a chat quit_game with no live game still saves an unlabeled plan', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok bye' },
+        { type: 'tool_use', id: 'tu_quit', name: 'quit_game', input: { next_time: 'ask how the interview went', next_time_game: 'none' } },
+      ],
+    });
+    const d: ChatDeps = { ...deps(), isInGame: () => true, liveGame: () => 'stardew' };
+    await sendChatMessage({ characterId: CHAR, text: 'you can head off' }, d);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time: ask how the interview went');
+    expect(consumeGoodbye(CHAR, 'game').nextStepGame).toBe('none');
+  });
 });
 
 // 260708: while one companion was in the player's world, a call-only companion

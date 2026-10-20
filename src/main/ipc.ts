@@ -195,6 +195,8 @@ export interface IpcHandlerDeps {
   notifyLaunchFailed: (characterId: string, reason: string) => void;
   /** Task 4 — true only when the character's bot is fully spawned in-world. */
   isSessionOnline: (characterId: string) => boolean;
+  /** 261020: the game of the character's live play session, or null (chat quit_game plan label). */
+  sessionGame?: (characterId: string) => GameId | null;
   /**
    * Voice streaming (260706): push ONE already-persisted companion message to the
    * renderer (the `chat:message` channel, no re-persist). Backs the streaming
@@ -1391,6 +1393,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         // Task 4 — when the character is already in-game (spawned), route this
         // message into that live session instead of the standalone chat brain.
         isInGame: (id) => deps.isSessionOnline(id),
+        liveGame: (id) => deps.sessionGame?.(id) ?? null,
         routeToBot: (id, payload) => deps.supervisor.sendSeiChat(id, payload),
         onLaunchFailed: (id, reason) => deps.notifyLaunchFailed(id, reason),
         // Task 5 — the companion called quit() from chat: end the live session.

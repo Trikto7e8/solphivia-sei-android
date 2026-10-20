@@ -624,7 +624,8 @@ export const QUIT_TOOL = {
     properties: {
       next_time: { type: 'string', description: NEXT_TIME_FIELD },
       next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
-      // 261020: the game the step is for; left out, a call plan has none.
+      // 261020: the game the step is for. Left out, the plan is for the live
+      // game being quit (chatService honorNextStep labels it, goodbyePlanPlace tags it).
       next_time_game: { type: 'string', description: NEXT_TIME_GAME_FIELD },
     },
     required: [] as string[],

@@ -74,7 +74,24 @@ export const PLAN_GAMES = Object.freeze({
   dontstarve: "Don't Starve Together",
 })
 
-const squash = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+// Whole answers that name one game: its id, its name, a leading part of the
+// name, or its short name. Compared as whole words, so "craft" or "Minecraft
+// Dungeons" names no game (review 261020).
+const PLAN_GAME_ALIASES = Object.freeze({
+  minecraft: ['minecraft', 'mc'],
+  stardew: ['stardew valley', 'stardew', 'sdv'],
+  dontstarve: ['dont starve together', 'dont starve', 'dontstarve', 'dst'],
+})
+
+/** Lowercase words, apostrophes dropped ("Don't" -> "dont"), no leading "the". */
+function gameWords(s) {
+  return s
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/^the\s+/, '')
+}
 
 /**
  * The tool field as a game id, 'none' (not about playing a game), or null
@@ -84,17 +101,18 @@ const squash = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
  */
 export function parsePlanGameField(raw) {
   if (typeof raw !== 'string') return null
-  const v = raw.replace(/^[\s*_"'`]+|[\s*_"'`.]+$/g, '').trim()
+  const v = raw.replace(/^[\s*_"'`“”‘’]+|[\s*_"'`“”‘’.。]+$/g, '').trim()
   if (!v) return null
-  if (/^(none|no|n\/a|nothing|无|没有|なし|없음)$/i.test(v)) return 'none'
-  const q = squash(v)
-  for (const [id, name] of Object.entries(PLAN_GAMES)) {
-    if (q === id || q === squash(name)) return /** @type {any} */ (id)
+  // "None of them", "none (just talk)": a short answer that starts with none,
+  // as the player-end check reads its note (cleanNote).
+  if (/^(none|nothing|no|n\/a)(?![a-z])/i.test(v) && v.split(/\s+/).length <= 3) return 'none'
+  if (/^(无|没有|なし|없음)$/.test(v)) return 'none'
+  // A trailing aside does not change the game: "Minecraft (the lighthouse)".
+  const words = gameWords(v.replace(/\s*\([^)]*\)\s*$/, ''))
+  for (const [id, aliases] of Object.entries(PLAN_GAME_ALIASES)) {
+    if (aliases.includes(words)) return /** @type {any} */ (id)
   }
-  // "Don't Starve" / "stardew": one game named by a unique part of its name.
-  if (q.length < 5) return null
-  const hits = Object.entries(PLAN_GAMES).filter(([id, name]) => squash(name).includes(q) || q.includes(squash(name)) || q.includes(id))
-  return hits.length === 1 ? /** @type {any} */ (hits[0][0]) : null
+  return null
 }
 
 // 261014: the player-facing line for the Home "up next" strip.

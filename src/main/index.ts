@@ -1315,6 +1315,9 @@ async function bootstrap(): Promise<void> {
     getBotStatuses: () => [...currentStatuses.values()],
     // Task 4 — only route chat into a bot that's fully spawned in-world.
     isSessionOnline: (id) => onlineIds.has(id),
+    // 261020: the live session's game, so a chat quit_game plan with no
+    // next_time_game is labeled with the game main tags it with at game end.
+    sessionGame: (id) => playStartedAt.get(id)?.game ?? null,
     // A non-blocking chat-launched join failed — tell the COMPANION (task 2,
     // 260702): its last message said "hopping in", so without a correcting turn
     // its own history claims it joined and it later insists "i'm already in".

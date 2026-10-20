@@ -3014,10 +3014,14 @@ the player-end check tagged its plan with the session's game. Now:
   wrong goal in `HEARTBEAT.stardew.md` still shows until cleared.
 - Goodbye plans name their game too: quit_game, end_call (bot) and the chat
   end_call take `next_time_game` (`NEXT_TIME_GAME_FIELD`, static text),
-  parsed by `parsePlanGameField` (exact id/name, one unambiguous containment
-  hit, or `none`). Main tags the ledger with `goodbyePlanPlace`: a named game
-  wins; `none` drops the game (Home shows the picker); a missing field keeps
-  the in-game session's game and leaves a call plan unscoped. A game session
+  parsed by `parsePlanGameField` (a whole id, name, leading part of a name
+  or short name like MC/DST; a short answer starting with none is `none`;
+  "craft" or "Minecraft Dungeons" is no game). Main tags the ledger with
+  `goodbyePlanPlace`: a named game wins; `none` drops the game (Home shows
+  the picker); a missing field keeps the in-game session's game and leaves a
+  call plan unscoped. The memory line's label follows the same rule (bot
+  end_call `saveNextStep(..., { call: true })`, chat quit_game `liveGame`
+  from main's `sessionGame`). A game session
   that loads an unscoped or other-surface plan (`readPendingPlanFor`,
   `notForGame`) greets with it as something to talk about, not a task to
   start (`nextTimeGreeting(plan, { notForGame })`). The player-end parser only

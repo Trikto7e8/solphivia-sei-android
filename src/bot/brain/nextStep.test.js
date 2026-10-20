@@ -242,6 +242,29 @@ describe('next_time_game field (261020 review)', () => {
     expect(parsePlanGameField(3)).toBeNull()
   })
 
+  // Delta review 261020: loose answers.
+  it('a short answer that starts with none is none', () => {
+    expect(parsePlanGameField('None of them')).toBe('none')
+    expect(parsePlanGameField('none (just talk)')).toBe('none')
+    expect(parsePlanGameField('No game')).toBe('none')
+    expect(parsePlanGameField('nothing in a game, it is about her exam')).toBeNull()
+  })
+
+  it('reads the short names DST and MC', () => {
+    expect(parsePlanGameField('DST')).toBe('dontstarve')
+    expect(parsePlanGameField('mc')).toBe('minecraft')
+    expect(parsePlanGameField("Don't Starve")).toBe('dontstarve')
+    expect(parsePlanGameField('Minecraft (the lighthouse build)')).toBe('minecraft')
+  })
+
+  it('matches whole words, so a part of a name or another game names none', () => {
+    expect(parsePlanGameField('craft')).toBeNull()
+    expect(parsePlanGameField('Minecraft Dungeons')).toBeNull()
+    expect(parsePlanGameField('valley')).toBeNull()
+    expect(parsePlanGameField('starve')).toBeNull()
+    expect(parsePlanGameField('Minecraft or Stardew Valley')).toBeNull()
+  })
+
   it('PLAN_GAMES matches the bot games in the shared catalog', () => {
     for (const [id, name] of Object.entries(PLAN_GAMES)) {
       expect(GAME_CATALOG.find((g) => g.id === id)?.name).toBe(name)

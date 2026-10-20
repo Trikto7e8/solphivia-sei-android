@@ -3602,13 +3602,15 @@ function maybeWarnByteCap(loop, warned) {
   // 261020 (review): + the game it is for (next_time_game). The model names
   // it from the step: a Minecraft plan said while leaving Stardew is labeled
   // and tagged Minecraft. 'none' = not about a game, saved with no label.
-  // Left out, the plan is taken to be for this game, as before.
-  async function saveNextStep(raw, rawLine, rawGame) {
+  // Left out, a quit plan is taken to be for this game, as before, and a
+  // call plan (end_call, opts.call) has no game: main tags it as a call
+  // (sessionGoodbye goodbyePlanPlace), so the line must not name this game.
+  async function saveNextStep(raw, rawLine, rawGame, opts = {}) {
     const step = normalizeNextStep(raw)
     if (!step) return { hook: false, line: null, game: null }
     const line = normalizePlayerLine(rawLine)
     const game = parsePlanGameField(rawGame)
-    const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : caps.gameName
+    const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : opts.call ? undefined : caps.gameName
     try {
       // 261020: labeled with its game, so another game's session reads it
       // as a plan for there and not as its own task.
@@ -3754,7 +3756,7 @@ function maybeWarnByteCap(loop, warned) {
         try { _emitSayLine(loop, farewell) } catch {}
       }
       lastActionResult = 'ended call'
-      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player, use.input?.next_time_game)
+      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player, use.input?.next_time_game, { call: true })
       try { onCallEndRequested?.({ nextStepHook: next.hook, nextStepLine: next.line, nextStepGame: next.game }) } catch (err) { logger.warn?.(`[sei/orch] onCallEndRequested failed: ${err?.message ?? err}`) }
       return { result: { type: 'tool_result', tool_use_id: use.id, content: 'call ended — you are still in the game', is_error: false }, terminate: false }
     }

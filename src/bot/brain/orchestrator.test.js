@@ -1042,7 +1042,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     _setTickIntervalForTests(10_000_000)
     const config = makeConfig()
     const provider = makeProvider([
-      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, village hunt tomorrow', next_time: 'find a village for beds' } }] },
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, village hunt tomorrow', next_time: 'find a village for beds', next_time_game: 'Minecraft' } }] },
       { text: '', toolUses: [] },
     ])
     const onCallEndRequested = vi.fn()
@@ -1053,7 +1053,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
     expect(md).toContain('Plan for next time in Minecraft: find a village for beds')
-    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: null })
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'minecraft' })
   })
 
   // 261020 (review): a plan said while leaving one game can be for another.
@@ -1090,6 +1090,26 @@ describe('next_time hook on goodbye tools (261008)', () => {
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
     expect(md).toContain('Plan for next time: ask how the interview went')
     expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'none' })
+  })
+
+  // Delta review: main tags an end_call plan with no field as a call plan
+  // (goodbyePlanPlace), so the memory line must not name this game.
+  it('end_call that leaves next_time_game out saves the plan with no game', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night', next_time: 'ask how the interview went' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const onCallEndRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onCallEndRequested, _anthropicOverride: provider })
+    orch.setVoiceCall(true)
+    await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time: ask how the interview went')
+    expect(md).not.toContain('in Minecraft: ask how')
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: null })
   })
 
   it('a plan the host says is not for this game is greeted as talk', async () => {

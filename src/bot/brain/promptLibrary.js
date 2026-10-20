@@ -520,7 +520,7 @@ export const PERSONALITY_TOOL_DESCRIPTIONS = {
     'Cancel the action you are running now, when the player asks you to stop or it is no longer the right thing to do. To switch to a different task, call the new action instead; it replaces the current one.',
 
   setGoal:
-    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.',
+    'Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead. A goal is for the game you are in now: a plan for a different game, or for outside the game, goes in remember() and waits for that game. Start the text with a short headline of the goal that leaves the player\'s name out, like "Fence in the chicken coop", because the player can see that headline on their home screen.',
 
   clearGoal:
     'Remove a goal (by distinctive substring) once its finish condition is met, the player says it is done, or the plan changed or was dropped. A task that ends with handing something over is done once give has run; while the items are still in your inventory, the player does not have them.',
@@ -684,6 +684,13 @@ export const NEXT_TIME_FIELD =
 export const NEXT_TIME_FOR_PLAYER_FIELD =
   'Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like "Finish the cabin roof" or "Tell Sui how the interview went" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player\'s name out.'
 
+// 261020 (review): which game the plan is for. A plan said while saying
+// goodbye in one game can be about another (a Minecraft build talked about
+// in Stardew), and a call's plan has no game at all unless the model says
+// so. Static text, so the cached tool prefix stays the same every turn.
+export const NEXT_TIME_GAME_FIELD =
+  'Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don\'t Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call.'
+
 export const NEXT_TIME_GOODBYE =
   'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time we finish the roof". If you leave it out, just say a normal goodbye.'
 
@@ -706,13 +713,25 @@ export const NEXT_TIME_GREETING =
 // `plan` null = the host checked and there is none, so no cue at all (an old,
 // already-raised plan in MEMORY.md must not come up again). undefined = the
 // host did not say (CLI runs): the soft hint.
-/** @param {string | null | undefined} plan */
-export function nextTimeGreeting(plan) {
+// 261020 (review): `notForGame` = the game this greeting is in, when the
+// plan is not tied to it (saved on a call or in chat with no game, or said
+// to be about no game). Raised there as something to talk about, not as
+// something to do in this game, so it does not turn into a goal here.
+/**
+ * @param {string | null | undefined} plan
+ * @param {{ notForGame?: string | null }} [opts]
+ */
+export function nextTimeGreeting(plan, opts = {}) {
   if (plan === null) return ''
   if (typeof plan !== 'string' || !plan.trim()) return NEXT_TIME_GREETING
   const text = plan.replace(/\s+/g, ' ').trim().replace(/"/g, "'")
+  const game = typeof opts.notForGame === 'string' ? opts.notForGame.trim() : ''
+  const scope = game
+    ? `It was not saved as something to do in ${game}, so bring it up as something to talk about, not as a task to start here. `
+    : ''
   return (
     `At the end of your last session you saved this to pick up next time: "${text}". ` +
+    scope +
     'Make it the main thing your greeting is about, in your own words and your usual style. A joke or a dry remark is fine, as long as it is clear what you want to pick up. ' +
     'Bring it up the way you would with a friend, and open with it rather than picking up where the earlier conversation stopped. ' +
     'If it is about something that may not have happened yet, bring it up in a way that fits that.'
@@ -756,10 +775,10 @@ export function callGreetingNote({ peers = [], plan } = {}) {
 // greeting is asked to raise it (nextTimeGreeting) and the "only a hint, a
 // plain greeting is fine" escape is left out, since it let a bit-heavy
 // character skip the plan every time.
-export const FIRST_CONTACT = ({ gameName, known, plan }) => {
+export const FIRST_CONTACT = ({ gameName, known, plan, planNotForGame = false }) => {
   const open = typeof plan === 'string' && plan.trim() ? plan : null
   if (open) {
-    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open)}`
+    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open, { notForGame: planNotForGame ? gameName : null })}`
   }
   if (known) {
     const cue = nextTimeGreeting(plan)
@@ -776,17 +795,50 @@ export const FIRST_CONTACT = ({ gameName, known, plan }) => {
 // same "Plan for next time" line, so NEXT_TIME_GREETING covers it.
 // 261014: it answers two labeled lines, the note (saved to MEMORY.md) and a
 // line written to the player for the Home strip (parseNextStepReply).
+// 261020: plus a third, `game:`, the game the step is played in, decided
+// from the step and not from the session (playerEndNextStep.ts
+// resolvePlanPlace). A Stardew session whose goals and memories held a
+// Minecraft build saved that build as a Stardew plan, and the Home card
+// offered "Play Stardew Valley" for it. {games} is the list of bot games.
 export const PLAYER_END_NEXT_STEP_SYSTEM =
   'You are {name}, an AI companion who plays games and talks with the player. ' +
   'The player just ended a session with you. You will get a short summary of it: what you were doing, the end of the conversation, your goals, and some of your memories.\n\n' +
   'Decide if there is one real thing to pick up next time: a goal you did not finish, something the two of you were in the middle of, a plan one of you said out loud, or something coming up for the player that you could ask about. ' +
-  'If there is, reply with exactly two lines, labeled like this:\n' +
+  'If there is, reply with exactly three lines, labeled like this:\n' +
   'note: the next step in a few words, written as a note to yourself, like "finish the cabin roof" or "ask how the job interview went".\n' +
-  'player: the same step as one short line for the player. It is shown on their home screen under "Up next with {card_name}", and the player is the one reading it, so write it as something for them to do, starting with a verb, like "Finish the cabin roof", "Mine iron with {card_name}" or "Tell {card_name} how the job interview went". Keep it under 60 characters and to one step. Name yourself only when the step needs you, as {card_name} and never as I, me or we, and leave the player\'s name out.\n\n' +
-  'Do not put words like tomorrow or tonight in either line, because both are read on a later day. ' +
-  'Keep the labels note: and player: as they are, and write the rest in the language you and the player talk in.\n\n' +
+  'player: the same step as one short line for the player. It is shown on their home screen under "Up next with {card_name}", and the player is the one reading it, so write it as something for them to do, starting with a verb, like "Finish the cabin roof", "Mine iron with {card_name}" or "Tell {card_name} how the job interview went". Keep it under 60 characters and to one step. Name yourself only when the step needs you, as {card_name} and never as I, me or we, and leave the player\'s name out.\n' +
+  'game: the game the step is done in, one of {games}, or none when it is not about playing one of them. Decide it from the step itself, not from where this session was: the two of you may have talked about one game while playing another.\n\n' +
+  'Do not put words like tomorrow or tonight in the note or player lines, because both are read on a later day. ' +
+  'Keep the labels note:, player: and game: as they are, and write the note and player lines in the language you and the player talk in.\n\n' +
   'If nothing was left open, or the session was only small talk, reply with only the word none. ' +
   'Do not make one up, and do not pick something that is already done.'
+
+// 261020: memories and the app chat are shared by every game a character
+// plays, and nothing in a game's seed said so. In a Stardew session she read
+// a Minecraft build from the text chat (a copper bulb lighthouse, filed under
+// the last world's header) as Stardew work: greeted with it, setGoal'd it,
+// pitched a "copper run" on the farm, and the Home card offered Stardew for
+// it. The person is shared across games; a game's plans are not. The memory
+// file now has a section per world (named with its game) plus an app
+// section (memoryLog APP_SECTION_HEADER); these lines say what that means.
+/** @param {string} gameName */
+export function memoryGameScope(gameName) {
+  const game = String(gameName ?? '').trim()
+  if (!game) return ''
+  return (
+    'You know this player from everywhere you spend time together: texting and calls in the app, minigames, and other games, ' +
+    'and each section header says where its memories are from. ' +
+    `You are playing ${game} now. A plan or project that belongs to a different game stays with that game: ` +
+    'you can talk about it, but do not take it on as a goal here.'
+  )
+}
+
+/** @param {string} gameName */
+export function chatContinuityGameScope(gameName) {
+  const game = String(gameName ?? '').trim()
+  if (!game) return ''
+  return `That chat may have been about other games too; a plan from it for a different game is not a task in ${game}.`
+}
 
 // 260703: session-end vs task-stop disambiguation. Haiku was following the
 // per-turn addenda below (which only ever named end_loop/stopTool) over the
@@ -1367,7 +1419,9 @@ const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not s
 // `sessionStartMs` (optional) splits off player tasks from earlier sessions.
 // `onHold` (pass 16): she stopped on the player's word, so this session's
 // tasks and her own goals get the on-hold heads.
-export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false } = {}) {
+// `gameName` (261020): the goal file is per game, and the header says which,
+// so goals read as this game's and a plan from another game does not.
+export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false, gameName = null } = {}) {
   const lvl = Number.isInteger(proactiveness) ? proactiveness : 1
   let goals
   let hasGoal = !!(goalsText && goalsText.trim())
@@ -1399,7 +1453,8 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
     goals = 'No active goals right now.'
   }
   const frontierBlock = renderFrontierBlock(lvl, hasGoal, frontierText)
-  return `# HEARTBEAT\n${goals}${frontierBlock}`
+  const head = typeof gameName === 'string' && gameName.trim() ? `# HEARTBEAT: your goals and tasks in ${gameName.trim()}` : '# HEARTBEAT'
+  return `${head}\n${goals}${frontierBlock}`
 }
 
 // 260708: group-call addressing guidance, appended to every live player line

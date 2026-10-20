@@ -681,7 +681,7 @@ async function honorRemember(
       continue;
     }
     try {
-      await appendMemory(path.join(paths.memoryDir(s.characterId), 'MEMORY.md'), text);
+      await appendMemory(path.join(paths.memoryDir(s.characterId), 'MEMORY.md'), text, undefined, { section: 'app' });
       s.lastRememberAt = Date.now();
     } catch (err) {
       slog(s, `remember() failed: ${(err as Error).message}`, true);

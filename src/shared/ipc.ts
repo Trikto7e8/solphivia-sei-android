@@ -987,7 +987,8 @@ export type BotLifecycle =
   // 260929: `reason` 'quit' = the companion called quit() and left on its own.
   // 261008: `nextStepHook` = that quit's goodbye carried a next_time hook.
   // 261014: `nextStepLine` = that hook written to the player (Home card).
-  | { type: 'summon-stopped'; reason?: 'quit' | 'stop' | 'error'; nextStepHook?: boolean; nextStepLine?: string }
+  // 261020: `nextStepGame` = the game that plan is for (a bot game id or 'none').
+  | { type: 'summon-stopped'; reason?: 'quit' | 'stop' | 'error'; nextStepHook?: boolean; nextStepLine?: string; nextStepGame?: string }
   | { type: 'exit'; code: number | null };
 
 /** A main → renderer current-action push (bot:action). */

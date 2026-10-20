@@ -35,7 +35,7 @@ import type { LlmCallParams, LlmMessage, LlmProvider, LlmResult, LlmToolDef } fr
 import type { UserConfig } from '../../shared/characterSchema';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
 import { isSilenceFiller } from '../../bot/brain/silenceFiller.js';
-import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from '../../bot/brain/nextStep.js';
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine, parsePlanGameField, PLAN_GAMES } from '../../bot/brain/nextStep.js';
 import { callGreetingNote } from '../../bot/brain/promptLibrary.js';
 import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye';
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
@@ -68,6 +68,12 @@ export interface ChatDeps {
   summon: (characterId: string, game?: GameId) => Promise<void>;
   /** Task 4 — true when the character's bot is fully spawned in-world right now. */
   isInGame?: (characterId: string) => boolean;
+  /**
+   * 261020 (review): the game of the character's live play session, or null.
+   * A chat quit_game whose plan leaves next_time_game out labels the plan
+   * with it, matching the tag main gives the plan at game end.
+   */
+  liveGame?: (characterId: string) => GameId | null;
   /**
    * Task 4 — route a message INTO the live game session (shared brain + prompt
    * cache). Returns false if no session took it, so the caller can fall back to
@@ -294,7 +300,7 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
     const text = String((b.input as { text?: string })?.text ?? '').trim();
     if (!text) continue;
     try {
-      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text);
+      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text, undefined, { section: 'app' });
       if (written > 0) appended = true;
     } catch (err) {
       console.warn(`[sei] voice remember() append failed: ${(err as Error).message}`);
@@ -315,15 +321,28 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
  * 261014: the result also carries `next_time_for_player`, the step written to
  * the player; it is not saved here but rides the goodbye note to the Home
  * card's tag (sessionGoodbye.ts).
+ *
+ * 261020 (review): + `next_time_game`, the game the step is for. A named game
+ * labels the memory line ("Plan for next time in Minecraft: ...") and rides
+ * the goodbye note to the tag, so a call's Minecraft plan offers Minecraft
+ * and is not raised as a task in Stardew. Left out (or 'none'), the plan has
+ * no game: a game greeting raises it as talk, not as a task there.
+ * Delta review: a quit from a live game passes `liveGame`, the label for a
+ * plan that leaves the field out, because main tags that plan with the
+ * session's game (goodbyePlanPlace); the line and the tag must agree.
  */
-async function honorNextStep(characterId: string, input: unknown): Promise<NextStepHookResult> {
-  const fields = input as { next_time?: unknown; next_time_for_player?: unknown } | null;
+async function honorNextStep(characterId: string, input: unknown, liveGame: GameId | null = null): Promise<NextStepHookResult> {
+  const fields = input as { next_time?: unknown; next_time_for_player?: unknown; next_time_game?: unknown } | null;
   const step = normalizeNextStep(fields?.next_time);
-  if (!step) return { hook: false, line: null };
-  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player) };
+  if (!step) return { hook: false, line: null, game: null };
+  const game = parsePlanGameField(fields?.next_time_game);
+  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player), game };
   if (!turnMayWrite(characterId, 'next_time')) return result;
+  const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : liveGame ? PLAN_GAMES[liveGame] : undefined;
   try {
-    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step));
+    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step, label), undefined, {
+      section: 'app',
+    });
     if (written > 0) void maybeCompactChatMemory(characterId).catch(() => {});
   } catch (err) {
     console.warn(`[sei] next_time append failed: ${(err as Error).message}`);
@@ -1239,8 +1258,10 @@ async function sendChatMessageImpl(
           quitCalled = true;
           // 261008: only a live world has a session for bot_session_ended to
           // close; otherwise the note would wait for an unrelated one.
-          const nextStepHook = await honorNextStep(args.characterId, toolUse.input);
-          if (deps.isInGame?.(args.characterId)) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
+          const inGame = deps.isInGame?.(args.characterId) ?? false;
+          const liveGame = inGame ? (deps.liveGame?.(args.characterId) ?? null) : null;
+          const nextStepHook = await honorNextStep(args.characterId, toolUse.input, liveGame);
+          if (inGame) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
           deps.leaveGame?.(args.characterId);
           note =
             'You have left the Minecraft world and logged off. You are back in chat only now — ' +
@@ -1263,7 +1284,7 @@ async function sendChatMessageImpl(
           if (memText) {
             try {
               const written = turnMayWrite(args.characterId, 'remember()')
-                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText)
+                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText, undefined, { section: 'app' })
                 : 0;
               // 260725: appendMemory returns 0 when its bounded duplicate guard
               // skips the write. Reporting a save that never happened taught the

@@ -1,3 +1,5 @@
+import { isGameId, type GameId } from '../shared/gameIpc';
+
 /**
  * How a session's goodbye went (261008, retention fix 2(c)), as analytics
  * props on the existing `_ended` events.
@@ -36,12 +38,24 @@ export interface GoodbyeNote {
   nextStepHook: boolean;
   /** 261014: that hook written to the player, for the Home card. Never sent to analytics. */
   nextStepLine?: string | null;
+  /**
+   * 261020: the game the plan is for, from the goodbye's next_time_game
+   * field ('none' = not about a game). Unset = the model left it out.
+   */
+  nextStepGame?: GameId | 'none';
 }
 
 /** What a goodbye's next_time fields came to: whether a plan was given, and its player line. */
 export interface NextStepHookResult {
   hook: boolean;
   line: string | null;
+  /** 261020: see GoodbyeNote.nextStepGame; null = left out. */
+  game?: GameId | 'none' | null;
+}
+
+/** A plan game as it arrives over the port or from a tool: a bot game id, 'none', or undefined. */
+export function goodbyeGame(raw: unknown): GameId | 'none' | undefined {
+  return raw === 'none' || isGameId(raw) ? raw : undefined;
 }
 
 export const NOTE_TTL_MS = 2 * 60_000;
@@ -65,7 +79,26 @@ export function noteCompanionGoodbye(
   const r: NextStepHookResult = typeof hook === 'boolean' ? { hook, line: null } : hook;
   const note: GoodbyeNote = { companionEnded: true, nextStepHook: r.hook === true };
   if (note.nextStepHook && typeof r.line === 'string' && r.line) note.nextStepLine = r.line;
+  const game = goodbyeGame(r.game);
+  if (note.nextStepHook && game) note.nextStepGame = game;
   notes.set(key(characterId, surface), { note, at: now });
+}
+
+/**
+ * 261020 (review): where a goodbye's plan belongs, for its Home card tag. A
+ * game the model named wins over the session (a Minecraft plan said while
+ * leaving Stardew offers Minecraft). 'none' drops the game, so the card
+ * offers the games picker (or a call) and no game claims the plan. Left out:
+ * a game session's plan is that game's, a call's stays a call plan.
+ */
+export function goodbyePlanPlace(
+  session: { surface: 'game'; game?: string | null } | { surface: 'call' },
+  game: GameId | 'none' | undefined,
+): { surface: 'game' | 'call'; game?: string } {
+  if (game && game !== 'none') return { surface: 'game', game };
+  if (session.surface === 'call') return { surface: 'call' };
+  if (game === 'none' || !session.game) return { surface: 'game' };
+  return { surface: 'game', game: session.game };
 }
 
 /** Read and forget the note for a session that just ended. */

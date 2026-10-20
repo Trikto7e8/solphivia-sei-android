@@ -235,10 +235,14 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
             // &text= (261014): a given plan text, for rendering real
             // generated plans (scripts/next-step-examples.ts); &surface=call
             // makes it a call plan, anything else a Minecraft plan.
+            // &game= (261020) picks the plan's game: stardew, dontstarve,
+            // or unknown (a game plan with no game, which offers the picker).
             const given = params.get('text');
             const surface = params.get('surface') === 'call' ? 'call' : 'game';
+            const gameParam = params.get('game');
+            const game = surface !== 'game' ? null : gameParam === 'unknown' ? null : gameParam === 'stardew' || gameParam === 'dontstarve' ? gameParam : 'minecraft';
             const card = given
-              ? { source: 'plan', text: given, surface, game: surface === 'game' ? 'minecraft' : null }
+              ? { source: 'plan', text: given, surface, game }
               : kind === 'goal'
                 ? { source: 'goal', text: 'Get iron tools together', surface: 'game', game: 'minecraft' }
                 : kind === 'call'

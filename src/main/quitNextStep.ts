@@ -403,7 +403,7 @@ export function _resetQuitNextStep(): void {
 
 let boundMemoryDir: ((characterId: string) => string) | null = null;
 let boundMemoryRoot: (() => string) | null = null;
-let boundActivity: (game: string) => string = (game) => `playing ${game} together`;
+let boundActivity: (game: string) => string = (game) => `playing ${game} with the player`;
 
 /** index.ts binds the main-only pieces once at startup. */
 export function bindQuitNextStepRuntime(b: {

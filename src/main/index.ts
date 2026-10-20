@@ -37,7 +37,7 @@ import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls, live
 import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
-import { consumeGoodbye, gameEndHookProps, callEndHookProps } from './sessionGoodbye';
+import { consumeGoodbye, gameEndHookProps, callEndHookProps, goodbyePlanPlace } from './sessionGoodbye';
 import {
   bindPlayerEndRuntime,
   clearSessionDigest,
@@ -444,10 +444,10 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // 261013 (T119): the companion's goodbye left a plan, so record that it came
   // from this game for the Home "up next" card (homeNextStep.ts).
   if (goodbye.nextStepHook) {
+    // 261020: or from the game its goodbye named (goodbyePlanPlace).
     updateHomeNextStep(id, async (dir) =>
       tagLatestPlan(dir, {
-        surface: 'game',
-        game: started.game,
+        ...goodbyePlanPlace({ surface: 'game', game: started.game }, goodbye.nextStepGame),
         line: goodbye.nextStepLine ?? null,
         names: await readPlayerLineNames(id),
       }),
@@ -494,7 +494,7 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
       characterId: id,
       surface: 'game',
       game: started.game,
-      activity: `playing ${gameName} together`,
+      activity: `playing ${gameName} with the player`,
       durationMs,
       lines: digest?.lines ?? [],
       playerLines: digest?.playerLines ?? 0,
@@ -605,8 +605,9 @@ function broadcastStatus(status: BotStatus): void {
       // 261013 (T120): this greeting moved on from an app-quit session.
       noteNewSessionForQuit(id);
       // 261013 (T119): this session's first-spawn greeting is told about the
-      // saved plan, so the Home card stops offering it.
-      updateHomeNextStep(id, (dir) => consumeNextStep(dir));
+      // saved plan, so the Home card stops offering it. 261020: unless the
+      // plan is for a different game (that greeting was not told about it).
+      updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
       if (game === 'minecraft') {
         const lanHost = latestLanState.kind === 'open' ? latestLanState.host : undefined;
         const hostWarning = lanHostWarning(lanHost);
@@ -1036,7 +1037,7 @@ async function bootstrap(): Promise<void> {
     bindQuitNextStepRuntime({
       memoryDir: paths.memoryDir,
       memoryRoot: () => path.join(paths.profileRoot(), 'memory'),
-      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} together`,
+      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} with the player`,
     });
   } catch (err) {
     logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
@@ -1314,6 +1315,9 @@ async function bootstrap(): Promise<void> {
     getBotStatuses: () => [...currentStatuses.values()],
     // Task 4 — only route chat into a bot that's fully spawned in-world.
     isSessionOnline: (id) => onlineIds.has(id),
+    // 261020: the live session's game, so a chat quit_game plan with no
+    // next_time_game is labeled with the game main tags it with at game end.
+    sessionGame: (id) => playStartedAt.get(id)?.game ?? null,
     // A non-blocking chat-launched join failed — tell the COMPANION (task 2,
     // 260702): its last message said "hopping in", so without a correcting turn
     // its own history claims it joined and it later insists "i'm already in".
@@ -1352,7 +1356,11 @@ async function bootstrap(): Promise<void> {
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
       if (goodbye.nextStepHook) {
         updateHomeNextStep(id, async (dir) =>
-          tagLatestPlan(dir, { surface: 'call', line: goodbye.nextStepLine ?? null, names: await readPlayerLineNames(id) }),
+          tagLatestPlan(dir, {
+            ...goodbyePlanPlace({ surface: 'call' }, goodbye.nextStepGame),
+            line: goodbye.nextStepLine ?? null,
+            names: await readPlayerLineNames(id),
+          }),
         );
       }
       // 261011: the player hung up (no companion goodbye), outside a game.
@@ -1372,7 +1380,9 @@ async function bootstrap(): Promise<void> {
       if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) {
         // 261013 (T119): a new session, so the Home card stops offering the
         // plan (the game's own first greeting was already told about it).
-        updateHomeNextStep(id, (dir) => consumeNextStep(dir));
+        // 261020: a plan for a different game was not, so it stays open.
+        const game = playStartedAt.get(id)?.game ?? null;
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
         return;
       }
       void (async () => {

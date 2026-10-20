@@ -399,6 +399,13 @@ log's timing, not a new session.
   it's in. These headers are deliberately NOT entry lines (`- [`), and both the
   seed-truncation (`readMemoryForSeed`) and the **segment-aware compactor** are
   written to preserve them — touch those two if you change the header format.
+  261020: headers name their game, and app-side writers file under
+  `APP_SECTION_HEADER` (see "Plans and goals belong to a game" below), so a
+  player who alternates a game and texting gets a new header pair every
+  session. The compactor therefore merges every occurrence of a section (a
+  world by number) into one segment at its last place (`coalesceSegments`),
+  and the seed reader pays for headers from its budget and keeps only the
+  headers of kept entries plus the last one.
 > The old CLAUDE.md framed this as "the LLM decides when to compact at semantic
 > boundaries" — misleading. The *write* is LLM-driven; the *compaction* is
 > mechanical (byte threshold).
@@ -2977,6 +2984,53 @@ and `scripts/next-step-examples-strips.ts` (renders the strips via
 `?dashshot=home&name=&text=&surface=`). 261014 run: greetings raised the plan
 36 of 36 (was 26 of 36; Marv 0 of 4 and Roger 1 of 4 before).
 
+**Plans and goals belong to a game (261020).** Live on v0.6.9-beta.3: a
+Minecraft build (a copper bulb lighthouse, discussed in a text chat) showed on
+Home as "Get copper for ouen's copper bulb lighthouse" with Play Stardew
+Valley. Chat memories had been filed under the last world's header (a Stardew
+farm), nothing in a game's seed said memories span games, so the Stardew
+session greeted with the plan, setGoal'd it into `HEARTBEAT.stardew.md`, and
+the player-end check tagged its plan with the session's game. Now:
+- MEMORY.md sections name their game (`## World 2 — Sui Farm (Stardew
+  Valley)`, `noteWorld(..., game)`), and app-side writers (chat, voice,
+  chess, Draw!, backseat, an out-of-game player-end plan) pass
+  `appendMemory(..., { section: 'app' })`, which opens
+  `APP_SECTION_HEADER` when the last section is a world. Seed truncation, the
+  compactor and the dedupe guard split on any `## ` header.
+- Plan lines carry their game: `Plan for next time in Minecraft: ...`
+  (`nextStepMemoryLine(step, gameName)`, read back by `parsePlanLine`). The
+  player-end check answers a third line, `game:` (a game or `none`), decided
+  from the step, not the session (`resolvePlanPlace`); its memories are
+  grouped under their section headers (`memoryEntries`), which is what lets
+  it tell Minecraft copper from Stardew copper (live probe: 0 of 4 right
+  without the headers, every labeled answer right with them).
+- `readPendingPlan` / `consumeNextStep` take `{ game }`: a game session
+  neither greets with nor consumes a plan for another game.
+- Game seeds say memories span games and another game's plans stay there
+  (`memoryGameScope`, `chatContinuityGameScope`, heartbeat header names the
+  game); setGoal's description says a goal is for the current game and to
+  start with a headline that leaves the player's name out. Prompt only, no
+  matcher. Unverified live in Stardew. Old data is not migrated: an existing
+  wrong goal in `HEARTBEAT.stardew.md` still shows until cleared.
+- Goodbye plans name their game too: quit_game, end_call (bot) and the chat
+  end_call take `next_time_game` (`NEXT_TIME_GAME_FIELD`, static text),
+  parsed by `parsePlanGameField` (a whole id, name, leading part of a name
+  or short name like MC/DST; a short answer starting with none is `none`;
+  "craft" or "Minecraft Dungeons" is no game). Main tags the ledger with
+  `goodbyePlanPlace`: a named game wins; `none` drops the game (Home shows
+  the picker); a missing field keeps the in-game session's game and leaves a
+  call plan unscoped. The memory line's label follows the same rule (bot
+  end_call `saveNextStep(..., { call: true })`, chat quit_game `liveGame`
+  from main's `sessionGame`). A game session
+  that loads an unscoped or other-surface plan (`readPendingPlanFor`,
+  `notForGame`) greets with it as something to talk about, not a task to
+  start (`nextTimeGreeting(plan, { notForGame })`). The player-end parser only
+  splits a run-on reply at a later label in order (`note`, `player`, `game`),
+  and at `game:` only when the rest is an exact game or `none`, so a step
+  like "play the board game: Catan" stays whole. Live Haiku probe of the
+  field (forced tool, 16 runs: MC plan quit from Stardew, Stardew plan, MC
+  plan on a call, non-game call plan): 16 of 16 right.
+
 **Sessions an app quit ended get the check on the next launch (261013,
 T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call
 live) has no time for an LLM call, so it never ran the player-end check
@@ -3170,7 +3224,9 @@ had it from the start. The contract is three things.
    in `extraStable` so they ride inside the cached region.
 2. **OUT, long-term** — offer `REMEMBER_TOOL` (`src/main/chat/chatPrompts.ts`)
    on the surface's turns, so the character can write to the same per-character
-   `MEMORY.md` that chat, voice and the bot share. In a **tool loop**, answer it
+   `MEMORY.md` that chat, voice and the bot share. A surface outside a game
+   world passes `appendMemory(file, text, undefined, { section: 'app' })` (261020)
+   so its lines are not filed under the last game world. In a **tool loop**, answer it
    with a `tool_result` note and treat `appendMemory() === 0` as "duplicate, not
    written" rather than claiming a save. In a **single-shot** call, honor it
    inline after the response (`honorRememberCalls`) or the write is silently

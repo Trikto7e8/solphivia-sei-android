@@ -7,9 +7,12 @@ import {
   _resetPlayerEndNextStep,
   buildPlayerEndPrompt,
   isPlayerEndedGame,
+  memoryEntries,
   noteSessionDigest,
   parseNextStepReply,
+  parseGameAnswer,
   parsePlayerEndReply,
+  resolvePlanPlace,
   runPlayerEndNextStep,
   startPlayerEndNextStep,
   takeSessionDigest,
@@ -121,7 +124,7 @@ describe('a player-ended session', () => {
     const llm = provider('"Finish the cabin roof."');
     const { d, saved, events } = deps({}, llm);
     expect(await runPlayerEndNextStep(input(), d)).toBe('saved');
-    expect(saved).toEqual([['char-1', 'Plan for next time: Finish the cabin roof']]);
+    expect(saved).toEqual([['char-1', 'Plan for next time in Minecraft: Finish the cabin roof']]);
     expect(llm.calls).toHaveLength(1);
     expect(llm.calls[0].maxTokens).toBe(PLAYER_END_MAX_TOKENS);
     expect(llm.calls[0].system).toContain('You are Sui');
@@ -311,19 +314,21 @@ describe('two-line reply parsing (261014)', () => {
     expect(parsePlayerEndReply("note: ask Alex what the vet says about Pepper's leg on Thursday\nplayer: Tell Roger what the vet said about Pepper")).toEqual({
       step: "ask Alex what the vet says about Pepper's leg on Thursday",
       line: 'Tell Roger what the vet said about Pepper',
+      game: null,
     });
     expect(parsePlayerEndReply('**Note:** finish the roof.\n**Player:** "finish the cabin roof tomorrow"')).toEqual({
       step: 'finish the roof',
       line: 'Finish the cabin roof',
+      game: null,
     });
   });
 
   it('none, an unlabeled reply, and a missing player line', () => {
     expect(parsePlayerEndReply('none')).toBeNull();
     expect(parsePlayerEndReply('note: none\nplayer: none')).toBeNull();
-    expect(parsePlayerEndReply('finish the roof')).toEqual({ step: 'finish the roof', line: null });
-    expect(parsePlayerEndReply('note: finish the roof')).toEqual({ step: 'finish the roof', line: null });
-    expect(parsePlayerEndReply('player: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' });
+    expect(parsePlayerEndReply('finish the roof')).toEqual({ step: 'finish the roof', line: null , game: null });
+    expect(parsePlayerEndReply('note: finish the roof')).toEqual({ step: 'finish the roof', line: null , game: null });
+    expect(parsePlayerEndReply('player: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' , game: null });
     expect(parseNextStepReply('note: finish the roof\nplayer: Finish the roof')).toBe('finish the roof');
   });
 
@@ -331,15 +336,17 @@ describe('two-line reply parsing (261014)', () => {
     expect(parsePlayerEndReply('note:\nfinish the roof\nplayer:\nFinish the roof with Sui')).toEqual({
       step: 'finish the roof',
       line: 'Finish the roof with Sui',
+      game: null,
     });
     // An empty label followed by the other label is not given that label's text.
-    expect(parsePlayerEndReply('note:\nplayer: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' });
+    expect(parsePlayerEndReply('note:\nplayer: Finish the roof')).toEqual({ step: 'Finish the roof', line: 'Finish the roof' , game: null });
   });
 
   it('strips markdown left after the value', () => {
     expect(parsePlayerEndReply('**note:** finish roof**\n**player:** Finish the roof**')).toEqual({
       step: 'finish roof',
       line: 'Finish the roof',
+      game: null,
     });
   });
 
@@ -347,10 +354,12 @@ describe('two-line reply parsing (261014)', () => {
     expect(parsePlayerEndReply('note: finish roof player: Finish the roof with Sui')).toEqual({
       step: 'finish roof',
       line: 'Finish the roof with Sui',
+      game: null,
     });
     expect(parsePlayerEndReply('**note:** finish roof **player:** Finish the roof')).toEqual({
       step: 'finish roof',
       line: 'Finish the roof',
+      game: null,
     });
   });
 
@@ -417,5 +426,208 @@ describe('prompt', () => {
     expect(user.length).toBeLessThan(6_000);
     expect(user).not.toContain('- a\n');
     expect(user).toContain('about 10 minutes');
+  });
+});
+
+// 261020: the plan's game comes from its content (the reply's game: line),
+// not from the session it was checked after. Live: a Stardew session whose
+// goals and memories held a Minecraft build saved it as a Stardew plan, and
+// Home offered "Play Stardew Valley" for a copper bulb lighthouse.
+describe('261020: the game a plan is for', () => {
+  it('reads the game: line in any of the shapes the other labels allow', () => {
+    expect(parsePlayerEndReply('note: get copper for the lighthouse\nplayer: Get copper for your lighthouse\ngame: Minecraft')).toEqual({
+      step: 'get copper for the lighthouse',
+      line: 'Get copper for your lighthouse',
+      game: 'minecraft',
+    });
+    expect(parsePlayerEndReply('note: plant parsnips player: Plant parsnips with Sui game: Stardew Valley.')?.game).toBe('stardew');
+    expect(parsePlayerEndReply("**note:** build a crock pot\n**player:** Build a crock pot\n**game:** Don't Starve Together")?.game).toBe('dontstarve');
+    expect(parsePlayerEndReply('note: ask how the interview went\nplayer: Tell Sui how the interview went\ngame: none')?.game).toBe('none');
+    expect(parsePlayerEndReply('note: x\nplayer: X\ngame:\nMinecraft')?.game).toBe('minecraft');
+    expect(parsePlayerEndReply('none\ngame: none')).toBeNull();
+  });
+
+  it('a game answer is a known game, none, or nothing usable', () => {
+    expect(parseGameAnswer('Minecraft')).toBe('minecraft');
+    expect(parseGameAnswer('"stardew valley"')).toBe('stardew');
+    expect(parseGameAnswer('dont starve together')).toBe('dontstarve');
+    expect(parseGameAnswer('None.')).toBe('none');
+    expect(parseGameAnswer('Terraria')).toBeNull();
+    expect(parseGameAnswer('Minecraft or Stardew Valley')).toBeNull();
+    expect(parseGameAnswer('')).toBeNull();
+    expect(parseGameAnswer(null)).toBeNull();
+  });
+
+  it('resolvePlanPlace: a named game wins over the session, none keeps the session without a game label', () => {
+    const stardew = { surface: 'game' as const, game: 'stardew' };
+    expect(resolvePlanPlace(stardew, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft', memoryGame: 'minecraft' });
+    expect(resolvePlanPlace(stardew, 'stardew')).toEqual({ surface: 'game', game: 'stardew', memoryGame: 'stardew' });
+    // Review 261020: 'none' drops the session's game (picker card, any game may raise it).
+    expect(resolvePlanPlace(stardew, 'none')).toEqual({ surface: 'game', memoryGame: null });
+    expect(resolvePlanPlace({ surface: 'backseat', game: 'roblox' }, 'none')).toEqual({ surface: 'backseat', memoryGame: null });
+    expect(resolvePlanPlace(stardew, null)).toEqual({ surface: 'game', game: 'stardew', memoryGame: 'stardew' });
+    expect(resolvePlanPlace({ surface: 'call' }, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft', memoryGame: 'minecraft' });
+    expect(resolvePlanPlace({ surface: 'call' }, 'none')).toEqual({ surface: 'call', memoryGame: null });
+    expect(resolvePlanPlace({ surface: 'call' }, null)).toEqual({ surface: 'call', memoryGame: null });
+    expect(resolvePlanPlace({ surface: 'backseat', game: 'roblox' }, null)).toEqual({ surface: 'backseat', game: 'roblox', memoryGame: null });
+  });
+
+  it('a Stardew session that left a Minecraft plan saves and tags it as Minecraft', async () => {
+    const llm = provider('note: get copper for the copper bulb lighthouse\nplayer: Get copper for your copper bulb lighthouse\ngame: Minecraft');
+    const tags: unknown[][] = [];
+    const saveOpts: unknown[] = [];
+    const { d, saved } = deps(
+      {
+        tagPlan: async (...a) => {
+          tags.push(a);
+        },
+      },
+      llm,
+    );
+    const save = d.save;
+    d.save = async (id, line, opts) => {
+      saveOpts.push(opts);
+      return save(id, line, opts);
+    };
+    const out = await runPlayerEndNextStep(
+      input({ game: 'stardew', goalsGame: 'stardew', activity: 'playing Stardew Valley with the player' }),
+      d,
+    );
+    expect(out).toBe('saved');
+    expect(saved[0][1]).toBe('Plan for next time in Minecraft: get copper for the copper bulb lighthouse');
+    expect(saveOpts[0]).toEqual({ inGame: true });
+    expect(tags).toEqual([['char-1', 'game', 'minecraft', 'Get copper for your copper bulb lighthouse']]);
+    // The prompt lists the games and asks for the line.
+    expect(llm.calls[0].system).toContain("one of Minecraft, Stardew Valley or Don't Starve Together, or none");
+    expect(llm.calls[0].system).not.toContain('{games}');
+    expect(String(llm.calls[0].messages[0].content)).toContain('(note:, player: and game:)');
+  });
+
+  it('a call plan about no game stays a call plan, filed under the app section', async () => {
+    const llm = provider('note: ask how the job interview went\nplayer: Tell Sui how the interview went\ngame: none');
+    const tags: unknown[][] = [];
+    const saveOpts: unknown[] = [];
+    const { d, saved } = deps({ tagPlan: async (...a) => void tags.push(a) }, llm);
+    const save = d.save;
+    d.save = async (id, line, opts) => {
+      saveOpts.push(opts);
+      return save(id, line, opts);
+    };
+    await runPlayerEndNextStep(input({ surface: 'call', game: undefined, goalsGame: undefined, activity: 'a voice call', playerLines: 6 }), d);
+    expect(saved[0][1]).toBe('Plan for next time: ask how the job interview went');
+    expect(saveOpts[0]).toEqual({ inGame: false });
+    expect(tags).toEqual([['char-1', 'call', undefined, 'Tell Sui how the interview went']]);
+  });
+});
+
+// 261020: the check sees which section each memory sits under. Without the
+// headers a Minecraft copper bulb build read as Stardew work (Stardew has
+// copper too), and the plan was labeled Stardew.
+describe('261020: memories keep the section they are from', () => {
+  const body = [
+    '# Memory',
+    '',
+    '- [2026-10-18] ouen likes cats',
+    '',
+    "## World 1 — ouen's world (Minecraft)",
+    "- [2026-10-19 21:00] ouen's favorite block is copper bulb, building a lighthouse",
+    '',
+    '## In the app (texting, calls and minigames, outside any game world)',
+    '- [2026-10-20 10:00] ouen still needs 40 copper bulbs',
+    '- [2026-10-20 10:05] ouen quit chess fast again',
+    '',
+    '## World 2 — Sui Farm (Stardew Valley)',
+    '- [2026-10-20 11:00] ouen named the farm Sui Farm',
+  ].join('\n');
+
+  it('memoryEntries pairs each entry with its section header', () => {
+    expect(memoryEntries(body)).toEqual([
+      { text: 'ouen likes cats', place: null },
+      { text: "ouen's favorite block is copper bulb, building a lighthouse", place: "World 1 — ouen's world (Minecraft)" },
+      { text: 'ouen still needs 40 copper bulbs', place: 'In the app (texting, calls and minigames, outside any game world)' },
+      { text: 'ouen quit chess fast again', place: 'In the app (texting, calls and minigames, outside any game world)' },
+      { text: 'ouen named the farm Sui Farm', place: 'World 2 — Sui Farm (Stardew Valley)' },
+    ]);
+  });
+
+  it('the prompt groups memories under where they are from, once per run', () => {
+    const { user } = buildPlayerEndPrompt({
+      name: 'Sui',
+      activity: 'playing Stardew Valley with the player',
+      durationMs: 600_000,
+      lines: [],
+      goals: [],
+      memories: memoryEntries(body),
+    });
+    expect(user).toContain(
+      [
+        'Some of your recent memories, under the heading of where each is from:',
+        'Earlier:',
+        '- ouen likes cats',
+        "World 1 — ouen's world (Minecraft):",
+        "- ouen's favorite block is copper bulb, building a lighthouse",
+        'In the app (texting, calls and minigames, outside any game world):',
+        '- ouen still needs 40 copper bulbs',
+        '- ouen quit chess fast again',
+        'World 2 — Sui Farm (Stardew Valley):',
+        '- ouen named the farm Sui Farm',
+      ].join('\n'),
+    );
+  });
+
+  it('a file with no sections keeps the plain list', () => {
+    const { user } = buildPlayerEndPrompt({
+      name: 'Sui',
+      activity: 'a voice call',
+      durationMs: 600_000,
+      lines: [],
+      goals: [],
+      memories: memoryEntries('# Memory\n\n- [2026-10-18] ouen likes cats\n'),
+    });
+    expect(user).toContain('Some of your recent memories:\n- ouen likes cats');
+  });
+});
+
+// 261020 (review): two follow-ups to the game: line.
+describe('261020 review: none answers and the game: split', () => {
+  it('a plan about no game after a Minecraft session is tagged with no game', async () => {
+    const llm = provider('note: ask how the job interview went\nplayer: Tell Sui how the interview went\ngame: none');
+    const tags: unknown[][] = [];
+    const { d, saved } = deps({ tagPlan: async (...a) => void tags.push(a) }, llm);
+    await runPlayerEndNextStep(input({}), d);
+    expect(saved[0][1]).toBe('Plan for next time: ask how the job interview went');
+    expect(tags).toEqual([['char-1', 'game', undefined, 'Tell Sui how the interview went']]);
+  });
+
+  it('"game:" inside the note does not cut it', () => {
+    expect(parsePlayerEndReply('note: finish the board game: monopoly\nplayer: Finish Monopoly with Sui\ngame: none')).toEqual({
+      step: 'finish the board game: monopoly',
+      line: 'Finish Monopoly with Sui',
+      game: 'none',
+    });
+    expect(parsePlayerEndReply('note: finish the board game: monopoly player: Finish Monopoly with Sui game: none')).toEqual({
+      step: 'finish the board game: monopoly',
+      line: 'Finish Monopoly with Sui',
+      game: 'none',
+    });
+    // A label earlier in the order does not split a later one's text.
+    expect(parsePlayerEndReply('note: x\nplayer: Write a note: thank Sui\ngame: Minecraft')?.line).toBe('Write a note: thank Sui');
+    // A label that has its own line is not also split out mid-line.
+    expect(parsePlayerEndReply('note: ask the player: how the interview went\nplayer: Tell Sui how the interview went\ngame: none')).toEqual({
+      step: 'ask the player: how the interview went',
+      line: 'Tell Sui how the interview went',
+      game: 'none',
+    });
+    expect(parsePlayerEndReply('note: get copper player: Get copper with Sui\ngame: Minecraft')).toEqual({
+      step: 'get copper',
+      line: 'Get copper with Sui',
+      game: 'minecraft',
+    });
+    // The real inline labels still split.
+    expect(parsePlayerEndReply('note: plant parsnips player: Plant parsnips with Sui game: Stardew Valley.')).toEqual({
+      step: 'plant parsnips',
+      line: 'Plant parsnips with Sui',
+      game: 'stardew',
+    });
   });
 });

@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeNextStep, nextStepMemoryLine, NEXT_STEP_MAX_CHARS } from './nextStep.js'
+import { normalizeNextStep, nextStepMemoryLine, parsePlanLine, parsePlanGameField, PLAN_GAMES, NEXT_STEP_MAX_CHARS } from './nextStep.js'
+import { GAME_CATALOG } from '../../shared/games'
 import { NEXT_TIME_GREETING } from './prompts.js'
 
 describe('normalizeNextStep', () => {
@@ -194,5 +195,89 @@ describe('greeting cues (261014)', () => {
     const group = callGreetingNote({ peers: ['Marv'], plan: 'ask how the move went' })
     expect(group).toContain('ongoing group voice call')
     expect(group).not.toContain('move')
+  })
+})
+
+describe('plan lines name their game (261020)', () => {
+  it('writes the game into the line, or the plain line without one', () => {
+    expect(nextStepMemoryLine('get copper', 'Minecraft')).toBe('Plan for next time in Minecraft: get copper')
+    expect(nextStepMemoryLine('build a crock pot', "Don't Starve Together")).toBe("Plan for next time in Don't Starve Together: build a crock pot")
+    expect(nextStepMemoryLine('ask how the interview went')).toBe('Plan for next time: ask how the interview went')
+    expect(nextStepMemoryLine('x', '  ')).toBe('Plan for next time: x')
+    // A colon in a name cannot break the prefix.
+    expect(nextStepMemoryLine('x', 'Game: Deluxe')).toBe('Plan for next time in Game Deluxe: x')
+  })
+
+  it('parses both shapes back', () => {
+    expect(parsePlanLine('Plan for next time in Stardew Valley: plant parsnips')).toEqual({ step: 'plant parsnips', gameName: 'Stardew Valley' })
+    expect(parsePlanLine('plan for next time: find diamonds')).toEqual({ step: 'find diamonds', gameName: null })
+    expect(parsePlanLine(nextStepMemoryLine('a: b', 'Minecraft'))).toEqual({ step: 'a: b', gameName: 'Minecraft' })
+    expect(parsePlanLine('Plan for next time:')).toBeNull()
+    expect(parsePlanLine('ouen likes copper')).toBeNull()
+  })
+
+  it('the greeting hint still names the labeled lines', () => {
+    expect(nextStepMemoryLine('x', 'Minecraft').startsWith('Plan for next time')).toBe(true)
+    expect(NEXT_TIME_GREETING).toContain('"Plan for next time"')
+  })
+})
+
+// 261020 (review): goodbye tools name the game their plan is for.
+describe('next_time_game field (261020 review)', () => {
+  it('reads a game id, a display name, a unique part of one, or none', () => {
+    expect(parsePlanGameField('Minecraft')).toBe('minecraft')
+    expect(parsePlanGameField('stardew valley')).toBe('stardew')
+    expect(parsePlanGameField('Stardew')).toBe('stardew')
+    expect(parsePlanGameField("Don't Starve Together")).toBe('dontstarve')
+    expect(parsePlanGameField('dontstarve')).toBe('dontstarve')
+    expect(parsePlanGameField(' none. ')).toBe('none')
+  })
+
+  it('anything else is left out: unknown games, two games, non-strings', () => {
+    expect(parsePlanGameField('Terraria')).toBeNull()
+    expect(parsePlanGameField('Minecraft or Stardew Valley')).toBeNull()
+    expect(parsePlanGameField('game')).toBeNull()
+    expect(parsePlanGameField('')).toBeNull()
+    expect(parsePlanGameField(undefined)).toBeNull()
+    expect(parsePlanGameField(3)).toBeNull()
+  })
+
+  // Delta review 261020: loose answers.
+  it('a short answer that starts with none is none', () => {
+    expect(parsePlanGameField('None of them')).toBe('none')
+    expect(parsePlanGameField('none (just talk)')).toBe('none')
+    expect(parsePlanGameField('No game')).toBe('none')
+    expect(parsePlanGameField('nothing in a game, it is about her exam')).toBeNull()
+  })
+
+  it('reads the short names DST and MC', () => {
+    expect(parsePlanGameField('DST')).toBe('dontstarve')
+    expect(parsePlanGameField('mc')).toBe('minecraft')
+    expect(parsePlanGameField("Don't Starve")).toBe('dontstarve')
+    expect(parsePlanGameField('Minecraft (the lighthouse build)')).toBe('minecraft')
+  })
+
+  it('matches whole words, so a part of a name or another game names none', () => {
+    expect(parsePlanGameField('craft')).toBeNull()
+    expect(parsePlanGameField('Minecraft Dungeons')).toBeNull()
+    expect(parsePlanGameField('valley')).toBeNull()
+    expect(parsePlanGameField('starve')).toBeNull()
+    expect(parsePlanGameField('Minecraft or Stardew Valley')).toBeNull()
+  })
+
+  it('PLAN_GAMES matches the bot games in the shared catalog', () => {
+    for (const [id, name] of Object.entries(PLAN_GAMES)) {
+      expect(GAME_CATALOG.find((g) => g.id === id)?.name).toBe(name)
+    }
+  })
+
+  it('a plan not tied to this game is raised as talk, not as a task here', () => {
+    const cue = nextTimeGreeting('ask how the interview went', { notForGame: 'Stardew Valley' })
+    expect(cue).toContain('not saved as something to do in Stardew Valley')
+    expect(cue).toContain('not as a task to start here')
+    expect(nextTimeGreeting('finish the roof')).not.toContain('not saved as something to do')
+    const fc = FIRST_CONTACT({ gameName: 'Stardew Valley', known: true, plan: 'ask how the interview went', planNotForGame: true })
+    expect(fc).toContain('not saved as something to do in Stardew Valley')
+    expect(FIRST_CONTACT({ gameName: 'Stardew Valley', known: true, plan: 'plant parsnips' })).not.toContain('not saved as something to do')
   })
 })

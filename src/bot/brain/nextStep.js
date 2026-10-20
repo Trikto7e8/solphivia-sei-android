@@ -31,9 +31,88 @@ export function normalizeNextStep(raw) {
 /**
  * The MEMORY.md entry for a saved hook. The prefix is what the greeting
  * prompts point at (promptLibrary NEXT_TIME_GREETING), so keep them in sync.
+ *
+ * 261020: `gameName` (a display name, "Stardew Valley") names the game the
+ * plan is for: "Plan for next time in Minecraft: ...". MEMORY.md is shared
+ * by every surface and every game, so an unlabeled Minecraft plan read like
+ * a task inside a Stardew session (live 261020: a copper bulb lighthouse
+ * became her Stardew goal). Omit it for a plan that is not about a game.
  */
-export function nextStepMemoryLine(step) {
-  return `Plan for next time: ${step}`
+export function nextStepMemoryLine(step, gameName) {
+  const game = typeof gameName === 'string' ? gameName.replace(/[\s:]+/g, ' ').trim() : ''
+  return game ? `Plan for next time in ${game}: ${step}` : `Plan for next time: ${step}`
+}
+
+/** "Plan for next time:" or "Plan for next time in <game>:" at the start of an entry. */
+export const PLAN_LINE_RE = /^plan for next time(?:\s+in\s+([^:]{1,60}?))?\s*:\s*/i
+
+/**
+ * An entry's text as a plan, or null when it is not one: the step without
+ * the prefix, and the game display name when the line names one.
+ * @param {string} text
+ * @returns {{ step: string, gameName: string | null } | null}
+ */
+export function parsePlanLine(text) {
+  const s = String(text ?? '').trim()
+  const m = PLAN_LINE_RE.exec(s)
+  if (!m) return null
+  const step = s.slice(m[0].length).trim()
+  if (!step) return null
+  return { step, gameName: m[1] ? m[1].trim() : null }
+}
+
+// 261020 (review): the game a goodbye's plan is for, from the goodbye
+// tools' optional `next_time_game` field. The model decides it from the step
+// (a Minecraft build talked about while playing Stardew is a Minecraft plan),
+// the same way the player-end check's `game:` line does. Display names match
+// src/shared/games.ts GAME_CATALOG (a test checks); kept here because this
+// module is import-free.
+/** Bot game id -> display name. */
+export const PLAN_GAMES = Object.freeze({
+  minecraft: 'Minecraft',
+  stardew: 'Stardew Valley',
+  dontstarve: "Don't Starve Together",
+})
+
+// Whole answers that name one game: its id, its name, a leading part of the
+// name, or its short name. Compared as whole words, so "craft" or "Minecraft
+// Dungeons" names no game (review 261020).
+const PLAN_GAME_ALIASES = Object.freeze({
+  minecraft: ['minecraft', 'mc'],
+  stardew: ['stardew valley', 'stardew', 'sdv'],
+  dontstarve: ['dont starve together', 'dont starve', 'dontstarve', 'dst'],
+})
+
+/** Lowercase words, apostrophes dropped ("Don't" -> "dont"), no leading "the". */
+function gameWords(s) {
+  return s
+    .toLowerCase()
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/^the\s+/, '')
+}
+
+/**
+ * The tool field as a game id, 'none' (not about playing a game), or null
+ * when it is missing or names no known game.
+ * @param {unknown} raw
+ * @returns {'minecraft' | 'stardew' | 'dontstarve' | 'none' | null}
+ */
+export function parsePlanGameField(raw) {
+  if (typeof raw !== 'string') return null
+  const v = raw.replace(/^[\s*_"'`“”‘’]+|[\s*_"'`“”‘’.。]+$/g, '').trim()
+  if (!v) return null
+  // "None of them", "none (just talk)": a short answer that starts with none,
+  // as the player-end check reads its note (cleanNote).
+  if (/^(none|nothing|no|n\/a)(?![a-z])/i.test(v) && v.split(/\s+/).length <= 3) return 'none'
+  if (/^(无|没有|なし|없음)$/.test(v)) return 'none'
+  // A trailing aside does not change the game: "Minecraft (the lighthouse)".
+  const words = gameWords(v.replace(/\s*\([^)]*\)\s*$/, ''))
+  for (const [id, aliases] of Object.entries(PLAN_GAME_ALIASES)) {
+    if (aliases.includes(words)) return /** @type {any} */ (id)
+  }
+  return null
 }
 
 // 261014: the player-facing line for the Home "up next" strip.

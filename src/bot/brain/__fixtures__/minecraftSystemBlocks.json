@@ -64,7 +64,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead. A goal is for the game you are in now: a plan for a different game, or for outside the game, goes in remember() and waits for that game. Start the text with a short headline of the goal that leaves the player's name out, like \"Fence in the chicken coop\", because the player can see that headline on their home screen.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -135,6 +135,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -157,6 +161,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -1110,7 +1118,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead. A goal is for the game you are in now: a plan for a different game, or for outside the game, goes in remember() and waits for that game. Start the text with a short headline of the goal that leaves the player's name out, like \"Fence in the chicken coop\", because the player can see that headline on their home screen.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1181,6 +1189,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -1203,6 +1215,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -2155,7 +2171,7 @@
       },
       {
         "name": "setGoal",
-        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead.",
+        "description": "Record a goal so it survives across loops: a project of your own, or a task the player gives you that you will not finish with the action you start now. That covers a task with more than one part (going back to them or handing something over is a part), a number to reach, something to do later, and a rule to keep. Write every part and when it counts as done, and set for_player when it is their task. Recording a goal does not start it: when the player wants it done now, call the action for its first step in the same turn. Feelings and facts about the player go in remember() instead. A goal is for the game you are in now: a plan for a different game, or for outside the game, goes in remember() and waits for that game. Start the text with a short headline of the goal that leaves the player's name out, like \"Fence in the chicken coop\", because the player can see that headline on their home screen.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2226,6 +2242,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -2248,6 +2268,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false

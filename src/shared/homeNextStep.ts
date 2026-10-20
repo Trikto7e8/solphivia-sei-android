@@ -8,6 +8,9 @@
  * character that has something. src/main/homeNextStep.ts has the rules.
  */
 
+import { isGameId, type GameId } from './gameIpc';
+import { GAME_CATALOG } from './games';
+
 /** Where a plan was made. Same values as playerEndNextStep's NextStepSurface. */
 export type HomeNextStepSurface = 'game' | 'call' | 'backseat';
 
@@ -43,4 +46,32 @@ export function nameInSentence(name: string): string {
   if (i < 0) return n;
   chars[i] = chars[i].toUpperCase();
   return chars.join('');
+}
+
+/** Lowercase letters and digits only: "Don't Starve Together" -> "dontstarvetogether". */
+function squash(s: string): string {
+  return s.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
+}
+
+/**
+ * 261020: a bot game as plan text names it ("Stardew Valley", "stardew",
+ * "Don't Starve Together") as its id, or null when it names none of them.
+ * Used for the game a plan's memory line names and for the player-end
+ * check's `game:` answer, so a value with extra words around one game name
+ * ("Minecraft.") still reads; one naming two games reads as none.
+ */
+export function gameIdFromName(name: string | null | undefined): GameId | null {
+  const n = squash(String(name ?? ''));
+  if (!n) return null;
+  if (isGameId(n)) return n;
+  const games = GAME_CATALOG.filter((g) => isGameId(g.id));
+  const exact = games.find((g) => squash(g.name) === n);
+  if (exact && isGameId(exact.id)) return exact.id;
+  const hits = games.filter((g) => n.includes(squash(g.name)) || n.includes(g.id));
+  return hits.length === 1 && isGameId(hits[0].id) ? hits[0].id : null;
+}
+
+/** A bot game id as plan text names it ("Stardew Valley"). */
+export function gameDisplayName(game: GameId): string {
+  return GAME_CATALOG.find((g) => g.id === game)?.name ?? game;
 }

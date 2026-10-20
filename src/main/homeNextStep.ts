@@ -39,8 +39,9 @@
 import path from 'node:path';
 import { readFile } from 'node:fs/promises';
 import type { HomeNextStep, HomeNextStepSurface } from '../shared/homeNextStep';
-import { GAME_IDS } from '../shared/gameIpc';
-import { acceptPlayerLine, nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
+import { gameIdFromName } from '../shared/homeNextStep';
+import { GAME_IDS, isGameId, type GameId } from '../shared/gameIpc';
+import { acceptPlayerLine, normalizePlayerLine, parsePlanLine } from '../bot/brain/nextStep.js';
 import { atomicWrite } from '../bot/brain/storage/atomicWrite.js';
 import { withFileLock } from '../bot/brain/storage/fileLock.js';
 import { goalsFileFor } from './playerEndNextStep';
@@ -54,9 +55,6 @@ export const TAG_WINDOW_MS = 10 * 60_000;
 const MAX_TAGS = 20;
 export const LEDGER_FILE = 'NEXT_STEP.json';
 
-/** "Plan for next time: " (nextStep.js owns the wording). */
-const PLAN_PREFIX = nextStepMemoryLine('');
-const PLAN_PREFIX_RE = new RegExp(`^${PLAN_PREFIX.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*`, 'i');
 
 export interface NextStepTag {
   /** planKey() of the plan text. */
@@ -85,6 +83,12 @@ export interface StampedEntry {
   text: string;
 }
 
+/** A plan entry: the step text, plus the game its line names (261020). */
+export interface PlanEntry extends StampedEntry {
+  /** Bot game id from "Plan for next time in <game>:", or null. */
+  game: GameId | null;
+}
+
 // ── pure ──────────────────────────────────────────────────────────────────
 
 /** Loose key for matching a plan's text: lowercase letters, digits, spaces. */
@@ -111,18 +115,51 @@ export function stampedEntries(body: string): StampedEntry[] {
 }
 
 /** The plan entries of a MEMORY.md body, prefix removed, in file order. */
-export function planEntries(memory: string): StampedEntry[] {
-  return stampedEntries(memory)
-    .filter((e) => PLAN_PREFIX_RE.test(e.text))
-    .map((e) => ({ at: e.at, text: e.text.replace(PLAN_PREFIX_RE, '').trim() }))
-    .filter((e) => e.text.length > 0);
+export function planEntries(memory: string): PlanEntry[] {
+  const out: PlanEntry[] = [];
+  for (const e of stampedEntries(memory)) {
+    const plan = parsePlanLine(e.text);
+    if (plan) out.push({ at: e.at, text: plan.step, game: gameIdFromName(plan.gameName) });
+  }
+  return out;
 }
 
 /** The newest entry by stamp (the later one wins a tie). */
-function newest(entries: StampedEntry[]): StampedEntry | null {
-  let best: StampedEntry | null = null;
+function newest<T extends StampedEntry>(entries: T[]): T | null {
+  let best: T | null = null;
   for (const e of entries) if (!best || e.at >= best.at) best = e;
   return best;
+}
+
+/** The newest tag recorded for a plan, if any. */
+function tagFor(plan: StampedEntry, ledger: NextStepLedger): NextStepTag | undefined {
+  const key = planKey(plan.text);
+  let tag: NextStepTag | undefined;
+  for (const t of ledger.tags) if (t.key === key) tag = t; // newest tag wins
+  return tag;
+}
+
+/**
+ * 261020: the bot game a plan belongs to, or null when it is not tied to one
+ * (a call plan, "ask how the interview went"). The tag decides when it names
+ * a game (it was set from the plan's content or the session it came from);
+ * else the game the memory line names.
+ */
+export function planGame(plan: PlanEntry, ledger: NextStepLedger): GameId | null {
+  const tag = tagFor(plan, ledger);
+  if (tag?.surface === 'game' && isGameId(tag.game)) return tag.game;
+  return plan.game;
+}
+
+/**
+ * 261020: whether a plan belongs to a DIFFERENT bot game than `game`. Such a
+ * plan is not raised by this game's greeting and is not used up by it, so
+ * the Home card keeps offering the right game.
+ */
+export function planIsForOtherGame(plan: PlanEntry, ledger: NextStepLedger, game: GameId | null | undefined): boolean {
+  if (!game) return false;
+  const g = planGame(plan, ledger);
+  return g !== null && g !== game;
 }
 
 function capitalize(s: string): string {
@@ -179,7 +216,7 @@ export interface PickInput {
  * The newest plan when it is still open: under NEXT_STEP_MAX_AGE_MS old and
  * not yet seen by a later greeting. Older plans never count (see top).
  */
-export function openPlan(p: { memory: string; ledger: NextStepLedger; now: number }): StampedEntry | null {
+export function openPlan(p: { memory: string; ledger: NextStepLedger; now: number }): PlanEntry | null {
   const plan = newest(planEntries(p.memory));
   if (!plan || p.now - plan.at > NEXT_STEP_MAX_AGE_MS) return null;
   const consumedAt = p.ledger.consumedAt ? Date.parse(p.ledger.consumedAt) : NaN;
@@ -192,20 +229,20 @@ export function pickNextStep(p: PickInput): HomeNextStep | null {
   const fresh = (at: number) => p.now - at <= NEXT_STEP_MAX_AGE_MS;
   const plan = openPlan(p);
   if (plan) {
-    const key = planKey(plan.text);
-    let tag: NextStepTag | undefined;
-    for (const t of p.ledger.tags) if (t.key === key) tag = t; // newest tag wins
+    const tag = tagFor(plan, p.ledger);
     // 261014: the line written to the player when there is one, else the
     // companion's note as before.
     const text = (tag?.line && normalizePlayerLine(tag.line)) || planDisplayText(plan.text);
     if (text) {
+      // 261020: an untagged plan whose line names its game still opens it.
+      const surface = tag?.surface ?? (plan.game ? 'game' : null);
       return {
         characterId: p.characterId,
         source: 'plan',
         text,
         at: plan.at,
-        surface: tag?.surface ?? null,
-        game: tag?.game ?? null,
+        surface,
+        game: tag?.game ?? (surface === 'game' ? plan.game : null),
       };
     }
   }
@@ -292,11 +329,34 @@ export async function readHomeNextStep(memoryDir: string, characterId: string, n
  * The plan a greeting starting now should raise (openPlan), as its note
  * text, or null. Read BEFORE consumeNextStep marks it used: main ships it in
  * the bot's init (FIRST_CONTACT) and the call greeting note. Never throws.
+ * 261020: `game` = the greeting is a game session's. A plan for a different
+ * game is not this greeting's to raise (null): a Minecraft plan made the main
+ * thing of a Stardew greeting turns into a Stardew task.
  */
-export async function readPendingPlan(memoryDir: string, now = Date.now()): Promise<string | null> {
+export async function readPendingPlan(
+  memoryDir: string,
+  now = Date.now(),
+  opts: { game?: GameId | null } = {},
+): Promise<string | null> {
+  return (await readPendingPlanFor(memoryDir, now, opts))?.text ?? null;
+}
+
+/**
+ * readPendingPlan plus whether the plan is tied to `game`. 261020 (review):
+ * a game greeting raises a plan with no game (a call plan the model gave no
+ * game, "ask how the interview went") too, but as something to talk about:
+ * `notForGame` tells the bot to say so (promptLibrary nextTimeGreeting).
+ */
+export async function readPendingPlanFor(
+  memoryDir: string,
+  now = Date.now(),
+  opts: { game?: GameId | null } = {},
+): Promise<{ text: string; notForGame: boolean } | null> {
   try {
     const [memory, ledger] = await Promise.all([readOrEmpty(path.join(memoryDir, 'MEMORY.md')), readLedger(memoryDir)]);
-    return openPlan({ memory, ledger, now })?.text ?? null;
+    const plan = openPlan({ memory, ledger, now });
+    if (!plan || planIsForOtherGame(plan, ledger, opts.game)) return null;
+    return { text: plan.text, notForGame: !!opts.game && planGame(plan, ledger) !== opts.game };
   } catch {
     return null;
   }
@@ -345,12 +405,19 @@ export async function tagLatestPlan(
  * A session whose greeting is told about the plan started: every plan
  * written up to now is used. Writes only when there is an unconsumed plan,
  * so most session starts touch nothing. Returns whether it wrote. Never throws.
+ * 261020: `game` = a game session started. A newest plan for a different game
+ * was not raised by it (readPendingPlan), so it stays open for that game.
  */
-export async function consumeNextStep(memoryDir: string, now = Date.now()): Promise<boolean> {
+export async function consumeNextStep(
+  memoryDir: string,
+  now = Date.now(),
+  opts: { game?: GameId | null } = {},
+): Promise<boolean> {
   try {
     const plan = newest(planEntries(await readOrEmpty(path.join(memoryDir, 'MEMORY.md'))));
     if (!plan) return false;
     return await updateLedger(memoryDir, (l) => {
+      if (planIsForOtherGame(plan, l, opts.game)) return false;
       const prev = l.consumedAt ? Date.parse(l.consumedAt) : NaN;
       if (Number.isFinite(prev) && plan.at <= prev) return false;
       l.consumedAt = new Date(now).toISOString();

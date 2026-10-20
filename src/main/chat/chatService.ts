@@ -760,6 +760,9 @@ async function prepareChatTurn(
     // 261008: every chat and voice turn offers remember() (chatSurfaceTools),
     // so the status block carries the per-turn memory check.
     memoryGuide: true,
+    // 261020: every chat and voice turn offers web search (chatTools), so the
+    // status block carries the search check too.
+    searchGuide: true,
   });
   // Voice: only the last N rows go to the model (VOICE_RECENT_CAP). Slice the raw
   // transcript BEFORE toMessages so role-merge + first-must-be-user still hold.

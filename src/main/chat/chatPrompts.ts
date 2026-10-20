@@ -176,6 +176,11 @@ export interface BuildSystemArgs {
    * chess and Draw! offer the plain REMEMBER_TOOL under their own contracts.
    */
   memoryGuide?: boolean;
+  /**
+   * 261020: the chat surface offers web search, so the status block carries
+   * CHAT_SEARCH_CHECK (ahead of the memory check). Set by chatService only.
+   */
+  searchGuide?: boolean;
 }
 
 /**
@@ -200,6 +205,21 @@ export const CHAT_MEMORY_CHECK =
   'or a plan you two agreed on. ' +
   'When they say goodbye, look back over this conversation: anything above that you would want next time and have not saved yet (a plan for tomorrow, something they told you) goes into remember() now, since this conversation will be gone. ' +
   'If there is nothing like that, just reply.';
+
+/**
+ * 261020: the per-turn search check, in the status block next to the memory
+ * check and for the same reason (the model follows what it reads last). After
+ * a server-side web_search the answer cites the pages, and a cited span is the
+ * page's own sentence: Sui's lowercase texting slid into "Zombies, Drowned,
+ * and Husks are now immune to freezing and will not take damage from the
+ * Freezing effect". The same rule only in CHAT_BASELINE (block 0) did not move
+ * it (scripts/search-qa/chat.qa.ts, 12 samples each). This frames the results
+ * as notes she retells, not text she passes on. Static text, no cache miss.
+ */
+export const CHAT_SEARCH_CHECK =
+  'Search check: what a search finds is notes for you, written in the style of the pages, not yours. ' +
+  'When you answer from them, retell the one or two facts that matter the way you would text a friend, in your usual voice and casing, short. ' +
+  'Do not copy sentences or phrases from the pages, even short ones.';
 
 /**
  * Multi-companion voice (260706): the group-call awareness note, added to block
@@ -421,6 +441,7 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
               : `\nWorld status: no open ${w.name} world is detected, so launch with game "${w.game}" would fail. Do not call launch for it; if they want to play ${w.name}, ask them to open their world in the game first.`,
           )
           .join('') +
+        (args.searchGuide ? `\n${CHAT_SEARCH_CHECK}` : '') +
         (args.memoryGuide ? `\n${CHAT_MEMORY_CHECK}` : ''),
   });
 

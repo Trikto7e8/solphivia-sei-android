@@ -134,7 +134,10 @@ export async function appendGoal(filePath, text, when, { forPlayer = false } = {
  * Returns the number of removed lines.
  */
 export async function removeGoal(filePath, query) {
-  const q = String(query ?? '').trim().toLowerCase()
+  // 261020 (pass 20 review): NUDGES.heartbeatNow shows a long goal cut at 157
+  // characters with "..." on the end. A clearGoal that copies that line whole
+  // must still match, so a trailing ellipsis is not part of the substring.
+  const q = String(query ?? '').trim().replace(/\s*(\.\.\.|…)$/, '').trim().toLowerCase()
   if (!q) return 0
 
   return withFileLock(filePath, async () => {

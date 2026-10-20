@@ -239,3 +239,18 @@ describe('review: the seed quote', () => {
     expect(JSON.stringify(provider.calls[1].messages)).not.toContain(QUOTE)
   })
 })
+
+describe('review: clearGoal with a clipped heartbeatNow line', () => {
+  it('matches the goal the "..." line was cut from', async () => {
+    const fs = await import('node:fs/promises')
+    const { appendGoal, removeGoal } = await import('./memory/heartbeat.js')
+    const file = path.join(os.tmpdir(), `sei-p20-clip-${process.pid}-${Date.now()}.md`)
+    const goal = `Fence in the chicken coop. ${'Put a fence post on every edge block, '.repeat(6)}done when no gap is left.`
+    try {
+      await appendGoal(file, goal, new Date())
+      const shown = NUDGES.heartbeatNow([goal]).split('\n')[1].slice(2)
+      expect(shown.endsWith('...')).toBe(true)
+      expect(await removeGoal(file, shown)).toBe(1)
+    } finally { await fs.rm(file, { force: true }) }
+  })
+})

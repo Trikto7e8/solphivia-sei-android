@@ -267,13 +267,16 @@ function isExactGameAnswer(raw: string): boolean {
  * Where a labeled value ends because the next label starts, or -1.
  * 261020 (review): only a LATER label in the reply's order (note, player,
  * game) splits a line, and a `game:` only when what follows it is a game
- * answer, so "finish the board game: monopoly" stays one note.
+ * answer, so "finish the board game: monopoly" stays one note. A label that
+ * opens a line of its own elsewhere in the reply (`ownLine`) is never split
+ * out mid-line, so "note: ask the player: how it went" above a real
+ * `player:` line stays one note.
  */
-function inlineLabelAt(label: string, value: string): number {
+function inlineLabelAt(label: string, value: string, ownLine: ReadonlySet<string>): number {
   const from = LABEL_ORDER.indexOf(label);
   for (const m of value.matchAll(INLINE_LABEL)) {
     const next = m[1].toLowerCase();
-    if (LABEL_ORDER.indexOf(next) <= from) continue;
+    if (LABEL_ORDER.indexOf(next) <= from || ownLine.has(next)) continue;
     const at = m.index ?? -1;
     if (at <= 0) continue;
     if (next === 'game') {
@@ -344,14 +347,16 @@ export function resolvePlanPlace(
  */
 export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
   const lines: string[] = [];
-  for (const first of String(text ?? '').trim().split('\n')) {
+  const rawLines = String(text ?? '').trim().split('\n');
+  const ownLine = new Set(rawLines.map((l) => LABELED.exec(l)?.[1].toLowerCase() ?? ''));
+  for (const first of rawLines) {
     // Several labels on one line: split it, so the note does not carry the
     // player line (261020: or the game line after it).
     let raw = first;
     for (;;) {
       const m = LABELED.exec(raw);
       if (m) {
-        const at = inlineLabelAt(m[1].toLowerCase(), m[2]);
+        const at = inlineLabelAt(m[1].toLowerCase(), m[2], ownLine);
         if (at > 0) {
           lines.push(raw.slice(0, raw.length - m[2].length + at));
           raw = m[2].slice(at).trim();

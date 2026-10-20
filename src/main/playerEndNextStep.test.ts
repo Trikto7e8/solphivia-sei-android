@@ -612,6 +612,17 @@ describe('261020 review: none answers and the game: split', () => {
     });
     // A label earlier in the order does not split a later one's text.
     expect(parsePlayerEndReply('note: x\nplayer: Write a note: thank Sui\ngame: Minecraft')?.line).toBe('Write a note: thank Sui');
+    // A label that has its own line is not also split out mid-line.
+    expect(parsePlayerEndReply('note: ask the player: how the interview went\nplayer: Tell Sui how the interview went\ngame: none')).toEqual({
+      step: 'ask the player: how the interview went',
+      line: 'Tell Sui how the interview went',
+      game: 'none',
+    });
+    expect(parsePlayerEndReply('note: get copper player: Get copper with Sui\ngame: Minecraft')).toEqual({
+      step: 'get copper',
+      line: 'Get copper with Sui',
+      game: 'minecraft',
+    });
     // The real inline labels still split.
     expect(parsePlayerEndReply('note: plant parsnips player: Plant parsnips with Sui game: Stardew Valley.')).toEqual({
       step: 'plant parsnips',

@@ -81,7 +81,7 @@ export function createMemoryLog({ path: filePath } = {}) {
   if (!filePath) throw new Error('createMemoryLog: path required')
   return {
     path: filePath,
-    append: (text, when) => appendMemory(filePath, text, when),
+    append: (text, when, opts) => appendMemory(filePath, text, when, opts),
     forget: (query) => forgetMemory(filePath, query),
     readAll: () => readMemoryFull(filePath),
     noteWorld: (num, label, game) => noteWorld(filePath, num, label, game),
@@ -112,19 +112,32 @@ export async function noteWorld(filePath, num, label, game) {
     // any section counts (the app section too), so a world re-entered after
     // app memories gets its header again and its entries are not filed
     // under the app section.
-    const lastHeader = lastSectionHeader(existing)
-    const lastWorld = lastHeader ? /^## World (\d+)\b/.exec(lastHeader) : null
-    if (lastWorld && Number(lastWorld[1]) === num) return 0
-    // 261020: name the game too ("## World 2 — Sei Farm (Stardew Valley)").
-    // World numbers are shared by every game a character plays, and a farm
-    // name alone does not say which game the section is from.
-    const gamePart = typeof game === 'string' && game.trim() && !String(label ?? '').includes(game.trim()) ? ` (${game.trim()})` : ''
-    const labelPart = label ? ` — ${label}${gamePart}` : gamePart
+    if (lastSectionIsWorld(existing, num)) return 0
     const sep = existing.endsWith('\n') ? '' : '\n'
-    await atomicWrite(filePath, `${existing}${sep}\n## World ${num}${labelPart}\n`)
-    await archiveAppend(filePath, `\n## World ${num}${labelPart}\n`)
+    const header = worldHeaderLine(num, label, game)
+    await atomicWrite(filePath, `${existing}${sep}\n${header}\n`)
+    await archiveAppend(filePath, `\n${header}\n`)
     return 1
   })
+}
+
+/** Whether the last section header of a MEMORY.md body is `## World <num>`. */
+function lastSectionIsWorld(body, num) {
+  const lastHeader = lastSectionHeader(body)
+  const lastWorld = lastHeader ? /^## World (\d+)\b/.exec(lastHeader) : null
+  return !!lastWorld && Number(lastWorld[1]) === num
+}
+
+/**
+ * The header line for a world. 261020: it names the game too ("## World 2 —
+ * Sei Farm (Stardew Valley)"). World numbers are shared by every game a
+ * character plays, and a farm name alone does not say which game the section
+ * is from.
+ */
+function worldHeaderLine(num, label, game) {
+  const gamePart = typeof game === 'string' && game.trim() && !String(label ?? '').includes(game.trim()) ? ` (${game.trim()})` : ''
+  const labelPart = label ? ` — ${label}${gamePart}` : gamePart
+  return `## World ${num}${labelPart}`
 }
 
 // ── Raw archive (260725) ────────────────────────────────────────────────
@@ -196,9 +209,14 @@ function isRecentDuplicate(existing, key, atMs) {
  * @param {string} filePath
  * @param {string} text
  * @param {Date | string} [when]
- * @param {{ section?: 'app' }} [opts] 261020: `section: 'app'` = written
- *   outside a game world (main's chat, call, chess, Draw!, backseat writers):
- *   filed under APP_SECTION_HEADER when the file's last section is a world.
+ * @param {{ section?: 'app', world?: { num: number, label?: string, game?: string } }} [opts]
+ *   261020: `section: 'app'` = written outside a game world (main's chat,
+ *   call, chess, Draw!, backseat writers): filed under APP_SECTION_HEADER
+ *   when the file's last section is a world. `world` = written by a game
+ *   session in that world (the bot): when an app writer opened another
+ *   section after this session's world header (a group-call greeting, a
+ *   late player-end save), the world header is written again first, in the
+ *   same lock, so the entry is not filed under that section.
  */
 export async function appendMemory(filePath, text, when, opts = {}) {
   const safe = String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()
@@ -227,7 +245,10 @@ export async function appendMemory(filePath, text, when, opts = {}) {
     const atMs = Number.isFinite(whenDate.getTime()) ? whenDate.getTime() : Date.now()
     if (isRecentDuplicate(existing, normalizeEntry(safe), atMs)) return 0
     let chunk = line
-    if (opts?.section === 'app') {
+    const world = opts?.world
+    if (world && Number.isFinite(world.num) && lastSectionHeader(existing) !== null && !lastSectionIsWorld(existing, world.num)) {
+      chunk = `${existing.endsWith('\n') ? '' : '\n'}\n${worldHeaderLine(world.num, world.label, world.game)}\n${line}`
+    } else if (opts?.section === 'app') {
       const last = lastSectionHeader(existing)
       if (last !== null && last !== APP_SECTION_HEADER) {
         chunk = `${existing.endsWith('\n') ? '' : '\n'}\n${APP_SECTION_HEADER}\n${line}`

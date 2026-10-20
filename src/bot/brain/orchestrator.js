@@ -1049,6 +1049,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   const worldRegistry = config.memory.worlds_json_path
     ? createWorldRegistry({ worldsPath: config.memory.worlds_json_path, memoryLog, logger })
     : null
+  // 261020: this session's world for a memory write, so an app section opened
+  // mid-session (a group-call greeting, a late player-end save) does not take
+  // the bot's next entries (appendMemory `world`). {} before the first spawn.
+  const worldAppendOpts = () => {
+    const w = worldRegistry?.current?.() ?? null
+    return w ? { world: { num: w.num, label: w.label, game: caps.gameName } } : {}
+  }
   // 260618: progression-graph state (observers/progression.js, surfaced through
   // adapter.getProgression). `progressionFlags` are the caller-owned ONE-WAY
   // latches the graph can't re-derive from live inventory — entered_nether /
@@ -3593,7 +3600,7 @@ function maybeWarnByteCap(loop, warned) {
     try {
       // 261020: labeled with this game, so another game's session reads it
       // as a plan for here and not as its own task.
-      const written = await memoryLog.append(nextStepMemoryLine(step, caps.gameName), new Date())
+      const written = await memoryLog.append(nextStepMemoryLine(step, caps.gameName), new Date(), worldAppendOpts())
       if (written) {
         memoryCompactor.maybeCompact().catch(err =>
           logger.warn?.(`[sei/orch] memoryCompactor.maybeCompact failed: ${err?.message ?? err}`))
@@ -3754,7 +3761,7 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'remember: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'remember: empty', is_error: true }, terminate: false }
         }
-        const written = await memoryLog.append(text, new Date())
+        const written = await memoryLog.append(text, new Date(), worldAppendOpts())
         if (written === 0) {
           // 260725: appendMemory skips a same-breath duplicate (its bounded
           // guard). Saying "remembered" for a write that never happened taught

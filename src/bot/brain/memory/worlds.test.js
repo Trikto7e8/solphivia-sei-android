@@ -284,3 +284,19 @@ describe('261020: repeated section headers stay bounded', () => {
     expect(segs.map((s) => s.marker)).toEqual([APP_SECTION_HEADER, '## World 2 — B (Stardew Valley)'])
   })
 })
+
+describe('261020: a game session keeps its entries under its own world', () => {
+  it('a bot write after an app section opened mid-session re-opens the world header first', async () => {
+    const world = { num: 1, label: 'Sky Base', game: 'Minecraft' }
+    await noteWorld(file, 1, 'Sky Base', 'Minecraft')
+    await appendMemory(file, 'mined iron with ouen', '2026-10-20T10:00:00.000Z', { world })
+    await appendMemory(file, 'ouen joined the group call', '2026-10-20T10:01:00.000Z', { section: 'app' })
+    await appendMemory(file, 'built the furnace room', '2026-10-20T10:02:00.000Z', { world })
+    await appendMemory(file, 'lit the furnace room', '2026-10-20T10:03:00.000Z', { world }) // already under it
+    const raw = await readFile(file, 'utf8')
+    expect(raw.match(/^## .*$/gm)).toEqual(['## World 1 — Sky Base (Minecraft)', APP_SECTION_HEADER, '## World 1 — Sky Base (Minecraft)'])
+    const tail = raw.slice(raw.lastIndexOf('## World 1'))
+    expect(tail).toContain('built the furnace room')
+    expect(tail).toContain('lit the furnace room')
+  })
+})

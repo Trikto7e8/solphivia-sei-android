@@ -66,6 +66,7 @@ import {
   CHAT_ABORTED,
   isSilenceFiller,
   TRANSCRIPT_STOP_SEQUENCES,
+  NO_FOLLOW_UP_TOOLS,
 } from '../chat/chatService';
 import * as chatStore from '../chat/chatStore';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
@@ -2235,7 +2236,16 @@ async function runChessLlmTurn(
       }
       messages.push({ role: 'user', content: results });
 
-      if (opts.kind !== 'move') continue;
+      if (opts.kind !== 'move') {
+        // 261020: a reply that rode with remember() is the whole turn. The
+        // "Saved. Continue" note used to buy another hop, and that hop
+        // answered the same player line again in new words (a near-repeat
+        // in chess table talk; same bug as the chat surface, see
+        // NO_FOLLOW_UP_TOOLS). remember() with no text still gets its hop.
+        // Move turns are left alone: there the next hop is the play().
+        if (text && toolUses.every((tu) => NO_FOLLOW_UP_TOOLS.has(tu.name))) break;
+        continue;
+      }
       // Move decided (or the game is ending): the turn is done. Talk was
       // invited BEFORE play(); a silent play is a legitimate outcome.
       if (played) break;

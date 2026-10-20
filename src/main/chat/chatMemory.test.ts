@@ -10,6 +10,7 @@ import {
   chatSurfaceTools,
   CHAT_MEMORY_CHECK,
   CHAT_REMEMBER_TOOL,
+  CHAT_SEARCH_CHECK,
   REMEMBER_TOOL,
   END_CALL_TOOL,
   LAUNCH_TOOL,
@@ -78,7 +79,16 @@ describe('memory check in the status block', () => {
     expect(b.some((x) => x.text.includes(CHAT_MEMORY_CHECK))).toBe(false);
   });
 
+  it('carries the search check before it when searchGuide is set (261020)', () => {
+    const b = blocks({ memoryGuide: true, searchGuide: true });
+    const last = b[b.length - 1].text;
+    expect(last.endsWith(`\n${CHAT_SEARCH_CHECK}\n${CHAT_MEMORY_CHECK}`)).toBe(true);
+    expect(blocks().some((x) => x.text.includes(CHAT_SEARCH_CHECK))).toBe(false);
+    expect(blocks({ surface: 'game', searchGuide: true }).some((x) => x.text.includes(CHAT_SEARCH_CHECK))).toBe(false);
+  });
+
   it('is plain text with no em-dashes', () => {
+    expect(CHAT_SEARCH_CHECK).not.toMatch(/—/);
     expect(CHAT_MEMORY_CHECK).not.toMatch(/—/);
     expect(CHAT_REMEMBER_TOOL.description).not.toMatch(/—/);
   });

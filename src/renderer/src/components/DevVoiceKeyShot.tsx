@@ -36,7 +36,10 @@ function seed(): void {
     });
 }
 
-seed();
+// DevDashShot imports every harness eagerly, so this module also loads for
+// the other ?dashshot= modes: seed only for our own, or it would sign every
+// harness in as dev-user and force the Cloud backend on them.
+if (params.get('dashshot') === 'voicekey') seed();
 
 export function DevVoiceKeyShot(): React.ReactElement {
   const [value, setValue] = useState<string | null>(null);

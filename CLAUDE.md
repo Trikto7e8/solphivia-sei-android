@@ -399,6 +399,13 @@ log's timing, not a new session.
   it's in. These headers are deliberately NOT entry lines (`- [`), and both the
   seed-truncation (`readMemoryForSeed`) and the **segment-aware compactor** are
   written to preserve them — touch those two if you change the header format.
+  261020: headers name their game, and app-side writers file under
+  `APP_SECTION_HEADER` (see "Plans and goals belong to a game" below), so a
+  player who alternates a game and texting gets a new header pair every
+  session. The compactor therefore merges every occurrence of a section (a
+  world by number) into one segment at its last place (`coalesceSegments`),
+  and the seed reader pays for headers from its budget and keeps only the
+  headers of kept entries plus the last one.
 > The old CLAUDE.md framed this as "the LLM decides when to compact at semantic
 > boundaries" — misleading. The *write* is LLM-driven; the *compaction* is
 > mechanical (byte threshold).

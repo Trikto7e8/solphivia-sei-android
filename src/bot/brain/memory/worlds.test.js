@@ -204,3 +204,83 @@ describe('261020: the app section and game-named world headers', () => {
     expect(await readFile(file, 'utf8')).toContain('## World 1 — Sei Farm (Stardew Valley)')
   })
 })
+
+// 261020 review: alternating a game and the app writes a world header and an
+// app header every session. The seed reader paid nothing for headers and the
+// compactor never sent a 1-2 entry segment to the model, so headers piled up
+// without bound: after 120 sessions a 4000-byte seed came back 12.7 KB of
+// headers with no entries, and compaction could not shrink the file.
+describe('261020: repeated section headers stay bounded', () => {
+  async function alternate(sessions) {
+    let t = Date.UTC(2026, 9, 1)
+    for (let day = 0; day < sessions; day++) {
+      await noteWorld(file, 1, 'Sky Base', 'Minecraft')
+      t += 3_600_000
+      await appendMemory(file, `played on day ${day}`, new Date(t).toISOString())
+      t += 3_600_000
+      await appendMemory(file, `texted about day ${day}`, new Date(t).toISOString(), { section: 'app' })
+    }
+  }
+
+  it('readMemoryForSeed pays for headers and keeps only those of kept entries plus the last', async () => {
+    await alternate(120)
+    const seed = await readMemoryForSeed(file, 4000)
+    expect(Buffer.byteLength(seed, 'utf8')).toBeLessThanOrEqual(4000)
+    expect(seed).toContain('texted about day 119')
+    expect(seed).toContain('played on day 119')
+    expect(seed.trimEnd().split('\n').some((l) => l === APP_SECTION_HEADER)).toBe(true)
+    // Every kept entry still sits under its own section's header.
+    const lines = seed.split('\n')
+    let section = null
+    for (const l of lines) {
+      if (l.startsWith('## ')) section = l
+      else if (l.startsWith('- [') && l.includes('texted about')) expect(section).toBe(APP_SECTION_HEADER)
+      else if (l.startsWith('- [') && l.includes('played on')) expect(section).toMatch(/^## World 1/)
+    }
+  })
+
+  it('readMemoryForSeed keeps the last header even when its section has no entries yet', async () => {
+    await noteWorld(file, 1, 'Sky Base', 'Minecraft')
+    for (let i = 0; i < 40; i++) await appendMemory(file, `old note ${i} ${'x'.repeat(60)}`, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString())
+    await noteWorld(file, 2, 'Sei Farm', 'Stardew Valley')
+    const seed = await readMemoryForSeed(file, 1200)
+    expect(seed.trimEnd().endsWith('## World 2 — Sei Farm (Stardew Valley)')).toBe(true)
+    expect(seed).toContain('## World 1 — Sky Base (Minecraft)')
+  })
+
+  it('the compactor merges each section into one segment at its last place, upgrading old world headers', async () => {
+    await noteWorld(file, 1, 'Sky Base') // an old, unlabeled header
+    await appendMemory(file, 'old world note', '2026-09-01T00:00:00.000Z')
+    await alternate(30)
+    const anthropic = { call: async () => null } // the model fails: only the merge applies
+    const compactor = createMemoryCompactor({
+      anthropic,
+      memoryLog: createMemoryLog({ path: file }),
+      config: { anthropic: { timeout_ms: 1000 }, memory: { compaction_trigger_bytes: 1 } },
+    })
+    const before = (await readFile(file, 'utf8')).match(/^- \[.*$/gm)
+    expect(await compactor.compactNow()).toBe(true)
+    const raw = await readFile(file, 'utf8')
+    expect(raw.match(/^## .*$/gm)).toEqual(['## World 1 — Sky Base (Minecraft)', APP_SECTION_HEADER])
+    // Nothing lost or duplicated, and each entry is in its own section.
+    const after = raw.match(/^- \[.*$/gm)
+    expect([...after].sort()).toEqual([...before].sort())
+    const appPart = raw.slice(raw.indexOf(APP_SECTION_HEADER))
+    expect(appPart).not.toContain('played on')
+    expect(appPart).toContain('texted about day 29')
+    expect(raw.slice(0, raw.indexOf(APP_SECTION_HEADER))).toContain('old world note')
+    // Within a section the entries keep their file order.
+    expect(raw.indexOf('played on day 3\n')).toBeLessThan(raw.indexOf('played on day 4\n'))
+  })
+
+  it('a merged section that is not last and has no entries is dropped; the last is kept', async () => {
+    const { coalesceSegments } = await import('./compactor.js')
+    const segs = coalesceSegments([
+      { marker: null, entries: [] },
+      { marker: '## World 1 — A (Minecraft)', entries: [] },
+      { marker: APP_SECTION_HEADER, entries: ['- [a] chat'] },
+      { marker: '## World 2 — B (Stardew Valley)', entries: [] },
+    ])
+    expect(segs.map((s) => s.marker)).toEqual([APP_SECTION_HEADER, '## World 2 — B (Stardew Valley)'])
+  })
+})

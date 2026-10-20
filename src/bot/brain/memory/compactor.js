@@ -75,6 +75,40 @@ export function splitWorldSegments(raw) {
   return segments
 }
 
+/** The identity of a section: `world:N` for a world header (its label may change), else the header line. */
+function sectionKey(marker) {
+  if (marker === null) return null
+  const w = /^## World (\d+)\b/.exec(marker)
+  return w ? `world:${w[1]}` : marker
+}
+
+/**
+ * 261020: one segment per section. Since app-side writers open the app
+ * section and a game session re-opens its world header after it, a player who
+ * alternates a game and texting gets a new pair of headers every session, each
+ * holding a line or two. Segments under COMPACT_SEGMENT_MIN entries are never
+ * sent to the model, so without this the file could not shrink at all and the
+ * headers piled up without bound. Every occurrence of a section is gathered at
+ * its LAST position (so the file still ends in the section new entries are
+ * filed under), in file order, under the newest header line (an old unlabeled
+ * `## World 1 — Base` becomes `## World 1 — Base (Minecraft)`). A section left
+ * with no entries is dropped, except the last one. Pure.
+ */
+export function coalesceSegments(segments) {
+  const lastIdx = new Map()
+  segments.forEach((s, i) => lastIdx.set(sectionKey(s.marker), i))
+  const gathered = new Map()
+  const out = []
+  segments.forEach((s, i) => {
+    const key = sectionKey(s.marker)
+    const acc = gathered.get(key) ?? []
+    acc.push(...s.entries)
+    gathered.set(key, acc)
+    if (lastIdx.get(key) === i) out.push({ marker: s.marker, entries: acc })
+  })
+  return out.filter((s, i) => s.entries.length > 0 || i === out.length - 1)
+}
+
 /**
  * @param {Object} opts
  * @param {{call: Function}} opts.anthropic     Anthropic client (createAnthropicClient instance).
@@ -183,12 +217,16 @@ export function createMemoryCompactor({ anthropic, memoryLog, config, logger = c
     // compaction and each world's entries stay grouped. Segment 0 (marker null)
     // holds any pre-header entries. Each segment's entries are compacted
     // independently; the headers are re-emitted verbatim between them.
-    const segments = splitWorldSegments(raw)
+    const split = splitWorldSegments(raw)
+    // 261020: repeated headers of one section are merged first (see
+    // coalesceSegments); that alone is a change worth writing.
+    const segments = coalesceSegments(split)
+    const markerCount = (segs) => segs.filter((s) => s.marker !== null).length
 
     const totalEntries = segments.reduce((s, seg) => s + seg.entries.length, 0)
     if (totalEntries < 4) return false
 
-    let changed = false
+    let changed = markerCount(segments) < markerCount(split)
     let totalAfter = 0
     const outParts = []
     for (const seg of segments) {

@@ -344,28 +344,43 @@ export async function readMemoryForSeed(filePath, budgetBytes) {
     return humanizeMemoryStamps([trunc, ...kept].join('\n'))
   }
 
-  // Section markers (worlds, the app section) are tiny and carry essential
-  // context — always keep them.
-  const markerBytes = body
-    .filter((l) => SECTION_RE.test(l))
-    .reduce((s, l) => s + Buffer.byteLength(l + '\n', 'utf8'), 0)
+  // Section markers (worlds, the app section) carry essential context: each
+  // kept entry keeps the header of the section it sits in, and the last header
+  // (the section being written now) is always kept. 261020: headers of
+  // sections whose entries were all truncated are left out and every kept
+  // header is paid from the budget. A player who alternates a game and texting
+  // gets a header pair per session (the compactor merges them later), and
+  // keeping all of them unpaid let headers alone overrun the budget.
+  const sectionOf = new Array(body.length).fill(-1)
+  let lastMarker = -1
+  for (let i = 0; i < body.length; i++) {
+    if (SECTION_RE.test(body[i])) lastMarker = i
+    sectionOf[i] = lastMarker
+  }
+  const bytesOf = (l) => Buffer.byteLength(l + '\n', 'utf8')
   const headerBytes = Buffer.byteLength(header + '\n', 'utf8')
-  let remaining = budgetBytes - headerBytes - markerBytes - truncBytes
+  let remaining = budgetBytes - headerBytes - truncBytes
   const keep = new Set()
+  if (lastMarker !== -1) {
+    keep.add(lastMarker)
+    remaining -= bytesOf(body[lastMarker])
+  }
   // Walk newest → oldest entries, keeping until the byte budget is exhausted.
   for (let k = entryIdx.length - 1; k >= 0; k--) {
     const i = entryIdx[k]
-    const lineBytes = Buffer.byteLength(body[i] + '\n', 'utf8')
-    if (lineBytes > remaining) break
+    const m = sectionOf[i]
+    const cost = bytesOf(body[i]) + (m !== -1 && !keep.has(m) ? bytesOf(body[m]) : 0)
+    if (cost > remaining) break
     keep.add(i)
-    remaining -= lineBytes
+    if (m !== -1) keep.add(m)
+    remaining -= cost
   }
-  // Reconstruct in ORIGINAL order: header, truncation marker, then every world
-  // header plus the kept entries — so the surviving entries stay under their
-  // world's section.
+  // Reconstruct in ORIGINAL order: header, truncation marker, then the kept
+  // section headers and entries, so the surviving entries stay under their
+  // section.
   const out = [header, trunc]
   for (let i = 0; i < body.length; i++) {
-    if (SECTION_RE.test(body[i]) || keep.has(i)) out.push(body[i])
+    if (keep.has(i)) out.push(body[i])
   }
   return humanizeMemoryStamps(out.join('\n') + '\n')
 }

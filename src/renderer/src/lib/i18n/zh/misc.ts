@@ -127,10 +127,18 @@ export const ZH_MISC: Record<string, string> = {
   '[voice paused, your ElevenLabs account is out of credits]':
     '[语音已暂停，你的 ElevenLabs 账户额度已用完]',
   '[voice unavailable, ElevenLabs rejected your key]': '[语音不可用，ElevenLabs 拒绝了你的密钥]',
-  '[voice unavailable, this voice needs its ElevenLabs key]':
-    '[语音不可用，这个声音需要对应的 ElevenLabs 密钥]',
-  'This voice is from an ElevenLabs account and plays only with that key. Pick a different voice.':
-    '这个声音来自某个 ElevenLabs 账户，只能用该账户的密钥播放。请选择其他声音。',
+  // 261020 (T158): a cloud line for an own ElevenLabs voice spoken with the
+  // character's stand-in Sei voice instead.
+  '[speaking with a Sei voice, add your ElevenLabs key in Settings to hear their own voice]':
+    '[正在使用 Sei 的声音，在设置中添加你的 ElevenLabs 密钥即可听到 TA 自己的声音]',
+  '[speaking with a Sei voice, ElevenLabs rejected your key]':
+    '[正在使用 Sei 的声音，ElevenLabs 拒绝了你的密钥]',
+  '[speaking with a Sei voice, their voice is no longer in your ElevenLabs account]':
+    '[正在使用 Sei 的声音，TA 的声音已不在你的 ElevenLabs 账户中]',
+  '[speaking with a Sei voice, your ElevenLabs account is out of credits]':
+    '[正在使用 Sei 的声音，你的 ElevenLabs 账户额度已用完]',
+  '[speaking with a Sei voice, your ElevenLabs plan cannot use their voice]':
+    '[正在使用 Sei 的声音，你的 ElevenLabs 套餐无法使用 TA 的声音]',
   // 260816 local speech: the sherpa voice pack for this call is not downloaded.
   '[voice unavailable, download the local voice pack in Settings]':
     '[语音不可用，请在设置中下载本地语音包]',
@@ -359,6 +367,11 @@ export const ZH_MISC: Record<string, string> = {
   'From your ElevenLabs account.': '来自你的 ElevenLabs 账户。',
   'From your ElevenLabs account. It plays only with your ElevenLabs key.':
     '来自你的 ElevenLabs 账户，只有使用你的 ElevenLabs 密钥才能播放。',
+  // 261020 (T158): cloud users with no key hear the stand-in Sei voice.
+  'From your ElevenLabs account. Without your ElevenLabs key, a Sei voice speaks for them.':
+    '来自你的 ElevenLabs 账户。没有你的 ElevenLabs 密钥时，会由一个 Sei 的声音代为说话。',
+  'Have your own ElevenLabs voices? Add your ElevenLabs key in Settings, under Voice.':
+    '有自己的 ElevenLabs 声音？请在设置的“声音”中添加你的 ElevenLabs 密钥。',
   'Could not read your ElevenLabs voices. Check your ElevenLabs key in Settings.':
     '无法读取你的 ElevenLabs 声音。请在设置中检查你的 ElevenLabs 密钥。',
   'Could not load your ElevenLabs voices right now.': '暂时无法加载你的 ElevenLabs 声音。',

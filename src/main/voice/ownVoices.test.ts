@@ -11,12 +11,12 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { mockResolveRoute, mockReadCached, mockWriteCached } = vi.hoisted(() => ({
-  mockResolveRoute: vi.fn(),
+const { mockResolveKey, mockReadCached, mockWriteCached } = vi.hoisted(() => ({
+  mockResolveKey: vi.fn(),
   mockReadCached: vi.fn(),
   mockWriteCached: vi.fn(),
 }));
-vi.mock('./elevenLabsKeyStore', () => ({ resolveElevenLabsRoute: mockResolveRoute }));
+vi.mock('./elevenLabsKeyStore', () => ({ resolveOwnVoiceKey: mockResolveKey }));
 vi.mock('./previewCache', () => ({
   previewCacheKey: (id: string, text: string) => `${id}|${text.length}`,
   readCachedPreview: mockReadCached,
@@ -70,8 +70,8 @@ function page(voices: unknown[], extra: Record<string, unknown> = {}): Response 
 
 beforeEach(() => {
   invalidateOwnVoices();
-  mockResolveRoute.mockReset();
-  mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'user-key-1' });
+  mockResolveKey.mockReset();
+  mockResolveKey.mockResolvedValue('user-key-1');
   mockReadCached.mockReset();
   mockReadCached.mockResolvedValue(null);
   mockWriteCached.mockReset();
@@ -214,13 +214,11 @@ describe('fetchOwnVoices', () => {
 });
 
 describe('listOwnVoices', () => {
-  it('lists nothing off the direct route (cloud proxy or no key)', async () => {
+  it('lists nothing without an own-voice key (none stored, or the store broke)', async () => {
     const f = vi.fn<FetchLike>(async () => page([CLONED]));
-    mockResolveRoute.mockResolvedValue({ kind: 'proxy' });
+    mockResolveKey.mockResolvedValue(null);
     expect(await listOwnVoices({ fetchImpl: f })).toEqual({ status: 'unavailable', voices: [] });
-    mockResolveRoute.mockResolvedValue({ kind: 'unconfigured' });
-    expect(await listOwnVoices({ fetchImpl: f })).toEqual({ status: 'unavailable', voices: [] });
-    mockResolveRoute.mockRejectedValue(new Error('keystore broke'));
+    mockResolveKey.mockRejectedValue(new Error('keystore broke'));
     expect((await listOwnVoices({ fetchImpl: f })).status).toBe('unavailable');
     expect(f).not.toHaveBeenCalled();
   });
@@ -240,7 +238,7 @@ describe('listOwnVoices', () => {
     expect(f).toHaveBeenCalledTimes(1);
     await listOwnVoices({ fetchImpl: f, refresh: true });
     expect(f).toHaveBeenCalledTimes(2);
-    mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'user-key-2' });
+    mockResolveKey.mockResolvedValue('user-key-2');
     await listOwnVoices({ fetchImpl: f });
     expect(f).toHaveBeenCalledTimes(3);
   });
@@ -267,7 +265,7 @@ describe('isOwnVoiceId', () => {
     expect(await isOwnVoiceId(CLONED.voice_id, { fetchImpl: f })).toBe(true);
     expect(await isOwnVoiceId(DESIGNED.voice_id, { fetchImpl: f })).toBe(false);
     expect(await isOwnVoiceId('../x', { fetchImpl: f })).toBe(false);
-    mockResolveRoute.mockResolvedValue({ kind: 'proxy' });
+    mockResolveKey.mockResolvedValue(null);
     invalidateOwnVoices();
     expect(await isOwnVoiceId(CLONED.voice_id, { fetchImpl: f })).toBe(false);
   });

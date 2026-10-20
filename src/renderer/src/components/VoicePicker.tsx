@@ -29,17 +29,21 @@
  * pitch-only tune previews from the BUNDLED clip through the shifter: instant,
  * offline, no sign-in, no spend. Only calmness still changes the bytes.
  *
- * 261019: "Your ElevenLabs voices". When main has a direct ElevenLabs route
- * (resolveElevenLabsRoute: a stored BYOK key while the AI backend is local,
- * or the SEI_TTS_DEV_KEY env in dev shells), it lists the voices in the
+ * 261019: "Your ElevenLabs voices". When main has an ElevenLabs key
+ * (resolveOwnVoiceKey: a stored key on either AI backend since 261020, or
+ * the SEI_TTS_DEV_KEY env in dev shells), it lists the voices in the
  * user's own account (cloned, designed, saved from the Voice Library) and
  * they get their own tab. A pick reports its OwnVoicePick through onChange so
  * the save site stamps the metadata.voiceOwn marker. Samples are ElevenLabs'
  * own preview clips, fetched in main. A key refusal or a network failure is
  * one quiet line; the built-in list is never affected. While the key route is
- * active the pool tabs say that Sei's voices need a paid ElevenLabs plan
- * through the key (ElevenLabs does not serve library voices over the API to
- * free plans).
+ * active on the LOCAL backend the pool tabs say that Sei's voices need a paid
+ * ElevenLabs plan through the key (ElevenLabs does not serve library voices
+ * over the API to free plans). On Sei Cloud the pool stays on the proxy.
+ *
+ * 261020 (T158): with no key saved, on either backend, one line points to
+ * the key field in Settings. Text only: the picker sits inside creation and
+ * Edit companion, and jumping to Settings would drop unsaved edits.
  */
 
 import React, { useEffect, useId, useRef, useState } from 'react';
@@ -56,6 +60,7 @@ import {
   ownVoiceDetail,
   ownVoicesView,
   poolUsesOwnKey,
+  elevenKeyHintShown,
   defaultVoiceTab,
   OWN_TAB_KEY,
   PITCH_DEFAULT,
@@ -560,7 +565,9 @@ export function VoicePicker({
             ? renderRow(
                 value,
                 unlistedOwn.name,
-                t('From your ElevenLabs account. It plays only with your ElevenLabs key.'),
+                aiBackendKind === 'cloud-proxy'
+                  ? t('From your ElevenLabs account. Without your ElevenLabs key, a Sei voice speaks for them.')
+                  : t('From your ElevenLabs account. It plays only with your ElevenLabs key.'),
                 unlistedOwn.name,
                 false,
               )
@@ -572,6 +579,12 @@ export function VoicePicker({
                 false,
               )}
         </section>
+      ) : null}
+
+      {elevenKeyHintShown(hasElevenKey, localTtsMode) ? (
+        <div className={styles.hint} data-testid="eleven-key-hint">
+          {t('Have your own ElevenLabs voices? Add your ElevenLabs key in Settings, under Voice.')}
+        </div>
       ) : null}
 
       {ownView === 'hint' ? (
@@ -611,7 +624,7 @@ export function VoicePicker({
         </div>
       ) : null}
 
-      {activeTab !== OWN_TAB_KEY && activeGroup && poolUsesOwnKey(ownList) ? (
+      {activeTab !== OWN_TAB_KEY && activeGroup && poolUsesOwnKey(ownList, aiBackendKind) ? (
         <div className={styles.hint}>
           {t("Sei's voices play through your ElevenLabs key on paid ElevenLabs plans. On a free plan, use your own voices.")}
         </div>

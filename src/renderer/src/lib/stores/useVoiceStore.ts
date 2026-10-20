@@ -49,6 +49,7 @@ import { useDataStore } from './useDataStore';
 import { useBackseatStore, backseatCapture } from './useBackseatStore';
 import { createStaleGate } from '../backseat/staleGate';
 import { voicePitchRate } from '@shared/voicePitch';
+import type { VoiceTtsNoticePush } from '@shared/ipc';
 import { createAudioQueue, type AudioQueue, type TtsStreamHandle } from '../voice/audioQueue';
 import { t, uiLanguage } from '../i18n';
 import { currentResetLine } from '../useResetLine';
@@ -593,9 +594,6 @@ function friendlyError(err: unknown): string {
   }
   if (/VOICE_ELEVEN_QUOTA/.test(msg)) return t('Your ElevenLabs account is out of credits.');
   if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) return t('ElevenLabs rejected your key. Check it in Settings.');
-  if (/VOICE_OWN_NEEDS_KEY/.test(msg)) {
-    return t('This voice is from an ElevenLabs account and plays only with that key. Pick a different voice.');
-  }
   if (/VOICE_NO_CREDITS/.test(msg)) {
     // 260926: say when free play comes back, not just that it is gone.
     const base = t("You've used this week's credits. Upgrade or top up to keep calling.");
@@ -648,6 +646,30 @@ function substitutePackNotice(push: { missingPackId: string; spokenPackId: strin
   return isZhPack(push.missingPackId)
     ? t('[spoken with the English voice, download the Chinese voice pack in Settings for a better fit]')
     : t('[spoken with the Chinese voice, download the English voice pack in Settings for a better fit]');
+}
+
+/** Notice copy when a cloud line for the user's OWN ElevenLabs voice was
+ * spoken with the character's stand-in Sei voice instead (261020, T158). */
+export function ownVoiceStandInNotice(
+  reason: 'no-key' | 'key-invalid' | 'voice-missing' | 'quota' | 'plan',
+): string {
+  switch (reason) {
+    case 'no-key':
+      return t('[speaking with a Sei voice, add your ElevenLabs key in Settings to hear their own voice]');
+    case 'key-invalid':
+      return t('[speaking with a Sei voice, ElevenLabs rejected your key]');
+    case 'voice-missing':
+      return t('[speaking with a Sei voice, their voice is no longer in your ElevenLabs account]');
+    case 'quota':
+      return t('[speaking with a Sei voice, your ElevenLabs account is out of credits]');
+    case 'plan':
+      return t('[speaking with a Sei voice, your ElevenLabs plan cannot use their voice]');
+  }
+}
+
+/** The call notice for one voice:tts-notice push. */
+function ttsNoticeText(push: VoiceTtsNoticePush): string {
+  return push.kind === 'own-voice-stand-in' ? ownVoiceStandInNotice(push.reason) : substitutePackNotice(push);
 }
 
 export const useVoiceStore = create<VoiceState>((set, get) => {
@@ -763,9 +785,6 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         set({ callNotice: t('[voice paused, your ElevenLabs account is out of credits]') });
       } else if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) {
         set({ callNotice: t('[voice unavailable, ElevenLabs rejected your key]') });
-      } else if (/VOICE_OWN_NEEDS_KEY/.test(msg)) {
-        // An own-account voice on the cloud path (the proxy speaks Sei's pool only).
-        set({ callNotice: t('[voice unavailable, this voice needs its ElevenLabs key]') });
       } else if (/VOICE_PACK_MISSING/.test(msg)) {
         // Local TTS (260816): NO installed voice pack can speak this line
         // (main already falls back to any installed pack, 260908). The
@@ -1514,13 +1533,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
   }
 
   // Substitute-pack notice (260908): the line played, but with a local voice
-  // pack that does not match the conversation language. A system notice, not
-  // companion speech — see callNotice.
+  // pack that does not match the conversation language. 261020: or with the
+  // stand-in Sei voice for an own ElevenLabs voice the key cannot speak. A
+  // system notice, not companion speech — see callNotice.
   try {
     offTtsNotice =
       sei.onVoiceTtsNotice?.((push) => {
         if (!get().participants.length) return; // no call surface to show it on
-        set({ callNotice: substitutePackNotice(push) });
+        set({ callNotice: ttsNoticeText(push) });
       }) ?? null;
   } catch {
     /* preload without onVoiceTtsNotice — the line still plays, just unannotated */

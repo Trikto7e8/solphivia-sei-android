@@ -639,8 +639,9 @@ export interface OwnVoiceInfo {
 /**
  * Result of voice:own-list (261019).
  *   - ok:          the list (may be empty).
- *   - unavailable: no direct ElevenLabs route (no key stored, cloud backend,
- *                  or a key that the active backend does not use).
+ *   - unavailable: no ElevenLabs key stored. Since 261020 a CLOUD user's
+ *                  optional key lists their own voices too (they speak
+ *                  direct with it; Sei's pool stays on the proxy).
  *   - bad_key:     ElevenLabs refused the key (401: wrong key, or a scoped key
  *                  without the Voices read permission).
  *   - error:       network or upstream failure; the built-in list still works.
@@ -667,13 +668,24 @@ export interface VoiceTtsChunkPush {
  * Chinese) is not installed. The line still plays; the call UI shows a system
  * notice naming the better-fitting download. Pack ids from
  * src/main/speech/packs.ts ('tts-en' | 'tts-zh'). */
-export interface VoiceTtsNoticePush {
-  characterId: string;
-  /** Pack that would fit the conversation language but is not installed. */
-  missingPackId: string;
-  /** Pack the line was actually spoken with. */
-  spokenPackId: string;
-}
+export type VoiceTtsNoticePush =
+  | {
+      kind: 'substitute-pack';
+      characterId: string;
+      /** Pack that would fit the conversation language but is not installed. */
+      missingPackId: string;
+      /** Pack the line was actually spoken with. */
+      spokenPackId: string;
+    }
+  | {
+      /** 261020 (T158): a cloud line for the user's OWN ElevenLabs voice was
+       * spoken with the character's stand-in Sei voice, because their key is
+       * missing ('no-key') or ElevenLabs refused it for that voice. The line
+       * still plays; the call UI shows a system notice. */
+      kind: 'own-voice-stand-in';
+      characterId: string;
+      reason: 'no-key' | 'key-invalid' | 'voice-missing' | 'quota' | 'plan';
+    };
 
 /**
  * One speech pack's state in speech:pack-status / speech:pack-state pushes

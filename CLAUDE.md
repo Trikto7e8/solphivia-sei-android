@@ -3206,7 +3206,9 @@ had it from the start. The contract is three things.
    in `extraStable` so they ride inside the cached region.
 2. **OUT, long-term** — offer `REMEMBER_TOOL` (`src/main/chat/chatPrompts.ts`)
    on the surface's turns, so the character can write to the same per-character
-   `MEMORY.md` that chat, voice and the bot share. In a **tool loop**, answer it
+   `MEMORY.md` that chat, voice and the bot share. A surface outside a game
+   world passes `appendMemory(file, text, undefined, { section: 'app' })` (261020)
+   so its lines are not filed under the last game world. In a **tool loop**, answer it
    with a `tool_result` note and treat `appendMemory() === 0` as "duplicate, not
    written" rather than claiming a save. In a **single-shot** call, honor it
    inline after the response (`honorRememberCalls`) or the write is silently

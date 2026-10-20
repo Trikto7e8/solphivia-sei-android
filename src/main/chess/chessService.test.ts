@@ -1018,3 +1018,89 @@ describe('hasChessCoordinates', () => {
     }
   });
 });
+
+describe('one player line gets one reply round (261020)', () => {
+  // T157 bug 7: a chess chat reply that rode with remember() got a second hop
+  // off the "Saved. Continue" tool result, and that hop answered the same
+  // player line again in new words. Same bug and fix as the chat surface.
+  const isMoveTurn = (params: PromptParams): boolean => promptText(params).includes('The moves you are considering');
+  // Any answer to the remember() call (saved, duplicate, or failed) is a tool
+  // result for its id; the next hop is the one that sees it.
+  const sawSaved = (params: PromptParams): boolean => JSON.stringify(params.messages).includes('"tool_use_id":"rem1"');
+
+  it('a chat reply beside remember() is the whole turn: one call, spoken once, memory written', async () => {
+    let replyCalls = 0;
+    createSpy.mockImplementation(async (params: PromptParams) => {
+      if (isMoveTurn(params)) {
+        return { content: [{ type: 'tool_use', id: 'mv', name: 'play', input: { move: 'e5' } }], usage: {} };
+      }
+      replyCalls++;
+      if (sawSaved(params)) {
+        return { content: [{ type: 'text', text: 'noted, the lighthouse game, got it' }], usage: {} };
+      }
+      return {
+        content: [
+          { type: 'text', text: 'oh a lighthouse game next, i like it' },
+          { type: 'tool_use', id: 'rem1', name: 'remember', input: { text: 'Player wants a lighthouse-themed game next' } },
+        ],
+        usage: {},
+      };
+    });
+
+    await startChess(CHAR, { playerColor: 'w' });
+    chatPushed.length = 0;
+    replyCalls = 0;
+    await handlePlayerChat({ characterId: CHAR, text: 'remember, next game we play the lighthouse opening' });
+
+    expect(replyCalls).toBe(1);
+    expect(chatPushed.map((m) => m.text)).toEqual(['oh a lighthouse game next, i like it']);
+    const { paths } = await import('../paths');
+    const { readFile } = await import('node:fs/promises');
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('lighthouse-themed game');
+  });
+
+  it('remember() with no reply text still gets the hop that answers', async () => {
+    let replyCalls = 0;
+    createSpy.mockImplementation(async (params: PromptParams) => {
+      if (isMoveTurn(params)) {
+        return { content: [{ type: 'tool_use', id: 'mv', name: 'play', input: { move: 'e5' } }], usage: {} };
+      }
+      replyCalls++;
+      if (sawSaved(params)) return { content: [{ type: 'text', text: 'ok noted' }], usage: {} };
+      return {
+        content: [{ type: 'tool_use', id: 'rem1', name: 'remember', input: { text: 'Player has a cat named Miso' } }],
+        usage: {},
+      };
+    });
+
+    await startChess(CHAR, { playerColor: 'w' });
+    chatPushed.length = 0;
+    replyCalls = 0;
+    await handlePlayerChat({ characterId: CHAR, text: 'my cat miso keeps walking on the board' });
+
+    expect(replyCalls).toBe(2);
+    expect(chatPushed.map((m) => m.text)).toEqual(['ok noted']);
+  });
+
+  it('a move turn whose first hop talks and remembers still goes on to play()', async () => {
+    createSpy.mockImplementation(async (params: PromptParams) => {
+      if (!isMoveTurn(params)) return { content: [{ type: 'text', text: 'gg' }], usage: {} };
+      if (sawSaved(params)) {
+        return { content: [{ type: 'tool_use', id: 'mv', name: 'play', input: { move: 'e5' } }], usage: {} };
+      }
+      return {
+        content: [
+          { type: 'text', text: 'king pawn again, you never change' },
+          { type: 'tool_use', id: 'rem1', name: 'remember', input: { text: 'Player always opens with the king pawn' } },
+        ],
+        usage: {},
+      };
+    });
+
+    await startChess(CHAR, { playerColor: 'w' });
+    await playerMove(CHAR, 'e2e4');
+    const pending = await waitFor(() => pushed.find((s) => s.pendingAiMove?.san === 'e5'));
+    expect(pending.pendingAiMove!.san).toBe('e5');
+  });
+});

@@ -13,7 +13,7 @@
  *     the cloud). Mirrors the last_launched stamp in botSupervisor.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _setUserDataOverride, paths } from '../paths';
@@ -64,6 +64,7 @@ import type { LanHost } from '../../shared/ipc';
 import { sendChatMessage, sendLaunchFailedTurn, sendVoiceIdleTurn, sendCompanionVoiceTurn, cancelInflightTurn, CHAT_ABORTED } from './chatService';
 import { setCallActive } from '../voice/callState';
 import { readAll as chatStoreRead } from './chatStore';
+import { consumeGoodbye, _resetGoodbyeNotes } from '../sessionGoodbye';
 
 const CHAR = '55555555-5555-4555-8555-555555555555';
 let dir: string;
@@ -630,6 +631,55 @@ describe('silence-by-convention + idle nudge (260707)', () => {
     // The spoken goodbye still comes back so the renderer can speak it first.
     expect(result.messages.map((m) => m.text)).toEqual(["well, i'll let you go!"]);
     expect(createSpy).toHaveBeenCalledTimes(1); // no tool loop on a nudge
+  });
+});
+
+// 261020 (review): a call's goodbye plan names the game it is for. Without
+// it the plan has no game, and a Minecraft plan made at a hang-up became the
+// main thing of a Stardew greeting. Named, it is labeled in MEMORY.md and the
+// goodbye note carries the game to the Home card's tag.
+describe('end_call next_time_game (261020 review)', () => {
+  beforeEach(async () => {
+    _resetGoodbyeNotes();
+    await mkdir(paths.memoryDir(CHAR), { recursive: true });
+  });
+
+  it('offers the field on the call tools', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: '(silence)' }] });
+    await sendVoiceIdleTurn(CHAR, 42, []);
+    const req = createSpy.mock.calls[0][0] as { tools: Array<{ name: string; input_schema: { properties: Record<string, unknown> } }> };
+    expect(req.tools.find((t) => t.name === 'end_call')?.input_schema.properties).toHaveProperty('next_time_game');
+  });
+
+  it('a named game labels the plan and rides the goodbye note', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok bye, copper next time' },
+        { type: 'tool_use', id: 'tu_end', name: 'end_call', input: { next_time: 'get copper for the lighthouse', next_time_game: 'Minecraft' } },
+      ],
+    });
+    await sendVoiceIdleTurn(CHAR, 90, []);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time in Minecraft: get copper for the lighthouse');
+    expect(consumeGoodbye(CHAR, 'call').nextStepGame).toBe('minecraft');
+  });
+
+  it('left out, the call plan has no game', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'bye, good luck' },
+        { type: 'tool_use', id: 'tu_end', name: 'end_call', input: { next_time: 'ask how the interview went' } },
+      ],
+    });
+    await sendVoiceIdleTurn(CHAR, 90, []);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time: ask how the interview went');
+    const note = consumeGoodbye(CHAR, 'call');
+    expect(note.nextStepHook).toBe(true);
+    expect(note.nextStepGame).toBeUndefined();
   });
 });
 

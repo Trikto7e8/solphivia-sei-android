@@ -61,6 +61,42 @@ export function parsePlanLine(text) {
   return { step, gameName: m[1] ? m[1].trim() : null }
 }
 
+// 261020 (review): the game a goodbye's plan is for, from the goodbye
+// tools' optional `next_time_game` field. The model decides it from the step
+// (a Minecraft build talked about while playing Stardew is a Minecraft plan),
+// the same way the player-end check's `game:` line does. Display names match
+// src/shared/games.ts GAME_CATALOG (a test checks); kept here because this
+// module is import-free.
+/** Bot game id -> display name. */
+export const PLAN_GAMES = Object.freeze({
+  minecraft: 'Minecraft',
+  stardew: 'Stardew Valley',
+  dontstarve: "Don't Starve Together",
+})
+
+const squash = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+
+/**
+ * The tool field as a game id, 'none' (not about playing a game), or null
+ * when it is missing or names no known game.
+ * @param {unknown} raw
+ * @returns {'minecraft' | 'stardew' | 'dontstarve' | 'none' | null}
+ */
+export function parsePlanGameField(raw) {
+  if (typeof raw !== 'string') return null
+  const v = raw.replace(/^[\s*_"'`]+|[\s*_"'`.]+$/g, '').trim()
+  if (!v) return null
+  if (/^(none|no|n\/a|nothing|无|没有|なし|없음)$/i.test(v)) return 'none'
+  const q = squash(v)
+  for (const [id, name] of Object.entries(PLAN_GAMES)) {
+    if (q === id || q === squash(name)) return /** @type {any} */ (id)
+  }
+  // "Don't Starve" / "stardew": one game named by a unique part of its name.
+  if (q.length < 5) return null
+  const hits = Object.entries(PLAN_GAMES).filter(([id, name]) => squash(name).includes(q) || q.includes(squash(name)) || q.includes(id))
+  return hits.length === 1 ? /** @type {any} */ (hits[0][0]) : null
+}
+
 // 261014: the player-facing line for the Home "up next" strip.
 //
 // The plan above is the companion's private note ("ask Alex what the vet says

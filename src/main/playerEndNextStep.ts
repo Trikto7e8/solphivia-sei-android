@@ -251,8 +251,40 @@ function cleanNote(raw: string): string | null {
 }
 
 const LABELED = /^\s*[*_-]*\s*(note|player|game)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$/i;
-/** A second label later on the same line ("note: x player: y"). */
-const INLINE_LABEL = /\s+(?=[*_]*\s*(?:note|player|game)\s*[*_]*\s*[:：])/i;
+/** A possible second label later on the same line ("note: x player: y"). */
+const INLINE_LABEL = /\s+(?=[*_]*\s*(note|player|game)\s*[*_]*\s*[:：])/gi;
+const LABEL_ORDER = ['note', 'player', 'game'];
+
+/** A mid-line `game:` value that is really an answer: exactly a game's id or name, or none. */
+function isExactGameAnswer(raw: string): boolean {
+  const v = raw.replace(/^[\s*_"'“”‘’`]+|[\s*_"'“”‘’`.。]+$/g, '').trim();
+  if (/^(none|no|n\/a|nothing|无|没有|なし|없음)$/i.test(v)) return true;
+  const q = v.toLowerCase().replace(/[^a-z0-9]+/g, '');
+  return GAME_IDS.some((id) => q === id || q === gameDisplayName(id).toLowerCase().replace(/[^a-z0-9]+/g, ''));
+}
+
+/**
+ * Where a labeled value ends because the next label starts, or -1.
+ * 261020 (review): only a LATER label in the reply's order (note, player,
+ * game) splits a line, and a `game:` only when what follows it is a game
+ * answer, so "finish the board game: monopoly" stays one note.
+ */
+function inlineLabelAt(label: string, value: string): number {
+  const from = LABEL_ORDER.indexOf(label);
+  for (const m of value.matchAll(INLINE_LABEL)) {
+    const next = m[1].toLowerCase();
+    if (LABEL_ORDER.indexOf(next) <= from) continue;
+    const at = m.index ?? -1;
+    if (at <= 0) continue;
+    if (next === 'game') {
+      const rest = LABELED.exec(value.slice(at))?.[2] ?? '';
+      const end = rest.search(INLINE_LABEL);
+      if (!isExactGameAnswer(end >= 0 ? rest.slice(0, end) : rest)) continue;
+    }
+    return at;
+  }
+  return -1;
+}
 
 /** "Minecraft, Stardew Valley or Don't Starve Together" for the prompt's {games}. */
 function gameList(): string {
@@ -286,8 +318,11 @@ export function parseGameAnswer(raw: string | null): GameId | 'none' | null {
  * when it names a bot game, even a different one from the session's: a plan
  * for a Minecraft build made in Stardew is a Minecraft plan, tagged so the
  * card offers Minecraft and labeled so the next Stardew session does not
- * read it as a Stardew task. 'none' keeps the session's surface (the card
- * opens where it was made) with no game on the memory line; no answer keeps
+ * read it as a Stardew task. 'none' keeps the session's surface with NO
+ * game (review 261020: "ask how the interview went" after Minecraft was
+ * tagged Minecraft, so Stardew never raised it and the card offered Play
+ * Minecraft; now a game session's card offers the games picker, a backseat
+ * one a call, and any game's greeting can raise it as talk). No answer keeps
  * the session, and a game session's plan names its game.
  */
 export function resolvePlanPlace(
@@ -295,8 +330,8 @@ export function resolvePlanPlace(
   answer: GameId | 'none' | null,
 ): { surface: NextStepSurface; game?: string; memoryGame: GameId | null } {
   if (answer && answer !== 'none') return { surface: 'game', game: answer, memoryGame: answer };
+  if (answer === 'none') return { surface: session.surface, memoryGame: null };
   const keep = { surface: session.surface, ...(session.game ? { game: session.game } : {}) };
-  if (answer === 'none') return { ...keep, memoryGame: null };
   return { ...keep, memoryGame: session.surface === 'game' && isGameId(session.game) ? session.game : null };
 }
 
@@ -316,8 +351,8 @@ export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
     for (;;) {
       const m = LABELED.exec(raw);
       if (m) {
-        const at = m[2].search(INLINE_LABEL);
-        if (at > 0 && LABELED.exec(m[2].slice(at))?.[1].toLowerCase() !== m[1].toLowerCase()) {
+        const at = inlineLabelAt(m[1].toLowerCase(), m[2]);
+        if (at > 0) {
           lines.push(raw.slice(0, raw.length - m[2].length + at));
           raw = m[2].slice(at).trim();
           continue;

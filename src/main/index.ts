@@ -37,7 +37,7 @@ import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls, live
 import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
-import { consumeGoodbye, gameEndHookProps, callEndHookProps } from './sessionGoodbye';
+import { consumeGoodbye, gameEndHookProps, callEndHookProps, goodbyePlanPlace } from './sessionGoodbye';
 import {
   bindPlayerEndRuntime,
   clearSessionDigest,
@@ -444,10 +444,10 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // 261013 (T119): the companion's goodbye left a plan, so record that it came
   // from this game for the Home "up next" card (homeNextStep.ts).
   if (goodbye.nextStepHook) {
+    // 261020: or from the game its goodbye named (goodbyePlanPlace).
     updateHomeNextStep(id, async (dir) =>
       tagLatestPlan(dir, {
-        surface: 'game',
-        game: started.game,
+        ...goodbyePlanPlace({ surface: 'game', game: started.game }, goodbye.nextStepGame),
         line: goodbye.nextStepLine ?? null,
         names: await readPlayerLineNames(id),
       }),
@@ -1353,7 +1353,11 @@ async function bootstrap(): Promise<void> {
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
       if (goodbye.nextStepHook) {
         updateHomeNextStep(id, async (dir) =>
-          tagLatestPlan(dir, { surface: 'call', line: goodbye.nextStepLine ?? null, names: await readPlayerLineNames(id) }),
+          tagLatestPlan(dir, {
+            ...goodbyePlanPlace({ surface: 'call' }, goodbye.nextStepGame),
+            line: goodbye.nextStepLine ?? null,
+            names: await readPlayerLineNames(id),
+          }),
         );
       }
       // 261011: the player hung up (no companion goodbye), outside a game.

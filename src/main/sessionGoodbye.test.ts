@@ -6,6 +6,8 @@ import {
   callEndHookProps,
   NOTE_TTL_MS,
   _resetGoodbyeNotes,
+  goodbyeGame,
+  goodbyePlanPlace,
 } from './sessionGoodbye';
 
 beforeEach(() => _resetGoodbyeNotes());
@@ -45,5 +47,29 @@ describe('sessionGoodbye', () => {
   it('drops a note whose end event never came', () => {
     noteCompanionGoodbye('sui', 'game', true, 0);
     expect(consumeGoodbye('sui', 'game', NOTE_TTL_MS + 1)).toEqual({ companionEnded: false, nextStepHook: false });
+  });
+});
+
+// 261020 (review): the game a goodbye's plan is for.
+describe('goodbye plan game (261020 review)', () => {
+  it('the note carries a valid game only, and only with a hook', () => {
+    noteCompanionGoodbye('a', 'call', { hook: true, line: null, game: 'minecraft' });
+    expect(consumeGoodbye('a', 'call').nextStepGame).toBe('minecraft');
+    noteCompanionGoodbye('a', 'call', { hook: true, line: null, game: 'none' });
+    expect(consumeGoodbye('a', 'call').nextStepGame).toBe('none');
+    noteCompanionGoodbye('a', 'call', { hook: false, line: null, game: 'minecraft' });
+    expect(consumeGoodbye('a', 'call').nextStepGame).toBeUndefined();
+    expect(goodbyeGame('roblox')).toBeUndefined();
+    expect(goodbyeGame(null)).toBeUndefined();
+  });
+
+  it('places a plan: a named game wins, none drops the game, left out keeps the session', () => {
+    const stardew = { surface: 'game' as const, game: 'stardew' };
+    expect(goodbyePlanPlace(stardew, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft' });
+    expect(goodbyePlanPlace(stardew, 'none')).toEqual({ surface: 'game' });
+    expect(goodbyePlanPlace(stardew, undefined)).toEqual({ surface: 'game', game: 'stardew' });
+    expect(goodbyePlanPlace({ surface: 'call' }, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft' });
+    expect(goodbyePlanPlace({ surface: 'call' }, 'none')).toEqual({ surface: 'call' });
+    expect(goodbyePlanPlace({ surface: 'call' }, undefined)).toEqual({ surface: 'call' });
   });
 });

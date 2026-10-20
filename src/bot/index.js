@@ -125,7 +125,8 @@ export async function start(config, hooks = {}) {
     // 261008: `nextStepHook` = the quit carried a next_time hook (already
     // saved to MEMORY.md); it rides summon-stopped for bot_session_ended.
     // 261014: + `nextStepLine`, that plan written to the player (Home card).
-    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true, nextStepLine: info?.nextStepLine }) } catch {} },
+    // 261020: + `nextStepGame`, the game the plan is for ('none' = no game).
+    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true, nextStepLine: info?.nextStepLine, nextStepGame: info?.nextStepGame }) } catch {} },
     // Voice calls (260705) — the bot called end_call(): ask main to hang up
     // the player's call (the bot stays in the game). The farewell say() was
     // already routed up before this fires, and the renderer drains its TTS
@@ -134,6 +135,7 @@ export async function start(config, hooks = {}) {
       type: 'call-end',
       nextStepHook: info?.nextStepHook === true,
       ...(typeof info?.nextStepLine === 'string' && info.nextStepLine ? { nextStepLine: info.nextStepLine } : {}),
+      ...(info?.nextStepHook === true && typeof info?.nextStepGame === 'string' ? { nextStepGame: info.nextStepGame } : {}),
     }),
   })
 
@@ -484,6 +486,9 @@ async function bootstrapWithInit(initData) {
     // used). Stashed as config._seiNextStepPlan for FIRST_CONTACT. null = none
     // open; undefined (older main / CLI) = the greeting gets the soft hint.
     nextStepPlan,         // string | null | undefined
+    // 261020: true = that plan is not tied to this session's game (a call
+    // plan, or one about no game): raised as talk, not as a task here.
+    nextStepPlanNotForGame, // boolean | undefined
     // 260909: web search settings bridged from UserConfig.web_search_* by
     // the supervisor: { provider, api_key } | undefined. Maps into config.web
     // below; absent (older main) -> keyless 'auto' chain.
@@ -703,6 +708,7 @@ async function bootstrapWithInit(initData) {
   try {
     config._seiNextStepPlan =
       typeof nextStepPlan === 'string' && nextStepPlan.trim() ? nextStepPlan : nextStepPlan === null ? null : undefined
+    config._seiNextStepPlanNotForGame = nextStepPlanNotForGame === true
   } catch {}
 
   // 260801: the supervisor's watchdog deadline, read by connect.js to size its
@@ -872,7 +878,7 @@ async function emitVisionCapability() {
  *   lifecycle so main can tell a companion that quit() on its own from any
  *   other clean exit.
  */
-async function gracefulShutdown(reason = 'stop', { nextStepHook = false, nextStepLine = null } = {}) {
+async function gracefulShutdown(reason = 'stop', { nextStepHook = false, nextStepLine = null, nextStepGame = null } = {}) {
   // Re-entry guard. Both the bot's own onTerminalError and the supervisor's
   // {type:'stop'} can drive shutdown concurrently (the daily-limit / depleted
   // backstop in botSupervisor.ts now actively drains the session on the same
@@ -902,6 +908,7 @@ async function gracefulShutdown(reason = 'stop', { nextStepHook = false, nextSte
     reason,
     ...(nextStepHook ? { nextStepHook: true } : {}),
     ...(nextStepHook && typeof nextStepLine === 'string' && nextStepLine ? { nextStepLine } : {}),
+    ...(nextStepHook && typeof nextStepGame === 'string' ? { nextStepGame } : {}),
   })
   // Give the lifecycle message a tick to flush before exiting
   setTimeout(() => process.exit(0), 100)

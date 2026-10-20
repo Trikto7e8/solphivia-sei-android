@@ -135,6 +135,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -157,6 +161,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -1181,6 +1189,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -1203,6 +1215,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -2226,6 +2242,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false
@@ -2248,6 +2268,10 @@
             "next_time_for_player": {
               "type": "string",
               "description": "Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like \"Finish the cabin roof\" or \"Tell Sui how the interview went\" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player's name out."
+            },
+            "next_time_game": {
+              "type": "string",
+              "description": "Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don't Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call."
             }
           },
           "additionalProperties": false

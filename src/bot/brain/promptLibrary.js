@@ -684,6 +684,13 @@ export const NEXT_TIME_FIELD =
 export const NEXT_TIME_FOR_PLAYER_FIELD =
   'Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like "Finish the cabin roof" or "Tell Sui how the interview went" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player\'s name out.'
 
+// 261020 (review): which game the plan is for. A plan said while saying
+// goodbye in one game can be about another (a Minecraft build talked about
+// in Stardew), and a call's plan has no game at all unless the model says
+// so. Static text, so the cached tool prefix stays the same every turn.
+export const NEXT_TIME_GAME_FIELD =
+  'Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don\'t Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call.'
+
 export const NEXT_TIME_GOODBYE =
   'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time we finish the roof". If you leave it out, just say a normal goodbye.'
 
@@ -706,13 +713,25 @@ export const NEXT_TIME_GREETING =
 // `plan` null = the host checked and there is none, so no cue at all (an old,
 // already-raised plan in MEMORY.md must not come up again). undefined = the
 // host did not say (CLI runs): the soft hint.
-/** @param {string | null | undefined} plan */
-export function nextTimeGreeting(plan) {
+// 261020 (review): `notForGame` = the game this greeting is in, when the
+// plan is not tied to it (saved on a call or in chat with no game, or said
+// to be about no game). Raised there as something to talk about, not as
+// something to do in this game, so it does not turn into a goal here.
+/**
+ * @param {string | null | undefined} plan
+ * @param {{ notForGame?: string | null }} [opts]
+ */
+export function nextTimeGreeting(plan, opts = {}) {
   if (plan === null) return ''
   if (typeof plan !== 'string' || !plan.trim()) return NEXT_TIME_GREETING
   const text = plan.replace(/\s+/g, ' ').trim().replace(/"/g, "'")
+  const game = typeof opts.notForGame === 'string' ? opts.notForGame.trim() : ''
+  const scope = game
+    ? `It was not saved as something to do in ${game}, so bring it up as something to talk about, not as a task to start here. `
+    : ''
   return (
     `At the end of your last session you saved this to pick up next time: "${text}". ` +
+    scope +
     'Make it the main thing your greeting is about, in your own words and your usual style. A joke or a dry remark is fine, as long as it is clear what you want to pick up. ' +
     'Bring it up the way you would with a friend, and open with it rather than picking up where the earlier conversation stopped. ' +
     'If it is about something that may not have happened yet, bring it up in a way that fits that.'
@@ -756,10 +775,10 @@ export function callGreetingNote({ peers = [], plan } = {}) {
 // greeting is asked to raise it (nextTimeGreeting) and the "only a hint, a
 // plain greeting is fine" escape is left out, since it let a bit-heavy
 // character skip the plan every time.
-export const FIRST_CONTACT = ({ gameName, known, plan }) => {
+export const FIRST_CONTACT = ({ gameName, known, plan, planNotForGame = false }) => {
   const open = typeof plan === 'string' && plan.trim() ? plan : null
   if (open) {
-    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open)}`
+    return `FIRST CONTACT: you just spawned into your friend's world, and this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool. Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; greet them the way you would greet a friend coming back, then carry on the way your persona would. ${nextTimeGreeting(open, { notForGame: planNotForGame ? gameName : null })}`
   }
   if (known) {
     const cue = nextTimeGreeting(plan)

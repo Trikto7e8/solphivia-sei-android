@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeNextStep, nextStepMemoryLine, parsePlanLine, NEXT_STEP_MAX_CHARS } from './nextStep.js'
+import { normalizeNextStep, nextStepMemoryLine, parsePlanLine, parsePlanGameField, PLAN_GAMES, NEXT_STEP_MAX_CHARS } from './nextStep.js'
+import { GAME_CATALOG } from '../../shared/games'
 import { NEXT_TIME_GREETING } from './prompts.js'
 
 describe('normalizeNextStep', () => {
@@ -218,5 +219,42 @@ describe('plan lines name their game (261020)', () => {
   it('the greeting hint still names the labeled lines', () => {
     expect(nextStepMemoryLine('x', 'Minecraft').startsWith('Plan for next time')).toBe(true)
     expect(NEXT_TIME_GREETING).toContain('"Plan for next time"')
+  })
+})
+
+// 261020 (review): goodbye tools name the game their plan is for.
+describe('next_time_game field (261020 review)', () => {
+  it('reads a game id, a display name, a unique part of one, or none', () => {
+    expect(parsePlanGameField('Minecraft')).toBe('minecraft')
+    expect(parsePlanGameField('stardew valley')).toBe('stardew')
+    expect(parsePlanGameField('Stardew')).toBe('stardew')
+    expect(parsePlanGameField("Don't Starve Together")).toBe('dontstarve')
+    expect(parsePlanGameField('dontstarve')).toBe('dontstarve')
+    expect(parsePlanGameField(' none. ')).toBe('none')
+  })
+
+  it('anything else is left out: unknown games, two games, non-strings', () => {
+    expect(parsePlanGameField('Terraria')).toBeNull()
+    expect(parsePlanGameField('Minecraft or Stardew Valley')).toBeNull()
+    expect(parsePlanGameField('game')).toBeNull()
+    expect(parsePlanGameField('')).toBeNull()
+    expect(parsePlanGameField(undefined)).toBeNull()
+    expect(parsePlanGameField(3)).toBeNull()
+  })
+
+  it('PLAN_GAMES matches the bot games in the shared catalog', () => {
+    for (const [id, name] of Object.entries(PLAN_GAMES)) {
+      expect(GAME_CATALOG.find((g) => g.id === id)?.name).toBe(name)
+    }
+  })
+
+  it('a plan not tied to this game is raised as talk, not as a task here', () => {
+    const cue = nextTimeGreeting('ask how the interview went', { notForGame: 'Stardew Valley' })
+    expect(cue).toContain('not saved as something to do in Stardew Valley')
+    expect(cue).toContain('not as a task to start here')
+    expect(nextTimeGreeting('finish the roof')).not.toContain('not saved as something to do')
+    const fc = FIRST_CONTACT({ gameName: 'Stardew Valley', known: true, plan: 'ask how the interview went', planNotForGame: true })
+    expect(fc).toContain('not saved as something to do in Stardew Valley')
+    expect(FIRST_CONTACT({ gameName: 'Stardew Valley', known: true, plan: 'plant parsnips' })).not.toContain('not saved as something to do')
   })
 })

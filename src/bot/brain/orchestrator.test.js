@@ -993,6 +993,8 @@ describe('next_time hook on goodbye tools (261008)', () => {
       expect(tool.input_schema.required ?? []).not.toContain('next_time')
       expect(tool.input_schema.properties.next_time_for_player.type).toBe('string')
       expect(tool.input_schema.required ?? []).not.toContain('next_time_for_player')
+      expect(tool.input_schema.properties.next_time_game.type).toBe('string')
+      expect(tool.input_schema.required ?? []).not.toContain('next_time_game')
     }
   })
 
@@ -1014,7 +1016,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     expect(adapter.chat).toHaveBeenCalledWith('cya, next time we finish the roof')
     await vi.advanceTimersByTimeAsync(11_000)
     // 261014: the player line rides to main (Home card), cleaned; it is not saved to memory.
-    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: 'Finish the cabin roof' })
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: 'Finish the cabin roof', nextStepGame: null })
     expect(md).not.toContain('Finish the cabin roof')
   })
 
@@ -1033,7 +1035,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8').catch(() => '')
     expect(md).not.toContain('Plan for next time')
     await vi.advanceTimersByTimeAsync(11_000)
-    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: false, nextStepLine: null })
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: false, nextStepLine: null, nextStepGame: null })
   })
 
   it('end_call with next_time saves the plan and reports the hook', async () => {
@@ -1051,7 +1053,58 @@ describe('next_time hook on goodbye tools (261008)', () => {
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
     expect(md).toContain('Plan for next time in Minecraft: find a village for beds')
-    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null })
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: null })
+  })
+
+  // 261020 (review): a plan said while leaving one game can be for another.
+  it('quit_game with next_time_game labels and reports the named game, not this one', async () => {
+    vi.useFakeTimers()
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'q1', name: 'quit_game', input: { farewell: 'cya, parsnips next time', next_time: 'plant the parsnips on the farm', next_time_game: 'Stardew Valley' } }] },
+    ])
+    const onQuitRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onQuitRequested, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('gtg'))
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time in Stardew Valley: plant the parsnips on the farm')
+    expect(md).not.toContain('in Minecraft: plant')
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'stardew' })
+  })
+
+  it('end_call with next_time_game none saves the plan with no game', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, good luck', next_time: 'ask how the interview went', next_time_game: 'none' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const onCallEndRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onCallEndRequested, _anthropicOverride: provider })
+    orch.setVoiceCall(true)
+    await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time: ask how the interview went')
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'none' })
+  })
+
+  it('a plan the host says is not for this game is greeted as talk', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: ask how the interview went\n')
+    config._seiNextStepPlan = 'ask how the interview went'
+    config._seiNextStepPlanNotForGame = true
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
+    expect(turn).toContain('to pick up next time: \\"ask how the interview went\\"')
+    expect(turn).toContain('not saved as something to do in Minecraft')
   })
 
   it('the first-spawn greeting is told about a saved plan', async () => {

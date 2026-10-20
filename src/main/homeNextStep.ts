@@ -338,11 +338,25 @@ export async function readPendingPlan(
   now = Date.now(),
   opts: { game?: GameId | null } = {},
 ): Promise<string | null> {
+  return (await readPendingPlanFor(memoryDir, now, opts))?.text ?? null;
+}
+
+/**
+ * readPendingPlan plus whether the plan is tied to `game`. 261020 (review):
+ * a game greeting raises a plan with no game (a call plan the model gave no
+ * game, "ask how the interview went") too, but as something to talk about:
+ * `notForGame` tells the bot to say so (promptLibrary nextTimeGreeting).
+ */
+export async function readPendingPlanFor(
+  memoryDir: string,
+  now = Date.now(),
+  opts: { game?: GameId | null } = {},
+): Promise<{ text: string; notForGame: boolean } | null> {
   try {
     const [memory, ledger] = await Promise.all([readOrEmpty(path.join(memoryDir, 'MEMORY.md')), readLedger(memoryDir)]);
     const plan = openPlan({ memory, ledger, now });
     if (!plan || planIsForOtherGame(plan, ledger, opts.game)) return null;
-    return plan.text;
+    return { text: plan.text, notForGame: !!opts.game && planGame(plan, ledger) !== opts.game };
   } catch {
     return null;
   }

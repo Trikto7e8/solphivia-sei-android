@@ -33,6 +33,7 @@ export {
   NEXT_TIME_SPOKEN,
   NEXT_TIME_GREETING,
   NEXT_TIME_FOR_PLAYER_FIELD,
+  NEXT_TIME_GAME_FIELD,
   nextTimeGreeting,
   callGreetingNote,
   FIRST_CONTACT,

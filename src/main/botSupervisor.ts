@@ -57,12 +57,12 @@ import { getCharacter, patchCharacter } from './characterStore';
 import { loadApiKey, hasApiKey, getAiBackendKind, type AiBackendKind } from './apiKeyStore';
 import { buildLaunchContinuity } from './chat/continuity';
 import { readKnowledgeForPrompt } from './knowledge/knowledgeStore';
-import { readPendingPlan } from './homeNextStep';
+import { readPendingPlanFor } from './homeNextStep';
 import { loadConfig as loadUserConfig } from './configStore'; // UserConfig for bot init
 import { paths } from './paths';
 import { createLogRouter, type LogRouter } from './logRouter';
 import { bootPhaseProps, type SummonFailureInfo, type SummonPhase } from './diagnostics';
-import { noteCompanionGoodbye } from './sessionGoodbye';
+import { goodbyeGame, noteCompanionGoodbye } from './sessionGoodbye';
 
 /**
  * The READY budget: from the bot reporting "booted" (its init-ack) to
@@ -1298,9 +1298,13 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // before the session going online marks it used (index.ts
     // consumeNextStep). Pure disk read; null = none open. 261020: a plan for
     // a different game is not this greeting's (null), and stays open.
-    const nextStepPlanP: Promise<string | null | undefined> = readPendingPlan(paths.memoryDir(characterId), Date.now(), {
-      game,
-    }).catch(() => undefined);
+    // 261020 (review): with whether it is tied to this game; a plan with no
+    // game is raised as talk, not as a task here.
+    const nextStepPlanP: Promise<{ text: string; notForGame: boolean } | null | undefined> = readPendingPlanFor(
+      paths.memoryDir(characterId),
+      Date.now(),
+      { game },
+    ).catch(() => undefined);
     // ITEM 1 (quick/260523-t8d): expose the AI-backend mode + has-key state to
     // the bot child so brain/log.js can suppress the noisy game-state +
     // [haiku?] prompt logs when running in local (BYOK) mode without a key —
@@ -1496,10 +1500,11 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // player's call (the bot stays in the game). Not a BotStatus event.
       if ((data as { type?: string }).type === 'call-end') {
         // 261008: voice_call_ended reads this back (sessionGoodbye.ts).
-        const end = data as { nextStepHook?: boolean; nextStepLine?: unknown };
+        const end = data as { nextStepHook?: boolean; nextStepLine?: unknown; nextStepGame?: unknown };
         noteCompanionGoodbye(characterId, 'call', {
           hook: end.nextStepHook === true,
           line: typeof end.nextStepLine === 'string' ? end.nextStepLine : null,
+          game: goodbyeGame(end.nextStepGame) ?? null,
         });
         opts.onCallEndRequested?.(characterId);
         return;
@@ -1615,6 +1620,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           noteCompanionGoodbye(characterId, 'game', {
             hook: data.nextStepHook === true,
             line: typeof data.nextStepLine === 'string' ? data.nextStepLine : null,
+            game: goodbyeGame(data.nextStepGame) ?? null,
           });
         }
       }
@@ -1824,7 +1830,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
               // double the standalone launch reply). Deterministic; no race.
               voiceCallActive: opts.isVoiceCallActive?.(characterId) ?? false,
               // 261014: the open plan for the FIRST CONTACT greeting (null = none).
-              nextStepPlan,
+              nextStepPlan: nextStepPlan === undefined ? undefined : (nextStepPlan?.text ?? null),
+              // 261020: true = that plan is not tied to this game (talk, not a task).
+              ...(nextStepPlan?.notForGame ? { nextStepPlanNotForGame: true } : {}),
               // 260909: { provider, api_key } for the brain's search / visit
               // tools. The bot maps it onto config.web in bootstrapWithInit.
               webSearch,

@@ -3012,6 +3012,20 @@ the player-end check tagged its plan with the session's game. Now:
   start with a headline that leaves the player's name out. Prompt only, no
   matcher. Unverified live in Stardew. Old data is not migrated: an existing
   wrong goal in `HEARTBEAT.stardew.md` still shows until cleared.
+- Goodbye plans name their game too: quit_game, end_call (bot) and the chat
+  end_call take `next_time_game` (`NEXT_TIME_GAME_FIELD`, static text),
+  parsed by `parsePlanGameField` (exact id/name, one unambiguous containment
+  hit, or `none`). Main tags the ledger with `goodbyePlanPlace`: a named game
+  wins; `none` drops the game (Home shows the picker); a missing field keeps
+  the in-game session's game and leaves a call plan unscoped. A game session
+  that loads an unscoped or other-surface plan (`readPendingPlanFor`,
+  `notForGame`) greets with it as something to talk about, not a task to
+  start (`nextTimeGreeting(plan, { notForGame })`). The player-end parser only
+  splits a run-on reply at a later label in order (`note`, `player`, `game`),
+  and at `game:` only when the rest is an exact game or `none`, so a step
+  like "play the board game: Catan" stays whole. Live Haiku probe of the
+  field (forced tool, 16 runs: MC plan quit from Stardew, Stardew plan, MC
+  plan on a call, non-game call plan): 16 of 16 right.
 
 **Sessions an app quit ended get the check on the next launch (261013,
 T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call

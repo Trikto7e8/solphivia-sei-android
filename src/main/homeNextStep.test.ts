@@ -17,6 +17,7 @@ import {
   planKey,
   readHomeNextStep,
   readPendingPlan,
+  readPendingPlanFor,
   tagLatestPlan,
   type NextStepLedger,
 } from './homeNextStep';
@@ -340,6 +341,23 @@ describe('files', () => {
       expect(await readPendingPlan(dir, NOW, { game: 'stardew' })).toBe('ask how the job interview went');
       expect(await readPendingPlan(dir, NOW)).toBe('ask how the job interview went');
       expect(await consumeNextStep(dir, NOW, { game: 'dontstarve' })).toBe(true);
+    });
+
+    // 261020 (review): the greeting raises a plan with no game as talk.
+    it('readPendingPlanFor says when an open plan is not tied to the game', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time: ask how the job interview went']);
+      await tagLatestPlan(dir, { surface: 'call' }, NOW);
+      expect(await readPendingPlanFor(dir, NOW, { game: 'stardew' })).toEqual({ text: 'ask how the job interview went', notForGame: true });
+      expect(await readPendingPlanFor(dir, NOW)).toEqual({ text: 'ask how the job interview went', notForGame: false });
+    });
+
+    it('readPendingPlanFor: a plan for this game is tied to it, a none plan (game dropped) is not', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time in Stardew Valley: plant parsnips']);
+      expect(await readPendingPlanFor(dir, NOW, { game: 'stardew' })).toEqual({ text: 'plant parsnips', notForGame: false });
+      await writeMemory([NOW - 30_000, 'Plan for next time: ask how the job interview went']);
+      await tagLatestPlan(dir, { surface: 'game' }, NOW);
+      expect(await readPendingPlanFor(dir, NOW, { game: 'minecraft' })).toEqual({ text: 'ask how the job interview went', notForGame: true });
+      expect(await readHomeNextStep(dir, 'c1', NOW)).toMatchObject({ surface: 'game', game: null });
     });
 
     it('a call greeting (no game) raises and uses up any plan', async () => {

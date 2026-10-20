@@ -35,7 +35,7 @@ import type { LlmCallParams, LlmMessage, LlmProvider, LlmResult, LlmToolDef } fr
 import type { UserConfig } from '../../shared/characterSchema';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
 import { isSilenceFiller } from '../../bot/brain/silenceFiller.js';
-import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from '../../bot/brain/nextStep.js';
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine, parsePlanGameField, PLAN_GAMES } from '../../bot/brain/nextStep.js';
 import { callGreetingNote } from '../../bot/brain/promptLibrary.js';
 import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye';
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
@@ -307,15 +307,23 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
  * 261014: the result also carries `next_time_for_player`, the step written to
  * the player; it is not saved here but rides the goodbye note to the Home
  * card's tag (sessionGoodbye.ts).
+ *
+ * 261020 (review): + `next_time_game`, the game the step is for. A named game
+ * labels the memory line ("Plan for next time in Minecraft: ...") and rides
+ * the goodbye note to the tag, so a call's Minecraft plan offers Minecraft
+ * and is not raised as a task in Stardew. Left out (or 'none'), the plan has
+ * no game: a game greeting raises it as talk, not as a task there.
  */
 async function honorNextStep(characterId: string, input: unknown): Promise<NextStepHookResult> {
-  const fields = input as { next_time?: unknown; next_time_for_player?: unknown } | null;
+  const fields = input as { next_time?: unknown; next_time_for_player?: unknown; next_time_game?: unknown } | null;
   const step = normalizeNextStep(fields?.next_time);
-  if (!step) return { hook: false, line: null };
-  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player) };
+  if (!step) return { hook: false, line: null, game: null };
+  const game = parsePlanGameField(fields?.next_time_game);
+  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player), game };
   if (!turnMayWrite(characterId, 'next_time')) return result;
+  const label = game && game !== 'none' ? PLAN_GAMES[game] : undefined;
   try {
-    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step), undefined, {
+    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step, label), undefined, {
       section: 'app',
     });
     if (written > 0) void maybeCompactChatMemory(characterId).catch(() => {});

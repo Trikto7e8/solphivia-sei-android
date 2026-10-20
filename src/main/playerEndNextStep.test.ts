@@ -462,7 +462,9 @@ describe('261020: the game a plan is for', () => {
     const stardew = { surface: 'game' as const, game: 'stardew' };
     expect(resolvePlanPlace(stardew, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft', memoryGame: 'minecraft' });
     expect(resolvePlanPlace(stardew, 'stardew')).toEqual({ surface: 'game', game: 'stardew', memoryGame: 'stardew' });
-    expect(resolvePlanPlace(stardew, 'none')).toEqual({ surface: 'game', game: 'stardew', memoryGame: null });
+    // Review 261020: 'none' drops the session's game (picker card, any game may raise it).
+    expect(resolvePlanPlace(stardew, 'none')).toEqual({ surface: 'game', memoryGame: null });
+    expect(resolvePlanPlace({ surface: 'backseat', game: 'roblox' }, 'none')).toEqual({ surface: 'backseat', memoryGame: null });
     expect(resolvePlanPlace(stardew, null)).toEqual({ surface: 'game', game: 'stardew', memoryGame: 'stardew' });
     expect(resolvePlanPlace({ surface: 'call' }, 'minecraft')).toEqual({ surface: 'game', game: 'minecraft', memoryGame: 'minecraft' });
     expect(resolvePlanPlace({ surface: 'call' }, 'none')).toEqual({ surface: 'call', memoryGame: null });
@@ -583,5 +585,38 @@ describe('261020: memories keep the section they are from', () => {
       memories: memoryEntries('# Memory\n\n- [2026-10-18] ouen likes cats\n'),
     });
     expect(user).toContain('Some of your recent memories:\n- ouen likes cats');
+  });
+});
+
+// 261020 (review): two follow-ups to the game: line.
+describe('261020 review: none answers and the game: split', () => {
+  it('a plan about no game after a Minecraft session is tagged with no game', async () => {
+    const llm = provider('note: ask how the job interview went\nplayer: Tell Sui how the interview went\ngame: none');
+    const tags: unknown[][] = [];
+    const { d, saved } = deps({ tagPlan: async (...a) => void tags.push(a) }, llm);
+    await runPlayerEndNextStep(input({}), d);
+    expect(saved[0][1]).toBe('Plan for next time: ask how the job interview went');
+    expect(tags).toEqual([['char-1', 'game', undefined, 'Tell Sui how the interview went']]);
+  });
+
+  it('"game:" inside the note does not cut it', () => {
+    expect(parsePlayerEndReply('note: finish the board game: monopoly\nplayer: Finish Monopoly with Sui\ngame: none')).toEqual({
+      step: 'finish the board game: monopoly',
+      line: 'Finish Monopoly with Sui',
+      game: 'none',
+    });
+    expect(parsePlayerEndReply('note: finish the board game: monopoly player: Finish Monopoly with Sui game: none')).toEqual({
+      step: 'finish the board game: monopoly',
+      line: 'Finish Monopoly with Sui',
+      game: 'none',
+    });
+    // A label earlier in the order does not split a later one's text.
+    expect(parsePlayerEndReply('note: x\nplayer: Write a note: thank Sui\ngame: Minecraft')?.line).toBe('Write a note: thank Sui');
+    // The real inline labels still split.
+    expect(parsePlayerEndReply('note: plant parsnips player: Plant parsnips with Sui game: Stardew Valley.')).toEqual({
+      step: 'plant parsnips',
+      line: 'Plant parsnips with Sui',
+      game: 'stardew',
+    });
   });
 });

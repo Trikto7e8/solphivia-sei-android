@@ -404,13 +404,39 @@ export function ownKeyFailureReason(err: unknown): OwnVoiceStandInReason | null 
  * line. Keyed on a key fingerprint: saving a different key retries at once.
  */
 const OWN_KEY_FAILURE_TTL_MS = 5 * 60_000;
+/** Hard cap on remembered refusals (expired ones are pruned first). */
+const OWN_KEY_FAILURE_MAX = 64;
 const ownKeyFailures = new Map<string, { reason: OwnVoiceStandInReason; until: number }>();
 function ownKeyFailureKey(key: string, voiceId: string): string {
   return `${createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16)}:${voiceId}`;
 }
+function rememberOwnKeyFailure(k: string, reason: OwnVoiceStandInReason): void {
+  const now = Date.now();
+  for (const [key, v] of ownKeyFailures) if (v.until <= now) ownKeyFailures.delete(key);
+  ownKeyFailures.delete(k);
+  // Map iteration is insertion order: drop the oldest past the cap.
+  while (ownKeyFailures.size >= OWN_KEY_FAILURE_MAX) {
+    const oldest = ownKeyFailures.keys().next().value;
+    if (oldest === undefined) break;
+    ownKeyFailures.delete(oldest);
+  }
+  ownKeyFailures.set(k, { reason, until: now + OWN_KEY_FAILURE_TTL_MS });
+}
+/**
+ * Forget every remembered refusal. Called when the stored key is saved or
+ * removed: re-saving the SAME key (after topping up ElevenLabs credits, or
+ * restoring a deleted voice) should retry at once, not wait out the TTL.
+ */
+export function clearOwnKeyFailures(): void {
+  ownKeyFailures.clear();
+}
 /** Test seam. */
 export function _resetOwnKeyFailuresForTests(): void {
   ownKeyFailures.clear();
+}
+/** Test seam: how many refusals are remembered. */
+export function _ownKeyFailureCountForTests(): number {
+  return ownKeyFailures.size;
 }
 
 interface SpeakPlan {
@@ -455,10 +481,7 @@ function ownKeyFallback(plan: SpeakPlan, character: Character, err: unknown): Ow
   if (!plan.canFallBack || plan.route.kind !== 'direct') return null;
   const reason = ownKeyFailureReason(err);
   if (!reason) return null;
-  ownKeyFailures.set(ownKeyFailureKey(plan.route.key, plan.speakId), {
-    reason,
-    until: Date.now() + OWN_KEY_FAILURE_TTL_MS,
-  });
+  rememberOwnKeyFailure(ownKeyFailureKey(plan.route.key, plan.speakId), reason);
   emitTtsNotice({ kind: 'own-voice-stand-in', characterId: character.id, reason });
   return reason;
 }

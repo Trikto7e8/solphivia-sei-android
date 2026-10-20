@@ -48,6 +48,8 @@ import {
   onTtsNotice,
   ownKeyFailureReason,
   _resetOwnKeyFailuresForTests,
+  _ownKeyFailureCountForTests,
+  clearOwnKeyFailures,
 } from './tts';
 import type { TtsStreamEvent, TtsNotice } from './tts';
 import { ownVoiceStandInId } from './voiceAssign';
@@ -552,6 +554,41 @@ describe('own ElevenLabs voices', () => {
     expect(fetchSpy.mock.calls[2][0]).toBe('https://api.sei.gg/tts/speech');
     expect(notices.map((n) => n.kind === 'own-voice-stand-in' && n.reason)).toEqual(['key-invalid', 'key-invalid']);
     off();
+  });
+
+  it('clearOwnKeyFailures (key re-saved): the same key is tried direct again at once', async () => {
+    cloudOwnKey();
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : okAudio()));
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(_ownKeyFailureCountForTests()).toBe(1);
+    clearOwnKeyFailures();
+    fetchSpy.mockClear();
+    fetchSpy.mockImplementation(async () => okAudio());
+    await voiceTts({ characterId: 'c1', text: 'again' });
+    expect(fetchSpy.mock.calls[0][0]).toContain(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}`);
+  });
+
+  it('remembered refusals are bounded (expired pruned, oldest dropped past the cap)', async () => {
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : okAudio()));
+    for (let i = 0; i < 80; i++) {
+      // A different key per line: each refusal is its own (key, voice) entry.
+      mockResolveTtsRoute.mockImplementation(async ({ own }: { own: boolean }) =>
+        own
+          ? { route: { kind: 'direct', key: `own-key-${i}` }, ownKeyOnCloud: true }
+          : { route: { kind: 'proxy' }, ownKeyOnCloud: false },
+      );
+      await voiceTts({ characterId: 'c1', text: `line ${i}` });
+    }
+    expect(_ownKeyFailureCountForTests()).toBeLessThanOrEqual(64);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await voiceTts({ characterId: 'c1', text: 'later' });
+      // Everything older than the TTL was pruned; only the newest refusal is left.
+      expect(_ownKeyFailureCountForTests()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('streaming: a rejected own key falls back before any chunk reaches the sink', async () => {

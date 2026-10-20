@@ -2559,6 +2559,10 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     // A new (or removed) key names a different account: drop its voice list.
     const { invalidateOwnVoices } = await import('./voice/ownVoices');
     invalidateOwnVoices();
+    // ...and any remembered own-voice refusals (261020): re-saving the same
+    // key after fixing the ElevenLabs account retries at once.
+    const { clearOwnKeyFailures } = await import('./voice/tts');
+    clearOwnKeyFailures();
   });
 
   ipcMain.handle(IpcChannel.voice.elevenKeyStatus, async (): Promise<{ present: boolean }> => {

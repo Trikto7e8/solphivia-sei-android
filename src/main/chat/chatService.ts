@@ -115,6 +115,14 @@ const MEMORY_BUDGET_BYTES = 12000;
 const MAX_HOPS = 6;
 
 /**
+ * 261020: tools whose result the model does not need in order to answer the
+ * player. A hop that already answered and called only these ends the turn;
+ * see the "answered" guard in the hop loop. Web tools and launch() are absent
+ * on purpose: their results change what the reply should say.
+ */
+export const NO_FOLLOW_UP_TOOLS: ReadonlySet<string> = new Set(['remember']);
+
+/**
  * 260917: ONE tool list per surface shape, built here so the four voice turn
  * kinds (user, greeting, companion reaction, idle nudge) cannot drift apart.
  * Tools sit at the front of the prompt-cache prefix, so membership must be
@@ -752,6 +760,9 @@ async function prepareChatTurn(
     // 261008: every chat and voice turn offers remember() (chatSurfaceTools),
     // so the status block carries the per-turn memory check.
     memoryGuide: true,
+    // 261020: every chat and voice turn offers web search (chatTools), so the
+    // status block carries the search check too.
+    searchGuide: true,
   });
   // Voice: only the last N rows go to the model (VOICE_RECENT_CAP). Slice the raw
   // transcript BEFORE toMessages so role-merge + first-must-be-user still hold.
@@ -1026,6 +1037,9 @@ async function sendChatMessageImpl(
     let replyText = '';
     /** The hop that produced `replyText` was cut by the token cap (tidyReply). */
     let truncated = false;
+    /** The hop that produced `replyText` also called remember() (noteLeak's
+     * second tier, same as the single-shot voice turns). */
+    let replyRememberCalled = false;
     // Task 2 — the actual summon is deferred until AFTER the reply is persisted,
     // so the companion's "hopping in" acknowledgement lands in chat before the
     // live-session popup (SummonedWidget) appears. Set when launch() resolves to
@@ -1063,6 +1077,8 @@ async function sendChatMessageImpl(
     };
 
     for (let hop = 0; hop < MAX_HOPS; hop++) {
+      /** Streamed lines emitted before this hop (the "answered" guard below). */
+      const streamedBeforeHop = streamedReplies.length;
       // Hard cap kept low so a reply can't ratchet into paragraphs. Each turn
       // feeds the model its own prior replies (toMessages), and with a generous
       // ceiling it self-conditions on the last (longest) turn and creeps up a
@@ -1157,6 +1173,7 @@ async function sendChatMessageImpl(
       if (text) {
         replyText = text;
         truncated = res.stopReason === 'max_tokens';
+        replyRememberCalled = res.content.some((b) => b.type === 'tool_use' && b.name === 'remember');
         // 260909: with the server-side search the "lemme check" line and the
         // answer arrive in ONE response as text blocks on either side of the
         // search. On the blocking typed path push the pre-search line now (it
@@ -1303,6 +1320,24 @@ async function sendChatMessageImpl(
       // "log off and hop back in" needs its follow-up "hopping back in" line).
       const spokeThisTurn = isStreaming ? streamedReplies.length > 0 : Boolean(replyText.trim());
       if ((endCallRequested || quitCalled) && spokeThisTurn && !launchCalled) break;
+
+      // 261020: the "answered" guard. The memory check asks for remember()
+      // "after your reply", so the usual shape is reply text plus remember()
+      // in ONE response. Running another hop on that handed the model its own
+      // finished reply plus "Saved, continue your reply", and it answered the
+      // same message a second time in new words. On a call both rounds were
+      // spoken (live 261020: one typed line, five spoken lines, the second
+      // round a reworded copy of the first); in typed chat the second round
+      // silently replaced the first. A hop that already answered the player
+      // and called only tools whose result changes nothing (remember) ends
+      // the turn here; its tool_use needs no tool_result because the hop
+      // history is dropped with the turn. A hop with a web tool or launch()
+      // keeps going, since that result is what the next line is about, and a
+      // remember() with no reply text yet still gets the hop that answers.
+      const answeredThisHop = isStreaming
+        ? streamedReplies.length > streamedBeforeHop
+        : Boolean(text.trim()) && Boolean(replyText.trim());
+      if (answeredThisHop && toolUses.every((b) => NO_FOLLOW_UP_TOOLS.has(b.name))) break;
     }
 
     // #9 — if a newer send arrived (or we were aborted) while this turn ran,
@@ -1329,6 +1364,7 @@ async function sendChatMessageImpl(
             voice: args.voiceCall === true,
             truncated,
             local: llm.backend === 'local',
+            rememberCalled: replyRememberCalled,
           })
         : [];
 

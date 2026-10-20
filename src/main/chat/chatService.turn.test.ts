@@ -277,15 +277,15 @@ describe('sendChatMessage — parallel tool_use blocks', () => {
     expect(result.replies.map((r) => r.text)).toEqual(['aight, catch you later']);
   });
 
-  it('remember() on a voice turn appends to MEMORY.md and answers the tool_use', async () => {
-    createSpy
-      .mockResolvedValueOnce({
-        content: [
-          { type: 'text', text: 'oh a big exam, noted.' },
-          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a big exam on friday' } },
-        ],
-      })
-      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'good luck friday.' }] });
+  it('remember() on a voice turn appends to MEMORY.md and ends the turn once the reply is out', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'oh a big exam, noted.' },
+        { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a big exam on friday' } },
+      ],
+    });
+    // A second response is staged but must never be consumed (261020).
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'good luck friday.' }] });
 
     const result = await sendChatMessage(
       { characterId: CHAR, text: 'i have a big exam friday', voiceCall: true },
@@ -294,11 +294,8 @@ describe('sendChatMessage — parallel tool_use blocks', () => {
 
     const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
     expect(mem).toContain('player has a big exam on friday');
-    // The tool_use was answered (second hop ran) and the reply survived.
-    const secondReq = createSpy.mock.calls[1][0] as { messages: Array<{ role: string; content: unknown }> };
-    const blocks = secondReq.messages[secondReq.messages.length - 1].content as Array<{ type: string; tool_use_id: string }>;
-    expect(blocks.map((b) => b.tool_use_id)).toEqual(['tu_rem']);
-    expect(result.replies.length).toBeGreaterThan(0);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(result.replies.map((r) => r.text)).toEqual(['oh a big exam, noted.']);
   });
 
   it('typed chat (261008) offers remember() and writes it to MEMORY.md too', async () => {
@@ -936,5 +933,127 @@ describe('streamed voice turn: spoken text keeps its punctuation and carries rep
     await sendChatMessage({ characterId: CHAR, text: 'can you help', voiceCall: true }, { ...deps(), emitReply });
 
     expect(emitReply.mock.calls.map(([, , speech]) => speech.more)).toEqual([false, false]);
+  });
+});
+
+describe('one player message gets one reply round (261020)', () => {
+  /** A streamed response: text deltas, then the final message with any tool_use. */
+  function streamedResponse(text: string, toolUses: Array<{ id: string; name: string; input: unknown }> = []) {
+    const content = [
+      ...(text ? [{ type: 'text', text }] : []),
+      ...toolUses.map((t) => ({ type: 'tool_use', ...t })),
+    ];
+    return {
+      async *[Symbol.asyncIterator]() {
+        if (text) yield { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+      },
+      finalMessage: async () => ({ content, usage: {}, stop_reason: toolUses.length ? 'tool_use' : 'end_turn' }),
+    };
+  }
+  const memoryFile = () => readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+
+  it('a typed line on a call answered with text + remember() is spoken once, not reworded in a second hop', async () => {
+    // Live 261020 (v0.6.9-beta.3, 1:1 call, typed "remind me next time, we
+    // need to get copper first"): hop 0 spoke three lines and called
+    // remember(); the loop re-called the model with "Saved to your memory.
+    // Continue your reply" and hop 1 said the same thing again in new words.
+    setCallActive(CHAR, true);
+    streamSpy
+      .mockReturnValueOnce(
+        streamedResponse("Yeah, copper first, got it. I'll bring it up next time, don't you worry.", [
+          { id: 'tu_rem', name: 'remember', input: { text: 'next session: get copper before the lighthouse base' } },
+        ]),
+      )
+      .mockReturnValueOnce(streamedResponse("I'll bring it up next time so we don't skip it."));
+    const emitReply = vi.fn();
+
+    const result = await sendChatMessage(
+      { characterId: CHAR, text: 'remind me next time, we need to get copper first', voiceCall: true },
+      { ...deps(), emitReply },
+    );
+
+    expect(streamSpy).toHaveBeenCalledTimes(1);
+    expect(emitReply.mock.calls.map(([, msg]) => msg.text)).toEqual([
+      'Yeah, copper first, got it.',
+      "I'll bring it up next time, don't you worry.",
+    ]);
+    expect(result.streamed).toBe(true);
+    expect(await memoryFile()).toContain('get copper before the lighthouse base');
+  });
+
+  it('typed chat keeps the reply written beside remember() instead of swapping it for a second one', async () => {
+    createSpy
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'copper bulb lighthouse, that is going to look so good at night' },
+          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'favorite block is the copper bulb' } },
+        ],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'wait i gotta ask, you building it solo?' }] });
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'remember this: my favorite block is copper bulb' }, deps());
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(result.replies.map((r) => r.text)).toEqual(['copper bulb lighthouse, that is going to look so good at night']);
+    expect(await memoryFile()).toContain('favorite block is the copper bulb');
+  });
+
+  it('remember() with no reply text yet still gets the hop that answers', async () => {
+    createSpy
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a dog named Pepper' } }],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'pepper is such a good name' }] });
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'my dog is called pepper' }, deps());
+
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(result.replies.map((r) => r.text)).toEqual(['pepper is such a good name']);
+  });
+
+  it('on a call, a lead line + search, then a remember()-only hop, still continues to the answer', async () => {
+    // The guard is per hop: the lead line spoken before the lookup does not
+    // count as the answer.
+    setCallActive(CHAR, true);
+    webRuns.length = 0;
+    streamSpy
+      .mockReturnValueOnce(streamedResponse('one sec, let me check.', [{ id: 'tu_s', name: 'search', input: { query: 'minecraft snapshot' } }]))
+      .mockReturnValueOnce(streamedResponse('', [{ id: 'tu_rem', name: 'remember', input: { text: 'player follows snapshots' } }]))
+      .mockReturnValueOnce(streamedResponse('yeah there is a new snapshot with brittle ice.'));
+    const emitReply = vi.fn();
+
+    await sendChatMessage({ characterId: CHAR, text: 'anything new for minecraft this week', voiceCall: true }, { ...deps(), emitReply });
+
+    expect(streamSpy).toHaveBeenCalledTimes(3);
+    expect(emitReply.mock.calls.map(([, msg]) => msg.text)).toEqual([
+      'one sec, let me check.',
+      'yeah there is a new snapshot with brittle ice.',
+    ]);
+  });
+
+  it('an answer that arrives after a search and also calls remember() ends the turn there', async () => {
+    webRuns.length = 0;
+    createSpy
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'lemme check.' },
+          { type: 'tool_use', id: 'tu_s', name: 'search', input: { query: 'netherite armor' } },
+        ],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'smithing table, diamond gear plus an ingot.' },
+          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player is going for netherite' } },
+        ],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'so yeah, smithing table.' }] });
+    const pushed: string[] = [];
+    const d: ChatDeps = { ...deps(), emitReply: (_id, m) => { pushed.push(m.text); } };
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'how do i make netherite armor' }, d);
+
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(pushed).toEqual(['lemme check']);
+    expect(result.replies.map((r) => r.text)).toEqual(['smithing table, diamond gear plus an ingot']);
   });
 });

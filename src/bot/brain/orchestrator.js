@@ -58,7 +58,7 @@ import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries } from './memory/heartbeat.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -1075,9 +1075,20 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // loop seed and after setGoal/clearGoal), so it clears the moment the task
   // leaves the list, however it was cleared.
   let playerTaskInGoals = false
+  // 261020 (pass 20): the goal lines as of the last read, for the turn text of
+  // a player line mid-loop. The heartbeat block is read once at the loop's
+  // seed, so a goal written later in the same loop (the player's errand, set
+  // on their line) was in no heartbeat she could see, and "actually forget the
+  // logs" was answered without a clearGoal: told to clear "a goal in your
+  // heartbeat", she had none in view.
+  let heartbeatGoals = []
   async function refreshPlayerTaskInGoals() {
-    if (!heartbeatLog) { playerTaskInGoals = false; return }
-    try { playerTaskInGoals = hasPlayerTask(await heartbeatLog.readAll()) } catch { /* keep the last value */ }
+    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; return }
+    try {
+      const full = await heartbeatLog.readAll()
+      playerTaskInGoals = hasPlayerTask(full)
+      heartbeatGoals = goalEntries(full)
+    } catch { /* keep the last value */ }
   }
   // 261012 (quality pass 5): when the player last told her to stop. Every
   // stop_gather failure in the eval was the same: the gather stopped at once,
@@ -1192,6 +1203,36 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     } catch { return null }
   }
   const ownRepeatsTail = (mode) => { const t = ownRepeatsText(mode); return t ? `\n\n${t}` : '' }
+  // 261020 (pass 20): the turn after one of her actions finished carried no
+  // line of hers, so a line she had just said went out again: "hey alex"
+  // twice when a dig came back out of range, "you're welcome" on the "thanks"
+  // and again when the give landed. That turn now gets the short check-in
+  // form ('result'), only while her newest line is fresh, and once per line
+  // per loop: a long gather does not re-quote the same line on every result.
+  // Idle seeds keep the light idle form (no quote). Quoting a fresh line on
+  // the seed was tried in this pass and is the pass 6a silence again: in the
+  // persona eval it raised silent items 7 -> 15 and misattributions 10 -> 21
+  // against pass 19, mostly on the idle and failed_action situations.
+  // Only these result notes mark a line as noted. A reply turn's quote does
+  // not: when the reply turn calls an action and no say() (the hello that
+  // crossed theirs), the result turn after it is where the second hello
+  // came from (probe greet_dig, 8 of 8 with the reply's quote marked).
+  const RESULT_REPEATS_FRESH_MS = config?.memory?.result_repeats_fresh_ms ?? 45_000
+  const newestOwnLineAt = () => {
+    try {
+      const at = convoMemory.recentChat._internal.selfLines.at(-1)?.at
+      return Number.isFinite(at) ? at : null
+    } catch { return null }
+  }
+  function resultRepeatsTail(loop) {
+    const at = newestOwnLineAt()
+    if (at == null || Date.now() - at > RESULT_REPEATS_FRESH_MS) return ''
+    if (loop?._ownLinesNotedAt === at) return ''
+    const t = ownRepeatsText('result')
+    if (!t) return ''
+    if (loop) loop._ownLinesNotedAt = at
+    return `\n\n${t}`
+  }
   // 261012: the first-spawn greeting and the player's own first "hey" cross
   // in flight. Her greeting is decided on the first idle tick but reaches
   // chat a few seconds later (paced typing), the player types hello in that
@@ -2423,7 +2464,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       peers: companions,
       fromTeammate: teammate === true,
       ownAction,
-    })) + crossedTail + (humanLine ? ownRepeatsTail(crossed ? 'greeted' : 'reply') : '')
+    })) + crossedTail + (humanLine ? heartbeatNowTail() + ownRepeatsTail(crossed ? 'greeted' : 'reply') : '')
+  }
+
+  function heartbeatNowTail() {
+    const t = NUDGES.heartbeatNow(heartbeatGoals)
+    return t ? `\n\n${t}` : ''
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -4333,10 +4379,13 @@ function maybeWarnByteCap(loop, warned) {
     // action_complete path is a continuation of the same iteration that
     // dispatched the long-runner, so nudges fire on the NEXT iteration's
     // own cadence check).
+    // 261020 (pass 20): her fresh line, when this is the result of her own
+    // action (a player line folded in already carries the reply form).
+    const resultEventText = extraEventText ?? (resultRepeatsTail(loop).trim() || null)
     try {
       loop.appendToolResults(pendingResults, {
         snapshot: snapshotText(),
-        ...(extraEventText ? { eventText: extraEventText } : {}),
+        ...(resultEventText ? { eventText: resultEventText } : {}),
       })
     } catch (err) {
       logger.warn?.(`[sei/orch] appendToolResults failed in action_complete: ${err.message}`)
@@ -4493,6 +4542,8 @@ function maybeWarnByteCap(loop, warned) {
       // starting anything ("on it, after this stone batch"); bring that line
       // back now, so a new order is not lost behind her own next step.
       if (replyDeferred?.length) eventText = `${eventText}\n\n${NUDGES.deferredReplies(replyDeferred)}`
+      // 261020 (pass 20): her fresh line, so the result turn does not say it again.
+      else if (!pendingInterrupt) eventText += resultRepeatsTail(loop)
       // 261015: a player line that landed while the loop waited for this
       // completion (no action running, so it could not ride an action tick)
       // is answered in the same turn as the result.

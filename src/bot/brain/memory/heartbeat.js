@@ -67,6 +67,17 @@ export function hasPlayerTask(fullText) {
   return false
 }
 
+// 261020 (pass 20): the goal texts in the heartbeat file, oldest first, with
+// the player-task tag kept and the stamps dropped.
+export function goalEntries(fullText) {
+  const out = []
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(line)
+    if (m && m[1].trim()) out.push(m[1].trim())
+  }
+  return out
+}
+
 function stripPlayerTaskTag(text) {
   const t = String(text ?? '').trim()
   return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t
@@ -123,7 +134,10 @@ export async function appendGoal(filePath, text, when, { forPlayer = false } = {
  * Returns the number of removed lines.
  */
 export async function removeGoal(filePath, query) {
-  const q = String(query ?? '').trim().toLowerCase()
+  // 261020 (pass 20 review): NUDGES.heartbeatNow shows a long goal cut at 157
+  // characters with "..." on the end. A clearGoal that copies that line whole
+  // must still match, so a trailing ellipsis is not part of the substring.
+  const q = String(query ?? '').trim().replace(/\s*(\.\.\.|…)$/, '').trim().toLowerCase()
   if (!q) return 0
 
   return withFileLock(filePath, async () => {

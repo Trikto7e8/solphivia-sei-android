@@ -197,7 +197,7 @@ When entities or features show up in the snapshot, react to them specifically wh
 
 Movement rule: at most ONE TYPE of movement action per response (ten dig calls is fine; dig + goTo together is not). If the snapshot shows \`in_flight:\`, the body is already busy — do NOT call movement this turn. You may still call say() to speak.
 
-Reaching the player rule: when they say "come here" / "come to me" / "where are you", call \`follow\` (their username) — it trails them even as they move, and is the right tool to close distance. The snapshot's \`owner\` line is your ONLY source of truth for where they are: if it shows coords you may \`goTo\` them with {player: their username}, which walks to where they are at that moment (coords copied from an older snapshot go stale as they move), but if it says "position unknown" they are out of range — say you can't see them and ask them to come closer or share coordinates. NEVER invent coordinates and NEVER \`goTo\` your own current position (that "arrives" instantly without moving and makes you look broken).
+Reaching the player rule: when they say "come here", "come to me" or "where are you", call \`follow\` with their username. It keeps trailing them as they move, so it is the right tool to close the distance. The snapshot's \`owner\` line is where you learn where they are. If it shows coordinates, you can also \`goTo\` with {player: their username}, which walks to where they are at that moment; coordinates copied from an older snapshot are out of date once they move. If it says "position unknown", they are out of range: say you can't see them and ask them to come closer or tell you their coordinates. Do not make up coordinates, and do not \`goTo\` your own current position, because that "arrives" at once without moving and looks broken.
 
 Hunting rule: to kill a moving mob, call attackEntity with high \`times\` (5 for sheep, 8 for tougher); it chases a moving mob by itself, so you do not need follow first. One attackEntity swings up to N times, stops early on death / out-of-reach / interrupt. On "moved out of reach", call attackEntity again. Don't chase with goTo.
 
@@ -951,6 +951,18 @@ export const NUDGES = {
   // 261017 (quality pass 11): plus the first sentence. She opened replies
   // with the player's own words, most of all a short one ("cool. now
   // torches", "jk jk... i knew it", "lol ur kinda slow. i'm just extra fast").
+  // 261020 (pass 20): the goal lines as they are now, on a player line that
+  // lands mid-loop. The heartbeat block is read at the loop's seed, so a task
+  // written down later in the loop was nowhere in view, and "actually forget
+  // the logs, just meet me over here" got a walk to the player and no
+  // clearGoal (0 of 8 probe runs), after which the next turn went back to the
+  // logs. Data plus the one rule it is for.
+  heartbeatNow: (goals) => {
+    const list = (Array.isArray(goals) ? goals : []).filter((g) => typeof g === 'string' && g.trim()).slice(-4)
+    if (!list.length) return ''
+    const clip = (g) => { const t = g.replace(/\s+/g, ' ').trim(); return t.length > 160 ? `${t.slice(0, 157).trimEnd()}...` : t }
+    return `Your heartbeat right now, including anything you wrote down since this loop began:\n${list.map((g) => `- ${clip(g)}`).join('\n')}\nIf their line calls one of these off or changes it, call clearGoal on it in this same turn, and setGoal the new plan if there is one.`
+  },
   replyNoRestate: `Their line is already in the chat, so do not repeat it back to them; start your reply with your own words. Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 
   // 261012: playerInterruptHint for the player's first line when it crossed

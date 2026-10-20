@@ -67,6 +67,17 @@ export function hasPlayerTask(fullText) {
   return false
 }
 
+// 261020 (pass 20): the goal texts in the heartbeat file, oldest first, with
+// the player-task tag kept and the stamps dropped.
+export function goalEntries(fullText) {
+  const out = []
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(line)
+    if (m && m[1].trim()) out.push(m[1].trim())
+  }
+  return out
+}
+
 function stripPlayerTaskTag(text) {
   const t = String(text ?? '').trim()
   return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t

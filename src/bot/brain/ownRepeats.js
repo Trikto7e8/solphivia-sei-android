@@ -413,6 +413,12 @@ export function repeatedOpener(selfLines, {
 //           pulled the other way, and a second hello ("yo alex", "hey alex.
 //           you're back") went out in 1 to 2 of 18 scripted sessions per run.
 //           Only the quote and the repeats, no ask.
+//   result  (261020, pass 20) the turn after one of her actions finished,
+//           while a line of hers is still fresh. These turns carried no
+//           quote at all, and the line she had just said went out again: a
+//           second hello after a dig came back out of range, "you're
+//           welcome" twice around one hand-over. The same short form as a
+//           check-in.
 const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
 
 /** The line half of the note: her last lines, quoted, and what they share. */
@@ -429,7 +435,7 @@ const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeb
 const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If they ask how it is going, tell them where things stand, just not in the same words as before. If their line only acknowledges yours, a short reaction is enough.'
 
 function linesNote(selfLines, playerLines, opts = {}) {
-  const mode = ['idle', 'checkin', 'greeted'].includes(opts.mode) ? opts.mode : 'reply'
+  const mode = ['idle', 'checkin', 'greeted', 'result'].includes(opts.mode) ? opts.mode : 'reply'
   const last = recentOwnTurns(selfLines, { now: opts.now })
   if (!last.length) return null
   // A word the tic note already names is not named twice ("big brother").
@@ -445,8 +451,8 @@ function linesNote(selfLines, playerLines, opts = {}) {
   const bits = phrases.length
     ? ` You have said ${phrases.map((p) => `"${p.phrase}"`).join(' and ')} more than once already, so leave ${phrases.length === 1 ? 'it' : 'them'} out of this line${mode === 'reply' || mode === 'greeted' ? ' unless they ask for it' : ''}.`
     : ''
-  if (mode === 'checkin') {
-    return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}, so if you say something this tick, make it new.${bits}`
+  if (mode === 'checkin' || mode === 'result') {
+    return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}, so if you say something ${mode === 'checkin' ? 'this tick' : 'now'}, make it new.${bits}`
   }
   if (mode === 'greeted') return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}.${bits}`
   const opener = repeatedOpener(selfLines, {
@@ -463,7 +469,7 @@ function linesNote(selfLines, playerLines, opts = {}) {
 /**
  * The prompt note for the next turn, or null when she has said nothing
  * recently and nothing repeats. `opts.mode` is the kind of turn: 'reply'
- * (default, the player just spoke), 'idle', 'checkin' or 'greeted' (see the note above
+ * (default, the player just spoke), 'idle', 'checkin', 'greeted' or 'result' (see the note above
  * REUSE_ASK).
  */
 export function ownRepeatsNote(selfLines, playerLines = [], opts = {}) {

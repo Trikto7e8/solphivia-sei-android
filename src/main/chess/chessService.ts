@@ -2211,6 +2211,8 @@ async function runChessLlmTurn(
               const written = await appendMemory(
                 path.join(paths.memoryDir(s.characterId), 'MEMORY.md'),
                 memText,
+                undefined,
+                { section: 'app' },
               );
               note =
                 written === 0

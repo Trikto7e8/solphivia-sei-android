@@ -25,6 +25,8 @@ import {
   GREETING_HINT,
   renderPersona,
   renderHeartbeat,
+  memoryGameScope,
+  chatContinuityGameScope,
   renderProactivenessDirective,
   renderPunctuationDirective,
   renderLanguageDirective,
@@ -687,6 +689,10 @@ export async function composeSeedBlocks({
   // heartbeat then says her tasks and goals wait instead of "work it now".
   goalsOnHold = false,
   voiceCall = false,
+  // 261020: the game this session is in (adapter caps.gameName). Labels the
+  // heartbeat and says that memories and the app chat span every game while
+  // a different game's plans are not tasks here. Omitted = no game lines.
+  gameName = null,
   logger = console,
 }) {
   const player = sessionState.playerData()
@@ -739,7 +745,9 @@ export async function composeSeedBlocks({
           'or felt together so they know you remember. Don\'t force it, don\'t recite the list, and don\'t wait to ' +
           'be asked; just don\'t act like every session is the first. ' +
           'Each memory starts with when you wrote it — mind the gap to today: a weeks-old note is an old thread, ' +
-          'not something that just happened.\n\n'
+          'not something that just happened.' +
+          (gameName ? ` ${memoryGameScope(gameName)}` : '') +
+          '\n\n'
         blocks.push({ type: 'text', name: 'memory', text: memoryPreamble + memoryText })
       }
     } catch (err) {
@@ -787,7 +795,7 @@ export async function composeSeedBlocks({
           config._seiContinuityLead = lead
         }
       } catch {}
-      const parts = [lead]
+      const parts = [gameName ? `${lead} ${chatContinuityGameScope(gameName)}` : lead]
       if (cont.summary && cont.summary.trim()) {
         parts.push('\nEarlier conversation summary:\n' + cont.summary.trim())
       }
@@ -844,7 +852,7 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold }),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold, gameName }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -2145,7 +2153,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const fingerprint = String(identity.fingerprint)
     const label = (identity.label && String(identity.label).trim()) || fingerprint
     try {
-      await worldRegistry.resolveOnSpawn({ fingerprint, label })
+      await worldRegistry.resolveOnSpawn({ fingerprint, label, game: caps.gameName })
     } catch (err) {
       logger.warn?.(`[sei/orch] world resolve failed: ${err.message}`)
     }
@@ -3203,6 +3211,7 @@ function maybeWarnByteCap(loop, warned) {
           // 261018 (pass 16): she stopped on the player's word (stay note).
           goalsOnHold: !!stayNote,
           voiceCall: voiceCallActive,
+          gameName: caps.gameName,
           logger,
         })
       } catch (err) {
@@ -3582,7 +3591,9 @@ function maybeWarnByteCap(loop, warned) {
     if (!step) return { hook: false, line: null }
     const line = normalizePlayerLine(rawLine)
     try {
-      const written = await memoryLog.append(nextStepMemoryLine(step), new Date())
+      // 261020: labeled with this game, so another game's session reads it
+      // as a plan for here and not as its own task.
+      const written = await memoryLog.append(nextStepMemoryLine(step, caps.gameName), new Date())
       if (written) {
         memoryCompactor.maybeCompact().catch(err =>
           logger.warn?.(`[sei/orch] memoryCompactor.maybeCompact failed: ${err?.message ?? err}`))

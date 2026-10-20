@@ -57,6 +57,26 @@ export function humanizeMemoryStamps(text) {
   )
 }
 
+// 261020: the section for memories written OUTSIDE a game world (texting in
+// the app, out-of-game calls, chess, Draw!, a screen share). MEMORY.md is
+// segmented by `## World N` headers, but those writers appended at the end of
+// the file, so their entries landed under whatever game world came last: a
+// Minecraft build the player described in text chat sat under a Stardew
+// farm's header, and the next Stardew session took it for a Stardew task.
+// appendMemory({ section: 'app' }) opens this section first when the file's
+// last section is a world. Like world headers it is not an entry line, and
+// the seed reader, the duplicate guard and the compactor treat every `## `
+// line as a section header.
+export const APP_SECTION_HEADER = '## In the app (texting, calls and minigames, outside any game world)'
+
+const SECTION_RE = /^## /
+
+/** The last `## ` section header line of a MEMORY.md body, or null. */
+export function lastSectionHeader(body) {
+  const m = String(body ?? '').match(/^## .*$/gm)
+  return m && m.length ? m[m.length - 1] : null
+}
+
 export function createMemoryLog({ path: filePath } = {}) {
   if (!filePath) throw new Error('createMemoryLog: path required')
   return {
@@ -64,7 +84,7 @@ export function createMemoryLog({ path: filePath } = {}) {
     append: (text, when) => appendMemory(filePath, text, when),
     forget: (query) => forgetMemory(filePath, query),
     readAll: () => readMemoryFull(filePath),
-    noteWorld: (num, label) => noteWorld(filePath, num, label),
+    noteWorld: (num, label, game) => noteWorld(filePath, num, label, game),
   }
 }
 
@@ -77,7 +97,7 @@ export function createMemoryLog({ path: filePath } = {}) {
  * forget() leaves them alone; readMemoryForSeed and the compactor are taught to
  * preserve them.
  */
-export async function noteWorld(filePath, num, label) {
+export async function noteWorld(filePath, num, label, game) {
   if (!Number.isFinite(num)) return 0
   return withFileLock(filePath, async () => {
     let existing = ''
@@ -88,13 +108,18 @@ export async function noteWorld(filePath, num, label) {
       else throw err
     }
     if (!existing.startsWith('# Memory')) existing = HEADER + existing
-    // Skip if the most recent world header is already this world.
-    const markers = existing.match(/^## World (\d+)\b/gm)
-    if (markers && markers.length) {
-      const last = Number(markers[markers.length - 1].replace(/^## World /, ''))
-      if (last === num) return 0
-    }
-    const labelPart = label ? ` — ${label}` : ''
+    // Skip if the most recent section header is already this world. 261020:
+    // any section counts (the app section too), so a world re-entered after
+    // app memories gets its header again and its entries are not filed
+    // under the app section.
+    const lastHeader = lastSectionHeader(existing)
+    const lastWorld = lastHeader ? /^## World (\d+)\b/.exec(lastHeader) : null
+    if (lastWorld && Number(lastWorld[1]) === num) return 0
+    // 261020: name the game too ("## World 2 — Sei Farm (Stardew Valley)").
+    // World numbers are shared by every game a character plays, and a farm
+    // name alone does not say which game the section is from.
+    const gamePart = typeof game === 'string' && game.trim() && !String(label ?? '').includes(game.trim()) ? ` (${game.trim()})` : ''
+    const labelPart = label ? ` — ${label}${gamePart}` : gamePart
     const sep = existing.endsWith('\n') ? '' : '\n'
     await atomicWrite(filePath, `${existing}${sep}\n## World ${num}${labelPart}\n`)
     await archiveAppend(filePath, `\n## World ${num}${labelPart}\n`)
@@ -156,7 +181,7 @@ const DEDUPE_WINDOW_MS = 10 * 60_000
  * matches are the compactor's problem, not the append path's.
  */
 function isRecentDuplicate(existing, key, atMs) {
-  const lastHeader = existing.lastIndexOf('\n## World ')
+  const lastHeader = existing.lastIndexOf('\n## ')
   const segment = lastHeader === -1 ? existing : existing.slice(lastHeader)
   const cutoff = atMs - DEDUPE_WINDOW_MS
   for (const m of segment.matchAll(/^- \[([^\]]*)\] (.*)$/gm)) {
@@ -167,7 +192,15 @@ function isRecentDuplicate(existing, key, atMs) {
   return false
 }
 
-export async function appendMemory(filePath, text, when) {
+/**
+ * @param {string} filePath
+ * @param {string} text
+ * @param {Date | string} [when]
+ * @param {{ section?: 'app' }} [opts] 261020: `section: 'app'` = written
+ *   outside a game world (main's chat, call, chess, Draw!, backseat writers):
+ *   filed under APP_SECTION_HEADER when the file's last section is a world.
+ */
+export async function appendMemory(filePath, text, when, opts = {}) {
   const safe = String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()
   if (!safe) return 0
   let whenDate
@@ -193,8 +226,15 @@ export async function appendMemory(filePath, text, when) {
     // written" (the remember() tool_result says so).
     const atMs = Number.isFinite(whenDate.getTime()) ? whenDate.getTime() : Date.now()
     if (isRecentDuplicate(existing, normalizeEntry(safe), atMs)) return 0
-    await atomicWrite(filePath, existing + line)
-    await archiveAppend(filePath, line)
+    let chunk = line
+    if (opts?.section === 'app') {
+      const last = lastSectionHeader(existing)
+      if (last !== null && last !== APP_SECTION_HEADER) {
+        chunk = `${existing.endsWith('\n') ? '' : '\n'}\n${APP_SECTION_HEADER}\n${line}`
+      }
+    }
+    await atomicWrite(filePath, existing + chunk)
+    await archiveAppend(filePath, chunk)
     return 1
   })
 }
@@ -277,7 +317,7 @@ export async function readMemoryForSeed(filePath, budgetBytes) {
   // Header ends at the first entry line OR world marker (whichever comes first).
   let headerEnd = 0
   for (let i = 0; i < lines.length; i++) {
-    if (/^- \[/.test(lines[i]) || /^## World /.test(lines[i])) { headerEnd = i; break }
+    if (/^- \[/.test(lines[i]) || SECTION_RE.test(lines[i])) { headerEnd = i; break }
     headerEnd = i + 1
   }
   const header = lines.slice(0, headerEnd).join('\n')
@@ -304,9 +344,10 @@ export async function readMemoryForSeed(filePath, budgetBytes) {
     return humanizeMemoryStamps([trunc, ...kept].join('\n'))
   }
 
-  // World markers are tiny and carry essential context — always keep them.
+  // Section markers (worlds, the app section) are tiny and carry essential
+  // context — always keep them.
   const markerBytes = body
-    .filter((l) => /^## World /.test(l))
+    .filter((l) => SECTION_RE.test(l))
     .reduce((s, l) => s + Buffer.byteLength(l + '\n', 'utf8'), 0)
   const headerBytes = Buffer.byteLength(header + '\n', 'utf8')
   let remaining = budgetBytes - headerBytes - markerBytes - truncBytes
@@ -324,7 +365,7 @@ export async function readMemoryForSeed(filePath, budgetBytes) {
   // world's section.
   const out = [header, trunc]
   for (let i = 0; i < body.length; i++) {
-    if (/^## World /.test(body[i]) || keep.has(i)) out.push(body[i])
+    if (SECTION_RE.test(body[i]) || keep.has(i)) out.push(body[i])
   }
   return humanizeMemoryStamps(out.join('\n') + '\n')
 }

@@ -12,9 +12,9 @@
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { z } from 'zod'
-import { NUDGES, GREETING_HINT } from './prompts.js'
+import { NUDGES, GREETING_HINT, memoryGameScope, chatContinuityGameScope, PERSONALITY_TOOL_DESCRIPTIONS } from './prompts.js'
 import {
   createOrchestrator,
   composeSeedBlocks,
@@ -446,6 +446,71 @@ describe('composeSeedBlocks — player_message block (260616 #2)', () => {
     expect(names.indexOf('own_repeats')).toBe(names.indexOf('core') + 1)
     const none = await composeSeedBlocks(baseArgs)
     expect(none.some((b) => b.name === 'own_repeats')).toBe(false)
+  })
+})
+
+// ─────────── 261020: game-scoped goals, memories and app chat ───────────
+// A Stardew session read a Minecraft build from the shared memory and the app
+// chat as Stardew work. The person is shared across games; a game's plans are
+// not, and the seed now says which game the session is in.
+
+describe('composeSeedBlocks — game scope (261020)', () => {
+  let tmp
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sei-gamescope-'))
+    await fs.writeFile(path.join(tmp, 'MEMORY.md'),
+      '# Memory\n\n## World 2 — Sei Farm (Stardew Valley)\n- [2026-10-20T06:00:00.000Z] ouen likes the farm\n' +
+      '\n## In the app (texting, calls and minigames, outside any game world)\n- [2026-10-19T22:57:00.000Z] ouen is building a copper bulb lighthouse\n' +
+      '- [2026-10-19T23:00:00.000Z] Plan for next time in Minecraft: get copper for the lighthouse\n')
+    await fs.writeFile(path.join(tmp, 'HEARTBEAT.stardew.md'), '# HEARTBEAT\n- [2026-10-20T06:00:00.000Z] Plant parsnips\n')
+  })
+  afterEach(async () => { await fs.rm(tmp, { recursive: true, force: true }) })
+
+  const args = () => ({
+    sessionState: { playerData: () => ({}) },
+    playerStore: { formatPlayerSeedBlock: () => 'PLAYER' },
+    config: {
+      memory: { memory_md_path: path.join(tmp, 'MEMORY.md'), heartbeat_md_path: path.join(tmp, 'HEARTBEAT.stardew.md') },
+      persona: { proactiveness: 2 },
+      _seiContinuity: { recent: [{ role: 'user', text: 'my favorite block is copper bulb', ts: Date.now() - 60_000 }] },
+    },
+    eventText: 'Event: sei:idle',
+    snapshotText: 'world: #2 Sei Farm',
+  })
+  const text = (blocks, name) => blocks.find((b) => b.name === name)?.text ?? ''
+
+  it('labels the heartbeat and scopes memories and the app chat to the game', async () => {
+    const blocks = await composeSeedBlocks({ ...args(), gameName: 'Stardew Valley' })
+    expect(text(blocks, 'heartbeat')).toMatch(/^# HEARTBEAT: your goals and tasks in Stardew Valley\n/)
+    const memory = text(blocks, 'memory')
+    expect(memory).toContain(memoryGameScope('Stardew Valley'))
+    expect(memory).toContain('You are playing Stardew Valley now.')
+    // The memories themselves stay: the person is shared across games.
+    expect(memory).toContain('copper bulb lighthouse')
+    expect(memory).toContain('Plan for next time in Minecraft: get copper for the lighthouse')
+    expect(memory).toContain('## In the app (texting, calls and minigames, outside any game world)')
+    expect(text(blocks, 'chat_continuity')).toContain(chatContinuityGameScope('Stardew Valley'))
+  })
+
+  it('adds nothing when no game is named (hand-built configs keep their seed)', async () => {
+    const blocks = await composeSeedBlocks(args())
+    expect(text(blocks, 'heartbeat')).toMatch(/^# HEARTBEAT\n/)
+    expect(text(blocks, 'memory')).not.toContain('You are playing')
+    expect(text(blocks, 'chat_continuity')).not.toContain('a different game')
+  })
+
+  it('the scope lines are plain prose', () => {
+    for (const t of [memoryGameScope('Minecraft'), chatContinuityGameScope('Minecraft')]) {
+      expect(t).not.toMatch(/[—–]/)
+      expect(t).toContain('Minecraft')
+    }
+    expect(memoryGameScope('')).toBe('')
+    expect(chatContinuityGameScope(null)).toBe('')
+  })
+
+  it('setGoal says a goal is for this game and asks for a headline without the player name', () => {
+    expect(PERSONALITY_TOOL_DESCRIPTIONS.setGoal).toContain('A goal is for the game you are in now')
+    expect(PERSONALITY_TOOL_DESCRIPTIONS.setGoal).toContain("leaves the player's name out")
   })
 })
 
@@ -944,7 +1009,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     await orch.handleDispatch('sei:chat_received', chat('gtg, bye'))
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
-    expect(md).toContain('Plan for next time: finish the cabin roof')
+    expect(md).toContain('Plan for next time in Minecraft: finish the cabin roof')
     // The model's own farewell is spoken as written.
     expect(adapter.chat).toHaveBeenCalledWith('cya, next time we finish the roof')
     await vi.advanceTimersByTimeAsync(11_000)
@@ -985,7 +1050,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
-    expect(md).toContain('Plan for next time: find a village for beds')
+    expect(md).toContain('Plan for next time in Minecraft: find a village for beds')
     expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null })
   })
 

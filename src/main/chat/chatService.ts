@@ -286,7 +286,7 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
     const text = String((b.input as { text?: string })?.text ?? '').trim();
     if (!text) continue;
     try {
-      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text);
+      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text, undefined, { section: 'app' });
       if (written > 0) appended = true;
     } catch (err) {
       console.warn(`[sei] voice remember() append failed: ${(err as Error).message}`);
@@ -315,7 +315,9 @@ async function honorNextStep(characterId: string, input: unknown): Promise<NextS
   const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player) };
   if (!turnMayWrite(characterId, 'next_time')) return result;
   try {
-    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step));
+    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step), undefined, {
+      section: 'app',
+    });
     if (written > 0) void maybeCompactChatMemory(characterId).catch(() => {});
   } catch (err) {
     console.warn(`[sei] next_time append failed: ${(err as Error).message}`);
@@ -1246,7 +1248,7 @@ async function sendChatMessageImpl(
           if (memText) {
             try {
               const written = turnMayWrite(args.characterId, 'remember()')
-                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText)
+                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText, undefined, { section: 'app' })
                 : 0;
               // 260725: appendMemory returns 0 when its bounded duplicate guard
               // skips the write. Reporting a save that never happened taught the

@@ -100,7 +100,7 @@ describe('app-quit check on the next launch (production wiring)', () => {
 
     expect(llmCalls).toHaveLength(1);
     const memory = readFileSync(path.join(dirOf('char-1'), 'MEMORY.md'), 'utf8');
-    expect(memory).toMatch(/Plan for next time: finish the cabin roof/);
+    expect(memory).toMatch(/Plan for next time in Minecraft: finish the cabin roof/);
 
     const ledger = JSON.parse(readFileSync(path.join(dirOf('char-1'), LEDGER_FILE), 'utf8'));
     expect(ledger.tags).toEqual([expect.objectContaining({ surface: 'game', game: 'minecraft' })]);

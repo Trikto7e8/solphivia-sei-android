@@ -1296,8 +1296,11 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     const knowledgeP: Promise<string> = readKnowledgeForPrompt(characterId).catch(() => '');
     // 261014: the saved plan the first-spawn greeting should raise. Read now,
     // before the session going online marks it used (index.ts
-    // consumeNextStep). Pure disk read; null = none open.
-    const nextStepPlanP: Promise<string | null | undefined> = readPendingPlan(paths.memoryDir(characterId)).catch(() => undefined);
+    // consumeNextStep). Pure disk read; null = none open. 261020: a plan for
+    // a different game is not this greeting's (null), and stays open.
+    const nextStepPlanP: Promise<string | null | undefined> = readPendingPlan(paths.memoryDir(characterId), Date.now(), {
+      game,
+    }).catch(() => undefined);
     // ITEM 1 (quick/260523-t8d): expose the AI-backend mode + has-key state to
     // the bot child so brain/log.js can suppress the noisy game-state +
     // [haiku?] prompt logs when running in local (BYOK) mode without a key —

@@ -12,6 +12,8 @@ import {
   pickNextStep,
   planDisplayText,
   planEntries,
+  planGame,
+  planIsForOtherGame,
   planKey,
   readHomeNextStep,
   readPendingPlan,
@@ -40,6 +42,31 @@ describe('plan parsing', () => {
       [NOW - HOUR, 'plan for next time:   find diamonds together.'],
     );
     expect(planEntries(body).map((e) => e.text)).toEqual(['finish the roof on the lake house', 'find diamonds together.']);
+  });
+
+  it('261020: reads the game a plan line names, and keeps unlabeled plans game-less', () => {
+    const body = memory(
+      [NOW - 3 * HOUR, 'Plan for next time in Minecraft: get copper for the lighthouse'],
+      [NOW - 2 * HOUR, "Plan for next time in Don't Starve Together: build a crock pot"],
+      [NOW - HOUR, 'Plan for next time: ask how the interview went'],
+      [NOW - 30_000, 'Plan for next time in Terraria: beat the eye'],
+    );
+    expect(planEntries(body).map((e) => [e.text, e.game])).toEqual([
+      ['get copper for the lighthouse', 'minecraft'],
+      ['build a crock pot', 'dontstarve'],
+      ['ask how the interview went', null],
+      ['beat the eye', null],
+    ]);
+  });
+
+  it('261020: the tag decides the game, else the line', () => {
+    const [plan] = planEntries(memory([NOW, 'Plan for next time in Stardew Valley: plant parsnips']));
+    expect(planGame(plan, empty)).toBe('stardew');
+    const tagged: NextStepLedger = { v: 1, tags: [{ key: planKey(plan.text), at: iso(NOW), surface: 'game', game: 'minecraft' }] };
+    expect(planGame(plan, tagged)).toBe('minecraft');
+    expect(planIsForOtherGame(plan, tagged, 'stardew')).toBe(true);
+    expect(planIsForOtherGame(plan, tagged, 'minecraft')).toBe(false);
+    expect(planIsForOtherGame(plan, tagged, null)).toBe(false);
   });
 
   it('ignores lines without a readable stamp and empty plans', () => {
@@ -278,6 +305,48 @@ describe('files', () => {
     await consumeNextStep(dir, NOW - HOUR);
     await writeMemory([NOW - 2 * HOUR, 'Plan for next time: a'], [NOW - 60_000, 'Plan for next time: b']);
     expect((await readHomeNextStep(dir, 'c1', NOW))?.text).toBe('B');
+  });
+
+  // 261020: a plan belongs to a game, and only that game's greeting raises
+  // and uses it up (live: a Minecraft build was offered as "Play Stardew").
+  describe('261020: plans scoped to their game', () => {
+    it('a game session greeting skips a plan tagged for another game and leaves it open', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time in Minecraft: get copper for the copper bulb lighthouse']);
+      await tagLatestPlan(dir, { surface: 'game', game: 'minecraft', line: 'Get copper for your copper bulb lighthouse' }, NOW);
+      expect(await readPendingPlan(dir, NOW, { game: 'stardew' })).toBeNull();
+      expect(await consumeNextStep(dir, NOW, { game: 'stardew' })).toBe(false);
+      expect(await readHomeNextStep(dir, 'c1', NOW + 1)).toMatchObject({
+        source: 'plan',
+        text: 'Get copper for your copper bulb lighthouse',
+        surface: 'game',
+        game: 'minecraft',
+      });
+      // Its own game raises it and uses it up.
+      expect(await readPendingPlan(dir, NOW, { game: 'minecraft' })).toBe('get copper for the copper bulb lighthouse');
+      expect(await consumeNextStep(dir, NOW + 2, { game: 'minecraft' })).toBe(true);
+      expect(await readHomeNextStep(dir, 'c1', NOW + 3)).toBeNull();
+    });
+
+    it('the game the memory line names counts when there is no tag', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time in Stardew Valley: plant the strawberry seeds']);
+      expect(await readPendingPlan(dir, NOW, { game: 'minecraft' })).toBeNull();
+      expect(await readPendingPlan(dir, NOW, { game: 'stardew' })).toBe('plant the strawberry seeds');
+      expect(await readHomeNextStep(dir, 'c1', NOW)).toMatchObject({ surface: 'game', game: 'stardew', text: 'Plant the strawberry seeds' });
+    });
+
+    it('a plan with no game (a call plan, an untagged note) is raised by any game and by a call', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time: ask how the job interview went']);
+      await tagLatestPlan(dir, { surface: 'call' }, NOW);
+      expect(await readPendingPlan(dir, NOW, { game: 'stardew' })).toBe('ask how the job interview went');
+      expect(await readPendingPlan(dir, NOW)).toBe('ask how the job interview went');
+      expect(await consumeNextStep(dir, NOW, { game: 'dontstarve' })).toBe(true);
+    });
+
+    it('a call greeting (no game) raises and uses up any plan', async () => {
+      await writeMemory([NOW - 60_000, 'Plan for next time in Minecraft: dig copper']);
+      expect(await readPendingPlan(dir, NOW)).toBe('dig copper');
+      expect(await consumeNextStep(dir, NOW)).toBe(true);
+    });
   });
 
   it('reads goals from the per-game HEARTBEAT files', async () => {

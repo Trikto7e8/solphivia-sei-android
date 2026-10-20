@@ -44,6 +44,8 @@ export {
   CHAT_LANGUAGE_NAMES,
   renderCore,
   renderHeartbeat,
+  memoryGameScope,
+  chatContinuityGameScope,
   renderCompanions,
   voiceGroupGuidance,
   teammateVoiceGuidance,

@@ -12,7 +12,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createMemoryLog, noteWorld, appendMemory, readMemoryForSeed } from './memoryLog.js'
+import { createMemoryLog, noteWorld, appendMemory, readMemoryForSeed, APP_SECTION_HEADER } from './memoryLog.js'
 import { createWorldRegistry } from './worlds.js'
 import { createMemoryCompactor } from './compactor.js'
 
@@ -123,5 +123,84 @@ describe('compactor preserves world segmentation', () => {
     expect(raw.indexOf('## World 1')).toBeLessThan(raw.indexOf('## World 2'))
     expect(raw).toContain('compacted segment 1')
     expect(raw).toContain('compacted segment 2')
+  })
+})
+
+// 261020: memories written outside a game (texting, calls, minigames) used to
+// land under whichever game world came last, so a Minecraft build told over
+// text sat under a Stardew farm's header and the next Stardew session took it
+// for a Stardew task. They now get their own section, and world headers name
+// their game.
+describe('261020: the app section and game-named world headers', () => {
+  it('a world header names its game, unless the label already does', async () => {
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley')
+    await noteWorld(file, 2, 'Stardew Valley farm', 'Stardew Valley')
+    await noteWorld(file, 3, '', 'Minecraft')
+    const raw = await readFile(file, 'utf8')
+    expect(raw).toContain('## World 1 — Sei Farm (Stardew Valley)\n')
+    expect(raw).toContain('## World 2 — Stardew Valley farm\n')
+    expect(raw).toContain('## World 3 (Minecraft)\n')
+  })
+
+  it('an app memory after a world opens the app section once; the world header comes back on the next join', async () => {
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley')
+    await appendMemory(file, 'ouen likes the river by the farm', '2026-10-19T20:00:00.000Z')
+    await appendMemory(file, "ouen's favorite block is copper bulb", '2026-10-19T22:57:00.000Z', { section: 'app' })
+    await appendMemory(file, 'ouen needs 40 more copper bulbs', '2026-10-19T22:59:00.000Z', { section: 'app' })
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley') // same world, but the last section is the app's
+    await appendMemory(file, 'ouen planted parsnips with me', '2026-10-20T06:20:00.000Z')
+    const raw = await readFile(file, 'utf8')
+    const sections = raw.match(/^## .*$/gm)
+    expect(sections).toEqual([
+      '## World 1 — Sei Farm (Stardew Valley)',
+      APP_SECTION_HEADER,
+      '## World 1 — Sei Farm (Stardew Valley)',
+    ])
+    const appPart = raw.slice(raw.indexOf(APP_SECTION_HEADER), raw.lastIndexOf('## World 1'))
+    expect(appPart).toContain('copper bulb')
+    expect(appPart).not.toContain('river')
+    expect(raw.slice(raw.lastIndexOf('## World 1'))).toContain('parsnips')
+  })
+
+  it('an app memory with no world section yet adds no header', async () => {
+    await appendMemory(file, 'ouen draws bananas kinda cursed', '2026-08-01T00:07:00.000Z', { section: 'app' })
+    expect(await readFile(file, 'utf8')).not.toMatch(/^## /m)
+  })
+
+  it('the duplicate guard looks only at the current section', async () => {
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley')
+    await appendMemory(file, 'ouen likes copper', '2026-10-19T22:57:00.000Z', { section: 'app' })
+    expect(await appendMemory(file, 'ouen likes copper', '2026-10-19T22:58:00.000Z', { section: 'app' })).toBe(0)
+    // Back in the world (its header written again), the same line is new to that section.
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley')
+    expect(await appendMemory(file, 'ouen likes copper', '2026-10-19T22:59:00.000Z')).toBe(1)
+  })
+
+  it('readMemoryForSeed keeps the app section header when it truncates', async () => {
+    await noteWorld(file, 1, 'Sei Farm', 'Stardew Valley')
+    for (let i = 0; i < 40; i++) await appendMemory(file, `farm note ${i} ${'x'.repeat(60)}`, new Date(Date.UTC(2026, 9, 1, 0, i)).toISOString())
+    await appendMemory(file, 'copper bulb lighthouse', '2026-10-19T22:57:00.000Z', { section: 'app' })
+    const seed = await readMemoryForSeed(file, 1200)
+    expect(seed).toContain('[...older memory truncated]')
+    expect(seed).toContain('## World 1 — Sei Farm (Stardew Valley)')
+    expect(seed).toContain(APP_SECTION_HEADER)
+    expect(seed.indexOf(APP_SECTION_HEADER)).toBeLessThan(seed.indexOf('copper bulb lighthouse'))
+  })
+
+  it('the compactor keeps the app section as its own segment', async () => {
+    const { splitWorldSegments } = await import('./compactor.js')
+    const segs = splitWorldSegments(`# Memory\n\n- [a] pre\n## World 1 — Farm (Stardew Valley)\n- [b] farm\n${APP_SECTION_HEADER}\n- [c] chat\n`)
+    expect(segs.map((s) => [s.marker, s.entries.length])).toEqual([
+      [null, 1],
+      ['## World 1 — Farm (Stardew Valley)', 1],
+      [APP_SECTION_HEADER, 1],
+    ])
+  })
+
+  it('the registry passes the game name into the header', async () => {
+    const memoryLog = createMemoryLog({ path: file })
+    const reg = createWorldRegistry({ worldsPath: join(dir, 'worlds.json'), memoryLog })
+    await reg.resolveOnSpawn({ fingerprint: 'stardew:1', label: 'Sei Farm', game: 'Stardew Valley' })
+    expect(await readFile(file, 'utf8')).toContain('## World 1 — Sei Farm (Stardew Valley)')
   })
 })

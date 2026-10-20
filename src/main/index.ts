@@ -494,7 +494,7 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
       characterId: id,
       surface: 'game',
       game: started.game,
-      activity: `playing ${gameName} together`,
+      activity: `playing ${gameName} with the player`,
       durationMs,
       lines: digest?.lines ?? [],
       playerLines: digest?.playerLines ?? 0,
@@ -605,8 +605,9 @@ function broadcastStatus(status: BotStatus): void {
       // 261013 (T120): this greeting moved on from an app-quit session.
       noteNewSessionForQuit(id);
       // 261013 (T119): this session's first-spawn greeting is told about the
-      // saved plan, so the Home card stops offering it.
-      updateHomeNextStep(id, (dir) => consumeNextStep(dir));
+      // saved plan, so the Home card stops offering it. 261020: unless the
+      // plan is for a different game (that greeting was not told about it).
+      updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
       if (game === 'minecraft') {
         const lanHost = latestLanState.kind === 'open' ? latestLanState.host : undefined;
         const hostWarning = lanHostWarning(lanHost);
@@ -1036,7 +1037,7 @@ async function bootstrap(): Promise<void> {
     bindQuitNextStepRuntime({
       memoryDir: paths.memoryDir,
       memoryRoot: () => path.join(paths.profileRoot(), 'memory'),
-      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} together`,
+      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} with the player`,
     });
   } catch (err) {
     logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
@@ -1372,7 +1373,9 @@ async function bootstrap(): Promise<void> {
       if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) {
         // 261013 (T119): a new session, so the Home card stops offering the
         // plan (the game's own first greeting was already told about it).
-        updateHomeNextStep(id, (dir) => consumeNextStep(dir));
+        // 261020: a plan for a different game was not, so it stays open.
+        const game = playStartedAt.get(id)?.game ?? null;
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
         return;
       }
       void (async () => {

@@ -31,9 +31,34 @@ export function normalizeNextStep(raw) {
 /**
  * The MEMORY.md entry for a saved hook. The prefix is what the greeting
  * prompts point at (promptLibrary NEXT_TIME_GREETING), so keep them in sync.
+ *
+ * 261020: `gameName` (a display name, "Stardew Valley") names the game the
+ * plan is for: "Plan for next time in Minecraft: ...". MEMORY.md is shared
+ * by every surface and every game, so an unlabeled Minecraft plan read like
+ * a task inside a Stardew session (live 261020: a copper bulb lighthouse
+ * became her Stardew goal). Omit it for a plan that is not about a game.
  */
-export function nextStepMemoryLine(step) {
-  return `Plan for next time: ${step}`
+export function nextStepMemoryLine(step, gameName) {
+  const game = typeof gameName === 'string' ? gameName.replace(/[\s:]+/g, ' ').trim() : ''
+  return game ? `Plan for next time in ${game}: ${step}` : `Plan for next time: ${step}`
+}
+
+/** "Plan for next time:" or "Plan for next time in <game>:" at the start of an entry. */
+export const PLAN_LINE_RE = /^plan for next time(?:\s+in\s+([^:]{1,60}?))?\s*:\s*/i
+
+/**
+ * An entry's text as a plan, or null when it is not one: the step without
+ * the prefix, and the game display name when the line names one.
+ * @param {string} text
+ * @returns {{ step: string, gameName: string | null } | null}
+ */
+export function parsePlanLine(text) {
+  const s = String(text ?? '').trim()
+  const m = PLAN_LINE_RE.exec(s)
+  if (!m) return null
+  const step = s.slice(m[0].length).trim()
+  if (!step) return null
+  return { step, gameName: m[1] ? m[1].trim() : null }
 }
 
 // 261014: the player-facing line for the Home "up next" strip.

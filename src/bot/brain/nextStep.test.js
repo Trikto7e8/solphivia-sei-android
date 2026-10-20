@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { normalizeNextStep, nextStepMemoryLine, NEXT_STEP_MAX_CHARS } from './nextStep.js'
+import { normalizeNextStep, nextStepMemoryLine, parsePlanLine, NEXT_STEP_MAX_CHARS } from './nextStep.js'
 import { NEXT_TIME_GREETING } from './prompts.js'
 
 describe('normalizeNextStep', () => {
@@ -194,5 +194,29 @@ describe('greeting cues (261014)', () => {
     const group = callGreetingNote({ peers: ['Marv'], plan: 'ask how the move went' })
     expect(group).toContain('ongoing group voice call')
     expect(group).not.toContain('move')
+  })
+})
+
+describe('plan lines name their game (261020)', () => {
+  it('writes the game into the line, or the plain line without one', () => {
+    expect(nextStepMemoryLine('get copper', 'Minecraft')).toBe('Plan for next time in Minecraft: get copper')
+    expect(nextStepMemoryLine('build a crock pot', "Don't Starve Together")).toBe("Plan for next time in Don't Starve Together: build a crock pot")
+    expect(nextStepMemoryLine('ask how the interview went')).toBe('Plan for next time: ask how the interview went')
+    expect(nextStepMemoryLine('x', '  ')).toBe('Plan for next time: x')
+    // A colon in a name cannot break the prefix.
+    expect(nextStepMemoryLine('x', 'Game: Deluxe')).toBe('Plan for next time in Game Deluxe: x')
+  })
+
+  it('parses both shapes back', () => {
+    expect(parsePlanLine('Plan for next time in Stardew Valley: plant parsnips')).toEqual({ step: 'plant parsnips', gameName: 'Stardew Valley' })
+    expect(parsePlanLine('plan for next time: find diamonds')).toEqual({ step: 'find diamonds', gameName: null })
+    expect(parsePlanLine(nextStepMemoryLine('a: b', 'Minecraft'))).toEqual({ step: 'a: b', gameName: 'Minecraft' })
+    expect(parsePlanLine('Plan for next time:')).toBeNull()
+    expect(parsePlanLine('ouen likes copper')).toBeNull()
+  })
+
+  it('the greeting hint still names the labeled lines', () => {
+    expect(nextStepMemoryLine('x', 'Minecraft').startsWith('Plan for next time')).toBe(true)
+    expect(NEXT_TIME_GREETING).toContain('"Plan for next time"')
   })
 })

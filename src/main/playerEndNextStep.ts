@@ -48,7 +48,8 @@ import { readFile } from 'node:fs/promises';
 import type { LlmProvider } from './llm/types';
 import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine } from '../bot/brain/nextStep.js';
 import { PLAYER_END_NEXT_STEP_SYSTEM } from '../bot/brain/promptLibrary.js';
-import { nameInSentence } from '../shared/homeNextStep';
+import { gameDisplayName, gameIdFromName, nameInSentence } from '../shared/homeNextStep';
+import { GAME_IDS, isGameId, type GameId } from '../shared/gameIpc';
 
 export type NextStepSurface = 'game' | 'call' | 'backseat';
 
@@ -148,6 +149,51 @@ export function entryTexts(body: string): string[] {
     .filter(Boolean);
 }
 
+/** A MEMORY.md entry and the section it sits under ("World 2 — Sky Base (Minecraft)"), or null above the first section. */
+export interface MemoryEntry {
+  text: string;
+  place: string | null;
+}
+
+/**
+ * 261020: memory entries with their section. MEMORY.md is shared by every
+ * game and the app, and its section headers are the only thing that says
+ * where a memory is from. Without them the check read a Minecraft copper
+ * bulb build as Stardew work (Stardew has copper too) and labeled the plan
+ * Stardew.
+ */
+export function memoryEntries(body: string): MemoryEntry[] {
+  const out: MemoryEntry[] = [];
+  let place: string | null = null;
+  for (const l of body.split('\n')) {
+    if (l.startsWith('## ')) {
+      place = l.slice(3).trim() || null;
+      continue;
+    }
+    if (!l.startsWith('- [')) continue;
+    const text = l.replace(/^- \[[^\]]*\]\s*/, '').trim();
+    if (text) out.push({ text, place });
+  }
+  return out;
+}
+
+/** The memories block: entries grouped under the place they are from, in order. */
+function renderMemories(memories: Array<string | MemoryEntry>): string {
+  const items = memories.slice(-MAX_MEMORIES).map((m) => (typeof m === 'string' ? { text: m, place: null } : m));
+  if (!items.length) return '';
+  const hasPlaces = items.some((m) => m.place);
+  const out: string[] = [hasPlaces ? 'Some of your recent memories, under the heading of where each is from:' : 'Some of your recent memories:'];
+  let place: string | null | undefined;
+  for (const m of items) {
+    if (hasPlaces && m.place !== place) {
+      out.push(`${m.place ?? 'Earlier'}:`);
+      place = m.place;
+    }
+    out.push(`- ${m.text.slice(0, MEMORY_CHARS)}`);
+  }
+  return out.join('\n');
+}
+
 function formatMinutes(ms: number): string {
   const m = Math.max(1, Math.round(ms / 60_000));
   return `${m} minute${m === 1 ? '' : 's'}`;
@@ -165,10 +211,15 @@ export function buildPlayerEndPrompt(p: {
   durationMs: number;
   lines: DigestLine[];
   goals: string[];
-  memories: string[];
+  memories: Array<string | MemoryEntry>;
 }): { system: string; user: string } {
   // {card_name}: the name as the Home card shows it ("red" reads "Red").
-  const system = PLAYER_END_NEXT_STEP_SYSTEM.split('{card_name}').join(nameInSentence(p.name)).split('{name}').join(p.name);
+  const system = PLAYER_END_NEXT_STEP_SYSTEM.split('{card_name}')
+    .join(nameInSentence(p.name))
+    .split('{name}')
+    .join(p.name)
+    .split('{games}')
+    .join(gameList());
   const parts: string[] = [`Session: ${p.activity}, about ${formatMinutes(p.durationMs)}. The player ended it.`];
   const goals = p.goals.slice(-MAX_GOALS);
   parts.push(goals.length ? `Your goals when it ended:\n${goals.map((g) => `- ${g}`).join('\n')}` : 'Your goals when it ended: none.');
@@ -178,9 +229,9 @@ export function buildPlayerEndPrompt(p: {
       ? `The end of the conversation, oldest first:\n${lines.map((l) => `${speaker(l)}: ${l.text}`).join('\n')}`
       : 'Nobody said anything near the end.',
   );
-  const memories = p.memories.slice(-MAX_MEMORIES).map((m) => m.slice(0, MEMORY_CHARS));
-  if (memories.length) parts.push(`Some of your recent memories:\n${memories.map((m) => `- ${m}`).join('\n')}`);
-  parts.push('Reply with the two lines (note: and player:), or with none.');
+  const memories = renderMemories(p.memories);
+  if (memories) parts.push(memories);
+  parts.push('Reply with the three lines (note:, player: and game:), or with none.');
   return { system, user: parts.join('\n\n') };
 }
 
@@ -189,7 +240,7 @@ function cleanNote(raw: string): string | null {
   let s = raw
     .trim()
     .replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '')
-    .replace(/^(plan for next time|next time|next step)\s*:\s*/i, '')
+    .replace(/^(plan for next time(?: in [^:]{1,60})?|next time|next step)\s*:\s*/i, '')
     .replace(/[.。]+$/, '')
     .trim();
   s = s.replace(/^["'“”‘’`]+|["'“”‘’`]+$/g, '').trim();
@@ -199,15 +250,54 @@ function cleanNote(raw: string): string | null {
   return normalizeNextStep(s);
 }
 
-const LABELED = /^\s*[*_-]*\s*(note|player)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$/i;
+const LABELED = /^\s*[*_-]*\s*(note|player|game)\s*[*_]*\s*[:：]\s*[*_]*\s*(.*)$/i;
 /** A second label later on the same line ("note: x player: y"). */
-const INLINE_LABEL = /\s+(?=[*_]*\s*(?:note|player)\s*[*_]*\s*[:：])/i;
+const INLINE_LABEL = /\s+(?=[*_]*\s*(?:note|player|game)\s*[*_]*\s*[:：])/i;
+
+/** "Minecraft, Stardew Valley or Don't Starve Together" for the prompt's {games}. */
+function gameList(): string {
+  const names = GAME_IDS.map(gameDisplayName);
+  return names.length > 1 ? `${names.slice(0, -1).join(', ')} or ${names[names.length - 1]}` : (names[0] ?? '');
+}
 
 export interface PlayerEndPlan {
   /** The private note, saved to MEMORY.md as the plan. */
   step: string;
   /** The line written to the player for the Home strip; null when the model gave none. */
   line: string | null;
+  /**
+   * 261020: the game the step is done in, from the reply's `game:` line.
+   * 'none' = the model said it is not about a game; null = no usable answer.
+   */
+  game: GameId | 'none' | null;
+}
+
+/** A `game:` answer as a game id, 'none', or null when it names no known game. */
+export function parseGameAnswer(raw: string | null): GameId | 'none' | null {
+  if (raw === null) return null;
+  const v = raw.replace(/[\s*_"'“”‘’`.。]+$/g, '').replace(/^[\s*_"'“”‘’`]+/, '').trim();
+  if (!v) return null;
+  if (/^(none|no|n\/a|nothing|无|没有|なし|없음)$/i.test(v)) return 'none';
+  return gameIdFromName(v);
+}
+
+/**
+ * 261020: where a player-end plan belongs. The model's `game:` answer wins
+ * when it names a bot game, even a different one from the session's: a plan
+ * for a Minecraft build made in Stardew is a Minecraft plan, tagged so the
+ * card offers Minecraft and labeled so the next Stardew session does not
+ * read it as a Stardew task. 'none' keeps the session's surface (the card
+ * opens where it was made) with no game on the memory line; no answer keeps
+ * the session, and a game session's plan names its game.
+ */
+export function resolvePlanPlace(
+  session: { surface: NextStepSurface; game?: string },
+  answer: GameId | 'none' | null,
+): { surface: NextStepSurface; game?: string; memoryGame: GameId | null } {
+  if (answer && answer !== 'none') return { surface: 'game', game: answer, memoryGame: answer };
+  const keep = { surface: session.surface, ...(session.game ? { game: session.game } : {}) };
+  if (answer === 'none') return { ...keep, memoryGame: null };
+  return { ...keep, memoryGame: session.surface === 'game' && isGameId(session.game) ? session.game : null };
 }
 
 /**
@@ -219,20 +309,27 @@ export interface PlayerEndPlan {
  */
 export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
   const lines: string[] = [];
-  for (const raw of String(text ?? '').trim().split('\n')) {
-    // Both labels on one line: split it, so the note does not carry the player line.
-    const m = LABELED.exec(raw);
-    if (m) {
-      const at = m[2].search(INLINE_LABEL);
-      if (at > 0 && LABELED.exec(m[2].slice(at))?.[1].toLowerCase() !== m[1].toLowerCase()) {
-        lines.push(raw.slice(0, raw.length - m[2].length + at), m[2].slice(at).trim());
-        continue;
+  for (const first of String(text ?? '').trim().split('\n')) {
+    // Several labels on one line: split it, so the note does not carry the
+    // player line (261020: or the game line after it).
+    let raw = first;
+    for (;;) {
+      const m = LABELED.exec(raw);
+      if (m) {
+        const at = m[2].search(INLINE_LABEL);
+        if (at > 0 && LABELED.exec(m[2].slice(at))?.[1].toLowerCase() !== m[1].toLowerCase()) {
+          lines.push(raw.slice(0, raw.length - m[2].length + at));
+          raw = m[2].slice(at).trim();
+          continue;
+        }
       }
+      lines.push(raw);
+      break;
     }
-    lines.push(raw);
   }
   let note: string | null = null;
   let player: string | null = null;
+  let game: string | null = null;
   for (let i = 0; i < lines.length; i++) {
     const m = LABELED.exec(lines[i]);
     if (!m) continue;
@@ -244,17 +341,21 @@ export function parsePlayerEndReply(text: string): PlayerEndPlan | null {
     }
     // Markdown left around the value ("**note:** finish roof**").
     value = value.replace(/^[\s*_]+|[\s*_]+$/g, '');
-    if (m[1].toLowerCase() === 'note' && note === null) note = value;
-    else if (m[1].toLowerCase() === 'player' && player === null) player = value;
+    const label = m[1].toLowerCase();
+    if (label === 'note' && note === null) note = value;
+    else if (label === 'player' && player === null) player = value;
+    else if (label === 'game' && game === null) game = value;
   }
   if (note === null && player === null) {
-    const step = cleanNote(lines[0] ?? '');
-    return step ? { step, line: null } : null;
+    // A bare "none" (or a reply that is only a game: line) is no plan.
+    const first = lines.find((l) => !LABELED.test(l)) ?? '';
+    const step = cleanNote(first);
+    return step ? { step, line: null, game: parseGameAnswer(game) } : null;
   }
   const step = cleanNote(note || player || '');
   if (!step) return null;
   const line = player !== null && cleanNote(player) ? normalizePlayerLine(player) : null;
-  return { step, line };
+  return { step, line, game: parseGameAnswer(game) };
 }
 
 /** The plan note alone (see parsePlayerEndReply), or null for "none". */
@@ -307,8 +408,12 @@ export interface PlayerEndDeps {
   memoryFile(characterId: string): string;
   goalsFile(characterId: string, game: string): string;
   characterName(characterId: string): Promise<string | null>;
-  /** Append the plan line. false = not written (duplicate, scope moved). */
-  save(characterId: string, line: string): Promise<boolean>;
+  /**
+   * Append the plan line. false = not written (duplicate, scope moved).
+   * 261020: `inGame` = it belongs under the session's world section; else it
+   * is filed under the app section (memoryLog APP_SECTION_HEADER).
+   */
+  save(characterId: string, line: string, opts?: { inGame?: boolean }): Promise<boolean>;
   /**
    * 261013 (T119): record where a just-saved plan came from, for the Home
    * "up next" card (homeNextStep.ts). Optional; best-effort. 261014: plus
@@ -380,9 +485,9 @@ export async function runPlayerEndNextStep(
           if (await deps.overLimit()) return 'over_limit';
           const name = (await deps.characterName(characterId)) ?? null;
           if (!name) return 'no_character';
-          let memories: string[] = [];
+          let memories: MemoryEntry[] = [];
           try {
-            memories = entryTexts(await deps.readText(deps.memoryFile(characterId)));
+            memories = memoryEntries(await deps.readText(deps.memoryFile(characterId)));
           } catch {
             /* no memory yet */
           }
@@ -411,10 +516,13 @@ export async function runPlayerEndNextStep(
               `in ${u.input_tokens ?? 0} / out ${u.output_tokens ?? 0} tokens`,
           );
           if (!step) return 'none';
-          const saved = await deps.save(characterId, nextStepMemoryLine(step));
+          // 261020: the plan's game comes from its content (the game: line).
+          const place = resolvePlanPlace(input, plan?.game ?? null);
+          const memoryLine = nextStepMemoryLine(step, place.memoryGame ? gameDisplayName(place.memoryGame) : undefined);
+          const saved = await deps.save(characterId, memoryLine, { inGame: input.surface === 'game' });
           if (saved && deps.tagPlan) {
             try {
-              await deps.tagPlan(characterId, input.surface, input.game, plan?.line ?? null);
+              await deps.tagPlan(characterId, place.surface, place.game, plan?.line ?? null);
             } catch {
               /* the card falls back to the games picker */
             }
@@ -538,11 +646,13 @@ function defaultDeps(): PlayerEndDeps {
       const { getCharacter } = await import('./characterStore');
       return (await getCharacter(characterId))?.name ?? null;
     },
-    async save(characterId, line) {
+    async save(characterId, line, opts) {
       const { scopedTurnCurrent, trackScopedWrite } = await import('./profile/scopeBarrier');
       if (!scopedTurnCurrent()) return false;
       const { appendMemory } = await import('../bot/brain/memory/memoryLog.js');
-      const written = await trackScopedWrite(appendMemory(path.join(memoryDirOf(characterId), 'MEMORY.md'), line));
+      const written = await trackScopedWrite(
+        appendMemory(path.join(memoryDirOf(characterId), 'MEMORY.md'), line, undefined, opts?.inGame ? {} : { section: 'app' }),
+      );
       if (written > 0) {
         try {
           const { maybeCompactChatMemory } = await import('./chat/memoryCompaction');

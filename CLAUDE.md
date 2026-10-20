@@ -2977,6 +2977,35 @@ and `scripts/next-step-examples-strips.ts` (renders the strips via
 `?dashshot=home&name=&text=&surface=`). 261014 run: greetings raised the plan
 36 of 36 (was 26 of 36; Marv 0 of 4 and Roger 1 of 4 before).
 
+**Plans and goals belong to a game (261020).** Live on v0.6.9-beta.3: a
+Minecraft build (a copper bulb lighthouse, discussed in a text chat) showed on
+Home as "Get copper for ouen's copper bulb lighthouse" with Play Stardew
+Valley. Chat memories had been filed under the last world's header (a Stardew
+farm), nothing in a game's seed said memories span games, so the Stardew
+session greeted with the plan, setGoal'd it into `HEARTBEAT.stardew.md`, and
+the player-end check tagged its plan with the session's game. Now:
+- MEMORY.md sections name their game (`## World 2 — Sui Farm (Stardew
+  Valley)`, `noteWorld(..., game)`), and app-side writers (chat, voice,
+  chess, Draw!, backseat, an out-of-game player-end plan) pass
+  `appendMemory(..., { section: 'app' })`, which opens
+  `APP_SECTION_HEADER` when the last section is a world. Seed truncation, the
+  compactor and the dedupe guard split on any `## ` header.
+- Plan lines carry their game: `Plan for next time in Minecraft: ...`
+  (`nextStepMemoryLine(step, gameName)`, read back by `parsePlanLine`). The
+  player-end check answers a third line, `game:` (a game or `none`), decided
+  from the step, not the session (`resolvePlanPlace`); its memories are
+  grouped under their section headers (`memoryEntries`), which is what lets
+  it tell Minecraft copper from Stardew copper (live probe: 0 of 4 right
+  without the headers, every labeled answer right with them).
+- `readPendingPlan` / `consumeNextStep` take `{ game }`: a game session
+  neither greets with nor consumes a plan for another game.
+- Game seeds say memories span games and another game's plans stay there
+  (`memoryGameScope`, `chatContinuityGameScope`, heartbeat header names the
+  game); setGoal's description says a goal is for the current game and to
+  start with a headline that leaves the player's name out. Prompt only, no
+  matcher. Unverified live in Stardew. Old data is not migrated: an existing
+  wrong goal in `HEARTBEAT.stardew.md` still shows until cleared.
+
 **Sessions an app quit ended get the check on the next launch (261013,
 T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call
 live) has no time for an LLM call, so it never ran the player-end check

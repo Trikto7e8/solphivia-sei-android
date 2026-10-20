@@ -63,7 +63,8 @@ export function splitWorldSegments(raw) {
   const segments = []
   let cur = { marker: null, entries: [] }
   for (const l of lines) {
-    if (/^## World /.test(l)) {
+    // 261020: every `## ` section (worlds and the app section) opens one.
+    if (/^## /.test(l)) {
       segments.push(cur)
       cur = { marker: l, entries: [] }
     } else if (/^- \[/.test(l)) {

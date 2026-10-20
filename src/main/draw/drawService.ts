@@ -1416,10 +1416,9 @@ async function honorRemember(s: Session, raw: unknown): Promise<string> {
   try {
     // 0 means the bounded duplicate guard skipped the write; saying "saved"
     // there would teach the model it had stored something it had not.
-    const written = await appendMemory(
-      path.join(paths.memoryDir(s.characterId), 'MEMORY.md'),
-      text,
-    );
+    const written = await appendMemory(path.join(paths.memoryDir(s.characterId), 'MEMORY.md'), text, undefined, {
+      section: 'app',
+    });
     log(s, written === 0 ? 'remember(): duplicate, not written' : 'remember(): saved');
     return written === 0
       ? 'You already saved that a moment ago; nothing new was written. Continue.'

@@ -201,3 +201,41 @@ describe('orchestrator: a player line mid-loop sees the goals written in this lo
     expect(lastUser(later)).not.toContain('Your heartbeat right now')
   })
 })
+
+// Review fixes (261020).
+describe('review: the seed quote', () => {
+  const QUOTE = 'Your last line to them was \\"dock better be sick\\". They already heard it, so if you say something now, make it new.'
+  it('quotes a fresh line on one idle tick, not on every tick in its window', async () => {
+    const t0 = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
+    const { orch, provider } = setup([
+      turn(say('s1', 'dock better be sick')),
+      turn(),
+      turn(),
+    ])
+    orch.recordIncomingChat('Steve', 'thanks')
+    await orch.handleDispatch('sei:chat_received', line('thanks'))
+    now.mockReturnValue(t0 + 7_000)
+    await orch.handleDispatch('sei:idle', { quietMs: 7_000 })
+    now.mockReturnValue(t0 + 12_000)
+    await orch.handleDispatch('sei:idle', { quietMs: 12_000 })
+    expect(provider.calls.length).toBe(3)
+    expect(JSON.stringify(provider.calls[1].messages)).toContain(QUOTE)
+    expect(JSON.stringify(provider.calls[2].messages)).not.toContain('Your last line to them was')
+  })
+
+  it('an attack seed keeps the idle form (its fight note already quotes her line)', async () => {
+    const t0 = Date.now()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(t0)
+    const { orch, provider } = setup([
+      turn(say('s1', 'dock better be sick')),
+      turn(),
+    ])
+    orch.recordIncomingChat('Steve', 'thanks')
+    await orch.handleDispatch('sei:chat_received', line('thanks'))
+    now.mockReturnValue(t0 + 3_000)
+    await orch.handleDispatch('sei:attacked', { attackerLabel: 'zombie', attackerKind: 'mob', pvp: false, health: 14 })
+    expect(provider.calls.length).toBe(2)
+    expect(JSON.stringify(provider.calls[1].messages)).not.toContain(QUOTE)
+  })
+})

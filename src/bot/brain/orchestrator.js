@@ -1229,10 +1229,21 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // better be sick" opened with it again in 5 of 8 probe runs. Without a
   // fresh line it stays the light idle form (pass 6a: a quote on every idle
   // tick made her go silent).
-  function seedRepeatsText(loop, { playerMessageText, greetedTurn }) {
-    const mode = playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : (ownLineFresh() ? 'result' : 'idle')
+  // Review fix: the seed quotes a given line once per session, not once per
+  // loop. Each idle tick is its own loop, so at the 5s agentic cadence the
+  // per-loop mark let the same line be quoted on every tick of its 45s
+  // window, which is the pass 6a pattern. An attack seed keeps the idle
+  // form: its fightToldSuffix already quotes her recent line (pass 17).
+  let _seedQuotedLineAt = null
+  function seedRepeatsText(loop, { playerMessageText, greetedTurn, attackTurn = false }) {
+    const at = newestOwnLineAt()
+    const quote = !attackTurn && ownLineFresh() && at !== _seedQuotedLineAt
+    const mode = playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : (quote ? 'result' : 'idle')
     const t = ownRepeatsText(mode)
-    if (t && mode === 'result') { const at = newestOwnLineAt(); if (loop && at != null) loop._ownLinesNotedAt = at }
+    if (t && mode === 'result' && at != null) {
+      _seedQuotedLineAt = at
+      if (loop) loop._ownLinesNotedAt = at
+    }
     return t
   }
   function resultRepeatsTail(loop) {
@@ -3273,7 +3284,7 @@ function maybeWarnByteCap(loop, warned) {
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
-          ownRepeatsText: seedRepeatsText(loop, { playerMessageText, greetedTurn }),
+          ownRepeatsText: seedRepeatsText(loop, { playerMessageText, greetedTurn, attackTurn: isSafetyEvent }),
           playerMessageText,
           companions,
           frontierText: progFrontierText,

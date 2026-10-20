@@ -12,6 +12,13 @@
  * backend) users have neither, so before this store they had no voice at
  * all. `resolveElevenLabsKey` / `resolveElevenLabsRoute` below are the
  * single routing decision both tts.ts and stt.ts consume.
+ *
+ * 261020 (T158): a CLOUD user may store a key too, for one purpose only:
+ * speaking and listing voices from their own ElevenLabs account (a clone of
+ * their voice, a designed voice). Those calls use `resolveTtsRoute({ own:
+ * true })` / `resolveOwnVoiceKey`. Everything else on cloud (Sei's pool
+ * voices, STT) keeps the proxy route, so a stored key never bills the user's
+ * ElevenLabs credits for what their plan already includes.
  */
 import { safeStorage } from 'electron';
 import { readFile, writeFile, access, mkdir, unlink, rename } from 'node:fs/promises';
@@ -125,4 +132,51 @@ export async function resolveElevenLabsRoute(): Promise<ElevenLabsRoute> {
     /* unreadable config → the safe default, matching getAiBackendKind's own */
   }
   return backend === 'local' ? { kind: 'unconfigured' } : { kind: 'proxy' };
+}
+
+
+/**
+ * The key that can list and speak the user's OWN ElevenLabs voices (261020):
+ * the SEI_TTS_DEV_KEY env in dev shells, else the stored key on ANY backend.
+ * Under 'local' this is the same key resolveElevenLabsKey returns; under
+ * cloud it is the optional "your own ElevenLabs voices" key, which only ever
+ * reaches ElevenLabs for an own voice (see resolveTtsRoute). Best-effort:
+ * any read/decrypt failure resolves null.
+ */
+export async function resolveOwnVoiceKey(): Promise<string | null> {
+  const envKey = process.env.SEI_TTS_DEV_KEY;
+  if (envKey) return envKey;
+  try {
+    return await getElevenLabsKey();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * TTS route for ONE voice (261020, T158). `own` = the voice is from the
+ * user's own ElevenLabs account (metadata.voiceOwn, see voiceAssign
+ * ownVoicePickOf), never a Sei pool voice.
+ *
+ *   backend | voice | key stored | route
+ *   --------+-------+------------+--------------------------------------
+ *   local   | any   | yes        | direct (unchanged)
+ *   local   | any   | no         | unconfigured (unchanged)
+ *   cloud   | pool  | any        | proxy (plan pays; never the user's key)
+ *   cloud   | own   | yes        | direct, ownKeyOnCloud: true
+ *   cloud   | own   | no         | proxy (tts.ts swaps in the stand-in pool voice)
+ *
+ * `ownKeyOnCloud` marks the one case where the base route was the proxy and
+ * the key was used only because the voice is the user's own: tts.ts may fall
+ * back to the proxy (with a pool stand-in) when that key fails, which a BYOK
+ * user's route must never do. The SEI_TTS_DEV_KEY env still wins everywhere.
+ */
+export async function resolveTtsRoute(opts: { own: boolean }): Promise<{
+  route: ElevenLabsRoute;
+  ownKeyOnCloud: boolean;
+}> {
+  const base = await resolveElevenLabsRoute();
+  if (!opts.own || base.kind !== 'proxy') return { route: base, ownKeyOnCloud: false };
+  const key = await resolveOwnVoiceKey();
+  return key ? { route: { kind: 'direct', key }, ownKeyOnCloud: true } : { route: base, ownKeyOnCloud: false };
 }

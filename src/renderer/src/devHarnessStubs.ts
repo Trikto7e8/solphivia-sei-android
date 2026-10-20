@@ -69,6 +69,11 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // default), call, untagged, goal, long (two-line clamp), or none (no card).
   // Analytics calls are kept on window.__seiDevTrack.
   const homeMode = (params.get('dashshot') ?? '') === 'home';
+  // ?dashshot=voicekey (261020, T158): the ElevenLabs key surfaces.
+  // `&backend=local` for My key (default Sei Cloud), `&key=1` for a saved key.
+  const voiceKeyMode = (params.get('dashshot') ?? '') === 'voicekey';
+  const voiceKeyBackend = params.get('backend') === 'local' ? 'local' : 'cloud-proxy';
+  const voiceKeySaved = params.get('key') === '1';
   const now = Date.now();
   const chatRows = Array.from({ length: 24 }, (_, i) => ({
     id: `row-${i}`,
@@ -256,6 +261,42 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
           },
         }
       : {}),
+    ...(voiceKeyMode
+      ? {
+          getConfig: async () => ({ ai_backend_kind: voiceKeyBackend, tts_engine: 'elevenlabs' }),
+          creditsGet: async () => ({
+            plan: 'free',
+            usage_pct: 10,
+            over_limit: false,
+            resets_at: new Date(now + 3 * 86_400_000).toISOString(),
+            extra_credits_used: 0,
+            extra_credits_total: 0,
+            renews_at: null,
+            ends_at: null,
+            subscription_status_raw: null,
+            ai_backend_kind: voiceKeyBackend,
+            feedback_reward_available: false,
+          }),
+          hasApiKey: async () => voiceKeyBackend === 'local',
+          voiceElevenKeyStatus: async () => ({ present: voiceKeySaved }),
+          voicePreviewAvailable: async () => true,
+          voiceListVoices: async () => [
+            { id: 'f1', label: 'Sarah', gender: 'female', age: 'young', tags: [], vibe: 'bright and warm' },
+            { id: 'f2', label: 'Lily', gender: 'female', age: 'adult', tags: [], vibe: 'soft, British' },
+            { id: 'm1', label: 'Liam', gender: 'male', age: 'young', tags: [], vibe: 'easygoing, American' },
+          ],
+          voiceListOwnVoices: async () =>
+            voiceKeySaved
+              ? {
+                  status: 'ok',
+                  voices: [
+                    { id: 'own1', name: 'My voice', category: 'cloned', hasPreview: true },
+                    { id: 'own2', name: 'Narrator', category: 'generated', description: 'calm storyteller', hasPreview: true },
+                  ],
+                }
+              : { status: 'unavailable', voices: [] },
+        }
+      : {}),
     ...(onboardMode
       ? {
           track: (event: string, props: unknown) => {
@@ -265,7 +306,7 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
         }
       : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

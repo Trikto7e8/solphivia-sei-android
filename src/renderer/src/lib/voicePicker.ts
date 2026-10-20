@@ -177,9 +177,22 @@ export function ownVoicesView(list: OwnVoiceList | null): 'tab' | 'hint' | 'none
 
 /** Whether Sei's pool voices are being spoken through the user's own key
  * (the own-voice list is reachable, i.e. the direct route is active), which
- * is when the free-plan hint above the pool applies. */
-export function poolUsesOwnKey(list: OwnVoiceList | null): boolean {
-  return list !== null && list.status !== 'unavailable';
+ * is when the free-plan hint above the pool applies. 261020 (T158): only on
+ * the LOCAL backend. On Sei Cloud a saved key lists the user's own voices
+ * too, but Sei's pool keeps playing through the proxy and never bills it. */
+export function poolUsesOwnKey(
+  list: OwnVoiceList | null,
+  backend: 'local' | 'cloud-proxy' | null | undefined,
+): boolean {
+  return backend === 'local' && list !== null && list.status !== 'unavailable';
+}
+
+/** Whether the picker shows the "Have your own ElevenLabs voices? Add your
+ * key in Settings" pointer (261020, T158): both backends, once the key probe
+ * has answered "no key" (null = still probing, say nothing). Local voice-pack
+ * mode has no ElevenLabs list at all. */
+export function elevenKeyHintShown(hasKey: boolean | null, localTtsMode: boolean): boolean {
+  return !localTtsMode && hasKey === false;
 }
 
 /** Default tab: the tab holding the selection, else the own tab when it has
@@ -194,4 +207,23 @@ export function defaultVoiceTab(
   if (g) return g.key;
   if (own && own.length > 0) return OWN_TAB_KEY;
   return groups[0]?.key ?? (own ? OWN_TAB_KEY : null);
+}
+
+/**
+ * Where Settings shows the ElevenLabs key field (261020, T158):
+ *   - 'byok'           → local (My key) backend with the ElevenLabs engine:
+ *                        the key powers every voice and Scribe, so a missing
+ *                        key is a warning (unchanged since 260725).
+ *   - 'cloud-optional' → Sei Cloud: an OPTIONAL key, only for voices from the
+ *                        user's own ElevenLabs account. Sei's pool and speech
+ *                        recognition stay on the proxy.
+ *   - 'hidden'         → local voice packs, or the backend not reported yet.
+ */
+export function elevenKeySettingMode(
+  backend: 'local' | 'cloud-proxy' | null | undefined,
+  ttsEngine: 'elevenlabs' | 'local',
+): 'byok' | 'cloud-optional' | 'hidden' {
+  if (backend === 'cloud-proxy') return 'cloud-optional';
+  if (backend === 'local' && ttsEngine === 'elevenlabs') return 'byok';
+  return 'hidden';
 }

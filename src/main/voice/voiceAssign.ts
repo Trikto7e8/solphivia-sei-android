@@ -302,6 +302,17 @@ export function sharedVoiceIdFor(character: Pick<Character, 'metadata'>): string
 }
 
 /**
+ * The Sei pool voice that stands in for this character's OWN ElevenLabs voice
+ * on the author's machine when their key cannot speak it (261020, T158: a
+ * cloud user with no key stored, or a key ElevenLabs refused). Same pick an
+ * adopter hears (the author's voice for others, else the close match), so the
+ * stand-in is a voice the author already approved. Never persisted.
+ */
+export function ownVoiceStandInId(character: Character): string {
+  return sharedVoiceIdFor(character) ?? closeSharedVoiceId(character);
+}
+
+/**
  * Resolve (and persist, when newly assigned) the character's TTS voice id.
  * Never throws for assignment reasons — the fallback roll always lands on a
  * valid pool voice; only storage errors propagate from saveCharacter, and
@@ -322,9 +333,7 @@ export async function resolveVoiceId(character: Character): Promise<string> {
   // ids only), else a close match rolled from the character. Never persist
   // either: the author's metadata is the cloud copy's, and a cloud refresh
   // would only overwrite it again.
-  if (isBorrowedOwnVoice(character)) {
-    return sharedVoiceIdFor(character) ?? closeSharedVoiceId(character);
-  }
+  if (isBorrowedOwnVoice(character)) return ownVoiceStandInId(character);
 
   // Exclude voices the rest of the library already uses (assigned ones only —
   // resolving them recursively would just be this same roll).

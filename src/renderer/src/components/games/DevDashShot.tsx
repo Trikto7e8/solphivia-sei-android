@@ -16,6 +16,8 @@
  *     http://localhost:5173/?dashshot=mcprofile&part=lan|unsupported|forge|setup|done  the Sei profile / Start Minecraft surfaces (DevMcProfileShot)
  *     http://localhost:5173/?dashshot=chatfirst    the guided first moment (260926) in the real ChatScreen
  *     http://localhost:5173/?dashshot=perms&part=mic|screen|...  the OS permission cards (DevPermsShot, 260929)
+ *     http://localhost:5173/?dashshot=voicekey&part=settings|picker&backend=cloud|local&key=1  the ElevenLabs key
+ *                                              field and the picker's add-your-key line (DevVoiceKeyShot, 261020)
  *     http://localhost:5173/?dashshot=onboard  the first-run Sui scene from the top (261012); every
  *                                              sei.track call is kept on window.__seiDevTrack
  *     http://localhost:5173/?dashshot=chatlaunch&game=minecraft|dontstarve|stardew  a launch panel inside the real ChatScreen
@@ -51,6 +53,7 @@ import { DevCreditWallShot } from '../DevCreditWallShot';
 import { DevRobloxShot } from '../backseat/DevRobloxShot';
 import { DevMcProfileShot } from '../mcdash/DevMcProfileShot';
 import { DevPermsShot } from '../permissions/DevPermsShot';
+import { DevVoiceKeyShot } from '../DevVoiceKeyShot';
 import { OnboardApp } from '../../onboard/OnboardApp';
 import { useFirstMomentStore } from '../../lib/stores/useFirstMomentStore';
 import { useChessStore } from '../../lib/stores/useChessStore';
@@ -250,6 +253,8 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   if (which === 'mcprofile') return <DevMcProfileShot />;
   // ?dashshot=perms&part=mic|mic-win|mic-restricted|mic-restart|screen|screen-waiting|screen-restart (260929).
   if (which === 'perms') return <DevPermsShot />;
+  // ?dashshot=voicekey&part=settings|picker&backend=cloud|local&key=1 (261020, T158).
+  if (which === 'voicekey') return <DevVoiceKeyShot />;
   // ?dashshot=onboard (261012): the first-run scene, for the intro's stage
   // gates (watchdog, skip, reduced motion). onComplete goes nowhere.
   if (which === 'onboard') return <OnboardApp onComplete={() => undefined} />;

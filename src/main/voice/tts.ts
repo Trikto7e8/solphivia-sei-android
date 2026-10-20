@@ -20,10 +20,18 @@
  * 261019, direct route only (the user's own ElevenLabs account answered):
  * VOICE_NEEDS_PAID_PLAN (a free ElevenLabs plan cannot use Voice Library
  * voices over the API), VOICE_ELEVEN_QUOTA (their ElevenLabs credits ran
- * out, which is NOT Sei's credit wall), VOICE_ELEVEN_KEY_INVALID. And
- * VOICE_OWN_NEEDS_KEY: a voice from the user's own ElevenLabs account on a
- * route that is not their key (the proxy can only speak Sei's pool).
+ * out, which is NOT Sei's credit wall), VOICE_ELEVEN_KEY_INVALID.
+ *
+ * 261020 (T158), own voices on CLOUD: a voice from the user's own ElevenLabs
+ * account speaks DIRECT with their optional stored key, while Sei's pool
+ * voices keep the proxy (resolveTtsRoute in elevenLabsKeyStore.ts has the
+ * table). When that key is missing, or ElevenLabs refuses it for the voice,
+ * the line is spoken through the proxy with the character's stand-in pool
+ * voice (ownVoiceStandInId) and a TtsNotice says why, so a call never goes
+ * silent over it. The pick itself is never swapped. (This replaced the old
+ * VOICE_OWN_NEEDS_KEY refusal, which muted every line.)
  */
+import { createHash } from 'node:crypto';
 import { getClient } from '../auth/supabaseClient';
 import { getCharacter } from '../characterStore';
 import { loadConfig } from '../configStore';
@@ -32,10 +40,10 @@ import type { Character } from '../../shared/characterSchema';
 import { characterLanguage, clampChatLanguage, type ChatLanguage } from '../../shared/chatLanguage';
 import { toSpokenRegister, toSpokenUtterance } from './spokenRegister';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from './audioTags';
-import { resolveVoiceId, isPoolVoiceId, ownVoicePickOf } from './voiceAssign';
+import { resolveVoiceId, isPoolVoiceId, ownVoicePickOf, ownVoiceStandInId } from './voiceAssign';
 import { previewCacheKey, readCachedPreview, writeCachedPreview } from './previewCache';
 import { NO_VOICE_ID } from '../../shared/voiceIds';
-import { resolveElevenLabsRoute, type ElevenLabsRoute } from './elevenLabsKeyStore';
+import { resolveElevenLabsRoute, resolveTtsRoute, type ElevenLabsRoute } from './elevenLabsKeyStore';
 import { isOwnVoiceId } from './ownVoices';
 import type { SpeechPackId } from '../speech/packs';
 import { noteCreditWall } from '../creditWall';
@@ -101,9 +109,6 @@ const VOICE_NEEDS_PAID_PLAN =
   'VOICE_NEEDS_PAID_PLAN: free ElevenLabs plans cannot use library voices through the API. Pick one of your own voices, or upgrade your ElevenLabs plan.';
 const VOICE_ELEVEN_QUOTA = 'VOICE_ELEVEN_QUOTA: your ElevenLabs account is out of credits';
 const VOICE_ELEVEN_KEY_INVALID = 'VOICE_ELEVEN_KEY_INVALID: ElevenLabs rejected your key. Check it in Settings.';
-/** An own-account voice on a route that cannot speak it (cloud proxy). */
-const VOICE_OWN_NEEDS_KEY =
-  'VOICE_OWN_NEEDS_KEY: this voice is from an ElevenLabs account and plays only with that ElevenLabs key. Pick a different voice.';
 
 /**
  * Map a DIRECT-route (the user's own ElevenLabs account) failure to a
@@ -348,13 +353,25 @@ async function localTtsSelected(): Promise<boolean> {
  * better-fitting download; the line itself still plays. Fields are pack ids
  * from speech/packs.ts.
  */
-export interface TtsNotice {
-  characterId: string;
-  /** Pack that would fit the conversation language but is not installed. */
-  missingPackId: string;
-  /** Pack the line was actually spoken with. */
-  spokenPackId: string;
-}
+export type TtsNotice =
+  | {
+      kind: 'substitute-pack';
+      characterId: string;
+      /** Pack that would fit the conversation language but is not installed. */
+      missingPackId: string;
+      /** Pack the line was actually spoken with. */
+      spokenPackId: string;
+    }
+  | {
+      /** 261020 (T158): a cloud line for an OWN ElevenLabs voice was spoken
+       * with the character's stand-in Sei voice instead (see header). */
+      kind: 'own-voice-stand-in';
+      characterId: string;
+      reason: OwnVoiceStandInReason;
+    };
+
+/** Why an own voice was not spoken with the user's key (see TtsNotice). */
+export type OwnVoiceStandInReason = 'no-key' | 'key-invalid' | 'voice-missing' | 'quota' | 'plan';
 
 const ttsNoticeListeners = new Set<(notice: TtsNotice) => void>();
 export function onTtsNotice(cb: (notice: TtsNotice) => void): () => void {
@@ -363,6 +380,110 @@ export function onTtsNotice(cb: (notice: TtsNotice) => void): () => void {
 }
 function emitTtsNotice(notice: TtsNotice): void {
   for (const l of ttsNoticeListeners) l(notice);
+}
+
+const PROXY_ROUTE: ElevenLabsRoute = { kind: 'proxy' };
+
+/**
+ * The direct-route sentinel that means "the user's key cannot speak this own
+ * voice right now", mapped to a stand-in reason; null for anything else (a
+ * network blip or 5xx keeps its normal error, it is not the key's fault).
+ */
+export function ownKeyFailureReason(err: unknown): OwnVoiceStandInReason | null {
+  const msg = String((err as Error)?.message ?? err);
+  if (msg.startsWith('VOICE_ELEVEN_KEY_INVALID')) return 'key-invalid';
+  if (msg.startsWith('VOICE_NOT_IN_LIBRARY')) return 'voice-missing';
+  if (msg.startsWith('VOICE_ELEVEN_QUOTA')) return 'quota';
+  if (msg.startsWith('VOICE_NEEDS_PAID_PLAN')) return 'plan';
+  return null;
+}
+
+/**
+ * Own-key refusals remembered per (key, voice) for a few minutes, so a call
+ * on a dead key does not pay a failed ElevenLabs round trip before every
+ * line. Keyed on a key fingerprint: saving a different key retries at once.
+ */
+const OWN_KEY_FAILURE_TTL_MS = 5 * 60_000;
+/** Hard cap on remembered refusals (expired ones are pruned first). */
+const OWN_KEY_FAILURE_MAX = 64;
+const ownKeyFailures = new Map<string, { reason: OwnVoiceStandInReason; until: number }>();
+function ownKeyFailureKey(key: string, voiceId: string): string {
+  return `${createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 16)}:${voiceId}`;
+}
+function rememberOwnKeyFailure(k: string, reason: OwnVoiceStandInReason): void {
+  const now = Date.now();
+  for (const [key, v] of ownKeyFailures) if (v.until <= now) ownKeyFailures.delete(key);
+  ownKeyFailures.delete(k);
+  // Map iteration is insertion order: drop the oldest past the cap.
+  while (ownKeyFailures.size >= OWN_KEY_FAILURE_MAX) {
+    const oldest = ownKeyFailures.keys().next().value;
+    if (oldest === undefined) break;
+    ownKeyFailures.delete(oldest);
+  }
+  ownKeyFailures.set(k, { reason, until: now + OWN_KEY_FAILURE_TTL_MS });
+}
+/**
+ * Forget every remembered refusal. Called when the stored key is saved or
+ * removed: re-saving the SAME key (after topping up ElevenLabs credits, or
+ * restoring a deleted voice) should retry at once, not wait out the TTL.
+ */
+export function clearOwnKeyFailures(): void {
+  ownKeyFailures.clear();
+}
+/** Test seam. */
+export function _resetOwnKeyFailuresForTests(): void {
+  ownKeyFailures.clear();
+}
+/** Test seam: how many refusals are remembered. */
+export function _ownKeyFailureCountForTests(): number {
+  return ownKeyFailures.size;
+}
+
+interface SpeakPlan {
+  route: ElevenLabsRoute;
+  /** The voice id to send: the pick, or the stand-in pool voice. */
+  speakId: string;
+  /** A refusal of the user's key may retry once via the proxy stand-in. */
+  canFallBack: boolean;
+}
+
+/**
+ * Where one ElevenLabs line goes and in which voice (261020, T158). Only an
+ * own voice on cloud differs from the base route: with a key it goes direct
+ * (unless that key was just refused for this voice), without one it speaks
+ * the stand-in pool voice through the proxy and says so.
+ */
+async function planSpeech(
+  character: Character,
+  voiceId: string,
+  own: boolean,
+): Promise<SpeakPlan> {
+  const { route, ownKeyOnCloud } = await resolveTtsRoute({ own });
+  if (own && route.kind === 'proxy') {
+    emitTtsNotice({ kind: 'own-voice-stand-in', characterId: character.id, reason: 'no-key' });
+    return { route, speakId: ownVoiceStandInId(character), canFallBack: false };
+  }
+  if (ownKeyOnCloud && route.kind === 'direct') {
+    const failed = ownKeyFailures.get(ownKeyFailureKey(route.key, voiceId));
+    if (failed && failed.until > Date.now()) {
+      emitTtsNotice({ kind: 'own-voice-stand-in', characterId: character.id, reason: failed.reason });
+      return { route: PROXY_ROUTE, speakId: ownVoiceStandInId(character), canFallBack: false };
+    }
+  }
+  return { route, speakId: voiceId, canFallBack: ownKeyOnCloud };
+}
+
+/**
+ * After a failed direct attempt: the reason to fall back with (and the
+ * refusal remembered), or null when the error must propagate as-is.
+ */
+function ownKeyFallback(plan: SpeakPlan, character: Character, err: unknown): OwnVoiceStandInReason | null {
+  if (!plan.canFallBack || plan.route.kind !== 'direct') return null;
+  const reason = ownKeyFailureReason(err);
+  if (!reason) return null;
+  rememberOwnKeyFailure(ownKeyFailureKey(plan.route.key, plan.speakId), reason);
+  emitTtsNotice({ kind: 'own-voice-stand-in', characterId: character.id, reason });
+  return reason;
 }
 
 /**
@@ -411,6 +532,7 @@ async function synthesizeLocalClip(
   }
   if (pick.missingPreferredPack) {
     emitTtsNotice({
+      kind: 'substitute-pack',
       characterId,
       missingPackId: pick.missingPreferredPack,
       spokenPackId: speech.LOCAL_VOICE_SPEC[pick.voice].packId,
@@ -602,11 +724,11 @@ export async function voiceTts(args: {
     if (!localText) throw new Error('VOICE_TTS_FAILED: empty text');
     return await synthesizeLocalClip(localText, voiceId, language, args.characterId, own?.gender);
   }
-  const route = await resolveElevenLabsRoute();
-  // An own-account voice (261019) on the proxy route: the proxy only speaks
-  // Sei's pool, so fail with the hint before any network instead of a
-  // generic 4xx. The pick itself is left alone (never swapped).
-  if (own && route.kind === 'proxy') throw new Error(VOICE_OWN_NEEDS_KEY);
+  // An own-account voice (261019) goes direct with the user's key, on cloud
+  // too (261020); without a usable key on cloud it speaks the stand-in pool
+  // voice through the proxy instead (planSpeech). The pick is never swapped.
+  const plan = await planSpeech(character, voiceId, own !== null);
+  const { route } = plan;
   // BYOK on the ElevenLabs engine with no key stored (260908): before failing
   // with the setup hint, try any installed local voice pack — an accented or
   // substitute local voice beats a silent call, and the hint still shows when
@@ -621,16 +743,108 @@ export async function voiceTts(args: {
   // Spoken register BEFORE the cap: chat lines mirrored into the call carry
   // shorthand ("lmao", "rn") that TTS would read literally, and texting
   // punctuation that reads as an unfinished thought — see speechTextFor.
-  const text = clipForRoute(speechTextFor(args.text, language), route);
+  const spoken = speechTextFor(args.text, language);
+  const text = clipForRoute(spoken, route);
   if (!text) throw new Error('VOICE_TTS_FAILED: empty text');
   // previous_text is conditioning, so it gets the same register the clip
   // itself is rendered in.
   const prev = args.prev ? speechTextFor(args.prev, language) : undefined;
   const context = ttsContextFor(text, language, prev, args.more === true);
-  const buf = await synthesize(
-    text, voiceId, language, voiceStabilityFor(character), route, context,
-  );
-  return buf;
+  const stability = voiceStabilityFor(character);
+  try {
+    return await synthesize(text, plan.speakId, language, stability, route, context);
+  } catch (err) {
+    // Cloud + own voice + a key ElevenLabs refused: speak this line with the
+    // stand-in pool voice through the proxy (the notice already went out).
+    if (!ownKeyFallback(plan, character, err)) throw err;
+    const proxyText = clipForRoute(spoken, PROXY_ROUTE);
+    return await synthesize(
+      proxyText,
+      ownVoiceStandInId(character),
+      language,
+      stability,
+      PROXY_ROUTE,
+      ttsContextFor(proxyText, language, prev, args.more === true),
+    );
+  }
+}
+
+interface OpenedTtsStream {
+  body: NonNullable<Response['body']>;
+  ctrl: AbortController;
+}
+
+/**
+ * Open one streaming synthesis request (headers in, body not read yet).
+ * Pre-flight failures throw the renderer-facing sentinels, direct-route
+ * vocabulary first (see fetchAudio / directElevenLabsError). The fixed
+ * timeout guards connect / time-to-first-byte only and is cleared once the
+ * response is established; the body is guarded by the caller's stall
+ * watchdog on the returned AbortController.
+ */
+async function openTtsStream(
+  route: ElevenLabsRoute,
+  voiceId: string,
+  text: string,
+  language: ChatLanguage,
+  stability: number | undefined,
+  context: Record<string, string>,
+): Promise<OpenedTtsStream> {
+  // Language pin for non-English (see synthesize — same forward-compat stance).
+  const langField = language !== 'en' ? { language_code: language } : {};
+  const settings = voiceSettingsFor(stability);
+  const url = route.kind === 'direct'
+    ? `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${ELEVENLABS_OUTPUT_FORMAT}`
+    : `${PROXY_BASE_URL}/tts/speech`;
+  let headers: Record<string, string>;
+  let body: unknown;
+  if (route.kind === 'direct') {
+    headers = { 'xi-api-key': route.key };
+    body = { text, model_id: ELEVENLABS_TTS_MODEL, ...langField, ...context, ...(settings ? { voice_settings: settings } : {}) };
+  } else {
+    const jwt = await getJwtOrNull();
+    if (!jwt) throw new Error('VOICE_NO_SESSION: sign in to use voice calls');
+    headers = { Authorization: `Bearer ${jwt}` };
+    body = { text, voice_id: voiceId, ...langField, ...context, ...(stability !== undefined ? { stability } : {}) };
+  }
+
+  const ctrl = new AbortController();
+  const timeout = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+  } catch (err) {
+    clearTimeout(timeout);
+    throw new Error(`VOICE_TTS_FAILED: ${(err as Error).message}`);
+  }
+  if (!res.ok || !res.body) {
+    clearTimeout(timeout);
+    const bodyText = await res.text().catch(() => '');
+    // Direct route vocabulary first (see fetchAudio / directElevenLabsError).
+    const directErr = route.kind === 'direct' && !res.ok ? directElevenLabsError(res.status, bodyText) : null;
+    if (directErr) throw new Error(directErr);
+    if (res.status === 402) {
+      // 261005: see fetchAudio; only the proxy route is Sei's credit wall.
+      if (route.kind !== 'direct') noteCreditWall({ reason: 'depleted' }, { surface: 'voice', trigger: 'tts' });
+      throw new Error('VOICE_NO_CREDITS: playtime balance exhausted');
+    }
+    if (res.status === 429) throw new Error('VOICE_RATE_LIMITED: daily usage cap reached');
+    if (res.status === 503) throw new Error('VOICE_NOT_CONFIGURED: voice service unavailable');
+    console.warn(`[sei/voice] tts upstream ${res.status}: ${bodyText.slice(0, 200)}`);
+    throw new Error(`VOICE_TTS_FAILED: status ${res.status}`);
+  }
+  // Response established (headers in): the fixed timeout guarded connect /
+  // time-to-first-byte only, NOT the whole stream. A near-cap reply can take
+  // longer than TTS_TIMEOUT_MS to fully stream, so a whole-delivery deadline
+  // would abort playback mid-sentence; the body is instead guarded by the
+  // caller's inter-chunk stall watchdog, on this same AbortController.
+  clearTimeout(timeout);
+  return { body: res.body, ctrl };
 }
 
 /** Monotonic stream ids for voiceTtsStream (uniqueness within one main run). */
@@ -683,11 +897,12 @@ export async function voiceTtsStream(
     });
     return { streamId };
   }
-  const route = await resolveElevenLabsRoute();
-  // Own-account voice on the proxy route (see voiceTts).
-  if (own && route.kind === 'proxy') throw new Error(VOICE_OWN_NEEDS_KEY);
+  // Own-account voice (see voiceTts / planSpeech).
+  const plan = await planSpeech(character, voiceId, own !== null);
+  const { route } = plan;
   // Spoken register BEFORE the cap (see voiceTts / speechTextFor).
-  const text = clipForRoute(speechTextFor(args.text, language), route);
+  const spoken = speechTextFor(args.text, language);
+  const text = clipForRoute(spoken, route);
   if (!text) throw new Error('VOICE_TTS_FAILED: empty text');
   // BYOK with no key: try any installed local voice pack before the setup
   // sentinel (see voiceTts, 260908), degraded to one whole-clip chunk + done
@@ -705,70 +920,30 @@ export async function voiceTtsStream(
   // Delivery calmness (see voiceStabilityFor). Pitch is not a synthesis
   // parameter — the renderer shifts it locally (see voiceSettingsFor).
   const stability = voiceStabilityFor(character);
-  // Language pin for non-English (see synthesize — same forward-compat stance).
-  const langField = language !== 'en' ? { language_code: language } : {};
-  const settings = voiceSettingsFor(stability);
   // Utterance-context conditioning (see ttsContextFor) — keeps a multi-line
   // reply from dropping pitch between its own sentences. `prev` is normalized
   // like the clip itself (see voiceTts).
-  const context = ttsContextFor(
-    text,
-    language,
-    args.prev ? speechTextFor(args.prev, language) : undefined,
-    args.more === true,
-  );
+  const prev = args.prev ? speechTextFor(args.prev, language) : undefined;
+  const more = args.more === true;
 
-  const url = route.kind === 'direct'
-    ? `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}/stream?output_format=${ELEVENLABS_OUTPUT_FORMAT}`
-    : `${PROXY_BASE_URL}/tts/speech`;
-  let headers: Record<string, string>;
-  let body: unknown;
-  if (route.kind === 'direct') {
-    headers = { 'xi-api-key': route.key };
-    body = { text, model_id: ELEVENLABS_TTS_MODEL, ...langField, ...context, ...(settings ? { voice_settings: settings } : {}) };
-  } else {
-    const jwt = await getJwtOrNull();
-    if (!jwt) throw new Error('VOICE_NO_SESSION: sign in to use voice calls');
-    headers = { Authorization: `Bearer ${jwt}` };
-    body = { text, voice_id: voiceId, ...langField, ...context, ...(stability !== undefined ? { stability } : {}) };
-  }
-
-  const ctrl = new AbortController();
-  const timeout = setTimeout(() => ctrl.abort(), TTS_TIMEOUT_MS);
-  let res: Response;
+  let opened: OpenedTtsStream;
   try {
-    res = await fetch(url, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...headers },
-      body: JSON.stringify(body),
-      signal: ctrl.signal,
-    });
+    opened = await openTtsStream(route, plan.speakId, text, language, stability, ttsContextFor(text, language, prev, more));
   } catch (err) {
-    clearTimeout(timeout);
-    throw new Error(`VOICE_TTS_FAILED: ${(err as Error).message}`);
+    // Cloud + own voice + a key ElevenLabs refused: stand-in via the proxy
+    // (see voiceTts). Pre-flight only, so nothing has reached the sink yet.
+    if (!ownKeyFallback(plan, character, err)) throw err;
+    const proxyText = clipForRoute(spoken, PROXY_ROUTE);
+    opened = await openTtsStream(
+      PROXY_ROUTE,
+      ownVoiceStandInId(character),
+      proxyText,
+      language,
+      stability,
+      ttsContextFor(proxyText, language, prev, more),
+    );
   }
-  if (!res.ok || !res.body) {
-    clearTimeout(timeout);
-    const bodyText = await res.text().catch(() => '');
-    // Direct route vocabulary first (see fetchAudio / directElevenLabsError).
-    const directErr = route.kind === 'direct' && !res.ok ? directElevenLabsError(res.status, bodyText) : null;
-    if (directErr) throw new Error(directErr);
-    if (res.status === 402) {
-      // 261005: see fetchAudio; only the proxy route is Sei's credit wall.
-      if (route.kind !== 'direct') noteCreditWall({ reason: 'depleted' }, { surface: 'voice', trigger: 'tts' });
-      throw new Error('VOICE_NO_CREDITS: playtime balance exhausted');
-    }
-    if (res.status === 429) throw new Error('VOICE_RATE_LIMITED: daily usage cap reached');
-    if (res.status === 503) throw new Error('VOICE_NOT_CONFIGURED: voice service unavailable');
-    console.warn(`[sei/voice] tts upstream ${res.status}: ${bodyText.slice(0, 200)}`);
-    throw new Error(`VOICE_TTS_FAILED: status ${res.status}`);
-  }
-  // Response established (headers in): the fixed timeout guarded connect /
-  // time-to-first-byte only, NOT the whole stream. A near-cap reply can take
-  // longer than TTS_TIMEOUT_MS to fully stream, so a whole-delivery deadline
-  // would abort playback mid-sentence; the body is instead guarded by the
-  // inter-chunk stall watchdog below, on this same AbortController.
-  clearTimeout(timeout);
+  const { body: resBody, ctrl } = opened;
   // Upstream accepted the synthesis — this line is what the player will hear
   // last, so it becomes the next clip's previous_text.
 
@@ -783,7 +958,7 @@ export async function voiceTtsStream(
   // frozen playhead until the OS gave up on the socket minutes later (heard as
   // a "random TTS message" long after). Abort when no chunk arrives for
   // TTS_STREAM_STALL_MS: read() rejects and the catch emits the {error}.
-  const reader = res.body.getReader();
+  const reader = resBody.getReader();
   let stallTimer = setTimeout(() => ctrl.abort(), TTS_STREAM_STALL_MS);
   void (async () => {
     try {
@@ -881,9 +1056,12 @@ export async function voicePreviewTts(args: {
   }
   const voiceId = args.voiceId ?? '';
   // Closed allowlist: the curated pool, or (261019) a voice in the user's
-  // own ElevenLabs account as listed with the current direct key. Own voices
-  // only list on the direct route, so they never reach the proxy from here.
-  if (!isPoolVoiceId(voiceId) && !(await isOwnVoiceId(voiceId))) {
+  // own ElevenLabs account as listed with the current own-voice key. Own
+  // voices only list when that key exists, and they synthesize on its direct
+  // route (on cloud too, 261020), so they never reach the proxy from here; a
+  // pool voice keeps the base route (the proxy on cloud).
+  const pool = isPoolVoiceId(voiceId);
+  if (!pool && !(await isOwnVoiceId(voiceId))) {
     throw new Error('VOICE_TTS_FAILED: unknown voice');
   }
   const calmness =
@@ -896,7 +1074,8 @@ export async function voicePreviewTts(args: {
   const key = previewCacheKey(voiceId, line + paramTag);
   const cached = await readCachedPreview(key);
   if (cached) return cached;
-  const buf = await synthesize(line, voiceId, language, calmness);
+  const { route } = await resolveTtsRoute({ own: !pool });
+  const buf = await synthesize(line, voiceId, language, calmness, route);
   await writeCachedPreview(key, buf);
   return buf;
 }

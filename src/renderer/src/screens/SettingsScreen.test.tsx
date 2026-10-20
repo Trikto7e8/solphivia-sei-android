@@ -25,6 +25,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
+import { elevenKeySettingMode } from '../lib/voicePicker';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SETTINGS_TSX = resolve(__dirname, 'SettingsScreen.tsx');
@@ -378,6 +379,41 @@ describe('SettingsScreen (W5 china-compat: Voice group, TTS packs + SenseVoice)'
     // only persists once the download resolved.
     expect(src.includes("packStates[SENSEVOICE_PACK_ID]?.state !== 'ready'")).toBe(true);
     expect(src.includes("if (thenSensevoice) await persistSttEngine('sensevoice')")).toBe(true);
+  });
+});
+
+describe('SettingsScreen (T158: optional ElevenLabs key on Sei Cloud)', () => {
+  it('OV.1: the key field shows for BYOK + ElevenLabs and as an optional field on Cloud, never twice', () => {
+    expect(elevenKeySettingMode('local', 'elevenlabs')).toBe('byok');
+    expect(elevenKeySettingMode('local', 'local')).toBe('hidden');
+    // Cloud ignores tts_engine (no engine choice there): always optional.
+    expect(elevenKeySettingMode('cloud-proxy', 'elevenlabs')).toBe('cloud-optional');
+    expect(elevenKeySettingMode('cloud-proxy', 'local')).toBe('cloud-optional');
+    // Backend not reported yet: nothing.
+    expect(elevenKeySettingMode(null, 'elevenlabs')).toBe('hidden');
+  });
+
+  it('OV.2: the Cloud group renders the shared key row in optional mode with the credits copy', () => {
+    const src = readFileSync(SETTINGS_TSX, 'utf-8');
+    expect(src.includes("elevenKeySettingMode(aiBackendKind, ttsEngine) === 'cloud-optional'")).toBe(true);
+    expect(src.includes("renderElevenKeyRow('cloud-optional')")).toBe(true);
+    expect(src.includes("renderElevenKeyRow('byok')")).toBe(true);
+    // One key editor in the source: both groups share it.
+    expect((src.match(/placeholder=\{t\('Your ElevenLabs key'\)\}/g) ?? []).length).toBe(1);
+    expect(src.includes("t('Use your own ElevenLabs voices')")).toBe(true);
+    expect(src.includes('Those voices use your ElevenLabs credits.')).toBe(true);
+    // "Not set" is a warning only in BYOK mode.
+    expect(src.includes("hasElevenKey || mode === 'cloud-optional'")).toBe(true);
+  });
+
+  it('OV.3: the picker points to the key field when none is saved, on either backend', () => {
+    const src = readFileSync(VOICE_PICKER_TSX, 'utf-8');
+    expect(src.includes('elevenKeyHintShown(hasElevenKey, localTtsMode)')).toBe(true);
+    expect(src.includes("t('Have your own ElevenLabs voices? Add your ElevenLabs key in Settings, under Voice.')")).toBe(
+      true,
+    );
+    // The free-plan pool hint is a local-backend thing only.
+    expect(src.includes('poolUsesOwnKey(ownList, aiBackendKind)')).toBe(true);
   });
 });
 

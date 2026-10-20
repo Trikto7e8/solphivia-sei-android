@@ -18,6 +18,7 @@ import {
   ownVoiceDetail,
   ownVoicesView,
   poolUsesOwnKey,
+  elevenKeyHintShown,
   defaultVoiceTab,
   applyVoicePick,
 } from './voicePicker';
@@ -173,10 +174,21 @@ describe('own ElevenLabs voices', () => {
   });
 
   it('the free-plan pool hint shows only while the key route is active', () => {
-    expect(poolUsesOwnKey(null)).toBe(false);
-    expect(poolUsesOwnKey({ status: 'unavailable', voices: [] })).toBe(false);
-    expect(poolUsesOwnKey({ status: 'ok', voices: [] })).toBe(true);
-    expect(poolUsesOwnKey({ status: 'bad_key', voices: [] })).toBe(true);
+    expect(poolUsesOwnKey(null, 'local')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'unavailable', voices: [] }, 'local')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, 'local')).toBe(true);
+    expect(poolUsesOwnKey({ status: 'bad_key', voices: [] }, 'local')).toBe(true);
+    // 261020 (T158): on Sei Cloud the pool stays on the proxy even with a key.
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, 'cloud-proxy')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'bad_key', voices: [] }, 'cloud-proxy')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, null)).toBe(false);
+  });
+
+  it('the add-your-key pointer shows once the probe says no key, on both backends', () => {
+    expect(elevenKeyHintShown(false, false)).toBe(true);
+    expect(elevenKeyHintShown(true, false)).toBe(false);
+    expect(elevenKeyHintShown(null, false)).toBe(false); // still probing
+    expect(elevenKeyHintShown(false, true)).toBe(false); // local voice packs
   });
 
   it('defaultVoiceTab opens where the selection lives', () => {

@@ -9,6 +9,9 @@
  *     cloud-proxy resolves null even with a key on disk.
  *   - resolveElevenLabsRoute: direct with a key, unconfigured for key-less
  *     BYOK, proxy for cloud.
+ *   - resolveTtsRoute (261020, T158): the per-voice table. Cloud + own voice
+ *     + key -> direct; cloud + pool voice -> proxy even with a key; local
+ *     unchanged for both. STT keeps resolveElevenLabsRoute (proxy on cloud).
  * Mirrors the apiKeyStore.backendKind.test.ts harness (electron mock +
  * _setUserDataOverride tmp profile).
  */
@@ -34,6 +37,8 @@ import {
   hasElevenLabsKey,
   resolveElevenLabsKey,
   resolveElevenLabsRoute,
+  resolveOwnVoiceKey,
+  resolveTtsRoute,
 } from './elevenLabsKeyStore';
 
 let tmp: string;
@@ -128,5 +133,64 @@ describe('resolveElevenLabsRoute', () => {
   it('proxy for cloud-proxy without an env key', async () => {
     await setAiBackendKind('cloud-proxy');
     expect(await resolveElevenLabsRoute()).toEqual({ kind: 'proxy' });
+  });
+});
+
+describe('resolveTtsRoute (261020, own voices on cloud)', () => {
+  it('cloud + own voice + stored key -> direct with that key, flagged ownKeyOnCloud', async () => {
+    await setAiBackendKind('cloud-proxy');
+    await setElevenLabsKey('own-key-123');
+    expect(await resolveTtsRoute({ own: true })).toEqual({
+      route: { kind: 'direct', key: 'own-key-123' },
+      ownKeyOnCloud: true,
+    });
+  });
+
+  it('cloud + pool voice -> proxy even with a key stored (never bills the key for the pool)', async () => {
+    await setAiBackendKind('cloud-proxy');
+    await setElevenLabsKey('own-key-123');
+    expect(await resolveTtsRoute({ own: false })).toEqual({ route: { kind: 'proxy' }, ownKeyOnCloud: false });
+    // STT and anything else that asks the base route stay on the proxy too.
+    expect(await resolveElevenLabsRoute()).toEqual({ kind: 'proxy' });
+  });
+
+  it('cloud + own voice + no key -> proxy (tts.ts swaps in the stand-in)', async () => {
+    await setAiBackendKind('cloud-proxy');
+    expect(await resolveTtsRoute({ own: true })).toEqual({ route: { kind: 'proxy' }, ownKeyOnCloud: false });
+  });
+
+  it('local is unchanged: the key decides for every voice, never ownKeyOnCloud', async () => {
+    await setAiBackendKind('local');
+    expect(await resolveTtsRoute({ own: true })).toEqual({ route: { kind: 'unconfigured' }, ownKeyOnCloud: false });
+    expect(await resolveTtsRoute({ own: false })).toEqual({ route: { kind: 'unconfigured' }, ownKeyOnCloud: false });
+    await setElevenLabsKey('byok-key');
+    for (const own of [true, false]) {
+      expect(await resolveTtsRoute({ own })).toEqual({
+        route: { kind: 'direct', key: 'byok-key' },
+        ownKeyOnCloud: false,
+      });
+    }
+  });
+
+  it('the dev env key still wins everywhere, without the cloud fallback flag', async () => {
+    await setAiBackendKind('cloud-proxy');
+    process.env.SEI_TTS_DEV_KEY = 'env-key-456';
+    expect(await resolveTtsRoute({ own: true })).toEqual({
+      route: { kind: 'direct', key: 'env-key-456' },
+      ownKeyOnCloud: false,
+    });
+  });
+});
+
+describe('resolveOwnVoiceKey', () => {
+  it('returns the stored key on either backend (it lists own voices), env first, null when none', async () => {
+    await setAiBackendKind('cloud-proxy');
+    expect(await resolveOwnVoiceKey()).toBeNull();
+    await setElevenLabsKey('own-key-123');
+    expect(await resolveOwnVoiceKey()).toBe('own-key-123');
+    await setAiBackendKind('local');
+    expect(await resolveOwnVoiceKey()).toBe('own-key-123');
+    process.env.SEI_TTS_DEV_KEY = 'env-key-456';
+    expect(await resolveOwnVoiceKey()).toBe('env-key-456');
   });
 });

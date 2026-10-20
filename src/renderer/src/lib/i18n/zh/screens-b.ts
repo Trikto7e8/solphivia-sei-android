@@ -53,6 +53,12 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Your ElevenLabs key': '你的 ElevenLabs 密钥',
   'Your own ElevenLabs voices show up in the voice picker once your key is saved.':
     '保存密钥后，你自己的 ElevenLabs 声音会出现在声音选择器中。',
+  // 261020 (T158): the optional ElevenLabs key for Sei Cloud accounts.
+  'Use your own ElevenLabs voices': '使用你自己的 ElevenLabs 声音',
+  "Optional. Only needed for voices from your own ElevenLabs account, like a clone of your voice. Those voices use your ElevenLabs credits. Sei's voices are included in your plan.":
+    '可选。只有使用你自己 ElevenLabs 账户里的声音（例如克隆的你自己的声音）时才需要。这些声音会消耗你的 ElevenLabs 额度。Sei 的声音已包含在你的套餐中。',
+  "Only for voices in your own ElevenLabs account. Sei's voices and voice recognition keep running on Sei Cloud and never use this key.":
+    '仅用于你自己 ElevenLabs 账户里的声音。Sei 的声音和语音识别继续通过 Sei Cloud 运行，不会使用这个密钥。',
   'Remove': '移除',
   'Key cannot be empty.': '密钥不能为空。',
   'Failed to remove key. Try again.': '密钥移除失败，请重试。',

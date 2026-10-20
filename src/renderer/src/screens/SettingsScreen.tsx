@@ -56,6 +56,7 @@ import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
 import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
+import { elevenKeySettingMode } from '../lib/voicePicker';
 
 const API_KEY_BULLET_LEN = 24;
 
@@ -455,6 +456,70 @@ export function SettingsScreen(): React.ReactElement {
     setEditingElevenKey(false);
     setElevenKeyError(null);
   };
+
+  // The ElevenLabs key row, shared by the BYOK Voice group and the Cloud
+  // "your own voices" group (261020, T158). Write-only: the raw key never
+  // comes back to the renderer, only its presence. On Cloud the key is
+  // optional, so "Not set" is a plain state there, not a warning.
+  const renderElevenKeyRow = (mode: 'byok' | 'cloud-optional'): React.ReactElement => (
+    <>
+      <div className={styles.row}>
+        <span className={styles.label}>
+          {t('ElevenLabs key')}
+          <InfoTip
+            label={t('About the ElevenLabs key')}
+            text={
+              mode === 'byok'
+                ? t('ElevenLabs voices need your own ElevenLabs API key. No key? Switch to the local voices.')
+                : t(
+                    "Only for voices in your own ElevenLabs account. Sei's voices and voice recognition keep running on Sei Cloud and never use this key.",
+                  )
+            }
+          />
+        </span>
+        {editingElevenKey ? (
+          <span className={styles.editor}>
+            <TextField
+              value={elevenKeyDraft}
+              onChange={setElevenKeyDraft}
+              type="password"
+              placeholder={t('Your ElevenLabs key')}
+              autoFocus
+              onEnter={() => void onSaveElevenKey()}
+              aria-label={t('ElevenLabs key')}
+            />
+            <Button kind="primary" size="sm" onClick={() => void onSaveElevenKey()}>
+              {t('Save')}
+            </Button>
+            <Button kind="quiet" size="sm" onClick={onCancelElevenKey}>
+              {t('Cancel')}
+            </Button>
+          </span>
+        ) : (
+          <>
+            <span
+              className={
+                hasElevenKey || mode === 'cloud-optional'
+                  ? styles.monoValue
+                  : `${styles.monoValue} ${styles.statusWarn}`
+              }
+            >
+              {hasElevenKey ? '•'.repeat(API_KEY_BULLET_LEN) : t('Not set')}
+            </span>
+            <Button kind="ghost" size="sm" onClick={() => setEditingElevenKey(true)}>
+              {hasElevenKey ? t('Update') : t('Set')}
+            </Button>
+            {hasElevenKey ? (
+              <Button kind="quiet" size="sm" onClick={() => void onRemoveElevenKey()}>
+                {t('Remove')}
+              </Button>
+            ) : null}
+          </>
+        )}
+      </div>
+      {elevenKeyError ? <div className={styles.errorRow}>{elevenKeyError}</div> : null}
+    </>
+  );
 
   const onRemoveElevenKey = async (): Promise<void> => {
     try {
@@ -1320,56 +1385,8 @@ export function SettingsScreen(): React.ReactElement {
               <>
                 {/* ElevenLabs key (260725, relocated here by W5): powers TTS
                     and Scribe recognition. Write-only, same UX as the API key
-                    row. */}
-                <div className={styles.row}>
-                  <span className={styles.label}>
-                    {t('ElevenLabs key')}
-                    <InfoTip
-                      label={t('About the ElevenLabs key')}
-                      text={t(
-                        'ElevenLabs voices need your own ElevenLabs API key. No key? Switch to the local voices.',
-                      )}
-                    />
-                  </span>
-                  {editingElevenKey ? (
-                    <span className={styles.editor}>
-                      <TextField
-                        value={elevenKeyDraft}
-                        onChange={setElevenKeyDraft}
-                        type="password"
-                        placeholder={t('Your ElevenLabs key')}
-                        autoFocus
-                        onEnter={() => void onSaveElevenKey()}
-                        aria-label={t('ElevenLabs key')}
-                      />
-                      <Button kind="primary" size="sm" onClick={() => void onSaveElevenKey()}>
-                        {t('Save')}
-                      </Button>
-                      <Button kind="quiet" size="sm" onClick={onCancelElevenKey}>
-                        {t('Cancel')}
-                      </Button>
-                    </span>
-                  ) : (
-                    <>
-                      <span
-                        className={
-                          hasElevenKey ? styles.monoValue : `${styles.monoValue} ${styles.statusWarn}`
-                        }
-                      >
-                        {hasElevenKey ? '•'.repeat(API_KEY_BULLET_LEN) : t('Not set')}
-                      </span>
-                      <Button kind="ghost" size="sm" onClick={() => setEditingElevenKey(true)}>
-                        {hasElevenKey ? t('Update') : t('Set')}
-                      </Button>
-                      {hasElevenKey ? (
-                        <Button kind="quiet" size="sm" onClick={() => void onRemoveElevenKey()}>
-                          {t('Remove')}
-                        </Button>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-                {elevenKeyError ? <div className={styles.errorRow}>{elevenKeyError}</div> : null}
+                    row. 261020: the row is shared with the Cloud group. */}
+                {renderElevenKeyRow('byok')}
                 {/* 261019: the voice picker lists the account's own voices
                     (cloned, designed, saved) through this key. */}
                 <p className={styles.helper}>
@@ -1470,6 +1487,26 @@ export function SettingsScreen(): React.ReactElement {
                 {packError}
               </p>
             ) : null}
+          </div>
+        ) : null}
+
+        {/* ── Voice on Sei Cloud (261020, T158): one OPTIONAL key, only for
+            voices from the user's own ElevenLabs account. Those speak direct
+            with the key and use the user's ElevenLabs credits; Sei's pool
+            voices and speech recognition stay on the proxy (never billed to
+            the key). The BYOK group above keeps its own key row. ───────── */}
+        {elevenKeySettingMode(aiBackendKind, ttsEngine) === 'cloud-optional' ? (
+          <div className={styles.group} data-testid="cloud-own-voices">
+            <h3 className={styles.groupTitle}>{t('Voice')}</h3>
+            <p className={styles.helper}>
+              <strong>{t('Use your own ElevenLabs voices')}</strong>
+            </p>
+            {renderElevenKeyRow('cloud-optional')}
+            <p className={styles.helper}>
+              {t(
+                "Optional. Only needed for voices from your own ElevenLabs account, like a clone of your voice. Those voices use your ElevenLabs credits. Sei's voices are included in your plan.",
+              )}
+            </p>
           </div>
         ) : null}
 

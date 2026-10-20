@@ -22,16 +22,17 @@
  * API revision ignores voice_type: they are not "your" voices, and the
  * curated pool already covers what Sei offers.
  *
- * Only the DIRECT route lists anything (resolveElevenLabsRoute decides it:
- * the SEI_TTS_DEV_KEY env on any backend, else the stored BYOK key while the
- * AI backend is 'local'; resolveElevenLabsKey has the precedence). On the
- * proxy route voice traffic goes through Sei's account, which cannot speak a
- * voice from someone's personal account, so offering one there would be a lie.
+ * Only an own-voice key lists anything (resolveOwnVoiceKey: the
+ * SEI_TTS_DEV_KEY env, else the stored key). Since 261020 (T158) that
+ * includes a CLOUD user's optional key: their own voices then speak direct
+ * with it (tts.ts planSpeech) while Sei's pool keeps the proxy. With no key
+ * there is nothing that could speak an own voice (the proxy only speaks Sei's
+ * account), so offering one would be a lie.
  */
 import { createHash } from 'node:crypto';
 import type { OwnVoiceInfo, OwnVoiceList } from '../../shared/ipc';
 import { isWellFormedVoiceId } from '../../shared/voiceIds';
-import { resolveElevenLabsRoute } from './elevenLabsKeyStore';
+import { resolveOwnVoiceKey } from './elevenLabsKeyStore';
 import { previewCacheKey, readCachedPreview, writeCachedPreview } from './previewCache';
 
 const LIST_URL = 'https://api.elevenlabs.io/v2/voices';
@@ -193,15 +194,15 @@ export function invalidateOwnVoices(): void {
 async function ownVoiceRecords(opts: { refresh?: boolean; fetchImpl?: FetchLike } = {}): Promise<
   { status: OwnVoiceList['status']; voices: OwnVoiceRecord[] }
 > {
-  const route = await resolveElevenLabsRoute().catch(() => ({ kind: 'unconfigured' as const }));
-  if (route.kind !== 'direct') return { status: 'unavailable', voices: [] };
-  const fp = keyFingerprint(route.key);
+  const key = await resolveOwnVoiceKey().catch(() => null);
+  if (!key) return { status: 'unavailable', voices: [] };
+  const fp = keyFingerprint(key);
   const now = Date.now();
   if (!opts.refresh && cache && cache.fp === fp && now - cache.at < CACHE_TTL_MS) {
     return { status: 'ok', voices: cache.voices };
   }
   if (!inflight || inflight.fp !== fp) {
-    const promise = fetchOwnVoices(route.key, opts.fetchImpl);
+    const promise = fetchOwnVoices(key, opts.fetchImpl);
     inflight = { fp, promise };
     void promise.finally(() => {
       if (inflight?.promise === promise) inflight = null;
@@ -224,7 +225,7 @@ export async function listOwnVoices(opts: { refresh?: boolean; fetchImpl?: Fetch
   }
 }
 
-/** Whether `id` is a voice in the account behind the CURRENT direct key.
+/** Whether `id` is a voice in the account behind the CURRENT own-voice key.
  * The IPC preview boundary uses this beside isPoolVoiceId, so samples stay a
  * closed allowlist (pool ∪ the user's own library), never an arbitrary id. */
 export async function isOwnVoiceId(id: string, opts: { fetchImpl?: FetchLike } = {}): Promise<boolean> {

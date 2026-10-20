@@ -30,6 +30,7 @@ import React from 'react';
 import { useT } from '../lib/i18n';
 import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
+import { stripDuplicateTitleHeading } from '../lib/changelog';
 import styles from './UpdatePopup.module.css';
 
 /** The discriminated state the popup renders. */
@@ -142,7 +143,15 @@ export function UpdatePopup({ state, onUpdateNow, onDismiss }: UpdatePopupProps)
 
     case 'whats-new':
       title = t('What’s new in {version}', { version: state.version });
-      body = <div className={styles.changelog}>{renderChangelog(state.changelog)}</div>;
+      // 261020: the feed's changelog usually opens with the same "What's new
+      // in X" line; don't show the title twice.
+      body = (
+        <div className={styles.changelog}>
+          {renderChangelog(
+            stripDuplicateTitleHeading(state.changelog, [title, `What’s new in ${state.version}`]),
+          )}
+        </div>
+      );
       footer = (
         <Button kind="primary" size="md" onClick={() => onDismiss?.()}>
           {t('Got it')}

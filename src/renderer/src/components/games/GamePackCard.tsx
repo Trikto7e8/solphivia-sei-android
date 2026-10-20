@@ -88,7 +88,7 @@ export function GamePackCard({ game, className }: GamePackCardProps): React.Reac
       <h3 className={styles.title}>{t('Download {name} support (about {size})', { name: desc.name, size })}</h3>
       <p className={styles.body}>
         {t(
-          'Playing {name} together needs a one-time download. It is stored on this device and only downloads again after an update that needs a newer version.',
+          'Your companion needs a one-time download to play {name} with you. It is stored on this device and only downloads again after an update that needs a newer version.',
           { name: desc.name },
         )}
       </p>

@@ -1142,6 +1142,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       heard = playerLines ?? []
       for (const l of selfLines ?? []) if (Number.isFinite(l?.at) && l.at > saidAt) saidAt = l.at
     } catch { heard = [] }
+    // A player line newer than her last line means this turn answers it.
+    // The "said since" note waits for the turn after, also when an earlier
+    // line she did answer would qualify: chit-chat before the call-off put
+    // the note on the call-off turn anyway (review of 52138cdf).
+    const fromPlayer = (l) => l && l.companion !== true && Number.isFinite(l.at) && String(l.text ?? '').trim()
+    const answering = heard.some((l) => fromPlayer(l) && l.at > saidAt)
     const out = []
     for (const t of playerTasks) {
       const setAt = taskSetAt.get(t.key)
@@ -1156,7 +1162,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // lines already ask about it, and this note on top ("call clearGoal
       // on it") got clearGoal + stop + "on my way" with no goTo in 6 of 8
       // probe runs (forget_give_near; base 0 of 8).
-      const since = heard.filter((l) => l && l.companion !== true && Number.isFinite(l.at) && l.at > setAt && l.at <= saidAt && String(l.text ?? '').trim())
+      if (answering) continue
+      const since = heard.filter((l) => fromPlayer(l) && l.at > setAt && l.at <= saidAt)
       if (since.length) out.push(NUDGES.taskSince({ task: t.text, who: since.at(-1).who || who, lines: since.slice(-TASK_SINCE_LINES).map((l) => l.text) }))
     }
     clearedTasks = clearedTasks.filter((c) => Date.now() - c.at < CLEARED_TASK_MS)

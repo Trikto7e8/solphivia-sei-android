@@ -85,8 +85,11 @@ const lastUserText = (call) => JSON.stringify((call.messages ?? []).slice(-1))
 const line = (text) => ({ text, username: 'Steve', playerSpoke: true, ts: Date.now() })
 const DRAINED = new Set(['sei:action_complete', 'sei:chat_received', 'sei:action_tick'])
 const flush = () => new Promise((r) => setTimeout(r, 5))
-// A player line as index.js delivers it: recorded, then dispatched.
+// A player line as index.js delivers it: recorded, then dispatched. The
+// wait keeps its stamp off the millisecond of the turn before (a line in
+// the same ms as the setGoal reads as said before the task was set).
 async function hear(orch, text) {
+  await new Promise((r) => setTimeout(r, 2))
   orch.recordIncomingChat('Steve', text)
   await orch.handleDispatch('sei:chat_received', line(text))
 }
@@ -232,6 +235,24 @@ describe('the player\'s open task on later turns', () => {
     running.gather('gathered 8/8 oak_log')
     await settle()
     expect(since(provider.calls[provider.calls.length - 1])).toBe(true)
+  })
+
+  it('is not on the call-off turn when they said something else before it', async () => {
+    const { orch, provider, settle } = setup([
+      ASK,
+      turn(say('s2', 'dirt, obviously')),
+      turn(say('s3', 'ok coming'), act('m1', 'goTo', { player: 'Steve' })),
+      turn(say('s4', 'here')),
+    ])
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await hear(orch, 'whats ur favorite block')
+    await settle()
+    const before = provider.calls.length
+    await hear(orch, CALL_OFF)
+    await settle()
+    const answering = provider.calls[before]
+    expect(lastUserText(answering)).toContain('forget the logs')
+    expect(since(answering)).toBe(false)
   })
 
   it('says nothing before they have said anything more', async () => {

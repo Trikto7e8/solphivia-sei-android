@@ -184,7 +184,14 @@ function giveCalledOff(r) {
   const cleared = r.tools.includes('clearGoal')
   const stopped = r.tools.includes('stop')
   const moved = r.acts.some((a) => a.name === 'goTo' || a.name === 'follow')
-  return { ok: cleared && (stopped || moved), cleared, stopped, moved }
+  return { ok: cleared && (stopped || moved), cleared, stopped, moved, toPlayer: movedToPlayer(r) }
+}
+// pass 22b: a goTo or follow toward the player in the call-off turn itself
+// ("just meet me over here" is an order to come over, not only a cancel).
+function movedToPlayer(r) {
+  const near = (a) => Number.isFinite(a?.x) && Number.isFinite(a?.z) && Math.hypot(a.x - NEAR.x, a.z - NEAR.z) <= 6
+  return r.acts.some((a) => (a.name === 'goTo' || a.name === 'follow') &&
+    (String(a.args?.player ?? '').toLowerCase() === PLAYER.toLowerCase() || near(a.args)))
 }
 // pass 22: the turns after a call-off. Each later step ends whatever is
 // running then (with the result named for that action), or is an idle tick
@@ -635,13 +642,15 @@ const seq = (r) => (r.calls ?? []).map((c) => c.tools.map((t) => t.name === 'say
 if (arg('rejudge')) {
   const rows = fs.readFileSync(path.join(arg('rejudge'), 'runs.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l))
   const byCase = {}
+  const toP = {}
   for (const r of rows) {
     if (r.error || !CASES[r.case]) continue
     const j = CASES[r.case].judge(r)
     ;(byCase[r.case] ??= []).push(j.ok)
+    if (j.toPlayer !== undefined) (toP[r.case] ??= []).push(j.toPlayer)
     if (process.env.P21_VERBOSE) console.log(`${j.ok ? 'OK ' : 'BAD'} ${r.case}/${r.rep}: ${seq(r).slice(0, 200)}`)
   }
-  for (const [c, oks] of Object.entries(byCase)) console.log(`${c}: ${pct(oks.filter(Boolean).length, oks.length)}`)
+  for (const [c, oks] of Object.entries(byCase)) console.log(`${c}: ${pct(oks.filter(Boolean).length, oks.length)}${toP[c] ? `, moved to player ${pct(toP[c].filter(Boolean).length, toP[c].length)}` : ''}`)
   process.exit(0)
 }
 const jobs = []
@@ -664,7 +673,8 @@ const ok = rows.filter((r) => !r.error)
 const lines = ['# Pass 22 probe', '', `root ${ROOT}`, `model ${MODEL}, ${ok.length} runs (${rows.length - ok.length} errors), cost $${ok.reduce((s, r) => s + (r.cost ?? 0), 0).toFixed(3)}`, '', '| case | ok |', '|---|---:|']
 for (const cid of Object.keys(CASES)) {
   const rs = ok.filter((r) => r.case === cid)
-  if (rs.length) lines.push(`| ${cid} | ${pct(rs.filter((r) => r.ok).length, rs.length)} |`)
+  const mv = rs.filter((r) => r.toPlayer !== undefined)
+  if (rs.length) lines.push(`| ${cid} | ${pct(rs.filter((r) => r.ok).length, rs.length)} |${mv.length ? ` moved to player ${pct(mv.filter((r) => r.toPlayer).length, mv.length)}` : ''}`)
 }
 lines.push('', '## All runs', '')
 for (const r of ok) lines.push(`- ${r.ok ? 'OK ' : 'BAD'} ${r.case}/${r.rep}: ${seq(r)}${r.hit ? `  [hit: ${r.hit}]` : ''}${r.moved !== undefined ? `  [moved ${r.moved}]` : ''}${r.cleared && typeof r.cleared === 'string' ? `  [cleared: ${r.cleared}]` : ''}`)

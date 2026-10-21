@@ -6,8 +6,6 @@
 //    task whose action she stopped or replaced on a player's line is held
 //    with that line, and every snapshot shows the player's open task next to
 //    what they said since asking for it (or the line she stopped on).
-//  - A game thing she keeps bringing up herself (the zombie she killed) is
-//    named on reply turns with the lines that brought it up.
 
 import fs from 'node:fs/promises'
 import os from 'node:os'
@@ -15,7 +13,6 @@ import path from 'node:path'
 import { describe, it, expect, vi, afterEach } from 'vitest'
 import { z } from 'zod'
 import { renderHeartbeat, PLAYER_TASKS_HELD_HEAD, PLAYER_TASKS_HEAD } from './promptLibrary.js'
-import { ownRepeatsNote, repeatedOwnTopics } from './ownRepeats.js'
 import { createOrchestrator, composeSeedBlocks, _setTickIntervalForTests } from './orchestrator.js'
 
 afterEach(() => { vi.restoreAllMocks() })
@@ -214,7 +211,7 @@ describe('the player\'s open task on later turns', () => {
     await settle()
     const last = provider.calls[provider.calls.length - 1]
     expect(since(last)).toBe(true)
-    expect(lastUserText(last)).toContain('they said \\"whats ur favorite block\\". If that calls it off or changes it, call clearGoal on it before you do anything more for it.')
+    expect(lastUserText(last)).toContain('they said \\"whats ur favorite block\\". If that calls it off or changes it, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.')
     // The line that asked for it is not "since".
     expect(lastUserText(last)).not.toContain('they said \\"get me like 8 logs')
   })
@@ -306,58 +303,5 @@ describe('renderHeartbeat with held tasks', () => {
   })
   it('is unchanged without holds', () => {
     expect(renderHeartbeat(2, goals, '', { sessionStartMs: now })).toBe(renderHeartbeat(2, goals, '', { sessionStartMs: now, heldTask: () => null }))
-  })
-})
-
-// ─── reply notes ────────────────────────────────────────────────────────
-
-const NOW = 1_000_000
-const self = (text, agoS) => ({ at: NOW - agoS * 1000, text })
-const VOCAB = ['zombie', 'creeper', 'iron_sword', 'bread', 'oak_log', 'rotten_flesh']
-const ZOMBIE_SELF = [
-  self("yeah im fine, zombie's dead. you good alex", 58),
-  self('nehehe yeah i KNOW. you were scared of that zombie and i still got you', 50),
-  self('why did the zombie not go to the party? no body wanted him', 43),
-  self("rude. that joke killed a zombie, you're welcome", 33),
-  self('creepers are the worst. they sneak up silent and then BOOM', 26),
-  self('coming alex, stay close to me nehehe', 13),
-  self("ok ok holding still. you're three blocks away anyway", 6),
-]
-const PLAYER = ['are you ok??', 'nice job', 'tell me a joke', 'lmao thats so bad', 'what do you think about creepers', 'come here', 'stop moving', 'ur dumb as a rock'].map((text) => ({ who: 'Alex', text }))
-const OPTS = { now: NOW, names: ['Alex'], vocab: VOCAB, context: ['inventory: iron_sword×1 bread×4 rotten_flesh×1'] }
-
-describe('a game thing she keeps bringing up', () => {
-  it('is named on a reply turn', () => {
-    const [hit] = repeatedOwnTopics(ZOMBIE_SELF, PLAYER, OPTS)
-    expect(hit).toMatchObject({ term: 'zombie', count: 4, of: 7 })
-    expect(ownRepeatsNote(ZOMBIE_SELF, PLAYER, { ...OPTS, mode: 'reply' }))
-      .toContain(`You have brought up the zombie in 4 of your last 7 lines ("yeah im fine, zombie's dead. you good alex", "nehehe yeah i KNOW. you were scared of that zombie and i still got you", "why did the zombie not go to the party? no body wanted him", "rude. that joke killed a zombie, you're welcome") and they have not mentioned it lately, so unless their line is about it, leave it out of this one.`)
-  })
-  it('quotes at most the four most recent lines that brought it up', () => {
-    const many = [...ZOMBIE_SELF.slice(0, 4), self('another zombie joke', 20), self('zombie zombie', 15)]
-    expect(repeatedOwnTopics(many, PLAYER, OPTS)[0].lines).toEqual([
-      'why did the zombie not go to the party? no body wanted him', "rude. that joke killed a zombie, you're welcome", 'another zombie joke', 'zombie zombie',
-    ])
-  })
-  it('reads the job from topicContext (goals, running action) when given, not the snapshot', () => {
-    const note = (o) => ownRepeatsNote(ZOMBIE_SELF, PLAYER, { ...OPTS, mode: 'reply', ...o }) ?? ''
-    // The snapshot's last result still names the zombie: not the job.
-    expect(note({ context: ['last_action_result: killed zombie (4 hits)'], topicContext: ['', ''] })).toContain('brought up the zombie')
-    expect(note({ topicContext: ['Kill the zombie by the house'] })).not.toContain('brought up the zombie')
-  })
-  it('is not named when the player just talked about it, or it is in view', () => {
-    const asked = [...PLAYER.slice(0, -1), { who: 'Alex', text: 'was that zombie scary' }]
-    expect(repeatedOwnTopics(ZOMBIE_SELF, asked, OPTS)).toEqual([])
-    expect(repeatedOwnTopics(ZOMBIE_SELF, PLAYER, { ...OPTS, context: ['nearby entities: zombie @3,4,5'] })).toEqual([])
-  })
-  it('needs the game vocab, and a word that is not a game noun is never one', () => {
-    expect(repeatedOwnTopics(ZOMBIE_SELF, PLAYER, { ...OPTS, vocab: null })).toEqual([])
-    expect(repeatedOwnTopics([self('the party was wild', 9), self('what a party', 5)], [], OPTS)).toEqual([])
-  })
-  it('rides no idle or result turn (pass 6a: no quote, no ask on her own turns)', () => {
-    for (const mode of ['idle', 'checkin', 'result', 'greeted']) {
-      expect(ownRepeatsNote(ZOMBIE_SELF, PLAYER, { ...OPTS, mode }) ?? '').not.toContain('brought up')
-    }
-    expect(ownRepeatsNote(ZOMBIE_SELF, PLAYER, { ...OPTS, mode: 'idle' }) ?? '').not.toContain('Your last line')
   })
 })

@@ -946,13 +946,13 @@ export const NUDGES = {
   // lines above it, and she handed the logs over (probe chain_give, 5 of 8;
   // chain_walk, 4 of 8). These put the two side by side on every turn.
   // taskHeld: she stopped its action in answer to that line.
-  taskHeld: ({ task, who, line, secs }) => `on hold: ${who || 'the player'}'s task "${clipNote(task)}". You stopped it ${secs}s ago when they said "${clipNote(line, 120)}". Do not pick it back up, or hand anything over for it, unless they ask for it again. If that line called it off, call clearGoal on it.`,
+  taskHeld: ({ task, who, line, secs }) => `on hold: ${who || 'the player'}'s task "${clipNote(task)}". You stopped it ${secs}s ago when they said "${clipNote(line, 120)}". Do not pick it back up, or hand anything over for it, unless they ask for it again. If that line called it off, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.`,
   // taskCleared: she cleared it in answer to that line, a few minutes ago.
   taskCleared: ({ task, who, line, secs }) => `cleared: ${who || 'the player'}'s task "${clipNote(task)}". You cleared it ${secs}s ago, after they said "${clipNote(line, 120)}". Nothing is owed for it now: do not hand anything over for it or set it again unless they ask for it again.`,
   // taskSince: the player has said something since they asked for it.
   taskSince: ({ task, who, lines }) => {
     const list = (Array.isArray(lines) ? lines : [lines]).map((l) => `"${clipNote(l, 120)}"`)
-    return `${who || 'the player'}'s task "${clipNote(task)}" is still in your heartbeat. Since they asked for it, they said ${list.join(' and then ')}. If that calls it off or changes it, call clearGoal on it before you do anything more for it.`
+    return `${who || 'the player'}'s task "${clipNote(task)}" is still in your heartbeat. Since they asked for it, they said ${list.join(' and then ')}. If that calls it off or changes it, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.`
   },
 
   // 261015 (quality pass 8): the one extra call after a turn whose only work
@@ -1454,7 +1454,7 @@ export const OWN_GOALS_ON_HOLD_HEAD = `Your own goals. While your snapshot shows
 // with stop + goTo and no clearGoal in 6 of 8 probe runs ("logs ride with
 // me"), and on the turn she arrived the task still said to hand them over,
 // so she did. Each line here carries the player's line she stopped on.
-export const PLAYER_TASKS_HELD_HEAD = 'Tasks the player asked you to do that you stopped working on when they said something else (their line follows each one). Do not pick one back up, or hand anything over for it, unless they ask for it again. If their line called it off, call clearGoal on it:'
+export const PLAYER_TASKS_HELD_HEAD = 'Tasks the player asked you to do that you stopped working on when they said something else (their line follows each one). Do not pick one back up, or hand anything over for it, unless they ask for it again. If their line called it off, call clearGoal on it, and still do what they asked for now:'
 const heldSuffix = (h) => ` (you stopped it when ${h.who || 'the player'} said "${String(h.line ?? '').trim().slice(0, 120)}")`
 
 const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'

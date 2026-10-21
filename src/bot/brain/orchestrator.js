@@ -1262,15 +1262,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       const { selfLines, playerLines } = convoMemory.recentChat._internal
       const names = [config?.player_display_name, config?.player_username, ...companions]
       const { snapshot, goals, frontier } = _repeatsContext
-      // 261022 (pass 22): a game thing she keeps bringing up (ownRepeats
-      // repeatedOwnTopics) is the job only when the goals or the running
-      // action name it. The snapshot is left out here: its last-result line
-      // still said "killed zombie" while she brought the zombie up reply
-      // after reply.
-      let running = ''
-      try { running = JSON.stringify(inflight.current()?.args ?? '') } catch { running = '' }
       return ownRepeatsNote(selfLines, playerLines, {
-        mode, names, context: [snapshot, goals, frontier], topicContext: [goals, frontier, running], vocab: gameVocab(), signature: config?.persona?.expanded,
+        mode, names, context: [snapshot, goals, frontier], vocab: gameVocab(), signature: config?.persona?.expanded,
       })
     } catch { return null }
   }

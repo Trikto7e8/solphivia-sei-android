@@ -443,72 +443,6 @@ const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeb
 // where things stand, only not her last line again.
 const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If they ask how it is going, tell them where things stand, just not in the same words as before. If their line only acknowledges yours, a short reaction is enough.'
 
-// 261022 (pass 22): a thing from the game she keeps bringing up on her own.
-// After one zombie fight she came back to it in reply after reply (the
-// joke, then "that joke killed a zombie", then "i literally killed the
-// zombie for you" to "ur dumb as a rock"). The reply quote holds her last
-// four turns, and the brag was older. Probe rude_zombie (pass22-probe, 8
-// runs each): 0 of 8 replies free of the zombie with the word named alone,
-// 4 of 8 with the lines that brought it up quoted after it.
-// Only a game noun counts (the game's vocab): one that is not in the goals
-// or the running action (`topicContext`, from the orchestrator), so not the
-// job at hand, and that the player has not named in their last few lines,
-// so not what they are talking about.
-const TOPIC_TURNS = 8
-const TOPIC_MIN_TURNS = 2
-const TOPIC_PLAYER_WINDOW = 4
-// The most recent lines of hers that brought it up, quoted in the note.
-const TOPIC_QUOTED = 4
-
-/**
- * Game nouns (`vocab`) in at least `minTurns` of her last `window` turns,
- * left out when the word is in `context` (the goals and the running action), a name,
- * or in the player's last `playerWindow` lines.
- *
- * @returns {Array<{term:string, count:number, of:number}>} most repeated first
- */
-export function repeatedOwnTopics(selfLines, playerLines = [], {
-  now = Date.now(), window = TOPIC_TURNS, withinMs = PHRASE_WITHIN_MS, minTurns = TOPIC_MIN_TURNS,
-  playerWindow = TOPIC_PLAYER_WINDOW, names = [], context = [], vocab = null, max = 1,
-} = {}) {
-  const game = vocabKeys(vocab)
-  if (!game) return []
-  const turns = groupTurns(selfLines)
-    .filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs)
-    .slice(-window)
-  if (turns.length < minTurns) return []
-  const known = new Set()
-  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who), ...(context ?? [])]) {
-    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) known.add(k)
-  }
-  const heard = new Set()
-  for (const l of (playerLines ?? []).filter((x) => x && x.companion !== true).slice(-playerWindow)) {
-    for (const w of tokensOf(l?.text)) for (const k of wordKeys(w)) heard.add(k)
-  }
-  // The game noun a word is (its vocab key), or null.
-  const nounOf = (w) => {
-    if (w.length < 4 || STOP.has(w) || PLAIN_WORDS.has(w) || TASK_GLUE.has(w)) return null
-    const keys = wordKeys(w)
-    if (keys.some((k) => known.has(k) || heard.has(k) || TASK_GLUE.has(k) || PLAIN_WORDS.has(k))) return null
-    return keys.find((k) => game.has(k)) ?? null
-  }
-  const counts = new Map()
-  const lines = new Map()
-  for (const turn of turns) {
-    const seen = new Set()
-    for (const w of tokensOf(turn.text)) { const n = nounOf(w); if (n) seen.add(n) }
-    for (const n of seen) {
-      counts.set(n, (counts.get(n) ?? 0) + 1)
-      lines.set(n, [...(lines.get(n) ?? []), turn.text].slice(-TOPIC_QUOTED))
-    }
-  }
-  return [...counts]
-    .filter(([, c]) => c >= minTurns)
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, max)
-    .map(([term, count]) => ({ term, count, of: turns.length, lines: lines.get(term) }))
-}
-
 function linesNote(selfLines, playerLines, opts = {}) {
   const mode = ['idle', 'checkin', 'greeted', 'result'].includes(opts.mode) ? opts.mode : 'reply'
   const last = recentOwnTurns(selfLines, { now: opts.now, turns: mode === 'reply' ? REPLY_LINES_TURNS : LAST_LINES_TURNS })
@@ -535,15 +469,9 @@ function linesNote(selfLines, playerLines, opts = {}) {
   })
   const open = opener ? ` Your recent lines keep starting with "${opener}", so start this one another way.` : ''
   if (mode === 'idle') return (bits + open).trim() || null
-  // A reply turn also names a game thing she keeps coming back to (above).
-  const topic = repeatedOwnTopics(selfLines, playerLines, { now: opts.now, names, context: opts.topicContext ?? opts.context, vocab: opts.vocab })
-    .filter((t) => !phrases.some((p) => ` ${p.phrase} `.includes(` ${t.term} `)))[0]
-  const topicBit = topic
-    ? ` You have brought up the ${topic.term} in ${topic.count} of your last ${topic.of} lines (${topic.lines.map((l) => `"${clip(l, 90)}"`).join(', ')}) and they have not mentioned it lately, so unless their line is about it, leave it out of this one.`
-    : ''
   return `${lead} They already heard ${last.length === 1 ? 'it' : 'these'}. ` +
     REUSE_ASK +
-    bits + topicBit + open +
+    bits + open +
     ` ${REPITCH_ASK}`
 }
 

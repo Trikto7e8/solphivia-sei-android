@@ -200,6 +200,15 @@ function ticNote(hits) {
 // Her last turns are quoted only while they are fresh. An hour-old line is
 // not the thing she is about to repeat.
 const LAST_LINES_TURNS = 2
+// 261021 (pass 21): a reply turn quotes her last four. With two, the comeback
+// she reused was one turn too old to be in the quote: "nehehe rude." to
+// "lmao thats so bad", two plain lines, then "rude. i'm a rock with a sword"
+// to "ur dumb as a rock" (t160 night_social). Probe case rude, 8 runs each
+// (pass21-probe, 10-21): 1 of 8 replies free of it on dev with two quoted,
+// 7 of 8 with four. A second four-turn run with an extra note on top got 5 of
+// 8. Idle seeds still get no quote (pass 6a), and the other turn kinds keep
+// two.
+const REPLY_LINES_TURNS = 4
 const LAST_LINES_WITHIN_MS = 120_000
 // A shared phrase is looked for in this many recent turns, inside this time.
 const PHRASE_TURNS = 8
@@ -436,7 +445,7 @@ const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless
 
 function linesNote(selfLines, playerLines, opts = {}) {
   const mode = ['idle', 'checkin', 'greeted', 'result'].includes(opts.mode) ? opts.mode : 'reply'
-  const last = recentOwnTurns(selfLines, { now: opts.now })
+  const last = recentOwnTurns(selfLines, { now: opts.now, turns: mode === 'reply' ? REPLY_LINES_TURNS : LAST_LINES_TURNS })
   if (!last.length) return null
   // A word the tic note already names is not named twice ("big brother").
   const skip = (opts.skipTerms ?? []).map((t) => ` ${t} `)

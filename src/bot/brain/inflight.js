@@ -146,10 +146,14 @@ export function getInFlightLineForSnapshot(entry, now = Date.now(), opts = {}) {
   // eval) composed a turn 1.8s into give(oak_log), read oak_log x6 in her
   // inventory and the crafting table recipe on the next: line, and called
   // craft; the logs were already on their way to the player.
+  // 261021 (pass 21): it said "Those are theirs now", and to "actually forget
+  // the logs, just meet me over here" mid-give she let the toss finish ("the
+  // logs are already flying your way"): 7 of 8 kept the give running in the
+  // probe. Now it says the hand-over has not happened and stopping keeps them.
   if (!suffix && entry.name === 'give' && typeof entry.args?.item === 'string') {
     const n = Number.isFinite(entry.args.count) ? `${entry.args.count} ` : 'all your '
     const to = typeof entry.args.player === 'string' && entry.args.player.trim() ? entry.args.player.trim() : 'the player'
-    suffix = `, handing ${n}${entry.args.item} to ${to}. Those are theirs now: your inventory line still shows them until the toss lands, so do not count them toward anything of yours`
+    suffix = `, handing ${n}${entry.args.item} to ${to}. Nothing is handed over until the toss lands, so stopping it keeps them with you. They are meant for ${to}, so do not count them toward anything of yours`
   }
   return `in_flight: ${entry.name}(${argblurb}) started=${elapsed}s ago${suffix}`
 }

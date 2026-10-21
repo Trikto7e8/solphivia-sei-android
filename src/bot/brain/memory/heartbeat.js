@@ -97,6 +97,33 @@ export function goalKey(text) {
   return normalizeForDedup(text)
 }
 
+// 261022 (pass 22c): which of the player's tasks an action works, from the
+// item and block names in its args against the task's words ("oak_log" and
+// "Get 8 logs for Alex's dock" share "log"). A player name never links: a
+// walk to the player belongs to no one task. Empty when nothing is shared.
+const LINK_SKIP = new Set(['the', 'and', 'for', 'with', 'any', 'block', 'blocks', 'item', 'items', 'nearest'])
+const stemWord = (w) => {
+  if (w.length > 4 && w.endsWith('ies')) return `${w.slice(0, -3)}y`
+  if (w.length > 4 && /(ch|sh|s|x)es$/.test(w)) return w.slice(0, -2)
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1)
+  return w
+}
+const linkWords = (text) => String(text ?? '').toLowerCase().split(/[^a-z]+/)
+  .filter((w) => w.length >= 3 && !LINK_SKIP.has(w)).map(stemWord)
+export function tasksOfAction(args, tasks, { names = [] } = {}) {
+  const skip = new Set((names ?? []).flatMap((n) => linkWords(n)))
+  const words = new Set()
+  const walk = (v, depth) => {
+    if (depth > 2 || v == null) return
+    if (typeof v === 'string') { for (const w of linkWords(v)) if (!skip.has(w)) words.add(w) } else if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1) } else if (typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) if (k !== 'player' && k !== 'username') walk(x, depth + 1)
+    }
+  }
+  walk(args, 0)
+  if (!words.size) return []
+  return (tasks ?? []).filter((t) => linkWords(t?.text).some((w) => !skip.has(w) && words.has(w)))
+}
+
 function stripPlayerTaskTag(text) {
   const t = String(text ?? '').trim()
   return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t

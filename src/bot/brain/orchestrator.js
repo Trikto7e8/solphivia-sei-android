@@ -58,7 +58,7 @@ import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey, tasksOfAction } from './memory/heartbeat.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -1095,6 +1095,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // handed the logs over (probe chain_give, 5 of 8 on dev). A held task goes
   // under its own heartbeat head and rides the snapshot with the player's
   // line (taskNoteText). It stays held until it is cleared or set again.
+  // 261022 (pass 22c, review): only the task the stopped action worked
+  // (tasksOfAction), and only a plain stop holds it ({ kind: 'held' }). An
+  // action replaced by another on a player line may be a detour ("come look
+  // at this a sec") as easily as a call-off, so that task is only noted as
+  // switched ({ kind: 'switched' }) with the line, and she decides. Either
+  // ends when she starts an action for the task again (startLongRunner).
   let playerTasks = []
   const taskSetAt = new Map()
   const taskHolds = new Map()
@@ -1122,11 +1128,30 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const at = taskSetAt.get(t.key)
     return Number.isFinite(at) && Number.isFinite(startedAt) && at <= startedAt
   })
+  const playerNames = () => [config?.player_display_name, config?.player_username, ...companions].filter(Boolean)
+  // The task the running action was working: the one its args name, or the
+  // only task there was. None when that is unclear.
+  const taskOfRunning = (running) => {
+    const behind = tasksBehind(running?.startedAt)
+    const named = tasksOfAction(running?.input, behind, { names: playerNames() })
+    if (named.length) return named
+    return behind.length === 1 ? behind : []
+  }
+  // She started an action for a held or switched task: it is back on.
+  function releaseTaskHolds(name, args) {
+    if (!taskHolds.size || ACTION_VERB_SKIP.has(name)) return
+    const held = playerTasks.filter((t) => taskHolds.has(t.key))
+    for (const t of tasksOfAction(args, held, { names: playerNames() })) {
+      taskHolds.delete(t.key)
+      logger.info?.(`[sei/orch] task hold lifted: she started ${name} for it`)
+    }
+  }
   // For renderHeartbeat: the hold of a raw heartbeat line, or null.
   const heldTaskOfLine = (line) => {
     if (!taskHolds.size) return null
     const m = /^- \[[^\]]*\]\s*(.*)$/.exec(String(line ?? '').trim())
-    return m ? (taskHolds.get(goalKey(m[1])) ?? null) : null
+    const h = m ? taskHolds.get(goalKey(m[1])) : null
+    return h && h.kind === 'held' ? h : null
   }
   // The snapshot lines for this session's open player tasks: a held one with
   // the line she stopped on, any other with what the player has said since
@@ -1154,7 +1179,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       if (!Number.isFinite(setAt)) continue
       const h = taskHolds.get(t.key)
       if (h) {
-        out.push(NUDGES.taskHeld({ task: t.text, who: h.who || who, line: h.line, secs: Math.max(1, Math.round((Date.now() - h.at) / 1000)) }))
+        const note = h.kind === 'switched' ? NUDGES.taskSwitched : NUDGES.taskHeld
+        out.push(note({ task: t.text, who: h.who || who, line: h.line, secs: Math.max(1, Math.round((Date.now() - h.at) / 1000)) }))
         continue
       }
       // 261022 (pass 22b): only lines she has already answered. On the turn
@@ -2498,7 +2524,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // 260921: the unanswered-line retry (see runIterations) re-presents the
       // SAME line; only a genuinely new one re-arms it.
       if (!unanswered) {
-        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null }
+        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null, at: Date.now() }
         loop._unansweredRetried = false
         loop._unansweredNudgeText = null
       }
@@ -2652,6 +2678,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       logger.info?.(`[sei/orch] stay note cleared: she started ${name}`)
       stayNote = null
     }
+    releaseTaskHolds(name, args)
     const handle = inflight.start({ name, args })
     // Party redesign §2/§5: this is the single world-tool dispatch path. Surface
     // the action as a presence verb — but only for real world tools, never for
@@ -3223,7 +3250,7 @@ function maybeWarnByteCap(loop, warned) {
             : `your teammate ${speakerName} just spoke to you`)
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
-        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
+        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null, at: Date.now() }
         // 261017 (quality pass 11): their line comes after the instructions,
         // labelled the way the transcript labels it ("Their line, player
         // (Alex): cool"), instead of as a bare quoted string right under the
@@ -3966,7 +3993,12 @@ function maybeWarnByteCap(loop, warned) {
         // picks a held task back up.
         if (forPlayer) {
           const key = goalKey(text.replace(/\s*\n+\s*/g, ' '))
-          if (added === 1 || !taskSetAt.has(key) || taskHolds.has(key)) taskSetAt.set(key, Date.now())
+          // 261022 (pass 22c): stamped when the line that asked for it came
+          // in, so a quick "nvm" sent while she was still answering counts as
+          // said after the ask.
+          const askedAt = loop?._lastPlayerLine?.at
+          const setAt = Number.isFinite(askedAt) && askedAt <= Date.now() ? askedAt : Date.now()
+          if (added === 1 || !taskSetAt.has(key) || taskHolds.has(key)) taskSetAt.set(key, setAt)
           taskHolds.delete(key)
           clearedTasks = clearedTasks.filter((c) => c.key !== key)
         }
@@ -5392,9 +5424,10 @@ function maybeWarnByteCap(loop, warned) {
         const touchesGoals = toolUses.some(u => u.name === 'clearGoal' || u.name === 'setGoal')
         const sameAgain = !!running && newSuspendingTools.some(u => u.name === running.name)
         if (running && !touchesGoals && !sameAgain && !loop._groupVoiceLine && (hasStop || newSuspendingTools.length > 0)) {
-          for (const t of tasksBehind(running.startedAt)) {
-            taskHolds.set(t.key, { at: Date.now(), who: loop._lastPlayerLine.who ?? null, line })
-            logger.info?.(`[sei/orch] task held: she ${hasStop ? 'stopped' : 'replaced'} ${running.name} on the player's line (loop=${loop.id})`)
+          const kind = newSuspendingTools.length > 0 ? 'switched' : 'held'
+          for (const t of taskOfRunning(running)) {
+            taskHolds.set(t.key, { kind, at: Date.now(), who: loop._lastPlayerLine.who ?? null, line })
+            logger.info?.(`[sei/orch] task ${kind}: she ${kind === 'held' ? 'stopped' : 'replaced'} ${running.name} on the player's line (loop=${loop.id})`)
           }
         }
       }

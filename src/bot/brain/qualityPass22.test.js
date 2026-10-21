@@ -122,34 +122,79 @@ const CALL_OFF = 'actually forget the logs, just meet me over here'
 const held = (call) => lastUserText(call).includes(`on hold: Steve's task \\"Get 8 logs for Steve's dock.`)
 const since = (call) => lastUserText(call).includes(`Steve's task \\"Get 8 logs for Steve's dock.`) && lastUserText(call).includes('Since they asked for it, they said')
 
+const switched = (call) => lastUserText(call).includes(`switched: Steve's task \\"Get 8 logs for Steve's dock.`)
+const COAL = 'Bring Steve 4 coal from the ore by the hill. Done when 4 coal are handed to Steve via give.'
+const heldCoal = (call) => /(on hold|switched): Steve's task \\"Bring Steve 4 coal/.test(lastUserText(call))
+
 describe('a task whose action she stopped on the player\'s line', () => {
-  it('is held, and the next turn shows it with the line she stopped on', async () => {
-    const { orch, provider, aborted, settle } = setup([
+  it('is held on a plain stop, and the next turn shows it with the line she stopped on', async () => {
+    const { orch, provider, aborted, running, settle } = setup([
       ASK,
-      turn(say('s2', 'ok coming, logs ride with me'), act('st', 'stop'), act('m1', 'goTo', { player: 'Steve' })),
-      turn(say('s3', 'here')),
+      turn(say('s2', 'ok ok, holding'), act('st', 'stop')),
+      turn(say('s3', 'still here')),
     ])
     await hear(orch, 'get me like 8 logs, i wanna build a dock')
     await hear(orch, CALL_OFF)
     await settle()
     expect(aborted).toEqual(['gather'])
-    expect(provider.calls.length).toBe(3)
-    const text = lastUserText(provider.calls[2])
-    expect(held(provider.calls[2])).toBe(true)
+    await hear(orch, 'lol')
+    await settle()
+    const text = lastUserText(provider.calls[provider.calls.length - 1])
+    expect(held(provider.calls[provider.calls.length - 1])).toBe(true)
     expect(text).toContain(`when they said \\"${CALL_OFF}\\"`)
-    expect(text).toContain('Do not pick it back up, or hand anything over for it, unless they ask for it again.')
+    expect(text).toContain('Do not pick it back up, or hand anything over for it, unless they ask for it again. If they ask for it again, call setGoal with the same text to pick it back up.')
   })
 
-  it('is held when another action replaces it without a stop', async () => {
+  it('is only noted as switched when another action replaces it (a detour or a call-off)', async () => {
     const { orch, provider, settle } = setup([
       ASK,
-      turn(say('s2', 'coming'), act('m1', 'goTo', { player: 'Steve' })),
+      turn(say('s2', 'ok coming, logs ride with me'), act('st', 'stop'), act('m1', 'goTo', { player: 'Steve' })),
       turn(say('s3', 'here')),
     ])
     await hear(orch, 'get me like 8 logs, i wanna build a dock')
-    await hear(orch, CALL_OFF)
+    await hear(orch, 'come look at this a sec')
     await settle()
-    expect(held(provider.calls[2])).toBe(true)
+    const last = provider.calls[2]
+    expect(held(last)).toBe(false)
+    expect(switched(last)).toBe(true)
+    expect(lastUserText(last)).toContain('If it was only a detour, go back to the task once that is done.')
+  })
+
+  it('a detour is back on once she starts an action for the task again', async () => {
+    const { orch, provider, running, settle } = setup([
+      ASK,
+      turn(say('s2', 'coming'), act('m1', 'goTo', { player: 'Steve' })),
+      turn(say('s3', 'back to the trees'), act('a2', 'gather', { name: 'oak_log', count: 8 })),
+      turn(say('s4', 'got them')),
+    ])
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await hear(orch, 'come look at this a sec')
+    await settle()
+    // The walk ends at once here; that turn still shows the switch.
+    expect(switched(provider.calls[2])).toBe(true)
+    running.gather('gathered 8/8 oak_log')
+    await settle()
+    const last = provider.calls[provider.calls.length - 1]
+    expect(switched(last)).toBe(false)
+    expect(held(last)).toBe(false)
+  })
+
+  it('holds only the task the stopped action worked', async () => {
+    const { orch, provider, settle } = setup([
+      turn(say('s0', 'coal, got it'), act('g0', 'setGoal', { text: COAL, for_player: true })),
+      ASK,
+      turn(say('s2', 'ok, stopping'), act('st', 'stop')),
+      turn(say('s3', 'hm')),
+    ])
+    await hear(orch, 'can u get me 4 coal from that ore')
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await hear(orch, 'actually forget the logs')
+    await settle()
+    await hear(orch, 'lol')
+    await settle()
+    const last = provider.calls[provider.calls.length - 1]
+    expect(held(last)).toBe(true)
+    expect(heldCoal(last)).toBe(false)
   })
 
   it('is not held when the same action is called again (a new count)', async () => {
@@ -163,7 +208,7 @@ describe('a task whose action she stopped on the player\'s line', () => {
     await settle()
     running.gather('gathered 10/10 oak_log')
     await settle()
-    for (const c of provider.calls) expect(held(c)).toBe(false)
+    for (const c of provider.calls) { expect(held(c)).toBe(false); expect(switched(c)).toBe(false) }
   })
 
   it('is not held when that turn clears the goal', async () => {
@@ -177,6 +222,7 @@ describe('a task whose action she stopped on the player\'s line', () => {
     await settle()
     const last = provider.calls[provider.calls.length - 1]
     expect(held(last)).toBe(false)
+    expect(switched(last)).toBe(false)
     expect(since(last)).toBe(false)
   })
 
@@ -198,6 +244,41 @@ describe('a task whose action she stopped on the player\'s line', () => {
     expect(held(last)).toBe(false)
   })
 
+  it('starting an action for it again picks it back up, without setGoal', async () => {
+    const { orch, provider, settle } = setup([
+      ASK,
+      turn(say('s2', 'ok holding'), act('st', 'stop')),
+      turn(say('s3', 'back on it'), act('a2', 'gather', { name: 'oak_log', count: 8 })),
+      turn(say('s4', 'lol')),
+    ])
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await hear(orch, 'wait hold on')
+    await settle()
+    await hear(orch, 'ok go get them after all')
+    await settle()
+    await hear(orch, 'haha')
+    await settle()
+    const last = provider.calls[provider.calls.length - 1]
+    expect(held(last)).toBe(false)
+    expect(switched(last)).toBe(false)
+  })
+
+  it('a walk to the player does not pick a held task back up', async () => {
+    const { orch, provider, settle } = setup([
+      ASK,
+      turn(say('s2', 'ok holding'), act('st', 'stop')),
+      turn(say('s3', 'coming'), act('m1', 'goTo', { player: 'Steve' })),
+      turn(say('s4', 'lol')),
+    ])
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await hear(orch, 'wait hold on')
+    await settle()
+    await hear(orch, 'come here')
+    await settle()
+    await hear(orch, 'haha')
+    await settle()
+    expect(held(provider.calls[provider.calls.length - 1])).toBe(true)
+  })
 })
 
 describe('the player\'s open task on later turns', () => {
@@ -253,6 +334,22 @@ describe('the player\'s open task on later turns', () => {
     const answering = provider.calls[before]
     expect(lastUserText(answering)).toContain('forget the logs')
     expect(since(answering)).toBe(false)
+  })
+
+  it('counts a line sent while she was still answering the ask', async () => {
+    let orchRef = null
+    const { orch, provider, running, settle } = setup([
+      // "nvm" lands while the turn that sets the task is still thinking.
+      async () => { await new Promise((r) => setTimeout(r, 3)); orchRef.recordIncomingChat('Steve', 'nvm actually'); await new Promise((r) => setTimeout(r, 3)); return ASK },
+      turn(say('s3', 'got them')),
+    ])
+    orchRef = orch
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    await settle()
+    running.gather('gathered 8/8 oak_log')
+    await settle()
+    const last = provider.calls[provider.calls.length - 1]
+    expect(lastUserText(last)).toContain('they said \\"nvm actually\\"')
   })
 
   it('says nothing before they have said anything more', async () => {

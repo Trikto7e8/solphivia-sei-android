@@ -237,7 +237,61 @@ const ERRANDS_GATHER = [
   { t: 55, player: 'whats ur favorite block', uses: [['say', { text: 'dirt. i know, boring. but its everywhere lol' }]] },
 ]
 const CALL_OFF = 'actually forget the logs, just meet me over here'
+// pass 22c (review findings 3 and 4).
+const COAL_GOAL = 'Bring Alex 4 coal from the ore over there. Done when 4 coal are handed to Alex via give.'
+const ERRANDS_TWO = [
+  { t: 0, idle: true, uses: [['say', { text: 'hey alex. i have a stone pickaxe and zero plan' }]] },
+  { t: 20, player: 'can u grab me 4 coal from that ore over there? i need torches', uses: [
+    ['say', { text: 'coal for torches, on it' }],
+    ['setGoal', { text: COAL_GOAL, for_player: true }],
+    ['gather', { name: 'coal_ore', count: 4 }, { result: 'gathered 4/4 coal (mined from coal_ore)', inv: [['stone_pickaxe', 1], ['coal', 4]] }],
+  ], then: [['say', { text: '4 coal in the bag' }]] },
+  { t: 40, player: 'also get me like 8 logs, i wanna build a dock', uses: [
+    ['say', { text: 'logs too? ok, you owe me' }],
+    ['setGoal', { text: DOCK_GOAL, for_player: true }],
+    ['gather', { name: 'oak_log', count: 8 }, { hold: true, progress: { name: 'oak_log', count: 8, before: 0 } }],
+  ] },
+]
+const MORE_RELEASE = (t, n, rel = AFTER_RELEASE) => Array.from({ length: n }, (_, i) => ({ t: t + 14 * i, release: rel, live: true }))
+// The coal stays in her bag through the log run.
+const TWO_RELEASE = {
+  ...AFTER_RELEASE,
+  invs: { gather: [['stone_pickaxe', 1], ['coal', 4], ['oak_log', 8]], give: [['stone_pickaxe', 1], ['coal', 4]] },
+}
+const gaveItem = (r, re) => r.acts.some((a) => a.name === 'give' && re.test(String(a.args?.item ?? '')))
 const CASES = {
+  // A detour on the player's word: she should get back to the logs after.
+  detour_resume: {
+    world: { inv: [['stone_pickaxe', 1], ['oak_log', 3]], owner: FAR },
+    steps: [...ERRANDS_GATHER, { t: 70, player: 'come look at this a sec', live: true }, ...MORE_RELEASE(82, 3)],
+    judge: (r) => {
+      const resumed = r.acts.some((a) => a.name === 'gather') || r.released.includes('gather')
+      const cleared = r.tools.includes('clearGoal')
+      return { ok: resumed && !cleared, resumed, cleared }
+    },
+  },
+  // Called off with a plain stop (stubbed), then asked for again with no
+  // setGoal needed: she gathers, and on the finish she hands them over.
+  reask_plain: {
+    world: { inv: [['stone_pickaxe', 1], ['oak_log', 3]], owner: FAR },
+    steps: [...ERRANDS_GATHER,
+      { t: 70, player: 'actually forget the logs', uses: [['stop', {}], ['say', { text: 'ok ok, no logs' }]] },
+      { t: 84, player: 'ok go get them after all', live: true },
+      ...MORE_RELEASE(98, 3),
+    ],
+    judge: (r) => ({ ok: gaveItem(r, /log/), gathered: r.acts.some((a) => a.name === 'gather'), gave: gaveItem(r, /log/) }),
+  },
+  // Two tasks; the coal is called off while she gathers the logs. ok = the
+  // logs still get handed over, and the coal does not.
+  multi_task: {
+    world: { inv: [['stone_pickaxe', 1]], owner: FAR },
+    steps: [...ERRANDS_TWO, { t: 60, player: 'actually forget the coal, i found some', live: true }, ...MORE_RELEASE(72, 3, TWO_RELEASE)],
+    judge: (r) => {
+      const logs = gaveItem(r, /log/)
+      const coal = gaveItem(r, /coal/)
+      return { ok: logs && !coal, logs, coal }
+    },
+  },
   chain_give: {
     world: { inv: [['stone_pickaxe', 1]], owner: FAR },
     steps: [...ERRANDS_GIVE, { t: 64, player: CALL_OFF, live: true }, ...afterCalloff(76)],

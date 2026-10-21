@@ -112,6 +112,35 @@ describe('own_repeats wording by kind of turn', () => {
     expect(text).not.toContain(REPLY_ASK)
     finish?.('done')
   })
+
+  // 261021 (pass 21 review): a player line that lands mid-action renders
+  // through interruptTurnText, and its reply quote is the four-turn one too.
+  it('a player line mid-action quotes her last four turns', async () => {
+    _setTickIntervalForTests(10_000_000)
+    let now = 1_800_000_000_000
+    vi.spyOn(Date, 'now').mockImplementation(() => now)
+    let finish
+    const { orch, provider } = makeOrch([
+      { text: '', toolUses: [say('t1', 'first line')] },
+      { text: '', toolUses: [say('t2', 'second line')] },
+      { text: '', toolUses: [say('t3', 'third line')] },
+      { text: '', toolUses: [say('t4', 'fourth line, chopping now'), { id: 'g1', name: 'gather', input: { kind: 'oak_log' } }] },
+      { text: '', toolUses: [] },
+    ], () => new Promise((resolve) => { finish = resolve }))
+    for (const line of ['hey', 'whats up', 'cool', 'get wood']) {
+      now += 8_000
+      orch.recordIncomingChat('newb', line)
+      await orch.handleDispatch('sei:chat_received', chat(line))
+    }
+    now += 8_000
+    orch.recordIncomingChat('newb', 'lol ur slow')
+    await orch.handleDispatch('sei:chat_received', chat('lol ur slow'))
+    const text = lastTurnText(provider.calls.at(-1))
+    expect(text).toContain('lol ur slow')
+    expect(text).toContain('If it is chat, a question, a joke or encouragement')
+    expect(text).toContain('Your last lines to them were "first line" and then "second line" and then "third line" and then "fourth line, chopping now".')
+    finish?.('done')
+  })
 })
 
 // 261017 (pass 13): the player's first line crossed her first-contact hello.

@@ -19,6 +19,9 @@
 //                  zombie again, or a shared 3-word run with a recent line.
 //   forget_give_near  forget_give with the player 3 blocks away, so the
 //                  give is not a walk to them.
+//   forget_unrelated  control: their house goal is in the heartbeat, a
+//                  one-off gather with no goal is called off. ok = the house
+//                  goal is still there afterwards.
 //   forget_give_after the turn after a called-off give was stopped and she
 //                  walked over (stubbed). ok = no give and the goal cleared.
 // forget_give and forget_give_near are ok only when the goal is cleared AND
@@ -130,6 +133,7 @@ function snapshot(w) {
 // A step: { t, player?, idle?, uses: [[name, input, {hold?, result?}]...] }.
 // `live: true` on the measured step; for completion cases `release` lets the
 // held action finish (with `result`) and the completion turn is the live one.
+const HOUSE_GOAL = 'Build a small house with Alex near spawn. Done when it has four walls, a door and a roof.'
 const DOCK_GOAL = "Get 8 logs for Alex's dock. Done when 8 logs are handed to Alex via give."
 const WS_HISTORY = [
   { t: 0, idle: true, uses: [['say', { text: 'just standing in a plains field with zero tools staring at trees like they owe me money' }]] },
@@ -298,6 +302,31 @@ const CASES = {
       const gave = r.acts.some((a) => a.name === 'give')
       const cleared = r.tools.includes('clearGoal')
       return { ok: !gave && cleared, gave, cleared }
+    },
+  },
+  // pass 21 review: the control for the called-off clause. A goal of theirs
+  // is in her heartbeat, then a one-off gather with no goal of its own is
+  // called off. ok = that unrelated goal is still in her heartbeat afterwards
+  // (read from the file, so a clearGoal whose text happens to match it counts).
+  forget_unrelated: {
+    world: { inv: [['stone_pickaxe', 1], ['oak_log', 3]], owner: FAR },
+    steps: [
+      { t: 0, idle: true, uses: [['say', { text: 'hey alex. i have a stone pickaxe and zero plan' }]] },
+      { t: 20, player: 'wanna build a house with me later? a little one near spawn', uses: [
+        ['say', { text: 'a house? ok but i get the good bed' }],
+        ['setGoal', { text: HOUSE_GOAL, for_player: true }],
+      ] },
+      { t: 40, player: 'can you grab me a few logs real quick', uses: [
+        ['say', { text: 'ok grabbing a few' }],
+        ['gather', { name: 'oak_log', count: 4 }, { hold: true, progress: { name: 'oak_log', count: 4, before: 0 } }],
+      ] },
+      { t: 55, player: 'whats ur favorite block', uses: [['say', { text: 'dirt. i know, boring. but its everywhere lol' }]] },
+      { t: 70, player: 'actually forget the logs, just meet me over here', live: true },
+    ],
+    judge: (r) => {
+      const kept = /small house with alex/i.test(r.heartbeat ?? '')
+      const cleared = r.calls.flatMap((c) => c.tools).filter((t) => t.name === 'clearGoal').map((t) => String(t.input?.text ?? ''))
+      return { ok: kept, kept, cleared: cleared.join(' | ') || null, moved: r.acts.some((a) => a.name === 'goTo' || a.name === 'follow') }
     },
   },
   forget_give: {
@@ -510,10 +539,12 @@ async function runOne({ cid, rep }) {
   try { held?.resolve('done') } catch {}
   try { orch.dispose?.() } catch {}
   skew = 0
+  let heartbeat = null
+  try { heartbeat = fs.readFileSync(mem('HEARTBEAT.md'), 'utf8') } catch {}
   try { fs.rmSync(dir, { recursive: true, force: true }) } catch {}
   const tools = calls.flatMap((c) => c.tools.map((t) => t.name))
   const says = calls.flatMap((c) => c.tools.filter((t) => t.name === 'say').map((t) => String(t.input?.text ?? '')))
-  const row = { case: cid, rep, model: MODEL, root: ROOT, error, cost, calls, acts: acts.filter((a) => !BRAIN.has(a.name)), tools, says, priorSelf: selfLines }
+  const row = { case: cid, rep, model: MODEL, root: ROOT, error, cost, calls, acts: acts.filter((a) => !BRAIN.has(a.name)), tools, says, priorSelf: selfLines, heartbeat }
   if (!calls.length && !error) row.error = 'no live call'
   Object.assign(row, row.error ? { ok: null } : spec.judge(row))
   return row
@@ -559,7 +590,7 @@ for (const cid of Object.keys(CASES)) {
   if (rs.length) lines.push(`| ${cid} | ${pct(rs.filter((r) => r.ok).length, rs.length)} |`)
 }
 lines.push('', '## All runs', '')
-for (const r of ok) lines.push(`- ${r.ok ? 'OK ' : 'BAD'} ${r.case}/${r.rep}: ${seq(r)}${r.hit ? `  [hit: ${r.hit}]` : ''}${r.moved !== undefined ? `  [moved ${r.moved}]` : ''}`)
+for (const r of ok) lines.push(`- ${r.ok ? 'OK ' : 'BAD'} ${r.case}/${r.rep}: ${seq(r)}${r.hit ? `  [hit: ${r.hit}]` : ''}${r.moved !== undefined ? `  [moved ${r.moved}]` : ''}${r.cleared && typeof r.cleared === 'string' ? `  [cleared: ${r.cleared}]` : ''}`)
 for (const r of rows.filter((x) => x.error)) lines.push(`- ERR ${r.case}/${r.rep}: ${r.error}`)
 fs.writeFileSync(path.join(OUT, 'summary.md'), lines.join('\n') + '\n')
 console.log(lines.slice(0, 16).join('\n'))

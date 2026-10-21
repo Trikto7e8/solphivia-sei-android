@@ -47,7 +47,7 @@ describe('ownRepeatsNote on a reply turn', () => {
       expect(note).toMatch(/^Your last lines to them were "coming alex, stay close to me nehehe" and then "ok ok holding still/)
       expect(note).not.toContain('rude. that joke')
     }
-    expect(ownRepeatsNote(ZOMBIE_SELF, ZOMBIE_PLAYER, { ...OPTS, mode: 'idle' }) ?? '').not.toContain('rude. that joke')
+    expect(ownRepeatsNote(ZOMBIE_SELF, ZOMBIE_PLAYER, { ...OPTS, mode: 'idle' }) ?? '').not.toContain('Your last line')
   })
 })
 
@@ -59,6 +59,6 @@ describe('a called-off request mid-action', () => {
   })
 
   it('the mid-action choice says to stop or switch and clear the goal', () => {
-    expect(midActionChoice('stop')).toContain('If they call off something they asked for, they no longer want it, even when you already have some of it or are handing it over: call stop, or the new action if they asked for one, and call clearGoal on its goal in this same turn.')
+    expect(midActionChoice('stop')).toContain('If they call off something they asked for, they no longer want it, even when you already have some of it or are handing it over: call stop, or the new action if they asked for one, and if it has a goal in your heartbeat, call clearGoal on that goal in this same turn.')
   })
 })

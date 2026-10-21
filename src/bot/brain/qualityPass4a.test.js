@@ -247,9 +247,11 @@ describe('recipe on the next: line', () => {
 
 describe('in_flight progress wording', () => {
   // 261018 (pass 17): work_session-05, a craft planned on logs mid-give.
-  it('says items in a running give are the player\'s, not hers', () => {
+  // 261021 (pass 21): no longer "those are theirs now", which read as a
+  // hand-over already done (qualityPass21.test.js).
+  it('says items in a running give are meant for the player, not hers', () => {
     const line = getInFlightLineForSnapshot({ name: 'give', args: { item: 'oak_log', count: 6 }, startedAt: 0 }, 1800)
-    expect(line).toBe('in_flight: give(oak_log) started=1.8s ago, handing 6 oak_log to the player. Those are theirs now: your inventory line still shows them until the toss lands, so do not count them toward anything of yours')
+    expect(line).toBe('in_flight: give(oak_log) started=1.8s ago, handing 6 oak_log to the player. Nothing is handed over until the toss lands, so stopping it keeps them with you. They are meant for the player, so do not count them toward anything of yours')
     expect(getInFlightLineForSnapshot({ name: 'give', args: { item: 'coal', player: 'Alex' }, startedAt: 0 }, 0)).toContain('handing all your coal to Alex')
   })
 

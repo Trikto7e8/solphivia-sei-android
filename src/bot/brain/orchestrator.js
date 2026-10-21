@@ -1130,13 +1130,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
   // The snapshot lines for this session's open player tasks: a held one with
   // the line she stopped on, any other with what the player has said since
-  // they asked for it. '' when there is nothing to show.
+  // they asked for it and she has answered. '' when there is nothing to show.
   const TASK_SINCE_LINES = 2
   function taskNoteText() {
     if (!playerTasks.length && !clearedTasks.length) return ''
     const who = config?.player_display_name || config?.player_username || null
     let heard = []
-    try { heard = convoMemory.recentChat._internal.playerLines ?? [] } catch { heard = [] }
+    let saidAt = -Infinity
+    try {
+      const { playerLines, selfLines } = convoMemory.recentChat._internal
+      heard = playerLines ?? []
+      for (const l of selfLines ?? []) if (Number.isFinite(l?.at) && l.at > saidAt) saidAt = l.at
+    } catch { heard = [] }
     const out = []
     for (const t of playerTasks) {
       const setAt = taskSetAt.get(t.key)
@@ -1146,7 +1151,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         out.push(NUDGES.taskHeld({ task: t.text, who: h.who || who, line: h.line, secs: Math.max(1, Math.round((Date.now() - h.at) / 1000)) }))
         continue
       }
-      const since = heard.filter((l) => l && l.companion !== true && Number.isFinite(l.at) && l.at > setAt && String(l.text ?? '').trim())
+      // 261022 (pass 22b): only lines she has already answered. On the turn
+      // that answers the player's line, the turn's own frame and the goal
+      // lines already ask about it, and this note on top ("call clearGoal
+      // on it") got clearGoal + stop + "on my way" with no goTo in 6 of 8
+      // probe runs (forget_give_near; base 0 of 8).
+      const since = heard.filter((l) => l && l.companion !== true && Number.isFinite(l.at) && l.at > setAt && l.at <= saidAt && String(l.text ?? '').trim())
       if (since.length) out.push(NUDGES.taskSince({ task: t.text, who: since.at(-1).who || who, lines: since.slice(-TASK_SINCE_LINES).map((l) => l.text) }))
     }
     clearedTasks = clearedTasks.filter((c) => Date.now() - c.at < CLEARED_TASK_MS)

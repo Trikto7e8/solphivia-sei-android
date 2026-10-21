@@ -216,6 +216,24 @@ describe('the player\'s open task on later turns', () => {
     expect(lastUserText(last)).not.toContain('they said \\"get me like 8 logs')
   })
 
+  it('is not on the turn that answers their line, only on the turns after it', async () => {
+    const { orch, provider, running, settle } = setup([
+      ASK,
+      turn(say('s2', 'dirt, obviously')),
+      turn(say('s3', 'got them')),
+    ])
+    await hear(orch, 'get me like 8 logs, i wanna build a dock')
+    const before = provider.calls.length
+    await hear(orch, 'whats ur favorite block')
+    await settle()
+    const answering = provider.calls[before]
+    expect(lastUserText(answering)).toContain('whats ur favorite block')
+    expect(since(answering)).toBe(false)
+    running.gather('gathered 8/8 oak_log')
+    await settle()
+    expect(since(provider.calls[provider.calls.length - 1])).toBe(true)
+  })
+
   it('says nothing before they have said anything more', async () => {
     const { orch, provider, running, settle } = setup([ASK, turn(say('s3', 'got them'))])
     await hear(orch, 'get me like 8 logs, i wanna build a dock')

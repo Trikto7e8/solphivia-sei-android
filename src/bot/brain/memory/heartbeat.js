@@ -78,6 +78,25 @@ export function goalEntries(fullText) {
   return out
 }
 
+// 261022 (pass 22): the player tasks in the heartbeat file, oldest first:
+// { at } is the stamp in ms (NaN when unreadable), { text } the goal text
+// without the tag, { key } the text as appendGoal dedups it.
+export function playerTaskEntries(fullText) {
+  const out = []
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[([^\]]*)\]\s*(.*)$/.exec(line)
+    if (!m || !isPlayerTask(m[2])) continue
+    const text = stripPlayerTaskTag(m[2])
+    if (text) out.push({ at: Date.parse(m[1]), text, key: goalKey(text) })
+  }
+  return out
+}
+
+// A goal's text as appendGoal compares it (tag, case and punctuation dropped).
+export function goalKey(text) {
+  return normalizeForDedup(text)
+}
+
 function stripPlayerTaskTag(text) {
   const t = String(text ?? '').trim()
   return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t

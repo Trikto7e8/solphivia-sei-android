@@ -58,7 +58,7 @@ import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey, tasksOfAction } from './memory/heartbeat.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -689,6 +689,9 @@ export async function composeSeedBlocks({
   // 261018 (pass 16): true while she is stopped on the player's word; the
   // heartbeat then says her tasks and goals wait instead of "work it now".
   goalsOnHold = false,
+  // 261022 (pass 22): (heartbeat line) => { who, line } | null, a player task
+  // she stopped on the player's word (renderHeartbeat heldTask).
+  heldTask = null,
   voiceCall = false,
   // 261020: the game this session is in (adapter caps.gameName). Labels the
   // heartbeat and says that memories and the app chat span every game while
@@ -853,7 +856,7 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold, gameName }),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold, gameName, heldTask }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -1082,13 +1085,118 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // logs" was answered without a clearGoal: told to clear "a goal in your
   // heartbeat", she had none in view.
   let heartbeatGoals = []
+  // 261022 (pass 22): the player's tasks as of the last read ({ at, text,
+  // key }, heartbeat.js playerTaskEntries), when each was set this session
+  // (key -> Date.now() at the setGoal), and the ones she stopped on the
+  // player's word (key -> { at, who, line }). A task is held when a player
+  // line was answered by stopping or replacing the action she was running
+  // for it, with no clearGoal or setGoal in that turn: "actually forget the
+  // logs, just meet me over here" got stop + goTo, and the turn she arrived
+  // handed the logs over (probe chain_give, 5 of 8 on dev). A held task goes
+  // under its own heartbeat head and rides the snapshot with the player's
+  // line (taskNoteText). It stays held until it is cleared or set again.
+  // 261022 (pass 22c, review): only the task the stopped action worked
+  // (tasksOfAction), and only a plain stop holds it ({ kind: 'held' }). An
+  // action replaced by another on a player line may be a detour ("come look
+  // at this a sec") as easily as a call-off, so that task is only noted as
+  // switched ({ kind: 'switched' }) with the line, and she decides. Either
+  // ends when she starts an action for the task again (startLongRunner).
+  let playerTasks = []
+  const taskSetAt = new Map()
+  const taskHolds = new Map()
+  // Tasks she cleared in answer to a player's line, for a few minutes after
+  // ({ key, text, at, who, line }). With the task gone, the request was
+  // still in the transcript, and an idle tick set it again or a walk's end
+  // handed the items over anyway (probe chain_give and chain_gather).
+  let clearedTasks = []
+  const CLEARED_TASK_MS = config?.memory?.cleared_task_note_ms ?? 180_000
   async function refreshPlayerTaskInGoals() {
-    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; return }
+    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; playerTasks = []; taskHolds.clear(); return }
     try {
       const full = await heartbeatLog.readAll()
       playerTaskInGoals = hasPlayerTask(full)
       heartbeatGoals = goalEntries(full)
+      playerTasks = playerTaskEntries(full)
+      const keys = new Set(playerTasks.map((t) => t.key))
+      for (const k of [...taskHolds.keys()]) if (!keys.has(k)) taskHolds.delete(k)
+      for (const k of [...taskSetAt.keys()]) if (!keys.has(k)) taskSetAt.delete(k)
     } catch { /* keep the last value */ }
+  }
+  // The player's tasks set this session before `startedAt` (an action's
+  // start), i.e. the ones that action was working.
+  const tasksBehind = (startedAt) => playerTasks.filter((t) => {
+    const at = taskSetAt.get(t.key)
+    return Number.isFinite(at) && Number.isFinite(startedAt) && at <= startedAt
+  })
+  const playerNames = () => [config?.player_display_name, config?.player_username, ...companions].filter(Boolean)
+  // The task the running action was working: the one its args name, or the
+  // only task there was. None when that is unclear.
+  const taskOfRunning = (running) => {
+    const behind = tasksBehind(running?.startedAt)
+    const named = tasksOfAction(running?.input, behind, { names: playerNames() })
+    if (named.length) return named
+    return behind.length === 1 ? behind : []
+  }
+  // She started an action for a held or switched task: it is back on.
+  function releaseTaskHolds(name, args) {
+    if (!taskHolds.size || ACTION_VERB_SKIP.has(name)) return
+    const held = playerTasks.filter((t) => taskHolds.has(t.key))
+    for (const t of tasksOfAction(args, held, { names: playerNames() })) {
+      taskHolds.delete(t.key)
+      logger.info?.(`[sei/orch] task hold lifted: she started ${name} for it`)
+    }
+  }
+  // For renderHeartbeat: the hold of a raw heartbeat line, or null.
+  const heldTaskOfLine = (line) => {
+    if (!taskHolds.size) return null
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(String(line ?? '').trim())
+    const h = m ? taskHolds.get(goalKey(m[1])) : null
+    return h && h.kind === 'held' ? h : null
+  }
+  // The snapshot lines for this session's open player tasks: a held one with
+  // the line she stopped on, any other with what the player has said since
+  // they asked for it and she has answered. '' when there is nothing to show.
+  const TASK_SINCE_LINES = 2
+  function taskNoteText() {
+    if (!playerTasks.length && !clearedTasks.length) return ''
+    const who = config?.player_display_name || config?.player_username || null
+    let heard = []
+    let saidAt = -Infinity
+    try {
+      const { playerLines, selfLines } = convoMemory.recentChat._internal
+      heard = playerLines ?? []
+      for (const l of selfLines ?? []) if (Number.isFinite(l?.at) && l.at > saidAt) saidAt = l.at
+    } catch { heard = [] }
+    // A player line newer than her last line means this turn answers it.
+    // The "said since" note waits for the turn after, also when an earlier
+    // line she did answer would qualify: chit-chat before the call-off put
+    // the note on the call-off turn anyway (review of 52138cdf).
+    const fromPlayer = (l) => l && l.companion !== true && Number.isFinite(l.at) && String(l.text ?? '').trim()
+    const answering = heard.some((l) => fromPlayer(l) && l.at > saidAt)
+    const out = []
+    for (const t of playerTasks) {
+      const setAt = taskSetAt.get(t.key)
+      if (!Number.isFinite(setAt)) continue
+      const h = taskHolds.get(t.key)
+      if (h) {
+        const note = h.kind === 'switched' ? NUDGES.taskSwitched : NUDGES.taskHeld
+        out.push(note({ task: t.text, who: h.who || who, line: h.line, secs: Math.max(1, Math.round((Date.now() - h.at) / 1000)) }))
+        continue
+      }
+      // 261022 (pass 22b): only lines she has already answered. On the turn
+      // that answers the player's line, the turn's own frame and the goal
+      // lines already ask about it, and this note on top ("call clearGoal
+      // on it") got clearGoal + stop + "on my way" with no goTo in 6 of 8
+      // probe runs (forget_give_near; base 0 of 8).
+      if (answering) continue
+      const since = heard.filter((l) => fromPlayer(l) && l.at > setAt && l.at <= saidAt)
+      if (since.length) out.push(NUDGES.taskSince({ task: t.text, who: since.at(-1).who || who, lines: since.slice(-TASK_SINCE_LINES).map((l) => l.text) }))
+    }
+    clearedTasks = clearedTasks.filter((c) => Date.now() - c.at < CLEARED_TASK_MS)
+    for (const c of clearedTasks) {
+      out.push(NUDGES.taskCleared({ task: c.text, who: c.who || who, line: c.line, secs: Math.max(1, Math.round((Date.now() - c.at) / 1000)) }))
+    }
+    return out.join('\n')
   }
   // 261012 (quality pass 5): when the player last told her to stop. Every
   // stop_gather failure in the eval was the same: the gather stopped at once,
@@ -2262,7 +2370,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         onUnexplainedGains: recordInventoryGains,
       })
       if (typeof text === 'string') _repeatsContext.snapshot = text
-      return note && typeof text === 'string' ? `${text}\n${note}` : text
+      if (typeof text !== 'string') return text
+      const tasks = taskNoteText()
+      return [text, note, tasks].filter(Boolean).join('\n')
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
@@ -2414,7 +2524,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // 260921: the unanswered-line retry (see runIterations) re-presents the
       // SAME line; only a genuinely new one re-arms it.
       if (!unanswered) {
-        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null }
+        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null, at: Date.now() }
         loop._unansweredRetried = false
         loop._unansweredNudgeText = null
       }
@@ -2568,6 +2678,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       logger.info?.(`[sei/orch] stay note cleared: she started ${name}`)
       stayNote = null
     }
+    releaseTaskHolds(name, args)
     const handle = inflight.start({ name, args })
     // Party redesign §2/§5: this is the single world-tool dispatch path. Surface
     // the action as a presence verb — but only for real world tools, never for
@@ -3139,7 +3250,7 @@ function maybeWarnByteCap(loop, warned) {
             : `your teammate ${speakerName} just spoke to you`)
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
-        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
+        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null, at: Date.now() }
         // 261017 (quality pass 11): their line comes after the instructions,
         // labelled the way the transcript labels it ("Their line, player
         // (Alex): cool"), instead of as a bare quoted string right under the
@@ -3269,6 +3380,8 @@ function maybeWarnByteCap(loop, warned) {
           sessionStartMs: sessionStartedAt,
           // 261018 (pass 16): she stopped on the player's word (stay note).
           goalsOnHold: !!stayNote,
+          // 261022 (pass 22): tasks she stopped on the player's word.
+          heldTask: heldTaskOfLine,
           voiceCall: voiceCallActive,
           gameName: caps.gameName,
           logger,
@@ -3876,6 +3989,19 @@ function maybeWarnByteCap(loop, warned) {
         const forPlayer = fp === true || String(fp).toLowerCase() === 'true' || isPlayerTask(text)
         const added = await heartbeatLog.append(text, new Date(), { forPlayer })
         lastActionResult = 'goal set'
+        // 261022 (pass 22): when this task was set, and setting it again
+        // picks a held task back up.
+        if (forPlayer) {
+          const key = goalKey(text.replace(/\s*\n+\s*/g, ' '))
+          // 261022 (pass 22c): stamped when the line that asked for it came
+          // in, so a quick "nvm" sent while she was still answering counts as
+          // said after the ask.
+          const askedAt = loop?._lastPlayerLine?.at
+          const setAt = Number.isFinite(askedAt) && askedAt <= Date.now() ? askedAt : Date.now()
+          if (added === 1 || !taskSetAt.has(key) || taskHolds.has(key)) taskSetAt.set(key, setAt)
+          taskHolds.delete(key)
+          clearedTasks = clearedTasks.filter((c) => c.key !== key)
+        }
         await refreshPlayerTaskInGoals()
         // Link this goal to the spine nodes its finish condition names, so JS
         // can clear it once they are ALL done (goalLink.js). 261012: no longer
@@ -3922,8 +4048,19 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'clearGoal: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'clearGoal: empty', is_error: true }, terminate: false }
         }
+        const before = playerTasks
         const removed = await heartbeatLog.remove(text)
         await refreshPlayerTaskInGoals()
+        // 261022 (pass 22): a player's task cleared on their line is noted
+        // for a few minutes (clearedTasks).
+        const onLine = loop?._clearOnLine
+        if (removed > 0 && onLine) {
+          const left = new Set(playerTasks.map((t) => t.key))
+          for (const t of before) {
+            if (left.has(t.key)) continue
+            clearedTasks = [...clearedTasks.filter((c) => c.key !== t.key), { key: t.key, text: t.text, at: Date.now(), who: onLine.who, line: onLine.line }].slice(-3)
+          }
+        }
         // Drop the progression links of the goals the model cleared (the same
         // substring rule removeGoal uses).
         if (removed > 0) {
@@ -5247,6 +5384,12 @@ function maybeWarnByteCap(loop, warned) {
       // "stop, come here" (stop + goTo) is new work, not a hold. Her stop()
       // counts only when the player's line asked for one (asksToStop): a
       // stop she calls to drop her own action for a new order is not a hold.
+      // 261022 (pass 22): a clearGoal in answer to this line (and not with a
+      // hand-over, which is the task finishing) is noted (clearedTasks).
+      loop._clearOnLine = (_p1Trigger && loop._lastPlayerLine && !loop._groupVoiceLine &&
+        toolUses.some(u => u.name === 'clearGoal') && !toolUses.some(u => isHandOver(u.name)))
+        ? { who: loop._lastPlayerLine.who ?? null, line: loop._lastPlayerLine.text }
+        : null
       if (_p1Trigger && loop._lastPlayerLine) {
         // 261013: a goal set from the player's line is new work too. The
         // idle tick is what starts it, so a hold left on would sit on it.
@@ -5270,6 +5413,22 @@ function maybeWarnByteCap(loop, warned) {
         } else if ((hasStop || calledUnfollow) && !loop._groupVoiceLine) {
           stayNote = { at: Date.now(), who: loop._lastPlayerLine.who ?? null, line }
           logger.info?.(`[sei/orch] stay note set: she ${hasStop ? 'stopped' : 'unfollowed'} on the player's line (loop=${loop.id})`)
+        }
+        // 261022 (pass 22): she stopped, or replaced with another action, the
+        // action she was running for a task of the player's, and neither
+        // cleared nor set a goal: that task is held (taskHolds) with this
+        // line. The same action called again (a new count) carries on with
+        // the task, and a turn that touches the goals has already said what
+        // became of it.
+        const running = loop.inFlight
+        const touchesGoals = toolUses.some(u => u.name === 'clearGoal' || u.name === 'setGoal')
+        const sameAgain = !!running && newSuspendingTools.some(u => u.name === running.name)
+        if (running && !touchesGoals && !sameAgain && !loop._groupVoiceLine && (hasStop || newSuspendingTools.length > 0)) {
+          const kind = newSuspendingTools.length > 0 ? 'switched' : 'held'
+          for (const t of taskOfRunning(running)) {
+            taskHolds.set(t.key, { kind, at: Date.now(), who: loop._lastPlayerLine.who ?? null, line })
+            logger.info?.(`[sei/orch] task ${kind}: she ${kind === 'held' ? 'stopped' : 'replaced'} ${running.name} on the player's line (loop=${loop.id})`)
+          }
         }
       }
 

@@ -895,6 +895,9 @@ export const MEMORY_GOAL_TAIL = ` Last check before you end the turn, about THEI
 export const ACTION_STUCK_NUDGE_VISION = 'call look(around) to see what is blocking you, then explore() in a different direction'
 export const ACTION_STUCK_NUDGE_NOVISION = 'explore() in a different direction to try to get unstuck'
 
+// One line of a goal or a player's line, folded and clipped, for a note.
+const clipNote = (t, n = 160) => { const x = String(t ?? '').replace(/\s+/g, ' ').trim(); return x.length > n ? `${x.slice(0, n - 3).trimEnd()}...` : x }
+
 export const NUDGES = {
   silence:
     '[several iterations without speaking — call a brief say() if it genuinely fits, or stay silent. don\'t restate numbers; one short observation is enough.]',
@@ -934,6 +937,27 @@ export const NUDGES = {
   // note keeps that request in front of her on the turns after it, where it
   // used to scroll out of view and her own goal walked her off.
   stayNote: ({ who, line, secs }) => `hold: you stopped ${secs}s ago in answer to ${who || 'the player'}'s line "${String(line ?? '').trim().slice(0, 120)}". If they asked you to stay or wait there, stay where you are until they ask you for something else or you are in danger.`,
+
+  // 261022 (pass 22): snapshot lines for the player's open tasks (orchestrator
+  // taskNoteText). The heartbeat block is read at the loop's seed and the
+  // goal lines ride only player-line turns (heartbeatNow), so the turn where
+  // her walk ended or her gather finished had the task's "handed to Alex via
+  // give" in her history and the player's "actually forget the logs" a few
+  // lines above it, and she handed the logs over (probe chain_give, 5 of 8;
+  // chain_walk, 4 of 8). These put the two side by side on every turn.
+  // taskHeld: she stopped its action in answer to that line.
+  taskHeld: ({ task, who, line, secs }) => `on hold: ${who || 'the player'}'s task "${clipNote(task)}". You stopped it ${secs}s ago when they said "${clipNote(line, 120)}". Do not pick it back up, or hand anything over for it, unless they ask for it again. If they ask for it again, call setGoal with the same text to pick it back up. If that line called it off, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.`,
+  // taskSwitched (pass 22c): she replaced its action with another one when
+  // they said that line. That can be a detour as well as a call-off, so she
+  // decides which it was.
+  taskSwitched: ({ task, who, line, secs }) => `switched: ${who || 'the player'}'s task "${clipNote(task)}". You left it for something else ${secs}s ago when they said "${clipNote(line, 120)}". If that line called the task off, call clearGoal on it and hand nothing over for it. If it was only a detour, go back to the task once that is done.`,
+  // taskCleared: she cleared it in answer to that line, a few minutes ago.
+  taskCleared: ({ task, who, line, secs }) => `cleared: ${who || 'the player'}'s task "${clipNote(task)}". You cleared it ${secs}s ago, after they said "${clipNote(line, 120)}". Nothing is owed for it now: do not hand anything over for it or set it again unless they ask for it again.`,
+  // taskSince: the player has said something since they asked for it.
+  taskSince: ({ task, who, lines }) => {
+    const list = (Array.isArray(lines) ? lines : [lines]).map((l) => `"${clipNote(l, 120)}"`)
+    return `${who || 'the player'}'s task "${clipNote(task)}" is still in your heartbeat. Since they asked for it, they said ${list.join(' and then ')}. If that calls it off or changes it, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.`
+  },
 
   // 261015 (quality pass 8): the one extra call after a turn whose only work
   // was a new setGoal (orchestrator goalNotStartedNudgeFor). setGoal is a
@@ -1429,6 +1453,14 @@ const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks 
 // "i'm still getting you those logs though" with nothing running.
 export const PLAYER_TASKS_ON_HOLD_HEAD = 'Tasks the player asked you to do. You stopped when the player told you to, and while your snapshot shows that hold line these are on hold: do not pick one back up until the player asks you to, and do not say you are still working on one. If the player called a task off, call clearGoal on it:'
 export const OWN_GOALS_ON_HOLD_HEAD = `Your own goals. While your snapshot shows the hold line, these wait too: do not start on one until the player asks you for something, and do not say you are working on one. Once a goal's finish condition is met, or the player says it is no longer wanted, call clearGoal on it. ${OWN_GOALS_KNOWN}`
+// 261022 (pass 22): tasks she stopped on the player's word (orchestrator
+// taskHolds). "actually forget the logs, just meet me over here" was answered
+// with stop + goTo and no clearGoal in 6 of 8 probe runs ("logs ride with
+// me"), and on the turn she arrived the task still said to hand them over,
+// so she did. Each line here carries the player's line she stopped on.
+export const PLAYER_TASKS_HELD_HEAD = 'Tasks the player asked you to do that you stopped working on when they said something else (their line follows each one). Do not pick one back up, or hand anything over for it, unless they ask for it again. If they ask for one again, call setGoal with the same text to pick it back up. If their line called it off, call clearGoal on it, and still do what they asked for now:'
+const heldSuffix = (h) => ` (you stopped it when ${h.who || 'the player'} said "${String(h.line ?? '').trim().slice(0, 120)}")`
+
 const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not start projects of your own, leave it that way: stay with the player and wait for them to give you something. Otherwise you initiate, so your FIRST move is to pick a real, multi-step project and lock it in with setGoal (with a clear finish condition). Pick from the reachable list below — those are the milestones you can actually start from your CURRENT inventory and progress. The project can be ambitious and far-off, but it is a DIRECTION you work toward, not something you start by jumping to the end: commit the long-term aim, then begin AT THE NEAREST RUNG you can do now. Never set a goal you can\'t begin (no pickaxe = no mining — then the goal is to GET tools first), and don\'t just do a random chore and call it a plan. CRITICAL — your PLAN goes in the setGoal text and your tool calls. Your text is a PRIVATE scratchpad; the player hears ONLY a say() tool call. So at most ONE short say() about it, in your own voice, and no say() at all is perfectly fine too. Never put where you spawned, your inventory, where the player is, or your step-by-step plan ("first i\'ll punch trees, then craft...") inside say(). One short say() max, then act.'
 
 // Render the per-loop heartbeat block: persisted goals (or a note that there are
@@ -1440,7 +1472,9 @@ const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not s
 // tasks and her own goals get the on-hold heads.
 // `gameName` (261020): the goal file is per game, and the header says which,
 // so goals read as this game's and a plan from another game does not.
-export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false, gameName = null } = {}) {
+// `heldTask` (pass 22): (line) => { who, line } for a task she stopped on
+// the player's word, else null; those go under PLAYER_TASKS_HELD_HEAD.
+export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false, gameName = null, heldTask = null } = {}) {
   const lvl = Number.isInteger(proactiveness) ? proactiveness : 1
   let goals
   let hasGoal = !!(goalsText && goalsText.trim())
@@ -1450,17 +1484,21 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
   const taskLines = lvl === 0 ? [] : allLines.filter(isPlayerTaskLine)
   if (taskLines.length) {
     const own = allLines.filter((l) => !isPlayerTaskLine(l))
-    const current = taskLines.filter((l) => !isEarlierLine(l, sessionStartMs))
+    const held = (l) => (typeof heldTask === 'function' ? heldTask(l) : null)
+    const thisSession = taskLines.filter((l) => !isEarlierLine(l, sessionStartMs))
+    const current = thisSession.filter((l) => !held(l))
+    const stopped = thisSession.filter((l) => held(l))
     const earlier = taskLines.filter((l) => isEarlierLine(l, sessionStartMs))
     const parts = []
     if (current.length) parts.push(`${onHold ? PLAYER_TASKS_ON_HOLD_HEAD : PLAYER_TASKS_HEAD}\n${current.join('\n')}`)
+    if (stopped.length) parts.push(`${PLAYER_TASKS_HELD_HEAD}\n${stopped.map((l) => `${l}${heldSuffix(held(l))}`).join('\n')}`)
     if (own.length) parts.push(`${onHold ? OWN_GOALS_ON_HOLD_HEAD : current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.join('\n')}`)
-    else if (!current.length) parts.push(lvl === 2 ? NO_GOALS_AGENTIC : 'No active goals right now.')
+    else if (!current.length && !stopped.length) parts.push(lvl === 2 ? NO_GOALS_AGENTIC : 'No active goals right now.')
     if (earlier.length) parts.push(`${PLAYER_TASKS_EARLIER_HEAD}\n${earlier.join('\n')}`)
     goals = parts.join('\n\n')
     // Only earlier-session tasks: nothing is being worked yet, so the agentic
     // frontier menu stays up.
-    hasGoal = own.length > 0 || current.length > 0
+    hasGoal = own.length > 0 || current.length > 0 || stopped.length > 0
   } else if (goalsText && goalsText.trim()) {
     const head = lvl === 0
       ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment. Once a task is finished, or the player says it is done or no longer wanted, call clearGoal on it:'

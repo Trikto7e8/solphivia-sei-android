@@ -3433,18 +3433,41 @@ updates install from the zip artifact.
 **The download never blocks the app (260801).** Two renderer surfaces, split by
 whether the state needs a decision right now: `UpdatePopup` is the modal (the
 optional-update offer with its changelog, the post-update what's-new, and the
-`apply:'now'` restart), `UpdatePill` is a corner card that never takes the
-pointer (download progress, then "ready, restart to apply"). Before the split,
-`app:update-progress` drove the popup into a scrimmed `downloading` state with
-no dismiss path, so a routine MANDATORY patch, which updater.ts deliberately
-downloads without asking, locked the user out of the app until it finished.
-The consented flow no longer auto-installs either: the accepted download may
-land minutes later with the user mid-game, so `autoInstallOnAppQuit` applies it
-on the next quit and the pill only OFFERS the restart. `forced` is the one
-state that still takes the window, because main quits a few seconds later
-regardless. The `downloading` pill has no dismiss (nothing to decide while it
-works), so `App.tsx` must clear it on `app:update-error` or a dead download
-pins it at whatever percent it reached.
+`apply:'now'` restart); everything else lives in `useUpdateStore` and never
+takes the pointer. Before the split, `app:update-progress` drove the popup into
+a scrimmed `downloading` state with no dismiss path, so a routine MANDATORY
+patch, which updater.ts deliberately downloads without asking, locked the user
+out of the app until it finished. The consented flow no longer auto-installs
+either: the accepted download may land minutes later with the user mid-game,
+so `autoInstallOnAppQuit` applies it on the next quit and the UI only OFFERS
+the restart. `forced` is the one state that still takes the window, because
+main quits a few seconds later regardless. The downloading state has no
+dismiss (nothing to decide while it works), so `App.tsx` clears it on
+`app:update-error` or a dead download pins it at whatever percent it reached
+(`clearRail` never clears a READY update).
+
+**"Update Sei" is a sidebar button, and one click finishes the job (261023).**
+`UpdateRailButton` sits full-bleed at the foot of `IconRail` (Telegram's
+"Update Telegram" footer is the reference): a quiet hairline bar while
+downloading, a `--green` to `--accent-strong` block when ready, a spinner while
+restarting. It replaced the corner `UpdatePill`, which was easy to dismiss and
+forget. A click while a call, a companion bot, chess, a screen share or a
+Draw! turn is live confirms first (`liveSessionForRestart`). The install args
+come from `src/main/updateInstall.ts` (`restartInstallArgs`): on Windows
+`quitAndInstall(true, true)`, which NsisUpdater turns into
+`--updated /S --force-run`, so no installer window appears and the one-click
+installer reopens Sei when it is done (the old bare `quitAndInstall()` was
+`--updated --force-run`: it also reopened Sei, but showed the "Installing,
+please wait" banner meanwhile). macOS ignores the args (Squirrel relaunches).
+The update-on-quit run stays `--updated /S` with no relaunch.
+`build/installer.nsh` tells the two silent runs apart by `--force-run`: the
+one-time legacy per-machine cleanup (a UAC prompt) runs on the in-app restart
+but never on the quit run. `.github/workflows/nsis-upgrade-check.yml` covers
+both paths (relaunch or not, no visible installer window, the timing). An
+accepted OPTIONAL download stashes `pending` with `brief: true`, so the
+relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
+changelog bullet, `topChangelogLine`) instead of reopening the changelog the
+user already read; mandatory updates keep the full what's-new modal.
 
 ---
 

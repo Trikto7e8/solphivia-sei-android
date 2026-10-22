@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripDuplicateTitleHeading } from './changelog';
+import { stripDuplicateTitleHeading, topChangelogLine } from './changelog';
 
 const TITLES = ['What’s new in 0.6.9-beta.3'];
 
@@ -39,5 +39,28 @@ describe('stripDuplicateTitleHeading (261020, T158)', () => {
 
   it('leaves an empty changelog alone', () => {
     expect(stripDuplicateTitleHeading('', TITLES)).toBe('');
+  });
+});
+
+describe('topChangelogLine (261023)', () => {
+  it('takes the first bullet of the newest section', () => {
+    const md = "## What's new in 0.7.0\n- Faster voice calls\n- Fixes\n\n## What's new in 0.6.9\n- Old";
+    expect(topChangelogLine(md)).toBe('Faster voice calls');
+  });
+
+  it('cuts a long first bullet to its first sentence', () => {
+    const md =
+      '## What\'s new in 0.6.9-beta.3\n- New: use your own ElevenLabs voices. Save your ElevenLabs key in Settings and the voice picker gets a tab';
+    expect(topChangelogLine(md)).toBe('New: use your own ElevenLabs voices.');
+  });
+
+  it('keeps a short bullet whole and strips markdown emphasis', () => {
+    expect(topChangelogLine('- **Chess** is back. Try it')).toBe('Chess is back. Try it');
+  });
+
+  it('falls back to the first plain line, then to empty', () => {
+    expect(topChangelogLine('## Heading\nJust a sentence')).toBe('Just a sentence');
+    expect(topChangelogLine('')).toBe('');
+    expect(topChangelogLine('## Only a heading')).toBe('');
   });
 });

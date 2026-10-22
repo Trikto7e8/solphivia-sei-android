@@ -616,14 +616,25 @@ export const ZH_MODALS: Record<string, string> = {
     'Sei {latest} 已就绪。你当前的版本是 {current}。',
   'Later': '以后再说',
   'Update now': '立即更新',
-  'Downloading update…': '正在后台下载更新…',
   'Downloading update, {percent} percent': '正在下载更新，{percent}%',
   'Update ready': '更新已就绪',
-  'Restart Sei to apply it.': '重启 Sei 即可应用。',
-  'Restart now': '立即重启',
   'Applying the update. Sei will restart in a moment…':
     '正在应用更新。Sei 稍后将重启…',
   'What’s new in {version}': '{version} 版本更新内容',
+
+  // ── UpdateRailButton + UpdatedToast (261023) ──
+  'Update Sei': '更新 Sei',
+  'Restarting': '正在重启',
+  'Restarting to update': '正在重启以完成更新',
+  'Restart into Sei {version}': '重启并进入 Sei {version}',
+  'Restart into the new version': '重启并进入新版本',
+  'Restart to update?': '要重启来更新吗？',
+  'Sei closes and reopens to finish the update, which ends your call.':
+    'Sei 会关闭并重新打开来完成更新，你的通话会因此结束。',
+  'Sei closes and reopens to finish the update, which ends what your companions are doing right now.':
+    'Sei 会关闭并重新打开来完成更新，你的伙伴正在做的事会因此中断。',
+  'Restart and update': '重启并更新',
+  'Updated to Sei {version}': '已更新到 Sei {version}',
 
   // ── RecoveryPrompt (260810 phantom-call recovery) ──
   'Is your companion acting weird?': '你的伙伴是不是不太对劲？',

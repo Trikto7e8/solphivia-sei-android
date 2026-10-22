@@ -47,6 +47,7 @@ import { useDataStore } from './useDataStore';
 // turn to is already running one with the screen attached. One-way — the
 // backseat store knows nothing about calls.
 import { useBackseatStore, backseatCapture } from './useBackseatStore';
+import { backseatReasonForCallEnd, type CallEndReason } from '@shared/callEndReasons';
 import { createStaleGate } from '../backseat/staleGate';
 import { voicePitchRate } from '@shared/voicePitch';
 import type { VoiceTtsNoticePush } from '@shared/ipc';
@@ -73,6 +74,7 @@ import {
 import { prefetchVoiceModel } from '../voice/modelPrefetch';
 import { registerVoiceHooks } from '../voice/voiceBridge';
 import { decideReaction, isJunkTranscript, type Participant } from '../voice/pfcSteer';
+import { idleNudgeEligible, reactorPool } from '../voice/turnEligibility';
 import type { SpokenLineContext } from '../voice/voiceBridge';
 import {
   startRingtone,
@@ -178,10 +180,12 @@ interface VoiceState {
   startCall: (characterId: string) => Promise<void>;
   /** Add a companion to the live call (no-op if already on it). */
   addParticipant: (characterId: string) => void;
-  /** Drop one companion from the call (ends the whole call if it was the last). */
-  removeParticipant: (characterId: string) => void;
-  /** Hang up the whole call. */
-  endCall: () => void;
+  /** Drop one companion from the call (ends the whole call if it was the last).
+   *  `reason` (261023) is why, for that companion's voice_call_ended. */
+  removeParticipant: (characterId: string, reason?: CallEndReason) => void;
+  /** Hang up the whole call. `reason` (261023) is why, for voice_call_ended
+   *  and for the share the call takes with it (callEndReasons.ts). */
+  endCall: (reason?: CallEndReason) => void;
   /** Accept the local-backup offer: persists stt_local_fallback = true and
    * starts the model download now; the fallback applies from the NEXT call. */
   acceptSttFallback: () => Promise<void>;
@@ -715,7 +719,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       remoteEndAt = null;
       remoteDrainedAt = null;
       const characterId = s.callCharacterId;
-      get().endCall();
+      get().endCall('companion_hangup');
       const ui = useUiStore.getState();
       if (ui.view.kind === 'voice-call' && ui.view.characterId === characterId) {
         ui.navigate({ kind: 'chat', characterId });
@@ -731,7 +735,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     if (s.participants.length > 1) {
       // Let the goodbye clip (already queued) play, then remove just this one.
       remoteEndTimers.push(
-        window.setTimeout(() => get().removeParticipant(characterId), REMOTE_END_GRACE_MS + REMOTE_END_TAIL_MS),
+        window.setTimeout(() => get().removeParticipant(characterId, 'companion_hangup'), REMOTE_END_GRACE_MS + REMOTE_END_TAIL_MS),
       );
       return;
     }
@@ -1012,14 +1016,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     // state. All reactors in-game → the chain rests and the game brains carry
     // the conversation.
     const chainSummons = useDataStore.getState().summons;
-    const reactorPool = parts.filter((id) => {
-      if (id === speakerId) return true; // decideReaction excludes the speaker itself
-      const k = chainSummons[id]?.kind;
-      return k !== 'online' && k !== 'connecting';
-    });
+    // 261023: the companion watching the screen is excluded the same way, for
+    // the same reason: her backseat loop is her brain on this call, and a
+    // screenless reaction turn here would double-drive her. She still hears
+    // the room (the mirror below records peers' lines into her transcript),
+    // and her next look answers with the screen in view.
+    const pool = reactorPool(parts, speakerId, chainSummons, useBackseatStore.getState().sharingFor);
     const decision = decideReaction({
       speakerId,
-      participants: asParticipants(reactorPool),
+      participants: asParticipants(pool),
       depth,
       lastReactorId,
       // The line just spoken — if it names a peer, that peer is forced to answer.
@@ -1246,10 +1251,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     // the call through say()); nudging them here too would double-drive. Pick
     // only from participants NOT in a game session; all in-game → skip.
     const summons = useDataStore.getState().summons;
-    const eligible = s.participants.filter((id) => {
-      const k = summons[id]?.kind;
-      return k !== 'online' && k !== 'connecting';
-    });
+    // 261023: nor the companion watching the screen. Backseat is her loop:
+    // its idle looks already break the quiet, with the screen in view. A
+    // nudge here ran a second, screenless turn alongside it, so she talked
+    // over her own commentary about something unrelated to the game, and the
+    // nudge's end_call could hang up the call in the middle of the share.
+    const eligible = idleNudgeEligible(s.participants, summons, useBackseatStore.getState().sharingFor);
     idleNudgeInFlight = true;
     // Read BEFORE the turn runs and spend it here: main gets a different note
     // for a follow-up, and only one follow-up goes out per question.
@@ -1330,7 +1337,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         set({ inactivityPrompt: false, inactivitySecondsLeft: 0 });
         // The normal hang-up path, so every teardown (dictation, queue,
         // voiceCallSetActive with connectedMs, UI state) runs as usual.
-        get().endCall();
+        get().endCall('inactivity');
         return; // endCall bumped the session; this chain is dead
       }
       if (decision === 'prompt') {
@@ -1562,7 +1569,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       sei.onCreditsHardStop?.(() => {
         const st = useVoiceStore.getState();
         if (st.participants.length > 0 && (st.status === 'live' || st.status === 'connecting')) {
-          st.endCall();
+          st.endCall('credits_depleted');
         }
       }) ?? null;
   } catch {
@@ -2061,12 +2068,23 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       }
     },
 
-    removeParticipant: (characterId) => {
+    removeParticipant: (characterId, reason = 'companion_hangup') => {
       const s = get();
       if (!s.participants.includes(characterId)) return;
       const next = s.participants.filter((id) => id !== characterId);
+      if (next.length === 0) {
+        // The last one leaving ends the call: one teardown, one reason.
+        get().endCall(reason);
+        return;
+      }
       if (useBackseatStore.getState().watch?.characterId === characterId) {
         useBackseatStore.getState().stopWatch();
+      }
+      // 261023: a share belongs to the companion it shows the screen to. One
+      // who left the call must not keep watching (and commenting into a chat
+      // thread nobody is looking at) for the rest of the call.
+      if (useBackseatStore.getState().sharingFor === characterId) {
+        void useBackseatStore.getState().stopSharing('companion_left');
       }
       // A membership change is a barge point: cancel any in-flight companion chain
       // so the departing companion's queued reaction can't still fire (the
@@ -2087,12 +2105,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
           characterId,
           active: false,
           ...(since !== undefined ? { connectedMs: Date.now() - since } : {}),
+          reason,
         })
         .catch(() => {});
-      if (next.length === 0) {
-        get().endCall();
-        return;
-      }
       set({
         participants: next,
         callCharacterId: next[0],
@@ -2102,12 +2117,20 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       });
     },
 
-    endCall: () => {
+    endCall: (reason = 'user_hangup') => {
       const { participants } = get();
       session += 1;
       // A share waiting for its game's window (261004) belongs to this call:
       // the window opening after the call is over must not start one.
       useBackseatStore.getState().stopWatch();
+      // 261023: and so does a running share. Only the hang-up button used to
+      // stop it, so a call that ended any other way (the companion hanging
+      // up, the inactivity watchdog, the usage limit) left capture running
+      // and the companion commenting into a call that was gone. Stopped
+      // first, so capture ends before the call does (as the button did).
+      // Sharing requires a call, so any share goes (as the button did).
+      const bs = useBackseatStore.getState();
+      if (bs.sharingFor) void bs.stopSharing(backseatReasonForCallEnd(reason));
       directorSeq++; // cancel any running companion chain (bump + clear travel together)
       clearTurnCapture();
       speakerOriginSeq.clear();
@@ -2134,6 +2157,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
             characterId: id,
             active: false,
             ...(since !== undefined ? { connectedMs: now - since } : {}),
+            reason,
           })
           .catch(() => {});
       }
@@ -2225,7 +2249,7 @@ export function voiceTtsDrained(): boolean {
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     try {
-      useVoiceStore.getState().endCall();
+      useVoiceStore.getState().endCall('dev_reload');
     } catch {
       /* dispose must never block the reload */
     }

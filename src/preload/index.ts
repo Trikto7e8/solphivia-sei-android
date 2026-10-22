@@ -199,13 +199,14 @@ const api: RendererApi = {
   // Backseat (260728) — see src/shared/backseatIpc.ts.
   backseatSources: (opts?: { thumbnails?: boolean }) =>
     ipcRenderer.invoke(IpcChannel.backseat.sources, opts),
-  backseatStart: (characterId, sourceId, sourceName, mode, game) =>
+  backseatStart: (characterId, sourceId, sourceName, mode, game, trigger) =>
     ipcRenderer.invoke(IpcChannel.backseat.start, {
       characterId,
       sourceId,
       sourceName,
       mode,
       ...(game ? { game } : {}),
+      ...(trigger ? { trigger } : {}),
     }),
   backseatGameResolve: (gameId, input) =>
     ipcRenderer.invoke(IpcChannel.backseat.gameResolve, { gameId, input }),
@@ -228,7 +229,7 @@ const api: RendererApi = {
     ipcRenderer.invoke(IpcChannel.backseat.saveClip, { characterId, requestId, webmBase64 }),
   backseatRevealClip: (clipPath) =>
     ipcRenderer.invoke(IpcChannel.backseat.revealClip, clipPath),
-  backseatEnd: (characterId) => ipcRenderer.invoke(IpcChannel.backseat.end, characterId),
+  backseatEnd: (characterId, reason) => ipcRenderer.invoke(IpcChannel.backseat.end, characterId, reason),
   onBackseatState(cb) {
     const handler = (_e: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s);
     ipcRenderer.on(IpcChannel.backseat.state, handler);

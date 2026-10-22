@@ -95,6 +95,7 @@ export async function createAnthropicProvider(backend: LlmBackend): Promise<LlmP
     if (budget) console.warn(describeBudgetReport(budget, 'main'));
     const opts: Record<string, unknown> = {};
     if (p.timeoutMs !== undefined) opts.timeout = p.timeoutMs;
+    if (p.maxRetries !== undefined) opts.maxRetries = p.maxRetries;
     if (p.signal !== undefined) opts.signal = p.signal;
 
     if (p.onTextDelta || p.onContentBlock) {

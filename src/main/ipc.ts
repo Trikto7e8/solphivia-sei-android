@@ -38,6 +38,7 @@ import {
 } from '../shared/ipc';
 import { GAME_IDS, isGameId, type GameId, type WorldState, type WorldStates } from '../shared/gameIpc';
 import type { HomeNextStep } from '../shared/homeNextStep';
+import { BACKSEAT_START_TRIGGERS, CALL_END_REASONS } from '../shared/callEndReasons';
 import { CharacterSchema, UserConfigSchema, UserPreferencesSchema, MAX_COMPANION_SLOTS, type Character, type UserConfig } from '../shared/characterSchema';
 import { SHOWN_PROVIDERS, GRANDFATHERED_PROVIDERS, type ProviderKind } from '../shared/llmCatalog';
 import { loadConfig } from './configStore';
@@ -208,7 +209,7 @@ export interface IpcHandlerDeps {
    * reports how long audio flowed). Posts the "You and X called for Y" system
    * row to the transcript. Wired in index.ts to emitCallSession.
    */
-  notifyCallEnded?: (characterId: string, connectedMs: number) => void;
+  notifyCallEnded?: (characterId: string, connectedMs: number, reason: string) => void;
   /**
    * Voice calls (260705): the call pipeline went live — make the companion
    * speak first. In-game → supervisor.greetVoiceCall port event; idle → a
@@ -1601,6 +1602,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         mode: z.enum(['voice', 'text']),
         // 260929 backseat games: ids only; main looks the game up itself.
         game: BackseatGameSelectionSchema.optional(),
+        // 261023 (analytics): what started the share.
+        trigger: z.enum(BACKSEAT_START_TRIGGERS).optional(),
       })
       .parse(argsRaw);
     const { BACKSEAT_ERR_MC_ACTIVE } = await import('../shared/backseatIpc');
@@ -1612,6 +1615,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
       args.sourceName,
       args.mode,
       args.game,
+      args.trigger,
     );
   });
   // 260929 backseat games: the "which game are you playing?" step. Lookups
@@ -1672,9 +1676,14 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
       })
       .parse(tickRaw);
     const backseat = await import('./backseat/backseatService');
+    // 261023: the opening look waits for its turn and says how it went, so
+    // the renderer can take a failed or empty one again (shouldRetryOpening).
+    // The renderer sends it from a detached task, never its capture loop.
+    if (tick.kind === 'start') return await backseat.handleTick(tick).catch(() => 'failed' as const);
     // Fire and forget: the renderer must not block its capture loop on a turn
     // that takes a second or more.
     void backseat.handleTick(tick).catch(() => {});
+    return undefined;
   });
   // macOS system-audio tap (260728): the overlay renderer cannot hear the
   // system on macOS (Chromium loopback is Windows-only, measured), so main
@@ -1739,10 +1748,16 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     if (!resolved.startsWith(nodePath.resolve(root) + nodePath.sep)) return;
     shell.showItemInFolder(resolved);
   });
-  ipcMain.handle(IpcChannel.backseat.end, async (_event, idArg: unknown) => {
+  ipcMain.handle(IpcChannel.backseat.end, async (_event, idArg: unknown, reasonArg: unknown) => {
     const id = IdSchema.parse(idArg);
+    // 261023: why it ended, validated against a fixed vocabulary (an unknown
+    // or missing reason becomes 'unspecified'). Only a stop the player chose
+    // runs the player-end "next time" check; a lost window or a failed
+    // capture is not the player leaving.
+    const { normalizeBackseatEndReason, isPlayerEndedReason } = await import('../shared/callEndReasons');
+    const reason = normalizeBackseatEndReason(reasonArg);
     const backseat = await import('./backseat/backseatService');
-    await backseat.endBackseat(id, undefined, { playerEnded: true });
+    await backseat.endBackseat(id, reason, { playerEnded: isPlayerEndedReason(reason) });
   });
 
   // ── Minecraft dashboard (260721) ──────────────────────────────────────────
@@ -2102,6 +2117,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         connectedMs: z.number().int().nonnegative().optional(),
         // Connect report (260926): the call went live. See markCallLive.
         live: z.boolean().optional(),
+        // Hang-up only (261023): why the call ended, for voice_call_ended.
+        reason: z.enum(CALL_END_REASONS).optional(),
       })
       .parse(argsRaw);
     // The state transition and its account-switch cases live in callState
@@ -2109,7 +2126,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { applyCallReport } = await import('./voice/callState');
     const fx = applyCallReport(args);
     if (fx.voiceCall !== null) deps.supervisor.setVoiceCall(args.characterId, fx.voiceCall);
-    if (fx.endedMs !== null) deps.notifyCallEnded?.(args.characterId, fx.endedMs);
+    if (fx.endedMs !== null) deps.notifyCallEnded?.(args.characterId, fx.endedMs, args.reason ?? 'unspecified');
     if (!fx.stamp) return;
     // Presence (260707): a call is a real interaction, so stamp last_chatted at
     // BOTH edges. Game sessions and text chat already drive the "online" dot;
@@ -3991,7 +4008,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         try { await deps.supervisor.shutdown(); } catch { /* best-effort */ }
         try { (await import('./chess/chessService')).shutdownChess(); } catch { /* best-effort */ }
         try { (await import('./draw/drawService')).shutdownDraw(); } catch { /* best-effort */ }
-        try { await (await import('./backseat/backseatService')).clearAllBackseat(); } catch { /* best-effort */ }
+        try { await (await import('./backseat/backseatService')).clearAllBackseat('factory_reset'); } catch { /* best-effort */ }
         // A leftover tray-settings.json (retired tray mode) is the only record
         // that Sei registered a login item: remove the item before the wipe.
         try { (await import('./legacyTrayCleanup')).cleanupLegacyTraySettings(); } catch { /* best-effort */ }

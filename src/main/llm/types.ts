@@ -62,6 +62,13 @@ export interface LlmCallParams {
   /** Anthropic-shaped messages. Non-Anthropic adapters map them. */
   messages: LlmMessage[];
   timeoutMs?: number;
+  /**
+   * 261023: SDK retries for this call (the Anthropic client defaults to 1,
+   * and a timed-out request is retried, so a 30 s budget can stall for 60 s).
+   * Honored ONLY by the Anthropic adapter; the others have no retry of their
+   * own to turn off.
+   */
+  maxRetries?: number;
   signal?: AbortSignal;
   /**
    * Streaming text sink. Anthropic: SDK stream text_delta events (awaited, in

@@ -92,6 +92,29 @@ describe('tickNote start branch', () => {
     const note = tickNote({ ...base, kind: 'start', frameAges: [0] });
     expect(note).toContain('Only one frame');
   });
+
+  // 261023: 221 of 794 shares in a month started within 30 s of the last one
+  // ending, and each opened with a fresh hello.
+  it('a resumed share skips the hello and keeps the window title', () => {
+    const note = tickNote({ ...base, kind: 'start', resumedAfterS: 12.4, shareLabel: 'Roblox' });
+    expect(note).toContain('came back 12 seconds later');
+    expect(note).toContain('No hello');
+    expect(note).toContain('"Roblox"');
+    expect(note).not.toContain('just shared their screen');
+    expect(note).not.toMatch(/Your hello is/);
+    expect(note).not.toMatch(/[—–;]/);
+  });
+
+  it('words a very short gap as a moment, and a long one in minutes', () => {
+    expect(tickNote({ ...base, kind: 'start', resumedAfterS: 0.2 })).toContain('came back a moment later');
+    expect(tickNote({ ...base, kind: 'start', resumedAfterS: 110 })).toContain('came back 2 minutes later');
+  });
+
+  it('only the start look reads the resume gap', () => {
+    for (const kind of ['user', 'jolt', 'idle'] as const) {
+      expect(tickNote({ ...base, kind, resumedAfterS: 10 })).not.toContain('came back');
+    }
+  });
 });
 
 /**
@@ -331,10 +354,11 @@ describe('the length rule on every look (261008)', () => {
     expect(BACKSEAT_CONTRACT).not.toContain('under twenty words');
   });
 
-  it('caps a look at 45 tokens and a player turn at 400 (261010)', () => {
+  it('caps a look at 45 tokens, the opening look at 80 and a player turn at 400 (261010, 261023)', () => {
     expect(BACKSEAT_LOOK_MAX_TOKENS).toBe(45);
     expect(backseatMaxTokens('user')).toBe(400);
-    for (const k of ['start', 'idle', 'jolt'] as const) expect(backseatMaxTokens(k)).toBe(45);
+    for (const k of ['idle', 'jolt'] as const) expect(backseatMaxTokens(k)).toBe(45);
+    expect(backseatMaxTokens('start')).toBe(80);
   });
 
   it('keeps memories to the thing on screen', () => {
@@ -419,17 +443,21 @@ describe('endAtLastSentence (261010)', () => {
     expect(endAtLastSentence('Margit is down to a sliver! Dodge the next one or yo')).toBe('Margit is down to a sliver!');
   });
 
-  it('leaves a line alone when it already ends, or has nowhere earlier to end', () => {
+  it('leaves a line alone when it already ends', () => {
     expect(endAtLastSentence('That boss is huge.')).toBe('That boss is huge.');
-    expect(endAtLastSentence('the sand cube thing just got a whole new life and the green')).toBe(
-      'the sand cube thing just got a whole new life and the green',
-    );
-    // A one-word sentence is not worth keeping on its own.
-    expect(endAtLastSentence('Ok. the sand cube thing just got a whole')).toBe('Ok. the sand cube thing just got a whole');
+    expect(endAtLastSentence('wait is that a dragon?"')).toBe('wait is that a dragon?"');
+  });
+
+  // 261023: never speak a half sentence.
+  it('drops a cut line with nowhere earlier to end', () => {
+    expect(endAtLastSentence('the sand cube thing just got a whole new life and the green')).toBe('');
+    // A one-word sentence is not worth keeping on its own either.
+    expect(endAtLastSentence('Ok. the sand cube thing just got a whole')).toBe('');
   });
 
   it('does not split on a decimal or a mid-word dot', () => {
-    expect(endAtLastSentence('version 1.21 looks great and the')).toBe('version 1.21 looks great and the');
+    expect(endAtLastSentence('version 1.21 looks great and the')).toBe('');
+    expect(endAtLastSentence('version 1.21 looks great. And the')).toBe('version 1.21 looks great.');
   });
 });
 

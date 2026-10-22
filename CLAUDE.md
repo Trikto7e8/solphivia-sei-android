@@ -1951,6 +1951,50 @@ The design and its measurements are committed at
     in 14. A cut line ends at its last finished sentence (`endAtLastSentence`,
     positional, not content-based). User turns stay at 400.
 
+- **Sessions hold, and every end says why (261023, branch fix/session-hold).**
+  From 30 days of PostHog: 746 of 794 sessions ended with no reason, 221
+  restarted within 30 s of the previous end, 86 never said a line.
+  - **Capture recovery.** A capture track that ends no longer ends the
+    session. `useBackseatStore.onCaptureEnded` retries the source list
+    (`REACQUIRE_TRIES` 4, about 5 s) and reopens the same window by id, or by
+    the same name and kind (`pickReacquireSource`, pure + tested), inside the
+    SAME session with no opening look (`backseat_capture_recovered {match,
+    gap_ms}`). On macOS a same-id end with the window still listed is the
+    system "Stop sharing" control and ends the share
+    (`capture_stopped_by_os`). Unverified on a Mac or Windows machine.
+  - **Resume note.** A share that starts under `RESUME_WINDOW_MS` (2 min)
+    after one where she spoke (`resumedAfterMs`) gets the resume start note
+    (`tickNote` `resumedAfterS`): no second hello, one thought about the
+    screen.
+  - **Opening look.** 20 s budget with no SDK retry (`START_LOOK_TIMEOUT_MS`;
+    the default 30 s retried once meant up to 60 s of silence), one renderer
+    retry on a failed or empty look (`shouldRetryOpening`), never
+    stale-gated, own cap `BACKSEAT_START_MAX_TOKENS` 80 (45 cut 31 of 100
+    opening lines). A line cut inside its text by any cap ends at its last
+    finished sentence and is NOT spoken when it has none
+    (`endAtLastSentence` returns ''); the replays had spoken 46 half
+    sentences in 909 looks.
+  - **One loop per sharer.** Every call end stops the share with its reason,
+    a companion leaving a group call stops hers, and the idle starter and
+    group reactions skip the sharer (`voice/turnEligibility.ts`; main
+    backstops the idle turn in `sendVoiceIdleTurnImpl`).
+  - **End reasons** (`src/shared/callEndReasons.ts`, pinned in its test):
+    `voice_call_ended.reason` (renderer: user_hangup, companion_hangup,
+    inactivity, credits_depleted, scope_reset, dev_reload; main closes and
+    reports calls itself with app_quit, account_switch, window_closed,
+    renderer_gone, renderer_reload) and `backseat_ended.reason` (user_stop,
+    user_hangup, game_switch, game_launch, capture_lost,
+    capture_stopped_by_os, `capture_failed:<class>`, scope_changed,
+    watch_stopped, companion_left, `call_ended:<call reason>`, replaced, plus
+    main's app_quit, account_switch, window/renderer reasons, factory_reset;
+    unknown = `unspecified`). `backseat_ended` adds `first_line_ms`,
+    `failed_turns`, `last_error_class`; `backseat_started` adds `trigger`,
+    `replaced_live`, `since_prev_end_ms`, `prev_end_reason`. Only user_stop
+    and user_hangup run the player-end next-step check. A new end path must
+    pass a reason and add it to the list: main records an unknown backseat
+    reason as `unspecified`, and the voice.callState schema rejects an
+    unknown call reason.
+
 **Extracted:** the screen-watching half is mirrored as a public standalone repo
 at `sei-studio/backseat` (AGPL-3.0) with a plain-language architecture README.
 Changes here should be mirrored there when the design moves.

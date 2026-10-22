@@ -72,6 +72,12 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // ?dashshot=art (261023): names over character art (DevArtShot). The
   // generic Proxy answers whatever the page, call and grid ask.
   const artMode = (params.get('dashshot') ?? '') === 'art';
+  // ?dashshot=authchoice|signinmodal (261023): the sign-in surfaces with
+  // "Continue with ChatGPT". &reason=existing_account|new_device|unverified_email
+  // picks the code step the stubbed login answers; &gpt=fail answers a
+  // linked-elsewhere refusal instead. Code 000000 is "wrong", anything else
+  // signs in.
+  const authMode = ['authchoice', 'signinmodal'].includes(params.get('dashshot') ?? '');
   // ?dashshot=voicekey (261020, T158): the ElevenLabs key surfaces.
   // `&backend=local` for My key (default Sei Cloud), `&key=1` for a saved key.
   const voiceKeyMode = (params.get('dashshot') ?? '') === 'voicekey';
@@ -339,6 +345,29 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
               : { status: 'unavailable', voices: [] },
         }
       : {}),
+    // The onboarding AuthPanel reuses the same ChatGPT stubs (?dashshot=onboard).
+    ...(authMode || onboardMode
+      ? {
+          regionStatus: async () => ({ blocked: false }),
+          signInChatgpt: async () => {
+            await new Promise((r) => setTimeout(r, 400));
+            if (params.get('gpt') === 'fail') {
+              return { ok: false, reason: 'linked_elsewhere', message: 'linked elsewhere' };
+            }
+            return {
+              ok: true,
+              kind: 'email_code',
+              emailHint: 's***@example.com',
+              reason: params.get('reason') ?? 'existing_account',
+            };
+          },
+          chatgptLoginVerifyCode: async (code: string) =>
+            code === '000000'
+              ? { ok: false, reason: 'invalid_code', message: 'wrong' }
+              : { ok: true, kind: 'signed_in', created: false, planEnabled: true },
+          chatgptLoginResendCode: async () => ({ ok: true }),
+        }
+      : {}),
     ...(onboardMode
       ? {
           track: (event: string, props: unknown) => {
@@ -348,7 +377,7 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
         }
       : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode || artMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = authMode || chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode || artMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

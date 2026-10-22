@@ -3388,6 +3388,37 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { cancelGoogle } = await import('./auth/authHandlers');
     return await cancelGoogle();
   });
+  // 261023 "Continue with ChatGPT" account login. Tokens, the ticket and the
+  // code never come back over IPC; see shared/ipc.ts ChatgptLoginResult.
+  ipcMain.handle(IpcChannel.auth.signinChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().login();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptVerifyCode, async (_e, codeRaw: unknown) => {
+    const code = z.string().trim().min(4).max(16).regex(/^[0-9\s]+$/).parse(codeRaw);
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().verifyCode(code);
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptResendCode, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().resendCode();
+  });
+  ipcMain.handle(IpcChannel.auth.cancelChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    chatgptAccountLogin().cancel();
+  });
+  ipcMain.handle(IpcChannel.auth.linkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().link();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptLoginStatus, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().status();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptTakePlanOffer, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return chatgptAccountLogin().takePlanOffer();
+  });
   ipcMain.handle(IpcChannel.auth.signout, async () => {
     const { signOut } = await import('./auth/authHandlers');
     return await signOut();

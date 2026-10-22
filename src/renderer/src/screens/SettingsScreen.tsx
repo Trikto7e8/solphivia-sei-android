@@ -55,6 +55,7 @@ import styles from './SettingsScreen.module.css';
 import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
 import { SearchSettingsSection } from '../components/settings/SearchSettingsSection';
 import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
+import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 import { elevenKeySettingMode } from '../lib/voicePicker';
@@ -1020,6 +1021,15 @@ export function SettingsScreen(): React.ReactElement {
                 </Button>
               </div>
             ) : null}
+
+            {/* 261023: link a ChatGPT identity to this account, so "Continue
+                with ChatGPT" signs into it. */}
+            <ChatgptLinkRow
+              rowClassName={styles.row}
+              labelClassName={styles.label}
+              valueClassName={styles.monoValue}
+              errorClassName={styles.errorRow}
+            />
 
             {/* 260724: the Playtime row is gone. Weekly usage lives on the plan
                 screen (the rail's Plan icon), and there is no time estimate to

@@ -527,3 +527,75 @@ describe('bot bridge', () => {
     expect(posted.at(-1)).toMatchObject({ token: null, code: 'CHATGPT_SIGNED_OUT' });
   });
 });
+
+describe('account login (261023)', () => {
+  it('uses the given nonce, verifies the ID token against it, and saves nothing', async () => {
+    const { srv, mem, session, logs } = setup();
+    const r = await session.signInForLogin({ nonce: 'proxy-nonce-1' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(srv.authorizeSeen[0].params.nonce).toBe('proxy-nonce-1');
+    expect(srv.authorizeSeen[0].params.client_id).toBe(CHATGPT_DYNAMIC_CLIENT_ID);
+    expect(r.pending).toMatchObject({ clientId: 'client-issued-1', subject: 'user-1', email: 'player@example.com', planEnabled: true });
+    expect(r.pending.idToken.split('.')).toHaveLength(3);
+    expect(mem.saves).toHaveLength(0);
+    // Diagnostics name the claims and the email_verified value, never token values.
+    const line = logs.find((l) => l.includes('account login id_token claims'))!;
+    expect(line).toMatch(/email_verified=absent/);
+    expect(line).not.toContain(r.pending.idToken);
+    expect(logs.join('\n')).not.toMatch(/eyJ|rt-\d|at-\d/);
+  });
+
+  it('logs email_verified when the token carries it', async () => {
+    const { srv, session, logs } = setup();
+    srv.knobs.idTokenOverride = (claims) => srv.signer.sign({ ...claims, email_verified: true });
+    await session.signInForLogin({ nonce: 'n' });
+    expect(logs.some((l) => l.includes('email_verified=true'))).toBe(true);
+  });
+
+  it('refuses an ID token that does not carry the proxy nonce', async () => {
+    const { srv, session } = setup();
+    srv.knobs.idTokenOverride = (claims) => srv.signer.sign({ ...claims, nonce: 'other' });
+    expect(await session.signInForLogin({ nonce: 'proxy-nonce-1' })).toMatchObject({ ok: false, reason: 'id_token_invalid' });
+  });
+
+  it('a reauth target reuses the issued client id, and another ChatGPT account answering is allowed', async () => {
+    const { srv, session } = setup();
+    srv.knobs.user = { sub: 'someone-else', email: 'x@example.com' };
+    const r = await session.signInForLogin({
+      nonce: 'n2',
+      target: { client_id: 'client-issued-1', id_token: null, email: 'player@example.com' },
+    });
+    expect(r.ok).toBe(true);
+    expect(srv.authorizeSeen[0].params.client_id).toBe('client-issued-1');
+    expect(srv.authorizeSeen[0].params.login_hint).toBe('player@example.com');
+    if (r.ok) expect(r.pending.subject).toBe('someone-else');
+  });
+
+  it('adoptLoginAccount stores the registration in the current vault and activates it', async () => {
+    const clock = { t: 1_000_000 };
+    const { mem, session } = setup({ clock });
+    const r = await session.signInForLogin({ nonce: 'n' });
+    if (!r.ok) throw new Error('sign-in failed');
+    clock.t += 120_000; // the email-code step took two minutes
+    const tokens: AccessToken[] = [];
+    session.onToken((t) => t && tokens.push(t));
+    const a = await session.adoptLoginAccount(r.pending);
+    expect(a.ok && a.planEnabled).toBe(true);
+    const saved = mem.read();
+    expect(saved.accounts).toHaveLength(1);
+    expect(saved.activeId).toBe(saved.accounts[0].id);
+    // Expiry counts from when the tokens ARRIVED, not from the adoption.
+    expect(saved.accounts[0].expires_at).toBe(r.pending.receivedAt + r.pending.tokens.expires_in * 1000);
+    expect(tokens).toHaveLength(1);
+    expect(await session.getAccessToken()).toMatchObject({ accountId: saved.accounts[0].id });
+  });
+
+  it('discardLoginAccount revokes the unused refresh token', async () => {
+    const { srv, session } = setup();
+    const r = await session.signInForLogin({ nonce: 'n' });
+    if (!r.ok) throw new Error('sign-in failed');
+    await session.discardLoginAccount(r.pending);
+    expect(srv.revoked).toEqual([r.pending.tokens.refresh_token]);
+  });
+});

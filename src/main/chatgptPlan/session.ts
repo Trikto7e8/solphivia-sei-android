@@ -214,9 +214,40 @@ export interface AccessToken {
 export type TokenListener = (t: AccessToken | null) => void;
 export type StatusListener = (s: ChatgptStatus) => void;
 
+/**
+ * A verified "Continue with ChatGPT" account-login sign-in that is not saved
+ * yet (261023). Lives only in main's memory between the browser round trip
+ * and the Sei session; never crosses IPC.
+ */
+export interface PendingLoginAccount {
+  idToken: string;
+  clientId: string;
+  subject: string;
+  issuer: string;
+  email: string | null;
+  hostId: string;
+  tokens: TokenResponse & { refresh_token: string };
+  /** Epoch ms the token response arrived (expiry is relative to it). */
+  receivedAt: number;
+  planEnabled: boolean;
+}
+
+export type LoginSignInResult =
+  | { ok: true; pending: PendingLoginAccount }
+  | { ok: false; reason: ChatgptSignInFailure; message?: string };
+
 export interface ChatgptSession {
   status(): Promise<ChatgptStatus>;
   signIn(opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<ChatgptSignInResult>;
+  /** Account login: browser sign-in with the proxy's nonce; saves nothing. */
+  signInForLogin(opts: {
+    nonce: string;
+    target?: { client_id: string; id_token: string | null; email: string | null } | null;
+  }): Promise<LoginSignInResult>;
+  /** Save a login's registration into the CURRENT profile's vault, active. */
+  adoptLoginAccount(p: PendingLoginAccount): Promise<ChatgptSignInResult>;
+  /** Revoke a login's grant that will not be kept. Best effort. */
+  discardLoginAccount(p: PendingLoginAccount): Promise<void>;
   cancelSignIn(): void;
   signOut(accountId?: string): Promise<ChatgptSignOutResult>;
   switchAccount(accountId: string): Promise<ChatgptStatus>;
@@ -338,7 +369,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     }
   }
 
-  function applyTokens(rec: StoredAccount, t: TokenResponse): void {
+  function applyTokens(rec: StoredAccount, t: TokenResponse, receivedAt: number = now()): void {
     // Access token, expiry, scopes and the rotating refresh token are
     // replaced TOGETHER (docs, "Store credentials").
     rec.access_token = t.access_token;
@@ -346,7 +377,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     if (t.id_token) rec.id_token = t.id_token;
     rec.token_type = t.token_type;
     rec.expires_in = t.expires_in;
-    rec.expires_at = now() + t.expires_in * 1000;
+    rec.expires_at = receivedAt + t.expires_in * 1000;
     rec.earliest_refresh_at = t.earliest_refresh_at;
     if (t.scopes.length) rec.scopes = t.scopes;
     rec.saved_at = new Date(now()).toISOString();
@@ -368,6 +399,184 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     return { ok: false, reason, ...(message ? { message } : {}) };
   }
 
+  interface AuthorizeTarget {
+    client_id: string;
+    id_token: string | null;
+    email: string | null;
+  }
+
+  type Authorized =
+    | {
+        ok: true;
+        clientId: string;
+        hostId: string;
+        tokens: TokenResponse & { id_token: string; refresh_token: string };
+        claims: Awaited<ReturnType<typeof verifyIdToken>>;
+        receivedAt: number;
+      }
+    | { ok: false; result: ChatgptSignInResult };
+
+  /**
+   * One browser round trip: authorize, callback, code exchange, ID-token
+   * verification. Touches no stored state. `attempt` must already be this
+   * call's controller.
+   */
+  async function authorize(
+    ctrl: AbortController,
+    p: { target: AuthorizeTarget | null; nonce: string; forceConsent: boolean; label: string },
+    onListener: (l: CallbackListener) => void,
+  ): Promise<Authorized> {
+    const no = (reason: ChatgptSignInFailure, message?: string): Authorized => ({ ok: false, result: fail(reason, message) });
+    const hostId = await deps.hostId();
+    const endpoints = await discover();
+    const state = randomToken();
+    let listener: CallbackListener;
+    try {
+      listener = await deps.startListener(state);
+    } catch (err) {
+      return no('port_unavailable', (err as Error).message);
+    }
+    onListener(listener);
+    const pkce = createPkce();
+    const pending = {
+      state,
+      nonce: p.nonce,
+      verifier: pkce.verifier,
+      redirectUri: listener.redirectUri,
+      issuedClientId: p.target?.client_id ?? null,
+    };
+    const url = buildAuthorizeUrl({
+      endpoint: endpoints.authorization_endpoint,
+      issuedClientId: pending.issuedClientId,
+      hostId,
+      redirectUri: pending.redirectUri,
+      state,
+      nonce: p.nonce,
+      codeChallenge: pkce.challenge,
+      idTokenHint: p.target?.id_token ?? null,
+      loginHint: p.target?.email ?? null,
+      forceConsent: p.forceConsent,
+    });
+    log(`[chatgpt] ${p.label} ${p.target ? 'reauth' : 'new registration'} via ${redactAuthorizeUrl(url)}`);
+    try {
+      await deps.openExternal(url);
+    } catch (err) {
+      return no('browser_failed', (err as Error).message);
+    }
+    let q: URLSearchParams;
+    try {
+      q = await listener.wait(signInTimeoutMs, ctrl.signal);
+    } catch (err) {
+      return no((err as Error).message === 'timeout' ? 'timeout' : 'cancelled');
+    }
+    const outcome = validateCallback(q, pending);
+    if (outcome.kind === 'invalid') return no(outcome.reason === 'no_code' ? 'exchange_failed' : outcome.reason);
+    if (outcome.kind === 'denied') {
+      log(`[chatgpt] ${p.label} declined (${outcome.error})`);
+      return no(outcome.error === 'access_denied' ? 'denied' : 'exchange_failed', outcome.error);
+    }
+
+    let tokens: TokenResponse;
+    try {
+      tokens = await exchangeCode(deps.fetchImpl, {
+        tokenEndpoint: endpoints.token_endpoint,
+        clientId: outcome.clientId,
+        code: outcome.code,
+        verifier: pending.verifier,
+        redirectUri: pending.redirectUri,
+      });
+    } catch (err) {
+      if (err instanceof OAuthError && err.network) return no('network');
+      // invalid_grant: the code is discarded; the user starts a fresh attempt.
+      return no('exchange_failed', err instanceof OAuthError ? (err.oauthError ?? undefined) : undefined);
+    }
+    const receivedAt = now();
+    if (!tokens.id_token || !tokens.refresh_token) {
+      return no('exchange_failed', !tokens.id_token ? 'no id_token' : 'no refresh_token');
+    }
+    let claims;
+    try {
+      claims = await verifyIdToken(tokens.id_token, { jwks, clientId: outcome.clientId, nonce: p.nonce, now: now() });
+    } catch (err) {
+      return no('id_token_invalid', err instanceof IdTokenError ? err.reason : 'verification failed');
+    }
+    return {
+      ok: true,
+      clientId: outcome.clientId,
+      hostId,
+      tokens: tokens as TokenResponse & { id_token: string; refresh_token: string },
+      claims,
+      receivedAt,
+    };
+  }
+
+  /** Save (insert or replace tokens of) one registration and make it active. */
+  async function commitAccount(a: {
+    id: string;
+    email: string | null;
+    issuer: string;
+    subject: string;
+    clientId: string;
+    hostId: string;
+    tokens: TokenResponse;
+    receivedAt: number;
+  }): Promise<{ ok: true; enabled: boolean } | { ok: false; result: ChatgptSignInResult }> {
+    let enabled = false;
+    // A refresh still in flight for this account must not overwrite the
+    // tokens this sign-in is about to store.
+    bump(a.id);
+    try {
+      await mutate((v) => {
+        let rec = v.accounts.find((x) => x.id === a.id);
+        if (!rec) {
+          rec = {
+            id: a.id,
+            email: a.email,
+            issuer: a.issuer,
+            subject: a.subject,
+            client_id: a.clientId,
+            ext_agent_host_id: a.hostId,
+            id_token: null,
+            access_token: null,
+            refresh_token: null,
+            token_type: 'Bearer',
+            expires_in: 3600,
+            expires_at: null,
+            earliest_refresh_at: null,
+            scopes: [],
+            saved_at: new Date(now()).toISOString(),
+          };
+          v.accounts.push(rec);
+        }
+        if (a.email) rec.email = a.email;
+        rec.ext_agent_host_id = a.hostId;
+        applyTokens(rec, a.tokens, a.receivedAt);
+        // Build scopes from the token response (an empty scope string
+        // means "none granted", never "keep the old ones" here).
+        rec.scopes = a.tokens.scopes;
+        v.activeId = a.id;
+        enabled = planEnabled(rec);
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        result: fail(
+          (err as Error).message === 'KEYCHAIN_UNAVAILABLE' ? 'keychain_unavailable' : 'exchange_failed',
+          (err as Error).message,
+        ),
+      };
+    }
+    usageLimitedUntil = 0;
+    usageLimitedAccount = null;
+    blocked = null;
+    models.delete(a.id);
+    log(`[chatgpt] signed in (${enabled ? 'plan usage enabled' : 'plan usage NOT granted'})`);
+    if (enabled) {
+      emitToken({ token: a.tokens.access_token, expiresAt: a.receivedAt + a.tokens.expires_in * 1000, accountId: a.id });
+    }
+    return { ok: true, enabled };
+  }
+
   async function signIn(opts: { accountId?: string | null; enablePlan?: boolean } = {}): Promise<ChatgptSignInResult> {
     attempt?.abort();
     const ctrl = new AbortController();
@@ -378,138 +587,121 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       const d = await data();
       const target = opts.accountId ? (d.accounts.find((a) => a.id === opts.accountId) ?? null) : null;
       if (opts.accountId && !target) return fail('exchange_failed', 'unknown account');
-      const hostId = await deps.hostId();
-      const endpoints = await discover();
-      const state = randomToken();
-      try {
-        listener = await deps.startListener(state);
-      } catch (err) {
-        return fail('port_unavailable', (err as Error).message);
-      }
       const nonce = randomToken();
-      const pkce = createPkce();
-      const pending = {
-        state,
-        nonce,
-        verifier: pkce.verifier,
-        redirectUri: listener.redirectUri,
-        issuedClientId: target?.client_id ?? null,
-      };
-      const url = buildAuthorizeUrl({
-        endpoint: endpoints.authorization_endpoint,
-        issuedClientId: pending.issuedClientId,
-        hostId,
-        redirectUri: pending.redirectUri,
-        state,
-        nonce,
-        codeChallenge: pkce.challenge,
-        idTokenHint: target?.id_token ?? null,
-        loginHint: target?.email ?? null,
-        forceConsent: opts.enablePlan === true,
-      });
-      log(`[chatgpt] sign-in ${target ? 'reauth' : 'new registration'} via ${redactAuthorizeUrl(url)}`);
-      try {
-        await deps.openExternal(url);
-      } catch (err) {
-        return fail('browser_failed', (err as Error).message);
-      }
-      let q: URLSearchParams;
-      try {
-        q = await listener.wait(signInTimeoutMs, ctrl.signal);
-      } catch (err) {
-        return fail((err as Error).message === 'timeout' ? 'timeout' : 'cancelled');
-      }
-      const outcome = validateCallback(q, pending);
-      if (outcome.kind === 'invalid') return fail(outcome.reason === 'no_code' ? 'exchange_failed' : outcome.reason);
-      if (outcome.kind === 'denied') {
-        log(`[chatgpt] sign-in declined (${outcome.error})`);
-        return fail(outcome.error === 'access_denied' ? 'denied' : 'exchange_failed', outcome.error);
-      }
-
-      let tokens: TokenResponse;
-      try {
-        tokens = await exchangeCode(deps.fetchImpl, {
-          tokenEndpoint: endpoints.token_endpoint,
-          clientId: outcome.clientId,
-          code: outcome.code,
-          verifier: pending.verifier,
-          redirectUri: pending.redirectUri,
-        });
-      } catch (err) {
-        if (err instanceof OAuthError && err.network) return fail('network');
-        // invalid_grant: the code is discarded; the user starts a fresh attempt.
-        return fail('exchange_failed', err instanceof OAuthError ? (err.oauthError ?? undefined) : undefined);
-      }
-      if (!tokens.id_token || !tokens.refresh_token) {
-        return fail('exchange_failed', !tokens.id_token ? 'no id_token' : 'no refresh_token');
-      }
-      let claims;
-      try {
-        claims = await verifyIdToken(tokens.id_token, { jwks, clientId: outcome.clientId, nonce, now: now() });
-      } catch (err) {
-        return fail('id_token_invalid', err instanceof IdTokenError ? err.reason : 'verification failed');
-      }
+      const got = await authorize(
+        ctrl,
+        { target, nonce, forceConsent: opts.enablePlan === true, label: 'sign-in' },
+        (l) => (listener = l),
+      );
+      if (!got.ok) return got.result;
+      const { claims } = got;
       if (target && claims.sub !== target.subject) {
         // A different ChatGPT account answered a reauth: never overwrite.
         return fail('account_mismatch');
       }
       if (ctrl.signal.aborted) return fail('cancelled');
 
-      const id = accountIdOf(outcome.clientId, claims.sub);
       const email = typeof claims.email === 'string' && claims.email ? claims.email : null;
-      let enabled = false;
-      // A refresh still in flight for this account must not overwrite the
-      // tokens this sign-in is about to store.
-      bump(id);
-      try {
-        await mutate((v) => {
-          let rec = v.accounts.find((a) => a.id === id);
-          if (!rec) {
-            rec = {
-              id,
-              email,
-              issuer: claims.iss,
-              subject: claims.sub,
-              client_id: outcome.clientId,
-              ext_agent_host_id: hostId,
-              id_token: null,
-              access_token: null,
-              refresh_token: null,
-              token_type: 'Bearer',
-              expires_in: 3600,
-              expires_at: null,
-              earliest_refresh_at: null,
-              scopes: [],
-              saved_at: new Date(now()).toISOString(),
-            };
-            v.accounts.push(rec);
-          }
-          if (email) rec.email = email;
-          rec.ext_agent_host_id = hostId;
-          applyTokens(rec, tokens);
-          // Build scopes from the token response (an empty scope string
-          // means "none granted", never "keep the old ones" here).
-          rec.scopes = tokens.scopes;
-          v.activeId = id;
-          enabled = planEnabled(rec);
-        });
-      } catch (err) {
-        return fail(
-          (err as Error).message === 'KEYCHAIN_UNAVAILABLE' ? 'keychain_unavailable' : 'exchange_failed',
-          (err as Error).message,
-        );
-      }
-      usageLimitedUntil = 0;
-      usageLimitedAccount = null;
-      blocked = null;
-      models.delete(id);
-      log(`[chatgpt] signed in (${enabled ? 'plan usage enabled' : 'plan usage NOT granted'})`);
-      if (enabled) emitToken({ token: tokens.access_token, expiresAt: now() + tokens.expires_in * 1000, accountId: id });
-      return { ok: true, status: await status(), planEnabled: enabled };
+      const saved = await commitAccount({
+        id: accountIdOf(got.clientId, claims.sub),
+        email,
+        issuer: claims.iss,
+        subject: claims.sub,
+        clientId: got.clientId,
+        hostId: got.hostId,
+        tokens: got.tokens,
+        receivedAt: got.receivedAt,
+      });
+      if (!saved.ok) return saved.result;
+      return { ok: true, status: await status(), planEnabled: saved.enabled };
     } finally {
-      listener?.close();
+      (listener as CallbackListener | null)?.close();
       if (attempt === ctrl) attempt = null;
       void emitStatus();
+    }
+  }
+
+  /**
+   * 261023 "Continue with ChatGPT" as a SEI ACCOUNT login. Same browser flow,
+   * but with the nonce Sei's proxy issued (so the proxy can check it) and
+   * nothing saved: the caller sends the ID token to the proxy, and only once
+   * a Sei session exists (and the profile scope moved to that account) hands
+   * the result back to adoptLoginAccount, which stores it in THAT account's
+   * vault. A reauth target here only reuses the install's issued client id;
+   * a different ChatGPT account answering it is fine (the proxy decides).
+   */
+  async function signInForLogin(opts: { nonce: string; target?: AuthorizeTarget | null }): Promise<LoginSignInResult> {
+    attempt?.abort();
+    const ctrl = new AbortController();
+    attempt = ctrl;
+    void emitStatus();
+    let listener: CallbackListener | null = null;
+    try {
+      const got = await authorize(
+        ctrl,
+        { target: opts.target ?? null, nonce: opts.nonce, forceConsent: false, label: 'account login' },
+        (l) => (listener = l),
+      );
+      if (!got.ok) return got.result as LoginSignInResult;
+      if (ctrl.signal.aborted) return { ok: false, reason: 'cancelled' };
+      const { claims } = got;
+      // Diagnostics for the account policy: claim NAMES and the
+      // email_verified value only. Never a token or a claim value.
+      const ev = claims.email_verified;
+      log(
+        `[chatgpt] account login id_token claims: ${Object.keys(claims).sort().join(',')}; ` +
+          `email_verified=${ev === undefined ? 'absent' : JSON.stringify(ev)}`,
+      );
+      return {
+        ok: true,
+        pending: {
+          idToken: got.tokens.id_token,
+          clientId: got.clientId,
+          subject: claims.sub,
+          issuer: claims.iss,
+          email: typeof claims.email === 'string' && claims.email ? claims.email : null,
+          hostId: got.hostId,
+          tokens: got.tokens,
+          receivedAt: got.receivedAt,
+          planEnabled: got.tokens.scopes.includes(CHATGPT_PLAN_SCOPE),
+        },
+      };
+    } finally {
+      (listener as CallbackListener | null)?.close();
+      if (attempt === ctrl) attempt = null;
+      void emitStatus();
+    }
+  }
+
+  /** Store a login's ChatGPT registration in the CURRENT profile's vault and activate it. */
+  async function adoptLoginAccount(p: PendingLoginAccount): Promise<ChatgptSignInResult> {
+    const saved = await commitAccount({
+      id: accountIdOf(p.clientId, p.subject),
+      email: p.email,
+      issuer: p.issuer,
+      subject: p.subject,
+      clientId: p.clientId,
+      hostId: p.hostId,
+      tokens: p.tokens,
+      receivedAt: p.receivedAt,
+    });
+    if (!saved.ok) return saved.result;
+    void emitStatus();
+    return { ok: true, status: await status(), planEnabled: saved.enabled };
+  }
+
+  /** Drop a login's tokens that will never be stored (cancelled or refused). */
+  async function discardLoginAccount(p: PendingLoginAccount): Promise<void> {
+    try {
+      const endpoints = await discover();
+      await revokeRefreshToken(deps.fetchImpl, {
+        revocationEndpoint: endpoints.revocation_endpoint,
+        clientId: p.clientId,
+        refreshToken: p.tokens.refresh_token,
+        attempts: 1,
+      });
+    } catch {
+      /* best effort: the grant simply goes unused */
     }
   }
 
@@ -782,6 +974,9 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
   return {
     status,
     signIn,
+    signInForLogin,
+    adoptLoginAccount,
+    discardLoginAccount,
     cancelSignIn,
     signOut,
     switchAccount,

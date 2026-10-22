@@ -57,3 +57,11 @@
   flex: none;
   display: block;
 }
+
+/* Beside a full-width Google button on the sign-in surfaces (the SIWC
+ * quickstart asks for comparable prominence with the other options). The
+ * Google Identity button caps itself at 400px, so this matches it. */
+.fullWidth {
+  width: 100%;
+  max-width: 400px;
+}

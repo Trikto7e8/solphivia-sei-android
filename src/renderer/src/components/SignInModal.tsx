@@ -22,10 +22,12 @@ import React, { useEffect, useState } from 'react';
 import { sei } from '../lib/ipcClient';
 import { uiLanguage, useT } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
+import { useChatgptLogin, chatgptCodeReasonCopy } from '../lib/useChatgptLogin';
 import { Button } from './Button';
 import { CodeInput } from './CodeInput';
 import { ModalShell, ModalFooter } from './ModalShell';
 import { GoogleSignInButton } from './GoogleSignInButton';
+import { ContinueWithChatGPTButton } from './ContinueWithChatGPTButton';
 import { TextField } from './TextField';
 import { OAuthInterstitialModal } from './OAuthInterstitialModal';
 import styles from './SignInModal.module.css';
@@ -102,6 +104,10 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
   // SetNewPasswordModal above, and unmounting the host mid-flow is what the
   // recovery gate exists to prevent.
   const codeState = useEmailCode(codeSentTo, onClose);
+  // 261023: "Continue with ChatGPT" account sign-in; success closes the modal
+  // like Google does, and the auth-state push routes App.tsx onward.
+  const gpt = useChatgptLogin(onClose);
+  const gptBusy = gpt.phase !== 'idle';
 
   /**
    * W7 region gate (260816). Pre-checked on mount over region:status so the
@@ -209,7 +215,7 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
     // Plan 10-05: hand off to OAuthInterstitialModal. SignInModal stays
     // mounted (the interstitial is a sibling, z-index 1100 > scrim 1000)
     // so on cancel the typed email is preserved automatically.
-    if (submitting) return;
+    if (submitting || gptBusy) return;
     setError(null);
     setOauthInFlight(true);
   };
@@ -265,6 +271,56 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
         <ModalFooter>
           <Button kind="accent" size="md" onClick={onClose}>
             {t('Got it')}
+          </Button>
+        </ModalFooter>
+      </ModalShell>
+    );
+  }
+
+  // 261023 ChatGPT code sub-state, same frame as the email code panel below.
+  if (gpt.phase === 'code' || gpt.phase === 'verifying') {
+    return (
+      <ModalShell
+        title={t('Enter your code')}
+        width={460}
+        escClose={gpt.phase !== 'verifying'}
+        onClose={onClose}
+      >
+        <p className={styles.framing}>{chatgptCodeReasonCopy(gpt.reason, t)}</p>
+        <p className={styles.framing}>
+          {t('We sent a 6-digit code to {email}. Check spam if it is not there.', {
+            email: gpt.emailHint,
+          })}
+        </p>
+        <CodeInput
+          value={gpt.code}
+          onChange={gpt.setCode}
+          onComplete={(v) => void gpt.submit(v)}
+          disabled={gpt.phase === 'verifying'}
+          invalid={!!gpt.error}
+          autoFocus
+          aria-label={t('Verification code')}
+        />
+        {gpt.error ? (
+          <p className={styles.errorText} role="alert">
+            {gpt.error}
+          </p>
+        ) : null}
+        {gpt.note ? <p className={styles.framing}>{gpt.note}</p> : null}
+        <ModalFooter>
+          <Button
+            kind="accent"
+            size="md"
+            disabled={gpt.phase === 'verifying' || gpt.code.length === 0}
+            onClick={() => void gpt.submit()}
+          >
+            {gpt.phase === 'verifying' ? t('Checking…') : t('Verify')}
+          </Button>
+          <Button kind="quiet" size="md" disabled={gpt.resending} onClick={() => void gpt.resend()}>
+            {gpt.resending ? t('Sending…') : t('Send a new code')}
+          </Button>
+          <Button kind="quiet" size="md" onClick={gpt.cancel}>
+            {t('Back')}
           </Button>
         </ModalFooter>
       </ModalShell>
@@ -518,10 +574,28 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
 
         <GoogleSignInButton
           onClick={onGoogleClick}
-          disabled={submitting}
+          disabled={submitting || gptBusy}
           fullWidth
           label={mode === 'signup' ? t('Sign up with Google') : t('Sign in with Google')}
         />
+
+        <ContinueWithChatGPTButton
+          onClick={() => void gpt.start()}
+          disabled={submitting || gptBusy}
+          busy={gpt.phase === 'browser'}
+          fullWidth
+        />
+        {gpt.phase === 'browser' ? (
+          <p className={styles.framing}>
+            {t('Finish signing in to ChatGPT in the browser tab that opened.')}{' '}
+            <button type="button" className={styles.toggleLink} onClick={gpt.cancel}>
+              {t('Cancel')}
+            </button>
+          </p>
+        ) : null}
+        {gpt.phase === 'idle' && gpt.error ? (
+          <p className={styles.errorText} role="alert">{gpt.error}</p>
+        ) : null}
 
         <ModalFooter>
           <Button kind="quiet" size="md" onClick={onClose} disabled={submitting}>

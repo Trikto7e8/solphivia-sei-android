@@ -25,8 +25,10 @@
  *     http://localhost:5173/?dashshot=chatchess    a finished chess game (the result card) inside the real ChatScreen
  *     http://localhost:5173/?dashshot=chatcall     a live call with Sui on her scene (VoiceCallScreen, backdrop mode)
  *     http://localhost:5173/?dashshot=home&step=plan|call|untagged|goal|long|none  the Home wall with the "up next" strip (261013);
+ *                                                  (&art=<url>,<url>: the wall's portraits in order, 261023)
  *                                                  (&name=Marv&text=...&surface=game|call: a given plan for that companion, 261014)
  *                                                  sei.track calls land on window.__seiDevTrack
+ *     http://localhost:5173/?dashshot=art&part=browse|page|call&art=<url>  names over character art (DevArtShot, 261023)
  *     http://localhost:5173/?dashshot=chatui&part=chat|picker|settings  the rail + a screen, for theme/accent checks
  *                                                  (&lang=zh on any of these for the Chinese copy)
  *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open)
@@ -54,6 +56,7 @@ import { DevRobloxShot } from '../backseat/DevRobloxShot';
 import { DevMcProfileShot } from '../mcdash/DevMcProfileShot';
 import { DevPermsShot } from '../permissions/DevPermsShot';
 import { DevVoiceKeyShot } from '../DevVoiceKeyShot';
+import { DevArtShot, devArtList } from '../DevArtShot';
 import { OnboardApp } from '../../onboard/OnboardApp';
 import { useFirstMomentStore } from '../../lib/stores/useFirstMomentStore';
 import { useChessStore } from '../../lib/stores/useChessStore';
@@ -230,7 +233,14 @@ function seed(): void {
         .map((name, i) => ({
           id: `dashshot-home-${name.toLowerCase()}`,
           name,
-          ...(name === 'Sui' ? { portrait_image: './img/onboard/sui-stand.png' } : {}),
+          // &art= (261023): a portrait per wall slot, for the name contrast checks.
+          ...(params.has('art')
+            ? devArtList()[i]?.art
+              ? { portrait_image: devArtList()[i].art }
+              : {}
+            : name === 'Sui'
+              ? { portrait_image: './img/onboard/sui-stand.png' }
+              : {}),
           last_chatted: new Date(now - [20, 50, 90][i] * 3_600_000).toISOString(),
         })) as unknown as ReturnType<typeof useDataStore.getState>['characters'],
     });
@@ -255,6 +265,8 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   if (which === 'perms') return <DevPermsShot />;
   // ?dashshot=voicekey&part=settings|picker&backend=cloud|local&key=1 (261020, T158).
   if (which === 'voicekey') return <DevVoiceKeyShot />;
+  // ?dashshot=art&part=browse|page|call&art=<url> (261023): names over character art.
+  if (which === 'art') return <DevArtShot />;
   // ?dashshot=onboard (261012): the first-run scene, for the intro's stage
   // gates (watchdog, skip, reduced motion). onComplete goes nowhere.
   if (which === 'onboard') return <OnboardApp onComplete={() => undefined} />;

@@ -97,6 +97,11 @@
      themes use white/offwhite so the name reads as a photo caption over the
      art rather than inheriting the dark body text (260724). */
   --art-fg: #ffffff;
+  /* The dark bed --art-fg sits on (261023): the scrim + halo behind names
+     over art. Dark in EVERY theme, because --art-fg is light in every theme;
+     a light-theme wash of --bg under white text is what made "Sui" vanish on
+     a pale portrait. Each theme tints it toward its own text hue. */
+  --art-ink: #0e1624;
 
   --text: #2a3340;
   --text-2: #586273;
@@ -154,6 +159,7 @@
   --card-top: #ffffff;
   --card-bottom: #eaf3ff;
   --art-fg: #ffffff;
+  --art-ink: #0e1624;
   --text: #2a3340;
   --text-2: #586273;
   --muted: #7d92ab;
@@ -218,6 +224,7 @@
 
   /* Home-wall names keep the normal light body text on the dark theme. */
   --art-fg: #e9e7e1;
+  --art-ink: #04070f;
 
   --text: #e9e7e1;
   --text-2: #a8a6a0;
@@ -278,6 +285,7 @@
   --card-top: #fffbf4;
   --card-bottom: #f3e9d8;
   --art-fg: #f9f1e2;      /* warm offwhite of the acorn cream, not pure white */
+  --art-ink: #1d150c;     /* deep acorn brown under the offwhite */
   --text: #3b3126;
   --text-2: #6a5c4b;
   --muted: #94836f;
@@ -325,6 +333,7 @@
   --card-top: #ffffff;
   --card-bottom: #e6f4eb;
   --art-fg: #edf9f1;      /* minty offwhite, not pure white */
+  --art-ink: #0c1a12;     /* deep forest green under the offwhite */
   --text: #24352b;
   --text-2: #52665a;
   --muted: #7b9587;

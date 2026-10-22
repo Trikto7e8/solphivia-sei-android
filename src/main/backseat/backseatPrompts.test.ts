@@ -354,10 +354,11 @@ describe('the length rule on every look (261008)', () => {
     expect(BACKSEAT_CONTRACT).not.toContain('under twenty words');
   });
 
-  it('caps a look at 45 tokens and a player turn at 400 (261010)', () => {
+  it('caps a look at 45 tokens, the opening look at 80 and a player turn at 400 (261010, 261023)', () => {
     expect(BACKSEAT_LOOK_MAX_TOKENS).toBe(45);
     expect(backseatMaxTokens('user')).toBe(400);
-    for (const k of ['start', 'idle', 'jolt'] as const) expect(backseatMaxTokens(k)).toBe(45);
+    for (const k of ['idle', 'jolt'] as const) expect(backseatMaxTokens(k)).toBe(45);
+    expect(backseatMaxTokens('start')).toBe(80);
   });
 
   it('keeps memories to the thing on screen', () => {
@@ -442,17 +443,21 @@ describe('endAtLastSentence (261010)', () => {
     expect(endAtLastSentence('Margit is down to a sliver! Dodge the next one or yo')).toBe('Margit is down to a sliver!');
   });
 
-  it('leaves a line alone when it already ends, or has nowhere earlier to end', () => {
+  it('leaves a line alone when it already ends', () => {
     expect(endAtLastSentence('That boss is huge.')).toBe('That boss is huge.');
-    expect(endAtLastSentence('the sand cube thing just got a whole new life and the green')).toBe(
-      'the sand cube thing just got a whole new life and the green',
-    );
-    // A one-word sentence is not worth keeping on its own.
-    expect(endAtLastSentence('Ok. the sand cube thing just got a whole')).toBe('Ok. the sand cube thing just got a whole');
+    expect(endAtLastSentence('wait is that a dragon?"')).toBe('wait is that a dragon?"');
+  });
+
+  // 261023: never speak a half sentence.
+  it('drops a cut line with nowhere earlier to end', () => {
+    expect(endAtLastSentence('the sand cube thing just got a whole new life and the green')).toBe('');
+    // A one-word sentence is not worth keeping on its own either.
+    expect(endAtLastSentence('Ok. the sand cube thing just got a whole')).toBe('');
   });
 
   it('does not split on a decimal or a mid-word dot', () => {
-    expect(endAtLastSentence('version 1.21 looks great and the')).toBe('version 1.21 looks great and the');
+    expect(endAtLastSentence('version 1.21 looks great and the')).toBe('');
+    expect(endAtLastSentence('version 1.21 looks great. And the')).toBe('version 1.21 looks great.');
   });
 });
 

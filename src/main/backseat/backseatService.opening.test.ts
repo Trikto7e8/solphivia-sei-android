@@ -15,6 +15,9 @@ const h = vi.hoisted(() => ({
   speech: [] as Array<{ text: string; ambientCapturedAt?: number }>,
   captures: [] as Array<[string, Record<string, unknown>]>,
   notes: [] as string[],
+  maxTokens: [] as Array<number | undefined>,
+  stop: 'end_turn' as string,
+  tail: null as null | { type: string; name: string; input: unknown },
 }));
 
 vi.mock('electron', () => ({ app: { isPackaged: true, getPath: () => '/tmp' } }));
@@ -36,13 +39,16 @@ vi.mock('../llm', () => ({
   buildLlmProvider: async () => ({
     kind: 'anthropic',
     model: 'test',
-    call: async (req: { timeoutMs?: number; maxRetries?: number; messages?: Array<{ content: unknown }> }) => {
+    call: async (req: { timeoutMs?: number; maxRetries?: number; maxTokens?: number; messages?: Array<{ content: unknown }> }) => {
       h.reqs.push({ timeoutMs: req.timeoutMs, maxRetries: req.maxRetries });
+      h.maxTokens.push(req.maxTokens);
       const last = req.messages?.[req.messages.length - 1]?.content;
       const text = Array.isArray(last) ? last.find((b: { type?: string }) => b.type === 'text') : null;
       h.notes.push((text as { text?: string } | null)?.text ?? '');
       if (h.reply instanceof Error) throw h.reply;
-      return { content: h.reply ? [{ type: 'text', text: h.reply }] : [], usage: {}, stopReason: 'end_turn' };
+      const content: unknown[] = h.reply ? [{ type: 'text', text: h.reply }] : [];
+      if (h.tail) content.push(h.tail);
+      return { content, usage: {}, stopReason: h.stop };
     },
   }),
 }));
@@ -94,7 +100,10 @@ describe('backseat opening look (261023)', () => {
     h.speech.length = 0;
     h.captures.length = 0;
     h.notes.length = 0;
+    h.maxTokens.length = 0;
     h.reply = 'a line';
+    h.stop = 'end_turn';
+    h.tail = null;
     initBackseatService({
       pushChatMessage: (_c, m, speech) => {
         if (m.role === 'companion') h.speech.push({ text: m.text, ambientCapturedAt: speech?.ambientCapturedAt });
@@ -120,6 +129,7 @@ describe('backseat opening look (261023)', () => {
   it('other looks keep the normal budget and their frame time', async () => {
     await tick('idle');
     expect(h.reqs).toEqual([{ timeoutMs: 30_000, maxRetries: undefined }]);
+    expect(h.maxTokens).toEqual([45]);
     expect(h.speech[0].ambientCapturedAt).toBeTypeOf('number');
   });
 
@@ -128,6 +138,34 @@ describe('backseat opening look (261023)', () => {
     await expect(tick('start')).resolves.toBe('failed');
     h.reply = '';
     await expect(tick('start')).resolves.toBe('silent');
+  });
+
+  it('runs the opening look on its own, larger token cap', async () => {
+    await tick('start');
+    expect(h.maxTokens).toEqual([80]);
+  });
+
+  // 261023: never speak a half sentence.
+  it('a line cut mid-sentence with nothing finished before it is not spoken', async () => {
+    h.reply = 'hey ouen, that double jump thing you';
+    h.stop = 'max_tokens';
+    await expect(tick('start')).resolves.toBe('silent');
+    expect(h.speech).toEqual([]);
+  });
+
+  it('a cut line ends at its last finished sentence', async () => {
+    h.reply = 'Hey Ouen! That double jump thing you';
+    h.stop = 'max_tokens';
+    await expect(tick('start')).resolves.toBe('spoke');
+    expect(h.speech.map((x) => x.text)).toEqual(['Hey Ouen!']);
+  });
+
+  it('a cut inside a tool call after the line leaves the line whole', async () => {
+    h.reply = 'hey ouen that castle is huge';
+    h.stop = 'max_tokens';
+    h.tail = { type: 'tool_use', name: 'remember', input: {} };
+    await expect(tick('start')).resolves.toBe('spoke');
+    expect(h.speech.map((x) => x.text)).toEqual(['hey ouen that castle is huge']);
   });
 
   it('a look with no session is dropped', async () => {

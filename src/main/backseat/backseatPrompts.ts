@@ -376,8 +376,19 @@ export const START_LENGTH_REMINDER =
  * remember() cut off by it is not saved (backseatService honorRemember).
  */
 export const BACKSEAT_LOOK_MAX_TOKENS = 45;
+/**
+ * 261023: the opening look's own cap. At 45 it cut 31 of 100 opening lines in
+ * the 261008-261010 replays, and 11 of those had no finished sentence to end
+ * at, so a half sentence was the first thing the player heard. The opening
+ * note asks for a hello and an optional thought, which runs longer than an
+ * ordinary look; 80 fits that in one or two short sentences and still stops a
+ * line that runs on. A cut line that ends nowhere is not spoken
+ * (endAtLastSentence), and an empty opening look is taken once more.
+ */
+export const BACKSEAT_START_MAX_TOKENS = 80;
 export function backseatMaxTokens(kind: BackseatTickKind): number {
-  return kind === 'user' ? 400 : BACKSEAT_LOOK_MAX_TOKENS;
+  if (kind === 'user') return 400;
+  return kind === 'start' ? BACKSEAT_START_MAX_TOKENS : BACKSEAT_LOOK_MAX_TOKENS;
 }
 
 // ── Backseat games (260929) ──────────────────────────────────────────────
@@ -539,8 +550,10 @@ export const SAVE_CLIP_TOOL = {
  * 261010: a look capped at BACKSEAT_LOOK_MAX_TOKENS that runs into the cap is
  * cut mid-word ("are you crafting that bucket or just ho"), and every word of
  * it is spoken. When the cut text holds a finished sentence before the cut,
- * the line ends there instead; otherwise it is left as it is. This looks only
- * at where the model was stopped, never at what it said.
+ * the line ends there instead. 261023: when it does not (or what is left is a
+ * single word), nothing is spoken: a half sentence is worse than no line, and
+ * the replays spoke 46 of them in 909 looks. This looks only at where the
+ * model was stopped, never at what it said.
  */
 export function endAtLastSentence(text: string): string {
   const t = text.trimEnd();
@@ -548,9 +561,9 @@ export function endAtLastSentence(text: string): string {
   let end = -1;
   const re = /[.!?]+["')\]]*(?=\s)/g;
   for (let m = re.exec(t); m; m = re.exec(t)) end = m.index + m[0].length;
-  if (end <= 0) return t;
+  if (end <= 0) return '';
   const kept = t.slice(0, end).trim();
-  return kept.split(/\s+/).length >= 2 ? kept : t;
+  return kept.split(/\s+/).length >= 2 ? kept : '';
 }
 
 /**
@@ -692,8 +705,8 @@ export function tickNote(args: {
     return (
       '[System note, not the player speaking: they just shared their screen with you, and this is ' +
       `your first look at it.${extras} This look always gets a line, even when the screen is a menu, a ` +
-      'loading screen or an inventory: say a short hello in your own words, and add one quick thought ' +
-      'about something you can see if you have one. Do not describe the picture back to them and do not thank them for sharing. ' +
+      'loading screen or an inventory: say a short hello in your own words. If you have one quick thought ' +
+      'about something you can see, fold it into the same sentence. Do not describe the picture back to them and do not thank them for sharing. ' +
       'There is very little history behind this look, so keep it to what is on screen and to them. ' +
       `Do not mention this note. ${START_LENGTH_REMINDER}]`
     );

@@ -1310,8 +1310,15 @@ async function runTurn(
   // a newline join spoke ". They're all free" as its own line.
   const fullText = stripDashes(textAfterLead(res.content, leadSpoken));
   // 261010: a line cut at the look cap ends at its last finished sentence.
-  const replyText = cutOff ? endAtLastSentence(fullText) : fullText;
-  if (cutOff && replyText !== fullText.trimEnd()) {
+  // 261023: and is not spoken at all when it has none. Only when the cut
+  // landed in the text: a cap that stopped a save_clip()/remember() after it
+  // left the line itself whole, finished with a full stop or not.
+  const blocks = res.content as Array<{ type?: string }>;
+  const cutInText = cutOff && blocks.length > 0 && blocks[blocks.length - 1]?.type === 'text';
+  const replyText = cutInText ? endAtLastSentence(fullText) : fullText;
+  if (cutInText && !replyText && fullText.trim()) {
+    slog(s, `turn ${tick.kind}: cut line had no finished sentence, not spoken ("${fullText.trim().slice(0, 40)}")`);
+  } else if (cutInText && replyText !== fullText.trimEnd()) {
     slog(s, `turn ${tick.kind}: cut line ended at its last sentence ("${fullText.slice(replyText.length).trim().slice(0, 40)}" dropped)`);
   }
 

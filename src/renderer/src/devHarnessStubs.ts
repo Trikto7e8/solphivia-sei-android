@@ -69,6 +69,9 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // default), call, untagged, goal, long (two-line clamp), or none (no card).
   // Analytics calls are kept on window.__seiDevTrack.
   const homeMode = (params.get('dashshot') ?? '') === 'home';
+  // ?dashshot=art (261023): names over character art (DevArtShot). The
+  // generic Proxy answers whatever the page, call and grid ask.
+  const artMode = (params.get('dashshot') ?? '') === 'art';
   // ?dashshot=voicekey (261020, T158): the ElevenLabs key surfaces.
   // `&backend=local` for My key (default Sei Cloud), `&key=1` for a saved key.
   const voiceKeyMode = (params.get('dashshot') ?? '') === 'voicekey';
@@ -241,6 +244,19 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
       : {}),
     ...(homeMode
       ? {
+          // &art= (261023): every wall slot has a last line, the call row
+          // Shawn's report showed, so the hover reveal has text to measure.
+          ...(params.has('art')
+            ? {
+                chatPreviews: async () =>
+                  Object.fromEntries(
+                    ['sui', 'marv', 'lyra'].map((n) => [
+                      `dashshot-home-${n}`,
+                      { role: 'system', text: `You and ${n[0].toUpperCase()}${n.slice(1)} called for a few seconds.`, ts: Date.now() - 3_600_000 },
+                    ]),
+                  ),
+              }
+            : {}),
           homeNextSteps: async (ids: string[]) => {
             const kind = params.get('step') ?? 'plan';
             const id = ids[0];
@@ -330,7 +346,7 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
         }
       : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode || artMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

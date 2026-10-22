@@ -76,40 +76,52 @@
   position: absolute;
   inset: 0;
   pointer-events: none;
-  /* 260724: bottom wash softened — it used to climb half the panel at 88%
-     opacity, which read as a heavy fog on the light themes. Now it rises just
-     past the character-name line so the name sits ON the wash (px-anchored so
-     tall panels don't stretch it higher) and stays faint. */
+  /* Top wash only. The bottom text bed lives on .info::before (261023): a
+     --bg wash under the name was a LIGHT bed on the light themes (white name
+     on a pale fog) and too thin on dark ones, so "Sui" vanished on her pale
+     lavender portrait. */
   background: linear-gradient(
     180deg,
     color-mix(in srgb, var(--bg) 22%, transparent) 0%,
-    transparent 28%,
-    transparent calc(100% - 140px),
-    color-mix(in srgb, var(--bg) 48%, transparent) 100%
-  );
-}
-
-/* 260724: on the dark themes the softened wash left the info block sitting on
-   bright art with almost no bed — deepen the bottom of the gradient (same
-   shape, stronger mix) so the name/status/lastline rest on a darker wash. */
-:root[data-scheme='dark'] .panelScrim {
-  background: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--bg) 22%, transparent) 0%,
-    transparent 28%,
-    transparent calc(100% - 140px),
-    color-mix(in srgb, var(--bg) 76%, transparent) 100%
+    transparent 28%
   );
 }
 
 /* ── Info block ──────────────────────────────────────────────────────── */
 .info {
   position: relative;
+  isolation: isolate;
   padding: 0 18px 18px;
   display: flex;
   flex-direction: column;
   gap: 6px;
   min-width: 0;
+}
+
+/* 261023: the text bed. A dark --art-ink fade (dark in every theme, because
+   --art-fg is light in every theme) that starts 72px above the name and
+   deepens under it, so name, Presence line, lastline and buttons always sit
+   on ink whatever the portrait is. It is sized to the info block, so it grows
+   with the hover reveal instead of fogging the whole panel, and on an already
+   dark portrait it just reads as a soft vignette. It sits on the portrait,
+   never on the custom background, so it is not scaled by --app-bg-tint. */
+.info::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: -72px;
+  bottom: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(
+    180deg,
+    transparent 0,
+    color-mix(in srgb, var(--art-ink) 13%, transparent) 24px,
+    color-mix(in srgb, var(--art-ink) 35%, transparent) 48px,
+    color-mix(in srgb, var(--art-ink) 60%, transparent) 72px,
+    color-mix(in srgb, var(--art-ink) 82%, transparent) 100%
+  );
 }
 
 .nameRow {
@@ -132,10 +144,13 @@
   text-overflow: ellipsis;
 }
 
-/* On the light themes a white name can land on bright art; a soft dark
-   shadow keeps it legible without darkening the faint scrim. */
-:root[data-scheme='light'] .name {
-  text-shadow: 0 1px 2px rgba(15, 25, 35, 0.45), 0 2px 10px rgba(15, 25, 35, 0.3);
+/* A light name can land on bright art in any theme; a tight ink edge plus a
+   soft halo keeps the glyphs crisp where the bed is thinnest (261023: was
+   light-scheme only, and dark mode is where Shawn lost "Sui"). */
+.name {
+  text-shadow:
+    0 1px 2px color-mix(in srgb, var(--art-ink) 55%, transparent),
+    0 0 14px color-mix(in srgb, var(--art-ink) 45%, transparent);
 }
 
 /* 260724: EVERYTHING in the info block sits on art, so on light themes the
@@ -152,7 +167,7 @@
   /* 260724: strengthened (0.35 → 0.65, tighter blur) — the small texts needed
      a firmer dark edge on bright art. Same single shadow, no new effect; the
      name keeps its own heavier two-layer shadow above. */
-  text-shadow: 0 1px 3px rgba(15, 25, 35, 0.65);
+  text-shadow: 0 1px 3px color-mix(in srgb, var(--art-ink) 65%, transparent);
 }
 
 /* 260724: dark-theme counterpart — the small texts (Presence line, lastline,
@@ -163,6 +178,7 @@
   --text: var(--art-fg);
   --text-2: color-mix(in srgb, var(--art-fg) 86%, transparent);
   --muted: color-mix(in srgb, var(--art-fg) 70%, transparent);
+  text-shadow: 0 1px 3px color-mix(in srgb, var(--art-ink) 65%, transparent);
 }
 
 /* Mono micro-line for the cloud-only placeholder state. */
@@ -224,6 +240,9 @@
   display: flex;
   gap: 8px;
   padding-bottom: 2px;
+  /* Buttons bring their own fills; the info block's text halo is for the
+     bare text on art. */
+  text-shadow: none;
 }
 
 /* ── Dormant (empty) slot ────────────────────────────────────────────── */

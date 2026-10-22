@@ -597,7 +597,7 @@ export const ZH_MODALS: Record<string, string> = {
   'Buy extra credits': '购买额外积分',
   'Extra credits do not expire and do not reset. Your companions use your weekly allowance first, then these.':
     '额外积分不会过期也不会重置。你的伙伴会先使用每周额度，然后再使用这些积分。',
-  'Buy': '购买',
+  'Buy for {price}': '{price} 购买',
 
   // ── UnsupportedVersionModal ──
   'Minecraft version not supported': '不支持的 Minecraft 版本',

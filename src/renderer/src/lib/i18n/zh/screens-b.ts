@@ -204,6 +204,11 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Opening…': '正在打开…',
   'Downgrade': '降级',
   'Upgrade': '升级',
+  // 261023: the plan card buttons ({name} is the plan name, e.g. Party).
+  'Get {name}': '开通 {name}',
+  'Upgrade to {name}': '升级到 {name}',
+  'Resume {name}': '恢复 {name}',
+  'Recommended': '推荐',
   'Your {name} plan will not renew. It ends {date}.': '你的 {name} 套餐将不再续费，于 {date} 结束。',
   'Your {name} plan will not renew.': '你的 {name} 套餐将不再续费。',
   'Your {name} plan renews on {date}.': '你的 {name} 套餐将于 {date} 续费。',

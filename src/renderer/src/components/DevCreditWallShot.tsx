@@ -7,6 +7,10 @@
  *     credits  the Credits screen at the wall, with the reset callout
  *     draw     the Draw! paused card on the credit wall
  *     banner   the "Your free play is back" strip
+ *     topup    the Credits screen with the extra-credit packages open
+ *
+ * `&plan=quest|party` seeds a subscriber, `&under=1` an account with
+ * allowance left (both answered by the creditsGet stub too).
  *
  * Add `&lang=zh` for the Chinese copy. window.sei is stubbed by
  * devHarnessStubs.ts (creditsGet answers a free plan at the wall, reset 3
@@ -30,16 +34,20 @@ const RESETS_AT = new Date(Date.now() + 3 * 86_400_000).toISOString();
 function seed(): void {
   const params = new URLSearchParams(window.location.search);
   if (params.get('lang') === 'zh') useLangStore.getState().setLang('zh');
+  const planParam = params.get('plan');
+  const under = params.has('under');
   useCreditsStore.setState({
-    plan: 'free',
-    usage_pct: 100,
-    over_limit: true,
+    plan: planParam === 'quest' || planParam === 'party' ? planParam : 'free',
+    usage_pct: under ? 40 : 100,
+    over_limit: !under,
     resets_at: RESETS_AT,
     ai_backend_kind: 'cloud-proxy',
     initialized: true,
     snapshotFailed: false,
     hardStopActive: params.get('part') === 'modal',
     hardStopReason: 'depleted',
+    // The plan screen opens the packages on arrival (the hard-stop Top up path).
+    topUpRequested: params.get('part') === 'topup',
   });
   useDataStore.setState((s) => ({
     characters: [
@@ -88,7 +96,7 @@ export function DevCreditWallShot(): React.ReactElement {
   return (
     <div style={{ position: 'fixed', inset: 0, display: 'flex', flexDirection: 'column', background: 'var(--window)', overflow: 'auto' }}>
       {part === 'banner' ? <BannerPart /> : null}
-      {part === 'credits' || part === 'modal' ? <CreditsScreen /> : null}
+      {part === 'credits' || part === 'modal' || part === 'topup' ? <CreditsScreen /> : null}
       {part === 'draw' ? <DrawScreen characterId={CHAR} /> : null}
       <HardStopModal />
     </div>

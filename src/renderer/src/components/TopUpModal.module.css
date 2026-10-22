@@ -21,6 +21,7 @@
    is light in light themes and dark in dark ones, and stays a visible step
    off the modal's var(--bg2) panel in every theme. */
 .pack {
+  min-width: 0;
   background: var(--bg4);
   border: 1px solid var(--border);
   padding: 16px 14px 14px;
@@ -45,5 +46,5 @@
 
 .packAction {
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 14px;
 }

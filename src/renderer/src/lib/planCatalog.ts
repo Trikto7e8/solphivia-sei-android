@@ -100,6 +100,14 @@ export const TOP_UPS: readonly TopUpPackage[] = [
   { kind: 'topup_large', price: '$20', credits: '3200 credits + 400 bonus' },
 ] as const;
 
+/**
+ * The plan the plan screen points people at (261023): its card gets the
+ * accent edge and a "Recommended" tag while it is an upgrade from the
+ * current plan. Presentation only, no price or allowance rides on it. Party,
+ * because Sei is a gaming companion and Party is the plan sized for games.
+ */
+export const RECOMMENDED_TIER: PlanTier = 'party';
+
 /** Rank order, free < quest < party. Used to label Upgrade vs Downgrade. */
 export const TIER_ORDER: Record<PlanTier, number> = { free: 0, quest: 1, party: 2 };
 

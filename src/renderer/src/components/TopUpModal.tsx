@@ -23,6 +23,7 @@ import { useT } from '../lib/i18n';
 import { useCreditsStore } from '../lib/stores/useCreditsStore';
 import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
+import { PlanButton } from './PlanButton';
 import styles from './TopUpModal.module.css';
 
 export interface TopUpModalProps {
@@ -63,15 +64,16 @@ export function TopUpModal({ onClose, onProceed }: TopUpModalProps): React.React
             <span className={styles.packPrice}>{pkg.price}</span>
             <span className={styles.packCredits}>{pkg.credits}</span>
             <div className={styles.packAction}>
-              <Button
-                kind="accent"
-                size="sm"
-                fullWidth
+              {/* 261023: a big full-width target that names the amount. */}
+              <PlanButton
+                kind="primary"
+                size="md"
+                arrow
                 disabled={busy}
                 onClick={() => handleBuy(pkg.kind)}
               >
-                {t('Buy')}
-              </Button>
+                {t('Buy for {price}', { price: pkg.price })}
+              </PlanButton>
             </div>
           </div>
         ))}

@@ -194,10 +194,12 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
     worldCheckNow: async () => null,
     lanCheckNow: async () => ({ kind: 'closed' }),
     getConfig: async () => ({}),
+    // `&plan=quest|party` (261023): a subscriber's plan cards; `&under=1`
+    // answers an account that still has allowance left (no wall).
     creditsGet: async () => ({
-      plan: 'free',
-      usage_pct: 100,
-      over_limit: true,
+      plan: params.get('plan') === 'quest' || params.get('plan') === 'party' ? params.get('plan') : 'free',
+      usage_pct: params.has('under') ? 40 : 100,
+      over_limit: !params.has('under'),
       resets_at: new Date(now + 3 * 86_400_000).toISOString(),
       extra_credits_used: 0,
       extra_credits_total: 0,

@@ -1880,6 +1880,17 @@ async function sendVoiceIdleTurnImpl(
   // Without this guard the turn still runs a full paid LLM round-trip and
   // persists a voice-flagged line that is never spoken anywhere.
   if (!isCallActive(characterId)) return { messages: [] };
+  // 261023: a companion watching the screen has her own idle looks (backseat);
+  // a screenless nudge alongside them talks over that loop. The renderer no
+  // longer picks her; this is the backstop. (Before the inflight check, so
+  // that check and the claim below stay in one synchronous step.)
+  try {
+    const { getBackseatState } = await import('../backseat/backseatService');
+    const bs = getBackseatState(characterId);
+    if (bs && bs.phase !== 'ended') return { messages: [] };
+  } catch {
+    /* no backseat module: nothing to defer to */
+  }
   if (inflight.has(characterId)) return { messages: [] };
   const ctrl = new AbortController();
   inflight.set(characterId, ctrl);

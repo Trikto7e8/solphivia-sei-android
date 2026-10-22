@@ -170,7 +170,7 @@ export function CallControls({
         className={sharing ? `${btn} ${styles.pillBtnToggled}` : btn}
         onClick={() => {
           if (sharing) {
-            void stopSharing();
+            void stopSharing('user_stop');
             return;
           }
           if (shareVisionBlocked || shareMcActive) return;
@@ -190,11 +190,10 @@ export function CallControls({
         type="button"
         className={`${btn} ${styles.pillBtnHangup}`}
         onClick={() => {
-          // A share belongs to the call, so it goes with it. Ending the session
-          // here rather than reacting to the call status keeps the teardown in
-          // one place and ordered: capture stops before the call does.
-          if (sharing) void stopSharing();
-          endCall();
+          // A share belongs to the call, so it goes with it. 261023: endCall
+          // stops it first (capture before the call, as this button used to),
+          // for every way a call ends, with the reason.
+          endCall('user_hangup');
           onHangUp?.();
         }}
         aria-label={t('Hang up')}

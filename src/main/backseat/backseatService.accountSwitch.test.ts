@@ -161,12 +161,29 @@ describe('backseat on an account switch', () => {
     expect(h.rows).toBe(2);
   });
 
-  it('an ordinary stop sends no reason', async () => {
+  // 261023: every end carries a reason; a caller that passes none shows up
+  // as 'unspecified' instead of hiding among the reasonless ends.
+  it('a stop with no reason is reported as unspecified', async () => {
     await startBackseat('sui', 'screen:1:0', 'Screen', 'text' as never);
     await endBackseat('sui');
     await new Promise((r) => setTimeout(r, 10));
     expect(ended()).toHaveLength(1);
-    expect(ended()[0][1]).not.toHaveProperty('reason');
+    expect(ended()[0][1]).toMatchObject({ reason: 'unspecified', failed_turns: 0 });
+    expect(ended()[0][1]).not.toHaveProperty('first_line_ms');
+  });
+
+  it('a start that replaces a live session ends it as replaced and is reported as a restart', async () => {
+    await startBackseat('sui', 'window:1:0', 'Roblox', 'text' as never, undefined, 'picker');
+    await startBackseat('sui', 'window:2:0', 'Notes', 'text' as never, undefined, 'picker');
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ended()).toHaveLength(1);
+    expect(ended()[0][1]).toMatchObject({ reason: 'replaced' });
+    const started = h.captures.filter(([e]) => e === 'backseat_started');
+    expect(started).toHaveLength(2);
+    expect(started[0][1]).toMatchObject({ trigger: 'picker', replaced_live: false });
+    expect(started[1][1]).toMatchObject({ trigger: 'picker', replaced_live: true, prev_end_reason: 'replaced' });
+    expect(typeof (started[1][1] as { since_prev_end_ms?: unknown }).since_prev_end_ms).toBe('number');
+    await endBackseat('sui', 'user_stop');
   });
 });
 

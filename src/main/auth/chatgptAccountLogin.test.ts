@@ -196,6 +196,8 @@ describe('chatgptAccountLogin.login', () => {
       [409, { error: 'chatgpt_account_conflict', reason: 'account_linked_to_other_chatgpt' }, 'account_conflict'],
       [422, { error: 'chatgpt_no_email' }, 'no_email'],
       [429, { error: 'rate_limited' }, 'rate_limited'],
+      [429, { error: 'rate_limited', reason: 'email_tickets', retry_after: 3600 }, 'rate_limited'],
+      [429, { error: 'rate_limited', reason: 'global_emails', retry_after: 3600 }, 'rate_limited'],
       [404, { error: 'not_found' }, 'unavailable'],
       [503, { error: 'chatgpt_login_unavailable' }, 'unavailable'],
     ];
@@ -281,6 +283,23 @@ describe('chatgptAccountLogin email code', () => {
     });
     expect(await h.login.verifyCode('123456')).toMatchObject({ ok: false, reason: 'unavailable' });
     down = false;
+    expect(await h.login.verifyCode('123456')).toMatchObject({ ok: true, kind: 'signed_in' });
+  });
+
+  it('per-address / project-wide caps (429 with a reason) are rate_limited and keep the ticket', async () => {
+    let capped = true;
+    const h = await atCode({
+      '/auth/chatgpt/verify': () =>
+        capped
+          ? { status: 429, body: { error: 'rate_limited', reason: 'email_failures', retry_after: 86400 } }
+          : { status: 200, body: { status: 'session', session: SESSION } },
+      '/auth/chatgpt/resend': () => ({ status: 429, body: { error: 'rate_limited', reason: 'global_emails', retry_after: 3600 } }),
+    });
+    expect(await h.login.verifyCode('123456')).toMatchObject({ ok: false, reason: 'rate_limited' });
+    expect(await h.login.resendCode()).toMatchObject({ ok: false, reason: 'rate_limited' });
+    expect(h.discarded).toHaveLength(0);
+    expect((await h.login.status()).awaitingCode).toBe(true);
+    capped = false;
     expect(await h.login.verifyCode('123456')).toMatchObject({ ok: true, kind: 'signed_in' });
   });
 

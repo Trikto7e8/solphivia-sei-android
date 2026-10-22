@@ -46,7 +46,15 @@ export interface ChatgptLoginState {
 type Translate = (en: string, params?: Record<string, string | number>) => string;
 
 /** User-facing copy for a failure. Main's messages are English-only logs. */
-export function chatgptLoginErrorCopy(reason: ChatgptLoginFailure, t: Translate): string | null {
+/**
+ * `surface` is 'link' for Settings > Link ChatGPT, where the user is already
+ * signed in and "use Google instead" would make no sense.
+ */
+export function chatgptLoginErrorCopy(
+  reason: ChatgptLoginFailure,
+  t: Translate,
+  surface: 'sign_in' | 'link' = 'sign_in',
+): string | null {
   switch (reason) {
     case 'cancelled':
       return null;
@@ -69,7 +77,11 @@ export function chatgptLoginErrorCopy(reason: ChatgptLoginFailure, t: Translate)
     case 'linked_elsewhere':
       return t('This ChatGPT account is already linked to a different Sei account.');
     case 'rate_limited':
-      return t('Too many tries. Wait a few minutes and try again.');
+      // Any 429: the per-IP gates, the per-address and project-wide email
+      // caps (sei-proxy quota.ts), or GoTrue's own email limit.
+      return surface === 'link'
+        ? t('Too many tries. Wait a bit and try again.')
+        : t('Too many tries. Wait a bit, or continue with Google.');
     case 'token_rejected':
       return t("Sei couldn't confirm your ChatGPT sign-in. Try again.");
     case 'invalid_code':

@@ -56,6 +56,18 @@ describe('ChatGPT login copy', () => {
     }
   });
 
+  it('rate limiting tells the user to wait or use Google (and only wait in Settings)', async () => {
+    const { chatgptLoginErrorCopy } = await import('./useChatgptLogin');
+    const signIn = chatgptLoginErrorCopy('rate_limited', ident)!;
+    expect(signIn).toMatch(/Too many tries/);
+    expect(signIn).toMatch(/Google/);
+    const link = chatgptLoginErrorCopy('rate_limited', ident, 'link')!;
+    expect(link).toMatch(/Too many tries/);
+    expect(link).not.toMatch(/Google/);
+    expect(ZH[signIn]).toBeTruthy();
+    expect(ZH[link]).toBeTruthy();
+  });
+
   it('every code reason has its own line, translated', async () => {
     const { chatgptCodeReasonCopy } = await import('./useChatgptLogin');
     const lines = REASONS.map((r) => chatgptCodeReasonCopy(r, ident));

@@ -63,10 +63,10 @@ export function ChatgptLinkRow(props: ChatgptLinkRowProps): React.ReactElement {
       if (res.ok) {
         setStatus({ linked: true, email: res.email, awaitingCode: false });
       } else {
-        setError(chatgptLoginErrorCopy(res.reason, t));
+        setError(chatgptLoginErrorCopy(res.reason, t, 'link'));
       }
     } catch {
-      setError(chatgptLoginErrorCopy('sign_in_failed', t));
+      setError(chatgptLoginErrorCopy('sign_in_failed', t, 'link'));
     } finally {
       setBusy(false);
     }

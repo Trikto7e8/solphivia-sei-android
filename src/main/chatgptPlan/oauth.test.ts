@@ -96,9 +96,23 @@ describe('PKCE + authorize URL', () => {
 
   it('redacts hints and one-time values for logs', () => {
     const red = redactAuthorizeUrl(
-      buildAuthorizeUrl({ issuedClientId: 'c', hostId: 'h', redirectUri: 'r', state: 'S3', nonce: 'N3', codeChallenge: 'C3', idTokenHint: 'ID3', loginHint: 'L3' }),
+      buildAuthorizeUrl({
+        issuedClientId: 'oaiapp_CLIENT3',
+        hostId: 'HOST3',
+        redirectUri: 'r',
+        state: 'S3',
+        nonce: 'N3',
+        codeChallenge: 'C3',
+        idTokenHint: 'ID3',
+        loginHint: 'L3',
+      }),
     );
-    for (const secret of ['S3', 'N3', 'C3', 'ID3', 'L3']) expect(red).not.toContain(secret);
+    for (const secret of ['S3', 'N3', 'C3', 'ID3', 'L3', 'oaiapp_CLIENT3', 'HOST3']) expect(red).not.toContain(secret);
+    const q = new URL(red).searchParams;
+    expect(q.get('client_id')).toBe('[redacted]');
+    expect(q.get('ext_agent_host_id')).toBe('[redacted]');
+    // Non-identifying parameters stay readable for debugging.
+    expect(q.get('response_type')).toBe('code');
   });
 });
 

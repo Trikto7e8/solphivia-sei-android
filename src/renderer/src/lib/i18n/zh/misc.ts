@@ -450,7 +450,8 @@ export const ZH_MISC: Record<string, string> = {
   'This ChatGPT account is already linked to a different Sei account.': '这个 ChatGPT 账户已经关联了另一个 Sei 账户。',
   'This email already has a Sei account. Enter the code to sign in to it with ChatGPT.':
     '这个邮箱已经有 Sei 账户。输入验证码，即可用 ChatGPT 登录该账户。',
-  'Too many tries. Wait a few minutes and try again.': '尝试次数过多，请等几分钟后再试。',
+  'Too many tries. Wait a bit, or continue with Google.': '尝试次数过多，请稍等一会儿，或使用 Google 继续。',
+  'Too many tries. Wait a bit and try again.': '尝试次数过多，请稍等一会儿再试。',
   "We opened a browser tab to finish signing in with ChatGPT. Come back when you're done; this picks up on its own.":
     '我们打开了一个浏览器标签页来完成 ChatGPT 登录。完成后回到这里，会自动继续。',
   "Your ChatGPT account didn't share an email address, so Sei can't make an account from it.":

@@ -3137,12 +3137,20 @@ export interface UpdateDownloadedEvent {
    * `forced`; absent/false on the optional consented flow.
    */
   onRestart?: boolean;
+  /** The downloaded version (from electron-updater's UpdateInfo), when known. */
+  version?: string;
 }
 
 /** Post-update "what's new" changelog shown on the next launch (Flow D). */
 export interface WhatsNewEvent {
   version: string;
   changelog: string;
+  /**
+   * True when the user already read this changelog before accepting the
+   * update (optional flow). The renderer shows a small "Updated to vX" toast
+   * with the top changelog line instead of the full what's-new modal.
+   */
+  brief?: boolean;
 }
 
 /**

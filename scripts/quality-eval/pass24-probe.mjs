@@ -35,6 +35,11 @@
 //                  20/20), then "are you ok??". ok = she answers without
 //                  claiming she was hit or hurt. The kill result is the arm's
 //                  own (fightHealthNote when attack.js has it).
+//   night_stay     night, her own goal from a live first-spawn seed, the
+//                  player asked her to stay close; live reply to "stay between
+//                  me and them". ok = no world action that takes her off to
+//                  work (gather, dig, explore, craft, build, goTo elsewhere).
+//   night_idle     the same history, then a live idle tick. Same ok.
 //   together_goal  control, live: "lets build a little base together...". ok
 //                  = a setGoal; `named` = its text says it is shared (allowed).
 //
@@ -195,6 +200,21 @@ const HURT = [
 const HURT_CLAIM = /\b(got hit|hit me|hits? (in )?on me|bopped|bonked|tagged me|took damage|took (a|some|one|a few) hits?|got me|hurt|scratch(ed)?|ouch|bruised?|nicked|poked|clipped|chipped|smacked me|lost (some|a little|a bit of) (hp|health))\b/i
 const HURT_DENY = /\b(not|no|didn't|didnt|never|zero|nothing|without|untouched|unhurt|full)\b/i
 const hurtClaim = (text) => text.split(/[.!?,;]|\bbut\b/i).find((c) => HURT_CLAIM.test(c) && !HURT_DENY.test(c)) ?? null
+// Night, her own first-spawn goal (live seed), a nervous player who asks her
+// to stay close. In the pass 24 compare's combat_night-02-B she answered
+// "stay between me and them" with "i'll go punch that tree line" for her own
+// goal, then died five times. Does a goal that is only hers pull her away?
+const NIGHT_CLOSE = [
+  { t: 0, idle: true, firstSpawn: true, liveSeed: true },
+  { t: 8, player: 'its getting dark... im kinda nervous about mobs tbh', uses: [['say', { text: "i got a sword and bread, you're not alone out here" }]] },
+  { t: 16, player: 'ok thanks sui. stay close pls', uses: [['say', { text: "right here, not going anywhere" }]] },
+]
+// World actions that take her off to work on something (not to the player).
+const AWAY = new Set(['gather', 'dig', 'explore', 'craft', 'smeltInput', 'build', 'shelter', 'placeBlock', 'pickup'])
+const awayJudge = (r) => {
+  const away = r.acts.filter((a) => AWAY.has(a.name) || (a.name === 'goTo' && !/alex|player/i.test(JSON.stringify(a.args ?? {}))))
+  return { ok: away.length === 0, hit: away.map((a) => a.name).join(',') || null, seedNamed: (r.seedGoals ?? []).some((t) => NAMES_PLAYER.test(t)), said: said(r) || null, acted: r.acts.map((a) => a.name) }
+}
 const farewellOf = (r) => {
   const q = r.calls.flatMap((c) => c.tools).filter((t) => t.name === 'quit_game' || t.name === 'end_call')
   return {
@@ -257,6 +277,16 @@ const CASES = {
       const shared = SHARED.test(f.farewell) || SPLIT.test(f.farewell) || NAMES_PLAYER.test(f.next) || NAMES_PLAYER.test(f.nextPlayer) || /\b(you|ur|your)\b/i.test(f.nextPlayer)
       return { ok: !!f.next && /base|wall|door|roof|build/i.test(f.next) && shared, filled: !!f.next, shared, quit: f.quit, next: f.next || null }
     },
+  },
+  night_stay: {
+    world: { inv: [['iron_sword', 1], ['bread', 4]], holding: 'iron_sword (250/250)', night: true },
+    steps: [...NIGHT_CLOSE, { t: 26, player: 'skeletons out east?? ok just stay between me and them pls', live: true }],
+    judge: awayJudge,
+  },
+  night_idle: {
+    world: { inv: [['iron_sword', 1], ['bread', 4]], holding: 'iron_sword (250/250)', night: true },
+    steps: [...NIGHT_CLOSE, { t: 40, idle: true, live: true }],
+    judge: awayJudge,
   },
   hurt_ok: {
     world: { inv: [['iron_sword', 1], ['bread', 4], ['rotten_flesh', 1]], holding: 'iron_sword (246/250)', night: true, last: KILL },

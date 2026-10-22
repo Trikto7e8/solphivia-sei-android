@@ -2,8 +2,7 @@
 
 [<img src="docs/sei-logo-blue.png" alt="Sei" width="240" />](https://sei.gg)
 
-An AI gaming companion.
-Companions that play your games with you, talk on voice, and remember you.
+AI gaming companions. Call, livestream, and game with unique characters.
 
 <img src="docs/app-home.png" alt="Sei home screen" width="720" />
 

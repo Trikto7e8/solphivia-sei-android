@@ -309,6 +309,29 @@ describe('attackEntity says what the fight cost her (261022)', () => {
     expect(fightHealthNote(3, 17)).toBe('You took 3 damage in this fight and are at 17/20 health.')
     expect(fightHealthNote(1.5, 18.5)).toBe('You took 1.5 damage in this fight and are at 18.5/20 health.')
     expect(fightHealthNote(0, undefined)).toBe('')
+    expect(fightHealthNote(0, 20, 20)).toBe('Nothing hurt you in this fight: you are at 20/20 health.')
+    expect(fightHealthNote(0, 16, 16)).toBe('Nothing hurt you in this fight. You were already at 16/20 health when it started, and you are at 16/20 now.')
+    expect(fightHealthNote(2, 14, 16)).toBe('You took 2 damage in this fight and are at 14/20 health.')
+  })
+
+  it('says she was already hurt when the fight began, instead of only "nothing hurt you" at 16/20', async () => {
+    // The usual order: a zombie hits her (sei:attacked), then she calls attackEntity.
+    const bot = withEvents(fightBot({ health: 16 }))
+    bot.attack.mockImplementation(() => { bot.emit('entityDead', { id: 7 }); delete bot.entities[7] })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight. You were already at 16/20 health when it started, and you are at 16/20 now.')
+  })
+
+  it('leaves the note off when she died during the action (the respawn is back at 20)', async () => {
+    const bot = withEvents(fightBot({ health: 10 }))
+    let n = 0
+    bot.attack.mockImplementation(() => {
+      n++
+      if (n === 1) { bot.health = 0; bot.emit('health'); bot.health = 20; bot.emit('health'); bot.emit('entityDead', { id: 7 }); delete bot.entities[7] }
+    })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).not.toMatch(/in this fight/)
   })
 
   it('counts a hit even when she regenerated back to full before the end', async () => {

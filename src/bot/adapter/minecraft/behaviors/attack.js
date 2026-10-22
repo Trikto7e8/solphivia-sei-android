@@ -142,13 +142,19 @@ export function goneResult(name, hits, died) {
 // at 20/20 health she kept telling the player "got hit a little" or "it hit
 // me", a flag in most quality compares since pass 6. The hp line in her
 // snapshot did not stop it; the result of the fight itself now says it.
-export function fightHealthNote(taken, hp) {
+// `startHp` is her health when the action began. She usually calls
+// attackEntity after a mob has already hit her, so a fight that cost nothing
+// can still start below 20; the note says so, or "nothing hurt you ... you
+// are at 16/20" would read as a contradiction of the hit she was told about.
+export function fightHealthNote(taken, hp, startHp) {
   if (!Number.isFinite(hp)) return ''
   const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
   const now = `${fmt(Math.max(0, hp))}/20`
-  return taken > 0
-    ? `You took ${fmt(taken)} damage in this fight and are at ${now} health.`
-    : `Nothing hurt you in this fight: you are at ${now} health.`
+  if (taken > 0) return `You took ${fmt(taken)} damage in this fight and are at ${now} health.`
+  if (Number.isFinite(startHp) && startHp < 20) {
+    return `Nothing hurt you in this fight. You were already at ${fmt(Math.max(0, startHp))}/20 health when it started, and you are at ${now} now.`
+  }
+  return `Nothing hurt you in this fight: you are at ${now} health.`
 }
 
 // 261012: say where the nearest one is when a name lookup comes up empty.
@@ -236,11 +242,15 @@ export async function attackEntityAction(args, bot, config) {
   try { bot.on?.('entityDead', onDead) } catch (_) {}
   // Health lost during this action, summed per drop so regen mid-fight does
   // not hide a hit (fightHealthNote).
+  // minHp catches a death mid-fight: the respawn puts health back to 20, and
+  // the note would then read as a fight she walked away from.
   let lastHp = startHp
+  let minHp = startHp
   let taken = 0
   const onHealth = () => {
     const hp = bot.health
     if (Number.isFinite(hp) && Number.isFinite(lastHp) && hp < lastHp) taken += lastHp - hp
+    if (Number.isFinite(hp) && !(hp >= minHp)) minHp = hp
     lastHp = hp
   }
   try { bot.on?.('health', onHealth) } catch (_) {}
@@ -293,10 +303,12 @@ export async function attackEntityAction(args, bot, config) {
     }
     // A mob fight that ran its course says what it cost her. An abort or the
     // critical-health stop (which already names her health) does not.
+    // A death during the action gets no note either.
     if (mobTarget && !signal?.aborted && !/^aborted|then stopped: you are down to/.test(result.text)) {
       onHealth()
       if (!bot.on && Number.isFinite(startHp) && Number.isFinite(bot.health)) taken = Math.max(0, startHp - bot.health)
-      const note = fightHealthNote(taken, bot.health)
+      const died = Number.isFinite(minHp) && minHp <= 0
+      const note = died ? '' : fightHealthNote(taken, bot.health, startHp)
       if (note) result = { ...result, text: `${result.text}. ${note}` }
     }
     return result.text

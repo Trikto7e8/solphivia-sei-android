@@ -106,7 +106,7 @@ describe('attackEntity after a kill (owner defense)', () => {
     const bot = fightable(world([{ id: 21, name: 'zombie', x: 2 }, { id: 22, name: 'zombie', x: -40 }], { ownerX: 4 }))
     bot.attack.mockImplementation((e) => { bot.emit('entityDead', { id: e.id }); delete bot.entities[e.id] })
     const r = await attackEntityAction({ target: 'zombie', times: 8 }, bot, {})
-    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
     expect(bot.attack).toHaveBeenCalledTimes(1)
   })
 
@@ -114,7 +114,7 @@ describe('attackEntity after a kill (owner defense)', () => {
     const bot = fightable(world([{ id: 21, name: 'sheep', x: 2 }, { id: 22, name: 'zombie', x: 3 }], { ownerX: 4 }))
     bot.attack.mockImplementation((e) => { bot.emit('entityDead', { id: e.id }); delete bot.entities[e.id] })
     const r = await attackEntityAction({ entity: 'sheep', times: 5 }, bot, {})
-    expect(r).toBe('killed sheep (1 hits)')
+    expect(r).toBe('killed sheep (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
   })
 
   it('gives a second hostile next to her one hit during the fight', async () => {
@@ -137,7 +137,7 @@ describe('attackEntity after a kill (owner defense)', () => {
     ], { ownerX: 4 }))
     bot.attack.mockImplementation((e) => { if (e.id === 21) { bot.emit('entityDead', { id: 21 }); delete bot.entities[21] } })
     const r = await attackEntityAction({ target: 'zombie', times: 8 }, bot, {})
-    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
     expect(bot.attack.mock.calls.map(([e]) => e.id)).toEqual([21])
   })
 

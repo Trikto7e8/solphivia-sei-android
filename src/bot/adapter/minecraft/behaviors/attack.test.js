@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi } from 'vitest'
 import { Vec3 } from 'vec3'
-import { weakWeaponNote, attackEntityAction, goneResult, CRITICAL_HP, continueAttack } from './attack.js'
+import { weakWeaponNote, attackEntityAction, goneResult, CRITICAL_HP, continueAttack, fightHealthNote } from './attack.js'
 
 function makeBot({ held = null, items = [] } = {}) {
   return {
@@ -104,7 +104,7 @@ describe('attackEntity reports death only on the death event (261011)', () => {
     const bot = withEvents(fightBot())
     bot.attack.mockImplementation(() => { bot.emit('entityDead', { id: 7 }); delete bot.entities[7] })
     const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
-    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
     expect(bot.handlers.entityDead).toHaveLength(0) // listener removed
   })
 
@@ -121,14 +121,14 @@ describe('attackEntity reports death only on the death event (261011)', () => {
     bot.attack.mockImplementation(() => { bot.emit('entityDead', { id: 7 }) }) // entity stays in the table
     const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
     expect(bot.attack).toHaveBeenCalledTimes(1)
-    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
   })
 
   it('counts a kill on the last swing', async () => {
     const bot = withEvents(fightBot())
     bot.attack.mockImplementation(() => { setTimeout(() => { bot.emit('entityDead', { id: 7 }) }, 50) })
     const r = await attackEntityAction({ entity_id: 7, times: 1 }, bot, {})
-    expect(r).toBe('killed zombie (1 hits)')
+    expect(r).toBe('killed zombie (1 hits). Nothing hurt you in this fight: you are at 20/20 health.')
   })
 
   it('names the mob when none is in range', async () => {
@@ -289,5 +289,53 @@ describe('continueAttack (261019)', () => {
     await attackEntityAction({ entity_id: 7, times: 2 }, bot, {})
     expect(seen[0]).toBeNull()
     expect(seen[1]).toMatch(/already on that zombie/)
+  })
+})
+
+// 261022 (pass 24): a finished mob fight says what it cost her, so "got hit a
+// little" at 20/20 health has the result itself against it.
+describe('attackEntity says what the fight cost her (261022)', () => {
+  function withEvents(bot) {
+    const handlers = {}
+    bot.on = vi.fn((ev, fn) => { (handlers[ev] ??= []).push(fn) })
+    bot.removeListener = vi.fn((ev, fn) => { handlers[ev] = (handlers[ev] ?? []).filter((h) => h !== fn) })
+    bot.emit = (ev, arg) => (handlers[ev] ?? []).forEach((h) => h(arg))
+    bot.handlers = handlers
+    return bot
+  }
+
+  it('fightHealthNote wording', () => {
+    expect(fightHealthNote(0, 20)).toBe('Nothing hurt you in this fight: you are at 20/20 health.')
+    expect(fightHealthNote(3, 17)).toBe('You took 3 damage in this fight and are at 17/20 health.')
+    expect(fightHealthNote(1.5, 18.5)).toBe('You took 1.5 damage in this fight and are at 18.5/20 health.')
+    expect(fightHealthNote(0, undefined)).toBe('')
+  })
+
+  it('counts a hit even when she regenerated back to full before the end', async () => {
+    const bot = withEvents(fightBot())
+    let n = 0
+    bot.attack.mockImplementation(() => {
+      n++
+      if (n === 1) { bot.health = 16; bot.emit('health') }
+      if (n === 2) { bot.health = 20; bot.emit('health'); bot.emit('entityDead', { id: 7 }) }
+    })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).toBe('killed zombie (2 hits). You took 4 damage in this fight and are at 20/20 health.')
+    expect(bot.handlers.health).toHaveLength(0) // listener removed
+  })
+
+  it('leaves the note off the critical-health stop, which already names her health', async () => {
+    const bot = withEvents(fightBot())
+    bot.attack.mockImplementation(() => { bot.health = 5; bot.emit('health') })
+    const r = await attackEntityAction({ entity_id: 7, times: 3 }, bot, {})
+    expect(r).not.toMatch(/in this fight/)
+  })
+
+  it('leaves the note off a spar with a player', async () => {
+    const bot = withEvents(fightBot())
+    bot._seiPvp = true
+    bot.entities[7] = { id: 7, type: 'player', username: 'Alex', position: new Vec3(1, 64, 0), height: 1.8 }
+    const r = await attackEntityAction({ entity_id: 7, times: 1 }, bot, {})
+    expect(r).not.toMatch(/in this fight/)
   })
 })

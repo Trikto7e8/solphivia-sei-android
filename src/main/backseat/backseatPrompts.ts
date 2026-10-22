@@ -354,6 +354,14 @@ export const LINE_LENGTH_REMINDER =
  * 5 of those opened on a menu or an inventory), so the session opened mute.
  * A hello is the one line that is always right on that look.
  */
+/** 261023: how long a resumed share was gone, in words for the start note. */
+function resumeGap(seconds: number): string {
+  const n = Math.round(seconds);
+  if (n < 5) return 'a moment later';
+  if (n < 90) return `${n} seconds later`;
+  return `${Math.round(n / 60)} minutes later`;
+}
+
 export const START_LENGTH_REMINDER =
   'Your hello is spoken out loud, so keep it to one short sentence, under ten words, then stop.';
 
@@ -624,6 +632,10 @@ export function tickNote(args: {
   /** The first word of each of the companion's last few lines, oldest first
    *  (recentOpeners). Named back to it on a look only when one repeats. */
   recentOpeners?: string[];
+  /** 261023: on a 'start' look, seconds since this companion's previous share
+   *  ended, when that was only a moment ago (the window came back, or they
+   *  picked another one). Absent for a share that really is the first. */
+  resumedAfterS?: number;
 }): string {
   // 260802: this is now the ONLY place the time gap is stated, and it matters
   // more than it used to. Every look produces a line, so "you last spoke N
@@ -662,6 +674,20 @@ export function tickNote(args: {
   // The grid is thin here by construction (START_LOOK_MS of ring), so the note
   // steers toward what is on screen and toward them, and away from detail the
   // frames cannot support.
+  // 261023: a share that came back a moment after the last one ended (the
+  // window was recreated, a different window was picked, the call was
+  // redialled). 221 of 794 shares in a month started within 30 s of the
+  // previous one, and each opened with a fresh hello to someone she had been
+  // watching with seconds before.
+  if (args.kind === 'start' && args.resumedAfterS !== undefined) {
+    return (
+      '[System note, not the player speaking: their screen share stopped and came back ' +
+      `${resumeGap(args.resumedAfterS)}, so you were already watching together and this is not a new start.${extras} ` +
+      'No hello and no comment on the share stopping. Say one quick thought about what is on screen now, ' +
+      `or about them. Do not mention this note. ${START_LENGTH_REMINDER.replace('Your hello is', 'Your line is')}]`
+    );
+  }
+
   if (args.kind === 'start') {
     return (
       '[System note, not the player speaking: they just shared their screen with you, and this is ' +

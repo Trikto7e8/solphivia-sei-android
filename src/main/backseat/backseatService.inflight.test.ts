@@ -7,7 +7,7 @@
  * real, and the chat-row write is held open so the window can be hit.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { MIN_SPEAK_GAP_MS, type BackseatTick } from '../../shared/backseatIpc';
+import { MIN_SPEAK_GAP_MS, type BackseatTick, type BackseatTickOutcome } from '../../shared/backseatIpc';
 
 const h = vi.hoisted(() => ({
   calls: [] as string[],
@@ -76,7 +76,7 @@ const flush = async () => {
   for (let i = 0; i < 10; i++) await new Promise((r) => setTimeout(r, 0));
 };
 
-function tick(kind: BackseatTick['kind'], text?: string): Promise<void> {
+function tick(kind: BackseatTick['kind'], text?: string): Promise<BackseatTickOutcome> {
   return handleTick({
     characterId: CH,
     kind,

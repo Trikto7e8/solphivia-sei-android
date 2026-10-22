@@ -40,10 +40,12 @@ import type { ChatMessage, SpokenLineContext } from '../../shared/ipc';
 import {
   MIN_SPEAK_GAP_MS,
   PREV_GRID_MAX_AGE_MS,
+  START_LOOK_TIMEOUT_MS,
   type BackseatLine,
   type BackseatMode,
   type BackseatState,
   type BackseatTick,
+  type BackseatTickOutcome,
 } from '../../shared/backseatIpc';
 import { paths } from '../paths';
 import { loadConfig } from '../configStore';
@@ -234,6 +236,16 @@ interface Session {
    * for the session, so its prompt block never moves the cached prefix.
    */
   game: { def: BackseatGameDef; game: BackseatGameInfo | null } | null;
+  /** 261023 (backseat_ended): model turns that failed, and the last one's
+   *  error class (surfaceErrorClass). */
+  failedTurns: number;
+  lastErrorClass: string | null;
+  /** 261023: when the companion's first line went out (null = never). */
+  firstLineAt: number | null;
+  /** 261023: ms between this character's previous share ending and this one
+   *  starting, when that share had her talking and ended under
+   *  RESUME_WINDOW_MS ago. Set = the opening look is a resume, not a hello. */
+  resumedAfterMs: number | null;
 }
 
 /** How long screen ticks rest after a 402 before one tries again (260926). */
@@ -241,6 +253,34 @@ const CREDIT_WALL_BACKOFF_MS = 60_000;
 
 const sessions = new Map<string, Session>();
 let deps: BackseatDeps | null = null;
+
+/**
+ * 261023: how and when each character's last session ended, so the next
+ * backseat_started can say it is a restart (221 of 794 sessions in the 30
+ * days to 261023 started within 30 s of the previous one ending, with no way
+ * to tell a lost window from a source switch). Kept in memory only.
+ */
+const lastEnded = new Map<string, { at: number; reason: string; spoke: boolean }>();
+/** A start this soon after an end is reported as a restart. */
+const RESTART_WINDOW_MS = 10 * 60_000;
+/** A start this soon after a share she spoke in opens without a new hello. */
+export const RESUME_WINDOW_MS = 2 * 60_000;
+
+/**
+ * 261023: whether a new share resumes the previous one. Only when the previous
+ * share had her talking (a share that died before her first line was never a
+ * conversation to resume) and ended under RESUME_WINDOW_MS ago. A resumed
+ * share that itself ended still counts as spoken, so a flapping window does
+ * not greet again on its third start.
+ */
+export function resumedAfterMs(
+  prev: { at: number; spoke: boolean } | undefined,
+  now: number,
+): number | null {
+  if (!prev || !prev.spoke) return null;
+  const gap = now - prev.at;
+  return gap >= 0 && gap <= RESUME_WINDOW_MS ? gap : null;
+}
 
 /**
  * Dev only: keep the most recent grid per kind on disk so a human can check
@@ -295,11 +335,14 @@ export async function startBackseat(
   sourceName: string,
   mode: BackseatMode,
   gameSel?: BackseatGameSelection,
+  /** 261023 (analytics): what started it (BackseatStartTrigger). */
+  trigger?: string,
 ): Promise<BackseatState> {
   // 260926: no session may start across an account switch (scopeBarrier).
   const startGuard = beginSessionStart();
   const existing = sessions.get(characterId);
-  if (existing && existing.state.phase !== 'ended') await endBackseat(characterId);
+  const replaced = !!existing && existing.state.phase !== 'ended';
+  if (replaced) await endBackseat(characterId, 'replaced');
 
   // Vision hard gate (china-compat W1): every backseat turn is an image call,
   // so a text-only model (deepseek, qwen-plus, ...) cannot run this surface
@@ -348,6 +391,10 @@ export async function startBackseat(
     creditWallUntil: 0,
     creditWallReported: false,
     game,
+    failedTurns: 0,
+    lastErrorClass: null,
+    firstLineAt: null,
+    resumedAfterMs: resumedAfterMs(lastEnded.get(characterId), Date.now()),
   };
   if (!startGuard.stillValid()) {
     void log.close().catch(() => {});
@@ -379,12 +426,23 @@ export async function startBackseat(
     }
   })().catch(() => {});
 
+  // 261023: a start close behind the previous end is a restart; say so, and
+  // why the previous one ended, so restarts can be split by cause.
+  const prevEnd = lastEnded.get(characterId);
+  const sincePrevEndMs = prevEnd ? Date.now() - prevEnd.at : null;
+  const restart =
+    prevEnd && sincePrevEndMs !== null && sincePrevEndMs <= RESTART_WINDOW_MS
+      ? { since_prev_end_ms: sincePrevEndMs, prev_end_reason: prevEnd.reason }
+      : {};
   void (async () => {
     try {
       const { capture } = await loadAnalytics();
       capture('backseat_started', {
         character_id: characterId,
         mode,
+        ...(trigger ? { trigger } : {}),
+        replaced_live: replaced,
+        ...restart,
         source_kind: sourceId.startsWith('screen:') ? 'screen' : 'window',
         // 260929: which backseat game tile started it, if any. Shape only:
         // the id, never the game's name.
@@ -420,9 +478,11 @@ export function setBackseatPaused(characterId: string, paused: boolean): void {
 
 /**
  * End one session: analytics (backseat_ended, duration_ms), the play row and
- * the fold. `reason` is analytics only (260926: 'account_switch' from the
- * account switch; absent for an ordinary stop). Tracked by the scope write
- * barrier so an account switch waits for the row before it moves the scope.
+ * the fold. `reason` is analytics only (261023: always set, see
+ * shared/callEndReasons.ts; main's own are 'replaced', 'app_quit',
+ * 'account_switch', 'window_closed', 'renderer_gone', 'renderer_reload').
+ * Tracked by the scope write barrier so an account switch waits for the row
+ * before it moves the scope.
  */
 /**
  * `opts.playerEnded` (261011): the player pressed End. Only that path runs the
@@ -431,7 +491,7 @@ export function setBackseatPaused(characterId: string, paused: boolean): void {
  */
 export function endBackseat(
   characterId: string,
-  reason?: string,
+  reason = 'unspecified',
   opts: { playerEnded?: boolean } = {},
 ): Promise<void> {
   return trackScopedWrite(endBackseatSession(characterId, reason, opts));
@@ -439,7 +499,7 @@ export function endBackseat(
 
 async function endBackseatSession(
   characterId: string,
-  reason?: string,
+  reason: string,
   opts: { playerEnded?: boolean } = {},
 ): Promise<void> {
   const s = sessions.get(characterId);
@@ -459,9 +519,11 @@ async function endBackseatSession(
   s.clips.clear();
   push(s);
   sessions.delete(characterId);
+  lastEnded.set(characterId, { at: Date.now(), reason, spoke: s.firstLineAt !== null || s.resumedAfterMs !== null });
   slog(
     s,
-    `session end: ${Math.round(durationMs / 1000)}s, ${lineCount} line(s) said`,
+    `session end (${reason}): ${Math.round(durationMs / 1000)}s, ${lineCount} line(s) said` +
+      (s.failedTurns ? `, ${s.failedTurns} failed turn(s)` : ''),
   );
   try {
     const { stopAudioTap } = await import('./audioTap');
@@ -480,7 +542,12 @@ async function endBackseatSession(
         mode: s.state.mode,
         lines: lineCount,
         ...(s.game ? { game: s.game.def.id } : {}),
-        ...(reason ? { reason } : {}),
+        reason,
+        // 261023: what the session was like, by shape: how long the first
+        // line took (absent when there was none) and how many turns failed.
+        ...(s.firstLineAt !== null ? { first_line_ms: s.firstLineAt - s.state.startedAt } : {}),
+        failed_turns: s.failedTurns,
+        ...(s.lastErrorClass ? { last_error_class: s.lastErrorClass } : {}),
       });
     } catch {
       /* analytics is never load-bearing */
@@ -589,8 +656,8 @@ export async function endAllBackseat(reason: string): Promise<void> {
 }
 
 /** Drop every session (renderer death/reload — capture cannot outlive it). */
-export function clearAllBackseat(): void {
-  for (const id of [...sessions.keys()]) void endBackseat(id).catch(() => {});
+export function clearAllBackseat(reason = 'renderer_gone'): void {
+  for (const id of [...sessions.keys()]) void endBackseat(id, reason).catch(() => {});
 }
 
 // ── Clips ─────────────────────────────────────────────────────────────────
@@ -689,14 +756,19 @@ async function honorRemember(
   }
 }
 
-export async function handleTick(tick: BackseatTick): Promise<void> {
+/**
+ * Run one tick. Resolves once its turn is over, with what happened
+ * (261023: the IPC handler hands this back for the opening look only, so the
+ * renderer can take a failed or empty one again; see shouldRetryOpening).
+ */
+export async function handleTick(tick: BackseatTick): Promise<BackseatTickOutcome> {
   const s = sessions.get(tick.characterId);
-  if (!s) return;
-  if (s.state.phase === 'ended') return;
+  if (!s) return 'dropped';
+  if (s.state.phase === 'ended') return 'dropped';
   // Paused holds everything, including user ticks: the overlay's chat input is
   // disabled while paused, so a user tick arriving here is a race with the
   // button, and honoring it would speak right after the player asked for quiet.
-  if (s.state.phase === 'paused') return;
+  if (s.state.phase === 'paused') return 'dropped';
 
   const isUser = tick.kind === 'user';
   const label = tick.kind + (tick.joltReason ? `:${tick.joltReason}` : '');
@@ -708,12 +780,12 @@ export async function handleTick(tick: BackseatTick): Promise<void> {
   const acting = actFlagFromEnv() && (await import('../computerUse/actSession')).isActing(s.characterId);
   if (acting && !isUser) {
     slog(s, `tick ${label} dropped (acting)`);
-    return;
+    return 'dropped';
   }
 
   if (!isUser && Date.now() < s.creditWallUntil) {
     slog(s, `tick ${label} dropped (credit wall)`);
-    return;
+    return 'credit_wall';
   }
 
   // Being talked to always earns an answer, so a user tick skips the speak-gap
@@ -721,14 +793,14 @@ export async function handleTick(tick: BackseatTick): Promise<void> {
   // is worse than one.
   if (!isUser && Date.now() - s.lastSpokeAt < MIN_SPEAK_GAP_MS) {
     slog(s, `tick ${label} dropped (spoke ${((Date.now() - s.lastSpokeAt) / 1000).toFixed(1)}s ago)`);
-    return;
+    return 'dropped';
   }
 
   if (s.inflight) {
     const running = s.inflightKind ?? 'idle';
     if (PRIORITY[tick.kind] <= PRIORITY[running]) {
       slog(s, `tick ${label} dropped (${running} turn in flight)`);
-      return;
+      return 'dropped';
     }
     slog(s, `tick ${label} preempts in-flight ${running} turn`);
     s.inflight.abort();
@@ -750,22 +822,27 @@ export async function handleTick(tick: BackseatTick): Promise<void> {
   s.inflightKind = tick.kind;
   // 261010: the line will be spoken about 1.5 s from now; warm TTS meanwhile.
   if (requireDeps().isCallActive?.(s.characterId) === true) requireDeps().prewarmSpeech?.();
+  const spokeBefore = s.lastSpokeAt;
   try {
     await prepareAndRunTurn(s, tick, ctrl, { isUser, label, acting });
+    if (s.lastSpokeAt !== spokeBefore) return 'spoke';
+    return ctrl.signal.aborted || s.inflight !== ctrl ? 'aborted' : 'silent';
   } catch (err) {
     const e = err as { name?: string; message?: string };
-    if (e?.name !== 'AbortError' && !/abort/i.test(e?.message ?? '')) {
-      slog(s, `turn failed: ${e?.message}`, true);
-      // Analytics (260828): genuine backseat turn failure (aborts excluded
-      // above). Shape only, never the message.
-      void (async () => {
-        try {
-          const { captureSurfaceError, surfaceErrorClass } = await loadAnalytics();
-          captureSurfaceError('backseat', `turn_${surfaceErrorClass(err)}`, s.characterId);
-        } catch { /* analytics is never load-bearing */ }
-      })();
-      void onCreditWall(s, err, isUser);
-    }
+    if (e?.name === 'AbortError' || /abort/i.test(e?.message ?? '')) return 'aborted';
+    slog(s, `turn failed: ${e?.message}`, true);
+    s.failedTurns += 1;
+    // Analytics (260828): genuine backseat turn failure (aborts excluded
+    // above). Shape only, never the message.
+    void (async () => {
+      try {
+        const { captureSurfaceError, surfaceErrorClass } = await loadAnalytics();
+        s.lastErrorClass = surfaceErrorClass(err);
+        captureSurfaceError('backseat', `turn_${s.lastErrorClass}`, s.characterId);
+      } catch { /* analytics is never load-bearing */ }
+    })();
+    void onCreditWall(s, err, isUser);
+    return classifyUsageLimit(err) === 'depleted' ? 'credit_wall' : 'failed';
   } finally {
     if (s.inflight === ctrl) {
       s.inflight = null;
@@ -1092,6 +1169,7 @@ async function runTurn(
     frameAges: tick.frameAges,
     secondsSincePrevGrid: prev ? prevAge / 1000 : undefined,
     recentOpeners: recentOpeners(history.filter((m) => m.role === 'companion').map((m) => m.text)),
+    ...(tick.kind === 'start' && s.resumedAfterMs !== null ? { resumedAfterS: s.resumedAfterMs / 1000 } : {}),
   });
   const note = opts.extraNote ? `${baseNote}\n\n${opts.extraNote}` : baseNote;
   const strip = (d: string): string => d.replace(/^data:image\/\w+;base64,/, '');
@@ -1115,7 +1193,11 @@ async function runTurn(
   // renderer's audio queue never drops the lead in favour of the answer.
   const turnTag = randomUUID();
   // 261010 staleness gate: lines she said on her own carry their frame time.
-  const ambientCapturedAt = tick.kind === 'user' ? undefined : tick.capturedAt;
+  // 261023: not the opening line. It answers the player pressing Share, and
+  // the first turn of a session is the slowest (nothing is cached yet), so
+  // the gate dropped it exactly when the screen was still settling (a game
+  // loading, a window coming forward) and the share opened in silence.
+  const ambientCapturedAt = tick.kind === 'user' || tick.kind === 'start' ? undefined : tick.capturedAt;
   const punctuation = character.metadata?.punctuation === 'deliberate' ? 'deliberate' : 'casual';
   let leadSpoken = false;
   let leadEmit: Promise<void> = Promise.resolve();
@@ -1143,7 +1225,11 @@ async function runTurn(
     system,
     tools,
     messages,
-    timeoutMs: CHAT_TIMEOUT_MS,
+    // 261023: the opening look gets one attempt at a shorter budget; the
+    // renderer takes a failed one again with a fresh grid (START_LOOK_TIMEOUT_MS).
+    ...(tick.kind === 'start'
+      ? { timeoutMs: START_LOOK_TIMEOUT_MS, maxRetries: 0 }
+      : { timeoutMs: CHAT_TIMEOUT_MS }),
     signal: ctrl.signal,
     ...(webSearchOffered
       ? {
@@ -1373,6 +1459,7 @@ function emitCompanionLines(
   return (async () => {
     const d = requireDeps();
     const now = Date.now();
+    if (s.firstLineAt === null && parts.length) s.firstLineAt = now;
     // One tag per turn (260806). Backseat turns land every 10-20 s while TTS
     // playback of a multi-part reply can run longer, so a new turn's lines used
     // to queue behind the old turn's and the spoken commentary drifted further

@@ -489,6 +489,44 @@ export type BackseatTickKind = 'user' | 'start' | 'jolt' | 'idle';
  */
 export const START_LOOK_MS = 1_800;
 
+/**
+ * The opening look's model budget (261023). The general turn budget is 30 s
+ * and the Anthropic SDK retries a timed-out request once, so a stalled first
+ * look used to leave the player in silence for up to a minute: 70bf5bab's
+ * first share (261008) timed out and they ended it at 48 s. The opening look
+ * now gets one SDK attempt at this budget, and a failed or empty one is taken
+ * again with a fresh grid (shouldRetryOpening), so a stall costs about 20 s
+ * and a transient failure still produces an opening line.
+ */
+export const START_LOOK_TIMEOUT_MS = 20_000;
+/** Pause before the opening look is taken again, so the new grid is new. */
+export const START_RETRY_DELAY_MS = 1_500;
+
+/** What main did with a tick (261023), returned for the opening look only. */
+export type BackseatTickOutcome =
+  /** The companion said at least one line. */
+  | 'spoke'
+  /** The turn ran but produced no line (an empty or "(silence)" reply). */
+  | 'silent'
+  /** The model call failed (timeout, network, provider error). */
+  | 'failed'
+  /** The allowance is spent; retrying would 402 again. */
+  | 'credit_wall'
+  /** Not run: gap floor, paused, a higher-priority turn in flight, no session. */
+  | 'dropped'
+  /** Superseded by a higher tick or a barge-in while it ran. */
+  | 'aborted';
+
+/**
+ * Whether the renderer should take the opening look again (261023). Only a
+ * look that ran and failed or came back empty, and only once: a dropped or
+ * aborted look means the player is already being answered, and the credit
+ * wall would fail again.
+ */
+export function shouldRetryOpening(outcome: BackseatTickOutcome | null | undefined, attempt: number): boolean {
+  return attempt < 1 && (outcome === 'failed' || outcome === 'silent');
+}
+
 // ── Staleness gate (261010) ───────────────────────────────────────────────
 //
 // Shawn: every comment lands in retrospect. A line about the screen is heard

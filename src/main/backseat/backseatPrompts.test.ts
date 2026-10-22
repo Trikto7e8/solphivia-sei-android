@@ -92,6 +92,29 @@ describe('tickNote start branch', () => {
     const note = tickNote({ ...base, kind: 'start', frameAges: [0] });
     expect(note).toContain('Only one frame');
   });
+
+  // 261023: 221 of 794 shares in a month started within 30 s of the last one
+  // ending, and each opened with a fresh hello.
+  it('a resumed share skips the hello and keeps the window title', () => {
+    const note = tickNote({ ...base, kind: 'start', resumedAfterS: 12.4, shareLabel: 'Roblox' });
+    expect(note).toContain('came back 12 seconds later');
+    expect(note).toContain('No hello');
+    expect(note).toContain('"Roblox"');
+    expect(note).not.toContain('just shared their screen');
+    expect(note).not.toMatch(/Your hello is/);
+    expect(note).not.toMatch(/[—–;]/);
+  });
+
+  it('words a very short gap as a moment, and a long one in minutes', () => {
+    expect(tickNote({ ...base, kind: 'start', resumedAfterS: 0.2 })).toContain('came back a moment later');
+    expect(tickNote({ ...base, kind: 'start', resumedAfterS: 110 })).toContain('came back 2 minutes later');
+  });
+
+  it('only the start look reads the resume gap', () => {
+    for (const kind of ['user', 'jolt', 'idle'] as const) {
+      expect(tickNote({ ...base, kind, resumedAfterS: 10 })).not.toContain('came back');
+    }
+  });
 });
 
 /**

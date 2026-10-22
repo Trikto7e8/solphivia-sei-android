@@ -31,10 +31,13 @@ import {
   MIN_SPEAK_GAP_MS,
   nextIdleDelayMs,
   START_LOOK_MS,
+  START_RETRY_DELAY_MS,
   SHARE_LABEL_INTERVAL_MS,
   STT_SAMPLE_RATE,
   SWITCH_DWELL_MS,
+  shouldRetryOpening,
   type BackseatTickKind,
+  type BackseatTickOutcome,
 } from '../../../../shared/backseatIpc';
 import { pushEnv, shareVoiceDuring, SHARE_VOICE_LEAD_MS, type EnvSample } from '../voice/echoGate';
 import { downmixInterleaved, resampleMono, rmsDb } from './pcm';
@@ -389,9 +392,13 @@ export async function startCapture(
   sourceName: string,
   opts: {
     /** 261004: the shared window went away (the OS ended the track), after
-     *  the session was ended and capture torn down. The store uses it to
-     *  clear its share state, and the auto-share watch to wait again. */
+     *  capture was torn down. 261023: the owner decides what that means
+     *  (look for the window again, or end the session with 'capture_lost');
+     *  with no owner the session is ended here. */
     onEnded?: () => void;
+    /** 261023: capture picked back up under a live session (the store's
+     *  recovery), so there is no opening look: the share did not just open. */
+    skipOpening?: boolean;
   } = {},
 ): Promise<CaptureHandle> {
   stopCapture();
@@ -669,15 +676,15 @@ export async function startCapture(
       transcript?: string;
       mic?: { ttsGapMs: number | null; shareVoice?: boolean | null };
     } = {},
-  ): Promise<void> => {
-    if (stopped) return;
+  ): Promise<BackseatTickOutcome | undefined> => {
+    if (stopped) return undefined;
     console.log(
       `[backseat] tick ${kind}: ${grid.ages.length} cell(s) at -${grid.ages
         .map((a) => a.toFixed(2))
         .join('/')}s` + (grid.dropped ? `, ${grid.dropped} dropped as duplicates` : ''),
     );
     try {
-      await sei.backseatTick({
+      return await sei.backseatTick({
         characterId,
         kind,
         grid: grid.dataUrl,
@@ -690,6 +697,7 @@ export async function startCapture(
     } catch (err) {
       /* a dropped tick is a missed comment, never a broken session */
       console.warn(`[backseat] tick send failed: ${(err as Error)?.message}`);
+      return 'failed';
     }
   };
 
@@ -842,22 +850,33 @@ export async function startCapture(
   // No idleBusy guard and no reschedule: it cannot collide with the idle timer,
   // whose floor is far beyond it, and if the player says something first that
   // tick outranks this one in main's ladder.
-  const startTimer = window.setTimeout(() => {
+  //
+  // 261023: taken once more, with a fresh grid, when it had no grid yet or its
+  // turn failed or came back empty (shouldRetryOpening). Main runs it on a
+  // shorter budget with no SDK retry (START_LOOK_TIMEOUT_MS), so a stalled
+  // first call costs seconds, not the minute of silence it used to.
+  let startRetryTimer = 0;
+  const openingLook = async (attempt: number): Promise<void> => {
     if (paused || stopped) return;
-    void (async () => {
-      try {
-        const { grid, transcript } = await look();
-        if (!grid) {
-          console.warn('[backseat] opening look skipped: no grid yet');
-          return;
-        }
+    let outcome: BackseatTickOutcome | undefined = 'failed';
+    try {
+      const { grid, transcript } = await look();
+      if (!grid) {
+        console.warn('[backseat] opening look skipped: no grid yet');
+      } else {
         if (paused || stopped) return;
-        await sendTick('start', grid, { transcript });
-      } catch {
-        /* a missed opening line is not a broken session */
+        outcome = await sendTick('start', grid, { transcript });
       }
-    })();
-  }, START_LOOK_MS);
+    } catch {
+      /* a missed opening line is not a broken session */
+    }
+    if (paused || stopped || !shouldRetryOpening(outcome, attempt)) return;
+    console.log(`[backseat] opening look ${outcome}: taking it again`);
+    startRetryTimer = window.setTimeout(() => void openingLook(attempt + 1), START_RETRY_DELAY_MS);
+  };
+  const startTimer = opts.skipOpening
+    ? 0
+    : window.setTimeout(() => void openingLook(0), START_LOOK_MS);
 
   // ── Clip requests from main ─────────────────────────────────────────────
   const offClip = sei.onBackseatClipRequest(({ characterId: id, requestId }) => {
@@ -876,15 +895,17 @@ export async function startCapture(
     })();
   });
 
-  // Sharing can also be revoked from the OS ("Stop sharing"), which just ends
-  // the track. Treat it as the player ending the session.
+  // The OS ends the track when the window goes away, when a game recreates
+  // its window, or from its own "Stop sharing" control. 261023: the owner
+  // (useBackseatStore) tells those apart and may pick the window back up, so
+  // the session is only ended here when there is no owner.
   videoTrack.addEventListener('ended', () => {
     // Ours stopping the track (handle.stop) also lands here; only a track the
     // OS ended, with this capture still the live one, is the window going away.
     if (stopped) return;
-    void sei.backseatEnd(characterId).catch(() => {});
     handle.stop();
-    opts.onEnded?.();
+    if (opts.onEnded) opts.onEnded();
+    else void sei.backseatEnd(characterId, 'capture_lost').catch(() => {});
   });
 
   const handle: CaptureHandle = {
@@ -897,6 +918,7 @@ export async function startCapture(
       window.clearTimeout(switchDeferTimer);
       window.clearTimeout(idleTimer);
       window.clearTimeout(startTimer);
+      window.clearTimeout(startRetryTimer);
       window.clearInterval(labelTimer);
       pipeline.stop();
       stt.stop();

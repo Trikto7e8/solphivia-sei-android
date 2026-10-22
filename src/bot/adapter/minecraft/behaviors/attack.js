@@ -138,6 +138,25 @@ export function goneResult(name, hits, died) {
   return hits ? `${hits} hits on ${name}, then ${lost}` : lost
 }
 
+// 261022 (pass 24): what the fight cost her. After "killed zombie (4 hits)"
+// at 20/20 health she kept telling the player "got hit a little" or "it hit
+// me", a flag in most quality compares since pass 6. The hp line in her
+// snapshot did not stop it; the result of the fight itself now says it.
+// `startHp` is her health when the action began. She usually calls
+// attackEntity after a mob has already hit her, so a fight that cost nothing
+// can still start below 20; the note says so, or "nothing hurt you ... you
+// are at 16/20" would read as a contradiction of the hit she was told about.
+export function fightHealthNote(taken, hp, startHp) {
+  if (!Number.isFinite(hp)) return ''
+  const fmt = (n) => (Number.isInteger(n) ? String(n) : n.toFixed(1))
+  const now = `${fmt(Math.max(0, hp))}/20`
+  if (taken > 0) return `You took ${fmt(taken)} damage in this fight and are at ${now} health.`
+  if (Number.isFinite(startHp) && startHp < 20) {
+    return `Nothing hurt you in this fight. You were already at ${fmt(Math.max(0, startHp))}/20 health when it started, and you are at ${now} now.`
+  }
+  return `Nothing hurt you in this fight: you are at ${now} health.`
+}
+
 // 261012: say where the nearest one is when a name lookup comes up empty.
 // The name lookup stays bounded at 16 blocks (targeting.js); a #N handle is
 // not, so that is the way to go after a mob that is farther out.
@@ -221,6 +240,20 @@ export async function attackEntityAction(args, bot, config) {
   const deadIds = new Set()
   const onDead = (e) => { if (e?.id != null) deadIds.add(e.id) }
   try { bot.on?.('entityDead', onDead) } catch (_) {}
+  // Health lost during this action, summed per drop so regen mid-fight does
+  // not hide a hit (fightHealthNote).
+  // minHp catches a death mid-fight: the respawn puts health back to 20, and
+  // the note would then read as a fight she walked away from.
+  let lastHp = startHp
+  let minHp = startHp
+  let taken = 0
+  const onHealth = () => {
+    const hp = bot.health
+    if (Number.isFinite(hp) && Number.isFinite(lastHp) && hp < lastHp) taken += lastHp - hp
+    if (Number.isFinite(hp) && !(hp >= minHp)) minHp = hp
+    lastHp = hp
+  }
+  try { bot.on?.('health', onHealth) } catch (_) {}
   let currentId = entity.id
   let run = null
   try {
@@ -268,6 +301,16 @@ export async function attackEntityAction(args, bot, config) {
       const one = ctx.tags === 1
       result = { ...result, text: `${result.text}. You also hit ${one ? 'another hostile' : `${ctx.tags} other hostiles`} once on the way, so ${one ? 'it should be' : 'they should be'} coming after you now` }
     }
+    // A mob fight that ran its course says what it cost her. An abort or the
+    // critical-health stop (which already names her health) does not.
+    // A death during the action gets no note either.
+    if (mobTarget && !signal?.aborted && !/^aborted|then stopped: you are down to/.test(result.text)) {
+      onHealth()
+      if (!bot.on && Number.isFinite(startHp) && Number.isFinite(bot.health)) taken = Math.max(0, startHp - bot.health)
+      const died = Number.isFinite(minHp) && minHp <= 0
+      const note = died ? '' : fightHealthNote(taken, bot.health, startHp)
+      if (note) result = { ...result, text: `${result.text}. ${note}` }
+    }
     return result.text
   } finally {
     // Release the sprint + pursuit goal we installed. NEVER yank a creeper-flee's
@@ -294,6 +337,7 @@ export async function attackEntityAction(args, bot, config) {
     if (run) run.open = false
     if (bot._seiAttackRun === run) bot._seiAttackRun = null
     try { bot.removeListener?.('entityDead', onDead) } catch (_) {}
+    try { bot.removeListener?.('health', onHealth) } catch (_) {}
   }
 }
 

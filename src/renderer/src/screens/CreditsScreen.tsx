@@ -63,7 +63,10 @@ import { RECOMMENDED_TIER, TIER_ORDER, planCard, planName } from '../lib/planCat
 import { t, useT } from '../lib/i18n';
 import styles from './CreditsScreen.module.css';
 import { ChatgptLogo } from '../components/ChatgptLogo';
-import { CHATGPT_HELP_URL } from '@shared/chatgptPlan';
+import { ChatgptPlanSettings, chatgptPlanDisclosure } from '../components/ChatgptPlanSettings';
+import { InfoTip } from '../components/InfoTip';
+import { CHATGPT_HELP_URL, CHATGPT_USAGE_URL } from '@shared/chatgptPlan';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 
 /** Note under the extra-credits bar: what carries over and what does not (SPEC §2). */
 const CARRY_OVER_NOTE =
@@ -193,6 +196,29 @@ export function CreditsScreen(): React.ReactElement {
   // session, and the reward is a server-side usage reset. BYOK/local users never
   // see the banner or the standing button.
   const cloudMode = useCreditsStore((s) => s.ai_backend_kind) === 'cloud-proxy';
+  // 261023: already on the ChatGPT plan (local backend, provider chatgpt, a
+  // signed-in account) -> the row says so and offers Manage usage instead of
+  // the sign-in button.
+  const chatgptStatus = useChatgptStore((s) => s.status);
+  const [providerIsChatgpt, setProviderIsChatgpt] = useState(false);
+  useEffect(() => {
+    if (cloudMode) {
+      setProviderIsChatgpt(false);
+      return;
+    }
+    let live = true;
+    void sei
+      .getConfig()
+      .then((c) => {
+        if (live) setProviderIsChatgpt(c?.provider === 'chatgpt');
+      })
+      .catch(() => {});
+    void useChatgptStore.getState().load();
+    return () => {
+      live = false;
+    };
+  }, [cloudMode]);
+  const usingChatgptPlan = !cloudMode && providerIsChatgpt && chatgptReady(chatgptStatus);
   // Notices inbox (260725) — the standing re-entry point under Submit feedback.
   const openInbox = useNoticesStore((s) => s.openInbox);
   const unreadNotices = useNoticesStore((s) => s.unreadCount());
@@ -546,18 +572,21 @@ export function CreditsScreen(): React.ReactElement {
         {/* 261017 (issue #46): "Use your ChatGPT plan". OpenAI's guidelines
             ask the pricing page to say which plans support it (every Sei plan,
             Free included) and to keep it apart from the app's own
-            subscription, so it is its own block under the plan cards, never a
-            feature inside a paid card. */}
+            subscription, so it is its own row under the plan cards, never a
+            feature inside a paid card. 261023 (Shawn: too much text): one
+            line plus the sign-in button; the "not a Sei charge" disclosure
+            sits in the info tip. The button signs in right here, then Settings
+            opens on the switch confirmation (view.useChatgptPlan). */}
         <div className={styles.chatgptPlan}>
-          <h3 className={styles.sectionTitle}>{t('ChatGPT plan, separate from Sei plans')}</h3>
           <div className={styles.chatgptPlanRow}>
             <ChatgptLogo size={18} />
             <div className={styles.chatgptPlanText}>
-              <span className={styles.chatgptPlanName}>{t('Use your ChatGPT plan')}</span>
+              <span className={styles.chatgptPlanName}>
+                {usingChatgptPlan ? t('Using ChatGPT plan') : t('Use your ChatGPT plan')}
+                <InfoTip label={t('About the ChatGPT plan')} text={chatgptPlanDisclosure(t)} />
+              </span>
               <span className={styles.planBlurb}>
-                {t(
-                  'Have ChatGPT Plus or Pro? Run your companions on your ChatGPT plan instead of Sei credits. It works on every Sei plan, including Free. ChatGPT plan usage is part of your OpenAI subscription, not a Sei charge.',
-                )}{' '}
+                {t('Works on every Sei plan, including Free.')}{' '}
                 <button
                   type="button"
                   className={styles.planFeatureLink}
@@ -567,9 +596,17 @@ export function CreditsScreen(): React.ReactElement {
                 </button>
               </span>
             </div>
-            <Button kind="ghost" size="sm" onClick={() => navigate({ kind: 'settings' })}>
-              {t('Set up in Settings')}
-            </Button>
+            {usingChatgptPlan ? (
+              <Button kind="ghost" size="sm" onClick={() => void sei.openExternal(CHATGPT_USAGE_URL)}>
+                {t('Manage usage')}
+              </Button>
+            ) : (
+              <ChatgptPlanSettings
+                active={false}
+                compact
+                onUsePlan={() => navigate({ kind: 'settings', useChatgptPlan: true })}
+              />
+            )}
           </div>
         </div>
 

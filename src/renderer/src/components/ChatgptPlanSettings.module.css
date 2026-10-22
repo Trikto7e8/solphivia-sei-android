@@ -1,36 +1,36 @@
 /* ChatgptPlanSettings (261017): the ChatGPT plan rows in Settings → AI.
    Tokens only; the brand-locked button carries its own CSS module. */
 
-.card {
+/* 261023: the Credits page's bare action (button + its notices). */
+.compact {
   display: flex;
   flex-direction: column;
-  gap: var(--space-sm);
-  margin: var(--space-md) 0;
-  padding: var(--space-md);
-  border: 1px solid var(--border);
-  background: var(--surface);
+  align-items: flex-end;
+  gap: var(--space-xs);
+  flex: none;
+  max-width: 100%;
 }
 
-.cardHead {
-  display: inline-flex;
-  align-items: center;
-  gap: var(--space-sm);
-  color: var(--text);
-}
-
-.cardTitle {
+.compactNote {
   font-family: var(--sans);
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.cardBody {
-  margin: 0;
-  font-family: var(--sans);
-  font-size: 13px;
-  line-height: 1.45;
+  font-size: 12px;
   color: var(--muted);
+}
+
+/* The signed-in account in the connected row: long emails truncate. */
+.account {
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* "Add account" under the connected row, quiet and right-aligned. */
+.addRow {
+  display: flex;
+  justify-content: flex-end;
+  padding: var(--space-xs) 0;
 }
 
 .buttonRow {

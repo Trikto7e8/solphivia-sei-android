@@ -74,6 +74,20 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   const voiceKeyMode = (params.get('dashshot') ?? '') === 'voicekey';
   const voiceKeyBackend = params.get('backend') === 'local' ? 'local' : 'cloud-proxy';
   const voiceKeySaved = params.get('key') === '1';
+  // &chatgpt=1 (261023): local backend on the ChatGPT plan, one signed-in
+  // account, so the connected row renders.
+  const voiceKeyChatgpt = params.get('chatgpt') === '1';
+  const voiceKeyChatgptStatus = {
+    accounts: voiceKeyChatgpt
+      ? [{ id: 'acc1', email: 'player@example.com', label: 'player@example.com', signedIn: true, planEnabled: true }]
+      : [],
+    activeId: voiceKeyChatgpt ? 'acc1' : null,
+    signingIn: false,
+    usageLimited: false,
+    blockedCode: null,
+    welcomeSeen: true,
+    models: [],
+  };
   const now = Date.now();
   const chatRows = Array.from({ length: 24 }, (_, i) => ({
     id: `row-${i}`,
@@ -267,7 +281,13 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
       : {}),
     ...(voiceKeyMode
       ? {
-          getConfig: async () => ({ ai_backend_kind: voiceKeyBackend, tts_engine: 'elevenlabs' }),
+          getConfig: async () => ({
+            ai_backend_kind: voiceKeyBackend,
+            tts_engine: 'elevenlabs',
+            ...(voiceKeyChatgpt ? { provider: 'chatgpt' } : {}),
+          }),
+          chatgptStatus: async () => voiceKeyChatgptStatus,
+          onChatgptStatus: () => () => {},
           creditsGet: async () => ({
             plan: 'free',
             usage_pct: 10,

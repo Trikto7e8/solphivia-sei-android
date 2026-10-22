@@ -131,6 +131,9 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Advanced updates': '抢先更新',
   // 260909 Search group
   'Search': '搜索',
+  // 261023: web search moved into the Games group, renamed for both.
+  'Games & search': '游戏与搜索',
+  'Web search': '网页搜索',
   'Companions can look things up on the web while you chat or play. This works out of the box for free. Add your own search API key only if lookups keep failing.':
     '伙伴在聊天或游戏时可以上网查资料。默认免费可用，无需设置。只有在查询经常失败时，才需要添加你自己的搜索 API 密钥。',
   'About search providers': '关于搜索提供方',
@@ -357,13 +360,10 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Use your ChatGPT plan?': '使用你的 ChatGPT 套餐？',
   "Sei will stop using managed cloud credits and run your companions on your ChatGPT plan instead. ChatGPT plan usage is OpenAI's, separate from Sei's own subscription and credits. This applies to a running bot right away. Your Sei subscription, if you have one, keeps renewing until you cancel it.":
     'Sei 将停止使用云端托管额度，改用你的 ChatGPT 套餐运行伙伴。ChatGPT 套餐用量由 OpenAI 提供，与 Sei 自己的订阅和额度分开。此更改会立即应用到正在运行的机器人。如果你有 Sei 订阅，它会继续续订，直到你取消。',
-  'ChatGPT plan, separate from Sei plans': 'ChatGPT 套餐，独立于 Sei 方案',
-  'Have ChatGPT Plus or Pro? Run your companions on your ChatGPT plan instead of Sei credits. It works on every Sei plan, including Free. ChatGPT plan usage is part of your OpenAI subscription, not a Sei charge.':
-    '有 ChatGPT Plus 或 Pro？你可以用 ChatGPT 套餐运行伙伴，而不消耗 Sei 额度。它适用于所有 Sei 方案，包括免费方案。ChatGPT 套餐用量属于你的 OpenAI 订阅，不是 Sei 的收费。',
-  'Set up in Settings': '在设置中开启',
   'ChatGPT account': 'ChatGPT 账户',
+  'About the ChatGPT plan': '关于 ChatGPT 套餐',
+  'Works on every Sei plan, including Free.': '适用于所有 Sei 方案，包括免费方案。',
   'ChatGPT accounts': 'ChatGPT 账户列表',
-  'Other accounts': '其他账户',
   'Add account': '添加账户',
   'Switch': '切换',
   'active': '当前',

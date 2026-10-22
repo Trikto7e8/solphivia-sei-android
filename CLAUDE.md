@@ -654,8 +654,9 @@ built for the loop itself.
   the pre-search line was pushed twice (the client-tool emit used the full
   text instead of the already-split remainder), and `textOf` joins text
   blocks with a space, not `''`.
-- **Settings:** the "Search" group in Settings (bottom, above About) is the
-  only UI: provider `Seg` (Auto (free) / Brave / Tavily / Serper) plus a
+- **Settings:** the "Web search" tab of the "Games & search" group
+  (`SearchSettingsSection`, an `extraTabs` entry of `GamesSettingsGroup`;
+  its own group above About until 261023) is the only UI: provider `Seg` (Auto (free) / Brave / Tavily / Serper) plus a
   masked key editor shown only for a keyed provider. Persisted as
   `UserConfig.web_search_provider` / `web_search_api_key` (both `.optional()`
   with NO default so the renderer's whole-config literals keep typechecking;
@@ -2029,8 +2030,9 @@ Both tiles are `available: true` in `src/shared/games.ts` (flipped 260908 so
 the user can run the live checklist from the app itself); the live checklist
 (plan section 5, M3, per game) is still owed, and neither game self-launches
 (`selfLaunch` off: each needs a player-run install pass first). Settings
-hosts every game under ONE "Games" group (`GamesSettingsGroup`: left column
-picks the game, right column shows that game's registered section).
+hosts every game under ONE "Games & search" group (`GamesSettingsGroup`: left
+column picks the game, right column shows that game's registered section; a
+rule then the non-game `extraTabs`, today only "Web search").
 
 - **Neither game has a mineflayer.** DST has no headless client and Steam
   allows one instance per account; a Stardew split-screen farmhand is

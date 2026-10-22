@@ -260,6 +260,9 @@
 
 /* Not .planName: that one uppercases, and "ChatGPT" is a brand name. */
 .chatgptPlanName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
   font-family: var(--sans);
   font-size: 14px;
   font-weight: 600;

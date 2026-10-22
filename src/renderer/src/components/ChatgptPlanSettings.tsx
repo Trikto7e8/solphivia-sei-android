@@ -6,25 +6,34 @@
  *   (every saved registration, the active one marked, add another), sign out,
  *   the "Using ChatGPT plan" line with Manage usage, the paused-plan notice,
  *   and the enable path for a sign-in that did not grant plan usage.
- * - otherwise (another local provider, or the cloud backend): the "Use your
- *   ChatGPT plan" card from OpenAI's UI guidelines, with Continue with
- *   ChatGPT as the action when a sign-in is needed. Offered on every Sei
- *   plan, Free included, and worded as separate from Sei's own subscription
- *   and credits (OpenAI: "Distinguish ChatGPT plan usage from your app's own
- *   subscription or charges").
+ * - otherwise (another local provider, or the cloud backend): ONE settings
+ *   row, "Use your ChatGPT plan" (the card title from OpenAI's UI
+ *   guidelines) with the Continue with ChatGPT button, or "Use ChatGPT plan"
+ *   once an account is signed in. 261023 (Shawn: "a lot of text ... i'd
+ *   rather have a clean signin to chatgpt button"): the card's two-sentence
+ *   body moved into the row's info tip. It still says what OpenAI asks for
+ *   (the guideline body copy, every Sei plan including Free, and that usage
+ *   counts toward the ChatGPT plan, not Sei's subscription or credits), one
+ *   hover away instead of on the page. The button label stays "Continue
+ *   with ChatGPT": OpenAI's open-source plan-usage sign-in asks for that
+ *   label (developers.openai.com/siwc/token-sharing-open-source/sign-in).
+ *
+ * `compact` (261023, the Credits page): the same row without the settings
+ * row chrome; the caller supplies the heading line and the Learn more link.
  *
  * Tokens never reach the renderer; this reads account summaries from
  * useChatgptStore only. The model picker below it is SettingsScreen's own.
  */
 import React from 'react';
 import type { ChatgptSignInFailure } from '@shared/chatgptPlan';
-import { CHATGPT_HELP_URL, CHATGPT_USAGE_URL } from '@shared/chatgptPlan';
+import { CHATGPT_USAGE_URL } from '@shared/chatgptPlan';
 import { useT } from '../lib/i18n';
 import { sei } from '../lib/ipcClient';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { Button } from './Button';
 import { ChatgptLogo } from './ChatgptLogo';
 import { ContinueWithChatGPTButton } from './ContinueWithChatGPTButton';
+import { InfoTip } from './InfoTip';
 import settings from '../screens/SettingsScreen.module.css';
 import styles from './ChatgptPlanSettings.module.css';
 
@@ -52,13 +61,27 @@ export function signInFailureText(reason: ChatgptSignInFailure, t: (s: string) =
   }
 }
 
+/**
+ * The ChatGPT plan disclosure (OpenAI's guideline body copy + which Sei plans
+ * it works on + that it is not a Sei charge), shown in an info tip wherever
+ * the plan is offered.
+ */
+export function chatgptPlanDisclosure(t: (s: string) => string): string {
+  return `${t('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')} ${t(
+    "Works on every Sei plan, including Free. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.",
+  )}`;
+}
+
 export function ChatgptPlanSettings({
   active,
   onUsePlan,
+  compact = false,
 }: {
   active: boolean;
   /** Switch the provider to the ChatGPT plan (after a sign-in, or when one exists). */
   onUsePlan: () => Promise<void> | void;
+  /** The bare action (button + notices), for a surface that draws its own row. */
+  compact?: boolean;
 }): React.ReactElement {
   const t = useT();
   const status = useChatgptStore((s) => s.status);
@@ -76,7 +99,6 @@ export function ChatgptPlanSettings({
   const signingIn = status?.signingIn === true;
   const errorLine = signInError ? signInFailureText(signInError, t) : null;
   const openUsage = (): void => void sei.openExternal(CHATGPT_USAGE_URL);
-  const openHelp = (): void => void sei.openExternal(CHATGPT_HELP_URL);
 
   const startSignIn = async (opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<void> => {
     const r = await signIn(opts);
@@ -110,35 +132,43 @@ export function ChatgptPlanSettings({
   );
 
   if (!active) {
-    // The invite card ("Use your ChatGPT plan"). Local mode only; the caller
-    // decides where it shows.
-    return (
-      <div className={styles.card}>
-        <div className={styles.cardHead}>
-          <ChatgptLogo size={18} />
-          <span className={styles.cardTitle}>{t('Use your ChatGPT plan')}</span>
+    // The invite ("Use your ChatGPT plan"): one row, one button. Local mode
+    // beside the other providers, and cloud accounts under Backend.
+    const action = ready ? (
+      <Button kind="primary" size="sm" onClick={() => void onUsePlan()}>
+        {t('Use ChatGPT plan')}
+      </Button>
+    ) : (
+      <ContinueWithChatGPTButton disabled={signingIn} busy={signingIn} onClick={() => void startSignIn()} />
+    );
+    if (compact) {
+      return (
+        <div className={styles.compact}>
+          {action}
+          {signingIn ? (
+            <span className={styles.compactNote}>
+              {t('Finish signing in with ChatGPT in your browser.')}{' '}
+              <button type="button" className={settings.creditLink} onClick={cancelSignIn}>
+                {t('Cancel')}
+              </button>
+            </span>
+          ) : null}
+          {notices}
         </div>
-        <p className={styles.cardBody}>
-          {t('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')}{' '}
-          {t("Works on every Sei plan, including Free. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.")}{' '}
-          <button type="button" className={settings.creditLink} onClick={openHelp}>
-            {t('Learn more')}
-          </button>
-        </p>
-        {ready ? (
-          <div>
-            <Button kind="primary" size="sm" onClick={() => void onUsePlan()}>
-              {t('Use ChatGPT plan')}
-            </Button>
-          </div>
-        ) : (
-          <div>
-            <ContinueWithChatGPTButton disabled={signingIn} busy={signingIn} onClick={() => void startSignIn()} />
-          </div>
-        )}
+      );
+    }
+    return (
+      <>
+        <div className={settings.row} data-testid="chatgpt-plan-invite">
+          <span className={settings.label}>
+            {t('Use your ChatGPT plan')}
+            <InfoTip label={t('About the ChatGPT plan')} text={chatgptPlanDisclosure(t)} />
+          </span>
+          {action}
+        </div>
         {signingInRow}
         {notices}
-      </div>
+      </>
     );
   }
 
@@ -167,31 +197,34 @@ export function ChatgptPlanSettings({
 
   return (
     <>
+      {/* Connected (261023: one row instead of three): the account, Manage
+          usage when the plan is on (OpenAI's "Using ChatGPT plan" + "Manage
+          usage" pair), Sign out, and Add account for a second account. */}
       <div className={settings.row}>
-        <span className={settings.label}>{t('ChatGPT account')}</span>
-        <span className={settings.monoValue}>{activeAcc.label}</span>
+        <span className={`${settings.label} ${styles.inUse}`}>
+          {activeAcc.planEnabled ? <ChatgptLogo size={16} /> : null}
+          {activeAcc.planEnabled ? t('Using ChatGPT plan') : t('ChatGPT account')}
+          <InfoTip label={t('About the ChatGPT plan')} text={chatgptPlanDisclosure(t)} />
+        </span>
+        <span className={`${settings.monoValue} ${styles.account}`} title={activeAcc.label}>
+          {activeAcc.label}
+        </span>
+        {activeAcc.planEnabled ? (
+          <Button kind="ghost" size="sm" onClick={openUsage}>
+            {t('Manage usage')}
+          </Button>
+        ) : null}
         <Button kind="ghost" size="sm" disabled={signingIn} onClick={() => void signOut(activeAcc.id)}>
           {t('Sign out')}
         </Button>
       </div>
       {accounts.length > 1 ? <AccountList /> : null}
-      <div className={settings.row}>
-        <span className={settings.label}>{t('Other accounts')}</span>
-        <Button kind="ghost" size="sm" disabled={signingIn} onClick={() => void startSignIn({ accountId: null })}>
+      <div className={styles.addRow}>
+        <Button kind="quiet" size="sm" disabled={signingIn} onClick={() => void startSignIn({ accountId: null })}>
           {t('Add account')}
         </Button>
       </div>
-      {activeAcc.planEnabled ? (
-        <div className={settings.row}>
-          <span className={`${settings.label} ${styles.inUse}`}>
-            <ChatgptLogo size={16} />
-            {t('Using ChatGPT plan')}
-          </span>
-          <Button kind="ghost" size="sm" onClick={openUsage}>
-            {t('Manage usage')}
-          </Button>
-        </div>
-      ) : (
+      {activeAcc.planEnabled ? null : (
         <>
           <p className={`${settings.helper} ${settings.helperError}`} role="alert">
             {t('ChatGPT plan use was not turned on when you signed in, so Sei cannot use your plan yet.')}

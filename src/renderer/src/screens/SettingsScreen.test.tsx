@@ -52,7 +52,7 @@ beforeEach(() => {
 describe('SettingsScreen (Party restyle structure)', () => {
   it('S.1: sentence-case Oswald group headers, no all-caps eyebrows', () => {
     const src = readFileSync(SETTINGS_TSX, 'utf-8');
-    for (const h of ['>Profile<', '>Account<', '>AI<', '>Games<', '>Appearance<', '>About<', '>Danger<']) {
+    for (const h of ['>Profile<', '>Account<', '>AI<', '>Games & search<', '>Appearance<', '>About<', '>Danger<']) {
       expect(src.includes(h)).toBe(true);
     }
     // The old uppercase section eyebrows are gone.
@@ -147,7 +147,7 @@ describe('SettingsScreen (ui-A1 mode gating)', () => {
     // billing path, so the group must render regardless of mode. Anchor on
     // the sentence-case header (260908: one "Games" group hosts every game,
     // Minecraft's rows inside it via GamesSettingsGroup).
-    const skinsIdx = src.indexOf('>Games<');
+    const skinsIdx = src.indexOf('>Games & search<');
     expect(src.includes('<GamesSettingsGroup')).toBe(true);
     expect(skinsIdx).toBeGreaterThan(0);
     // The group must NOT be wrapped in a local-only gate. The 200 chars before
@@ -468,5 +468,46 @@ describe('EditCharacterModal + VoicePicker (W5 local-TTS voice gating)', () => {
     }
     // No em dash anywhere in the W5 copy, either language.
     expect(block.includes('—')).toBe(false);
+  });
+});
+
+// 261023 (Shawn): web search moved into the Games group ("Games & search"),
+// and the ChatGPT plan block became one row with the sign-in button.
+describe('261023 settings tidy: web search tab + compact ChatGPT plan row', () => {
+  const settings = readFileSync(SETTINGS_TSX, 'utf8');
+  const credits = readFileSync(resolve(__dirname, 'CreditsScreen.tsx'), 'utf8');
+  const games = readFileSync(
+    resolve(REPO_ROOT, 'src', 'renderer', 'src', 'components', 'settings', 'GamesSettingsGroup.tsx'),
+    'utf8',
+  );
+
+  it('the standalone Search group is gone; Web search is an extra tab of Games & search', () => {
+    expect(settings).not.toMatch(/>\s*\{t\('Search'\)\}\s*</);
+    expect(settings).toContain("extraTabs={[");
+    expect(settings).toContain("id: 'search'");
+    expect(settings).toContain('<SearchSettingsSection config={cfg} saveConfig={persistConfig} />');
+    expect(games).toContain('extraTabs');
+  });
+
+  it('Credits drops the wordy block and hands the switch to Settings with the intent flag', () => {
+    expect(credits).not.toContain('ChatGPT plan, separate from Sei plans');
+    expect(credits).not.toContain('Have ChatGPT Plus or Pro?');
+    expect(credits).toContain("navigate({ kind: 'settings', useChatgptPlan: true })");
+    expect(readFileSync(USE_UI_STORE_TS, 'utf8')).toContain("{ kind: 'settings'; useChatgptPlan?: boolean }");
+  });
+
+  it('Settings runs the intent once through the normal switch paths, then clears it', () => {
+    const at = settings.indexOf('const chatgptPlanIntent');
+    expect(at).toBeGreaterThan(-1);
+    const body = settings.slice(at, at + 1200);
+    // Waits for a signed-in plan and a known backend before acting.
+    expect(body).toContain('chatgptReady(chatgptStatus)');
+    expect(body).toContain("aiBackendKind !== 'cloud-proxy' && aiBackendKind !== 'local'");
+    // Clears the flag so a re-render does not re-open the confirm.
+    expect(body).toContain("useUiStore.setState({ view: { kind: 'settings' } })");
+    // Cloud: the same confirm modal as this screen's own button. Local: provider pick.
+    expect(body).toContain("setSwitchVia('chatgpt')");
+    expect(body).toContain("setPendingSwitch('local')");
+    expect(body).toContain("onChangeProvider('chatgpt')");
   });
 });

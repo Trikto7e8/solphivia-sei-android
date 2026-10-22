@@ -108,6 +108,7 @@ jobs:
   upgrade:
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -198,12 +199,16 @@ jobs:
           if ($env:SCENARIO -ne 'fresh') {
             $old = (Resolve-Path old\Sei-win-x64.exe).Path
             switch ($env:SCENARIO) {
-              'peruser-default' { $instArgs = @('/S') }
               'peruser-custom'  { $instArgs = @('/S', '/D=C:\Games\My Sei') }
               { $_ -like 'permachine*' } { $instArgs = @('/S', '/allusers') }
+              default { $instArgs = @('/S') }
             }
             "Installing $env:STABLE_TAG with: $($instArgs -join ' ')"
-            $p = Start-Process -FilePath $old -ArgumentList $instArgs -Wait -PassThru
+            # Bounded: without /S the old ASSISTED installer waits on its wizard
+            # page forever (a scenario missing from the switch above once hung
+            # the job that way).
+            $p = Start-Process -FilePath $old -ArgumentList $instArgs -PassThru
+            if (-not $p.WaitForExit(300000)) { $p | Stop-Process -Force; throw 'the stable installer did not finish in 5 minutes' }
             "old installer exit: $($p.ExitCode)"
             Show-State "after $env:STABLE_TAG install"
             $before = @(Get-SeiEntries)

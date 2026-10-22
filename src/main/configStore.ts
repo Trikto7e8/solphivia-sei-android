@@ -167,7 +167,7 @@ export const RENDERER_SETTABLE_KEYS: readonly (keyof UserConfig)[] = [
   'stt_local_fallback',
   'tts_engine',
   'ui_language',
-  // 260909: Settings > Search (web search provider + optional key).
+  // 260909: Settings > Games & search > Web search (provider + optional key).
   'web_search_provider',
   'web_search_api_key',
   // 260909: "don't show again" on the Minecraft setup step (useMcSetupStore).

@@ -950,7 +950,7 @@ export const UserConfigSchema = z.object({
    * account. A keyed provider (brave / tavily / serper) is used only when
    * web_search_api_key is set. Resolved by src/main/llm/webSearchSettings.ts,
    * which also honors the SEI_SEARCH_PROVIDER / SEI_SEARCH_API_KEY env
-   * overrides for development. Edited from Settings > Search (the provider
+   * overrides for development. Edited from Settings > Games & search > Web search (the provider
    * picker + key field); the env overrides win over the saved values. Both
    * stay `.optional()` with NO default so the many renderer call sites that
    * build a whole UserConfig literal keep typechecking; absence = 'auto'.

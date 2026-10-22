@@ -354,6 +354,14 @@ export const LINE_LENGTH_REMINDER =
  * 5 of those opened on a menu or an inventory), so the session opened mute.
  * A hello is the one line that is always right on that look.
  */
+/** 261023: how long a resumed share was gone, in words for the start note. */
+function resumeGap(seconds: number): string {
+  const n = Math.round(seconds);
+  if (n < 5) return 'a moment later';
+  if (n < 90) return `${n} seconds later`;
+  return `${Math.round(n / 60)} minutes later`;
+}
+
 export const START_LENGTH_REMINDER =
   'Your hello is spoken out loud, so keep it to one short sentence, under ten words, then stop.';
 
@@ -368,8 +376,19 @@ export const START_LENGTH_REMINDER =
  * remember() cut off by it is not saved (backseatService honorRemember).
  */
 export const BACKSEAT_LOOK_MAX_TOKENS = 45;
+/**
+ * 261023: the opening look's own cap. At 45 it cut 31 of 100 opening lines in
+ * the 261008-261010 replays, and 11 of those had no finished sentence to end
+ * at, so a half sentence was the first thing the player heard. The opening
+ * note asks for a hello and an optional thought, which runs longer than an
+ * ordinary look; 80 fits that in one or two short sentences and still stops a
+ * line that runs on. A cut line that ends nowhere is not spoken
+ * (endAtLastSentence), and an empty opening look is taken once more.
+ */
+export const BACKSEAT_START_MAX_TOKENS = 80;
 export function backseatMaxTokens(kind: BackseatTickKind): number {
-  return kind === 'user' ? 400 : BACKSEAT_LOOK_MAX_TOKENS;
+  if (kind === 'user') return 400;
+  return kind === 'start' ? BACKSEAT_START_MAX_TOKENS : BACKSEAT_LOOK_MAX_TOKENS;
 }
 
 // ── Backseat games (260929) ──────────────────────────────────────────────
@@ -531,8 +550,10 @@ export const SAVE_CLIP_TOOL = {
  * 261010: a look capped at BACKSEAT_LOOK_MAX_TOKENS that runs into the cap is
  * cut mid-word ("are you crafting that bucket or just ho"), and every word of
  * it is spoken. When the cut text holds a finished sentence before the cut,
- * the line ends there instead; otherwise it is left as it is. This looks only
- * at where the model was stopped, never at what it said.
+ * the line ends there instead. 261023: when it does not (or what is left is a
+ * single word), nothing is spoken: a half sentence is worse than no line, and
+ * the replays spoke 46 of them in 909 looks. This looks only at where the
+ * model was stopped, never at what it said.
  */
 export function endAtLastSentence(text: string): string {
   const t = text.trimEnd();
@@ -540,9 +561,9 @@ export function endAtLastSentence(text: string): string {
   let end = -1;
   const re = /[.!?]+["')\]]*(?=\s)/g;
   for (let m = re.exec(t); m; m = re.exec(t)) end = m.index + m[0].length;
-  if (end <= 0) return t;
+  if (end <= 0) return '';
   const kept = t.slice(0, end).trim();
-  return kept.split(/\s+/).length >= 2 ? kept : t;
+  return kept.split(/\s+/).length >= 2 ? kept : '';
 }
 
 /**
@@ -624,6 +645,10 @@ export function tickNote(args: {
   /** The first word of each of the companion's last few lines, oldest first
    *  (recentOpeners). Named back to it on a look only when one repeats. */
   recentOpeners?: string[];
+  /** 261023: on a 'start' look, seconds since this companion's previous share
+   *  ended, when that was only a moment ago (the window came back, or they
+   *  picked another one). Absent for a share that really is the first. */
+  resumedAfterS?: number;
 }): string {
   // 260802: this is now the ONLY place the time gap is stated, and it matters
   // more than it used to. Every look produces a line, so "you last spoke N
@@ -662,12 +687,26 @@ export function tickNote(args: {
   // The grid is thin here by construction (START_LOOK_MS of ring), so the note
   // steers toward what is on screen and toward them, and away from detail the
   // frames cannot support.
+  // 261023: a share that came back a moment after the last one ended (the
+  // window was recreated, a different window was picked, the call was
+  // redialled). 221 of 794 shares in a month started within 30 s of the
+  // previous one, and each opened with a fresh hello to someone she had been
+  // watching with seconds before.
+  if (args.kind === 'start' && args.resumedAfterS !== undefined) {
+    return (
+      '[System note, not the player speaking: their screen share stopped and came back ' +
+      `${resumeGap(args.resumedAfterS)}, so you were already watching together and this is not a new start.${extras} ` +
+      'No hello and no comment on the share stopping. Say one quick thought about what is on screen now, ' +
+      `or about them. Do not mention this note. ${START_LENGTH_REMINDER.replace('Your hello is', 'Your line is')}]`
+    );
+  }
+
   if (args.kind === 'start') {
     return (
       '[System note, not the player speaking: they just shared their screen with you, and this is ' +
       `your first look at it.${extras} This look always gets a line, even when the screen is a menu, a ` +
-      'loading screen or an inventory: say a short hello in your own words, and add one quick thought ' +
-      'about something you can see if you have one. Do not describe the picture back to them and do not thank them for sharing. ' +
+      'loading screen or an inventory: say a short hello in your own words. If you have one quick thought ' +
+      'about something you can see, fold it into the same sentence. Do not describe the picture back to them and do not thank them for sharing. ' +
       'There is very little history behind this look, so keep it to what is on screen and to them. ' +
       `Do not mention this note. ${START_LENGTH_REMINDER}]`
     );

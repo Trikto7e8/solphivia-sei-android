@@ -38,6 +38,7 @@ import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
 import { consumeGoodbye, gameEndHookProps, callEndHookProps, goodbyePlanPlace } from './sessionGoodbye';
+import { endCallsForAccountSwitch } from './voice/accountSwitchCalls';
 import {
   bindPlayerEndRuntime,
   clearSessionDigest,
@@ -164,9 +165,12 @@ function rendererTarget(): string {
   return path.join(__dirname, '../renderer/index.html');
 }
 
-/** Account switch (260926): close every open call from main (see accountSwitchCalls.ts). */
-async function endVoiceCallsForAccountSwitch(reason: string): Promise<void> {
-  const { endCallsForAccountSwitch } = await import('./voice/accountSwitchCalls');
+/** Account switch (260926): close every open call from main (see accountSwitchCalls.ts).
+ *  261023: also the quit and renderer-gone paths, with their own reason. */
+async function endVoiceCallsFromMain(reason: string): Promise<void> {
+  // Static import: endCallsForAccountSwitch closes the calls synchronously
+  // before its first await, which the renderer sweep below relies on (it
+  // clears the call flags right after).
   await endCallsForAccountSwitch(reason, {
     setVoiceCall: (id, onCall) => supervisor?.setVoiceCall(id, onCall),
     closeOverlay: closeCallOverlay,
@@ -182,7 +186,13 @@ async function endVoiceCallsForAccountSwitch(reason: string): Promise<void> {
  * to resume normal in-game chat; without this a mid-call reload leaves the
  * bot muted in minecraft chat forever.
  */
-function sweepVoiceCalls(): void {
+function sweepVoiceCalls(reason: 'window_closed' | 'renderer_gone' | 'renderer_reload'): void {
+  // 261023: the calls this renderer was driving end here, and its hang-up
+  // report never comes, so voice_call_ended (and the call row) used to be
+  // lost for every call that ended this way. Main closes them first with the
+  // reason, the same path as an account switch, then clears the flags.
+  // Runs synchronously up to its first await (see endVoiceCallsFromMain).
+  if (activeCallIds().length > 0) void endVoiceCallsFromMain(reason).catch(() => {});
   for (const id of activeCallIds()) supervisor?.setVoiceCall(id, false);
   clearAllCalls();
   // The overlay belongs to the call the (now-gone) renderer was driving.
@@ -192,7 +202,7 @@ function sweepVoiceCalls(): void {
   // taken the session's eyes with it. Leaving the session open would keep
   // main waiting on ticks that can never arrive.
   void import('./backseat/backseatService')
-    .then((m) => m.clearAllBackseat())
+    .then((m) => m.clearAllBackseat(reason))
     .catch(() => {});
 }
 
@@ -202,6 +212,9 @@ function sweepVoiceCalls(): void {
 function wireMainWindowEvents(win: BrowserWindow): void {
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
+    // macOS keeps the app running when the last window closes; the call and
+    // the share died with the window, so close them with that reason.
+    sweepVoiceCalls('window_closed');
   });
   // Replay latest LAN state on did-finish-load so freshly-loaded renderer is in sync.
   win.webContents.on('did-finish-load', () => {
@@ -212,8 +225,8 @@ function wireMainWindowEvents(win: BrowserWindow): void {
       }
     }
   });
-  win.webContents.on('did-navigate', sweepVoiceCalls);
-  win.webContents.on('render-process-gone', sweepVoiceCalls);
+  win.webContents.on('did-navigate', () => sweepVoiceCalls('renderer_reload'));
+  win.webContents.on('render-process-gone', () => sweepVoiceCalls('renderer_gone'));
 }
 
 function broadcastLan(state: LanState): void {
@@ -1170,7 +1183,7 @@ async function bootstrap(): Promise<void> {
     initProfileScope({
       supervisor,
       getMainWindow: () => mainWindow,
-      endVoiceCalls: endVoiceCallsForAccountSwitch,
+      endVoiceCalls: endVoiceCallsFromMain,
       // 261013 (T120): the new account's sessions an app quit ended.
       onScopeSwitched: () => void runPendingQuitNextSteps(),
     });
@@ -1339,7 +1352,7 @@ async function bootstrap(): Promise<void> {
     },
     // Voice calls (260705): a live call ended — post the "You and X called for
     // Y" system row (renderer supplies how long audio actually flowed).
-    notifyCallEnded: (id, connectedMs) => {
+    notifyCallEnded: (id, connectedMs, reason) => {
       void trackScopedWrite(emitCallSession(id, connectedMs)).catch(() => {});
       // Analytics (260728): calls are playtime too. `connectedMs` is the time
       // audio actually flowed (the renderer only reports it for calls that
@@ -1351,6 +1364,8 @@ async function bootstrap(): Promise<void> {
       capture('voice_call_ended', {
         character_id: id,
         duration_ms: connectedMs,
+        // 261023: why it ended (callEndReasons.ts), from the renderer's report.
+        reason,
         ...callEndHookProps(goodbye),
       });
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
@@ -1619,6 +1634,15 @@ if (!gotLock) {
     // 261013 (T120): an out-of-game call keeps its window for the next
     // launch's "next time" check. Synchronous, local disk, no LLM call.
     try { persistCallsForQuit(); } catch { /* best-effort */ }
+    // 261023: a call open at quit never got its voice_call_ended (the renderer
+    // dies before it reports), so quitting mid-call was invisible. Close them
+    // from main with reason 'app_quit', bounded like the game surfaces below.
+    try {
+      await Promise.race([
+        endVoiceCallsFromMain('app_quit'),
+        new Promise((resolve) => setTimeout(resolve, QUIT_SURFACE_END_TIMEOUT_MS)),
+      ]);
+    } catch { /* best-effort */ }
     try { endAllPlaySessionsForQuit(); } catch { /* best-effort */ }
     // 261005: end chess, Draw! and backseat BEFORE the flush too. They used to
     // be shut down after it (and backseat not at all), so their *_ended events

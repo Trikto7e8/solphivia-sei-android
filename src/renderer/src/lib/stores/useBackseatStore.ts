@@ -47,6 +47,14 @@
  * waiting instead of leaving a dead share. A cold start arms a pending share
  * with no source, which starts the watch once the call is live. The watch
  * ends with the share toggle, the call, or "share something else".
+ *
+ * 261023: CAPTURE RECOVERY. A track the OS ended no longer ends the session
+ * at once. The store first looks for the window again for a few seconds (the
+ * same source id, or a window with the same title: a game that recreates its
+ * window on a fullscreen toggle or a server hop), and if it is back, capture
+ * restarts under the SAME session, with no second opening line. Only when it
+ * stays gone does the session end ('capture_lost'), and the watch, if any,
+ * takes over as before. Every end now carries a reason (callEndReasons.ts).
  */
 
 import { create } from 'zustand';
@@ -57,6 +65,11 @@ import {
   type BackseatGameSelection,
 } from '../../../../shared/backseatGames';
 import { startCapture, stopCapture, type CaptureHandle } from '../backseat/captureController';
+import {
+  captureErrorClass,
+  type BackseatEndReasonArg,
+  type BackseatStartTrigger,
+} from '../../../../shared/callEndReasons';
 import { sei } from '../ipcClient';
 import { t } from '../i18n';
 import { visionGateReason } from '../visionGate';
@@ -81,6 +94,40 @@ export const WATCH_SETTLE_MS = 1_500;
 /** After this many failed starts in a row the watch stops retrying and leaves
  *  the reason on the waiting card. */
 export const WATCH_MAX_FAILURES = 3;
+
+/**
+ * Capture recovery (261023): looks for the lost window before the session is
+ * ended, first after REACQUIRE_FIRST_MS and then every REACQUIRE_GAP_MS, at
+ * most REACQUIRE_TRIES times (about 5 s in all). Long enough for a window
+ * recreated on a fullscreen toggle or a server hop, short enough that a
+ * window the player closed ends the session promptly.
+ */
+export const REACQUIRE_FIRST_MS = 500;
+export const REACQUIRE_GAP_MS = 1_500;
+export const REACQUIRE_TRIES = 4;
+
+/**
+ * Which source to pick the share back up from after the OS ended its track,
+ * or why not (261023). Pure, for the tests.
+ *   - The same id is still listed: on macOS that is the system "Stop sharing"
+ *     control (the window is fine, the player stopped it), so it is not
+ *     undone. Elsewhere the track ended under a live window, so retry it.
+ *   - Otherwise a window of the same kind with the same title (the game
+ *     recreated its window, so the id changed).
+ */
+export function pickReacquireSource(
+  list: BackseatSource[],
+  lost: { id: string; name: string },
+  platform: string,
+): { source: BackseatSource; match: 'same_id' | 'same_name' } | 'stopped_by_os' | null {
+  const same = list.find((s) => s.id === lost.id);
+  if (same) return platform === 'darwin' ? 'stopped_by_os' : { source: same, match: 'same_id' };
+  const kind = (id: string): string => id.split(':')[0];
+  const byName = lost.name ? list.find((s) => s.name === lost.name && kind(s.id) === kind(lost.id)) : undefined;
+  return byName ? { source: byName, match: 'same_name' } : null;
+}
+
+const wait = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
 /** A share the player asked for before there was a call to put it on. */
 export interface PendingShare {
@@ -127,6 +174,8 @@ interface BackseatStore {
     characterId: string,
     source: BackseatSource,
     game?: BackseatGameSelection,
+    /** 261023 (analytics): what started it; the picker when omitted. */
+    trigger?: BackseatStartTrigger,
   ) => Promise<boolean>;
   /** Remember a share to start once a call with `characterId` goes live.
    *  A null source arms the auto-share watch for `game` instead. */
@@ -143,12 +192,13 @@ interface BackseatStore {
   clearPendingShare: () => void;
   /** Start the armed share if it is still valid. Returns whether it started. */
   consumePendingShare: (characterId: string) => Promise<boolean>;
-  /** Stop sharing, tearing down capture and the session in main. */
-  stopSharing: () => Promise<void>;
+  /** Stop sharing, tearing down capture and the session in main. `reason`
+   *  (261023) is why, for backseat_ended; the share toggle when omitted. */
+  stopSharing: (reason?: BackseatEndReasonArg) => Promise<void>;
   /** Mark a session started (used by the cross-launch gate's launch thunk). */
   markStarted: (characterId: string) => void;
   /** End a live session (the cross-launch gate's end path). */
-  end: (characterId: string) => Promise<void>;
+  end: (characterId: string, reason?: BackseatEndReasonArg) => Promise<void>;
   /** Reconcile against main, e.g. after a reload. */
   refresh: (characterId: string) => Promise<void>;
   /**
@@ -235,11 +285,11 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
       return;
     }
     watchSeen = null;
-    const ok = await get().share(w.characterId, hit, w.game);
+    const ok = await get().share(w.characterId, hit, w.game, w.resumed ? 'auto_resume' : 'auto_share');
     if (watchGen !== gen) {
       // Stopped (or replaced) while the capture was coming up: a share that
       // landed anyway belongs to a watch nobody wants any more.
-      if (ok && get().watch === null) void get().stopSharing();
+      if (ok && get().watch === null) void get().stopSharing('watch_stopped');
       return;
     }
     if (ok) {
@@ -255,11 +305,30 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
     scheduleWatch(WATCH_POLL_MS * 2);
   };
 
-  /** The OS ended the shared track: the window closed. Main's session was
-   *  already ended by the capture controller. */
-  const onCaptureEnded = (characterId: string, handle: () => CaptureHandle | null): void => {
-    if (capture !== handle()) return;
-    capture = null;
+  /** Bumped whenever a share starts or stops, so a recovery still looking
+   *  for its window can tell the share it belongs to is over. */
+  let shareGen = 0;
+
+  /** Start capture for a session main already has, wiring its OS-end path
+   *  to recovery. `skipOpening` for a recovered capture (no second hello). */
+  const openCapture = async (
+    characterId: string,
+    source: BackseatSource,
+    skipOpening: boolean,
+  ): Promise<CaptureHandle> => {
+    let mine: CaptureHandle | null = null;
+    const started = await startCapture(characterId, source.id, source.name, {
+      onEnded: () => onCaptureEnded(characterId, () => mine, source),
+      ...(skipOpening ? { skipOpening: true } : {}),
+    });
+    mine = started;
+    return started;
+  };
+
+  /** The share is over for good after the OS ended it: end main's session
+   *  and clear the share state. */
+  const finishCaptureLost = (characterId: string, reason: BackseatEndReasonArg): void => {
+    void sei.backseatEnd(characterId, reason).catch(() => {});
     set((s) => {
       const next = { ...s.active };
       delete next[characterId];
@@ -271,6 +340,58 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
       set({ watch: { ...w, resumed: true } });
       scheduleWatch();
     }
+  };
+
+  /** The OS ended the shared track (261023: recovery first, see the header).
+   *  The session stays live in main while the window is looked for; voice
+   *  turns meanwhile take the ordinary screenless path (no capture). */
+  const onCaptureEnded = (characterId: string, handle: () => CaptureHandle | null, lost: BackseatSource): void => {
+    if (capture !== handle()) return;
+    capture = null;
+    const gen = shareGen;
+    const epoch = scopeEpoch;
+    const lostAt = Date.now();
+    const stillOurs = (): boolean =>
+      gen === shareGen && epoch === scopeEpoch && get().sharingFor === characterId && capture === null;
+    void (async () => {
+      for (let i = 0; i < REACQUIRE_TRIES; i++) {
+        await wait(i === 0 ? REACQUIRE_FIRST_MS : REACQUIRE_GAP_MS);
+        if (!stillOurs()) return;
+        let list: BackseatSource[] = [];
+        try {
+          list = await sei.backseatSources({ thumbnails: false });
+        } catch {
+          /* the next try lists again */
+        }
+        if (!stillOurs()) return;
+        const pick = pickReacquireSource(list, lost, sei.platform);
+        if (pick === 'stopped_by_os') {
+          console.log('[backseat] capture ended by the OS stop control: not reacquiring');
+          finishCaptureLost(characterId, 'capture_stopped_by_os');
+          return;
+        }
+        if (!pick) continue;
+        try {
+          const started = await openCapture(characterId, pick.source, true);
+          if (!stillOurs()) {
+            started.stop();
+            return;
+          }
+          capture = started;
+          set({ stream: started.stream, sourceName: pick.source.name });
+          console.log(`[backseat] capture recovered (${pick.match}) after ${Date.now() - lostAt}ms`);
+          sei.track('backseat_capture_recovered', {
+            character_id: characterId,
+            match: pick.match,
+            gap_ms: Date.now() - lostAt,
+          });
+          return;
+        } catch (err) {
+          console.warn(`[backseat] capture recovery failed: ${(err as Error)?.message}`);
+        }
+      }
+      if (stillOurs()) finishCaptureLost(characterId, 'capture_lost');
+    })();
   };
 
   try {
@@ -303,15 +424,16 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
     pendingShare: null,
     watch: null,
 
-    share: async (characterId, source, game) => {
+    share: async (characterId, source, game, trigger = 'picker') => {
       if (get().starting) return false;
       const epoch = scopeEpoch;
+      shareGen += 1;
       set({ starting: true, error: null });
       // Order matters: main registers the session first, so a start it refuses
       // (a live Minecraft summon) never leaves a capture running with nothing
       // to send ticks to.
       try {
-        await sei.backseatStart(characterId, source.id, source.name, 'voice', game);
+        await sei.backseatStart(characterId, source.id, source.name, 'voice', game, trigger);
       } catch (err) {
         // Refused because the account is changing (ACCOUNT_SWITCHING), or it
         // changed while main answered: resetForScope already reset the store.
@@ -338,26 +460,22 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
         // The account changed after main accepted the session. Main's switch
         // ends its sessions itself; ending it here too covers a session that
         // registered after that sweep. A no-op when it is already gone.
-        void sei.backseatEnd(characterId).catch(() => {});
+        void sei.backseatEnd(characterId, 'scope_changed').catch(() => {});
         return false;
       }
       try {
-        let mine: CaptureHandle | null = null;
-        const started = await startCapture(characterId, source.id, source.name, {
-          onEnded: () => onCaptureEnded(characterId, () => mine),
-        });
-        mine = started;
+        const started = await openCapture(characterId, source, false);
         if (epoch !== scopeEpoch) {
           // The account changed while capture was coming up.
           stopCapture();
-          void sei.backseatEnd(characterId).catch(() => {});
+          void sei.backseatEnd(characterId, 'scope_changed').catch(() => {});
           return false;
         }
         capture = started;
       } catch (err) {
         // Capture failed after main accepted the session, so unwind it rather
         // than leaving a session with no pictures.
-        void sei.backseatEnd(characterId).catch(() => {});
+        void sei.backseatEnd(characterId, `capture_failed:${captureErrorClass(err)}`).catch(() => {});
         set({
           starting: false,
           error: (err as Error).message || t('Could not read that window.'),
@@ -407,7 +525,7 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
         get().startWatch(pending.characterId, pending.game);
         return true;
       }
-      return get().share(pending.characterId, pending.source, pending.game);
+      return get().share(pending.characterId, pending.source, pending.game, 'pending');
     },
 
     startWatch: (characterId, game) => {
@@ -427,11 +545,12 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
       if (get().watch) set({ watch: null });
     },
 
-    stopSharing: async () => {
+    stopSharing: async (reason = 'user_stop') => {
       // The share toggle means "stop showing them my screen", which includes
       // waiting to show it.
       get().stopWatch();
       const characterId = get().sharingFor;
+      shareGen += 1; // a capture recovery in progress is over too
       capture = null;
       stopCapture();
       set({ sharingFor: null, stream: null, sourceName: null, starting: false, error: null });
@@ -442,7 +561,7 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
         return { active: next };
       });
       try {
-        await sei.backseatEnd(characterId);
+        await sei.backseatEnd(characterId, reason);
       } catch {
         /* already ended */
       }
@@ -451,9 +570,9 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
     markStarted: (characterId) =>
       set((s) => ({ active: { ...s.active, [characterId]: true } })),
 
-    end: async (characterId) => {
+    end: async (characterId, reason = 'game_launch') => {
       if (get().sharingFor === characterId) {
-        await get().stopSharing();
+        await get().stopSharing(reason);
         return;
       }
       set((s) => {
@@ -462,7 +581,7 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
         return { active: next };
       });
       try {
-        await sei.backseatEnd(characterId);
+        await sei.backseatEnd(characterId, reason);
       } catch {
         /* already ended */
       }
@@ -470,6 +589,7 @@ export const useBackseatStore = create<BackseatStore>((set, get) => {
 
     resetForScope: () => {
       scopeEpoch += 1;
+      shareGen += 1;
       if (pendingTimer) clearTimeout(pendingTimer);
       pendingTimer = null;
       watchGen += 1;

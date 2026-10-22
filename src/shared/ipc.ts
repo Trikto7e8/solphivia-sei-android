@@ -28,6 +28,7 @@ import type {
 import type { ErrorClass } from './errorClasses';
 import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from './chatgptPlan';
 import type { RegionStatus } from './regionGate';
+import type { BackseatEndReasonArg, BackseatStartTrigger, CallEndReason } from './callEndReasons';
 export type { ErrorClass } from './errorClasses';
 import type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
 export type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
@@ -49,6 +50,7 @@ import type {
   BackseatSource,
   BackseatState,
   BackseatTick,
+  BackseatTickOutcome,
 } from './backseatIpc';
 export type {
   BackseatLine,
@@ -2190,6 +2192,8 @@ export interface RendererApi {
     sourceName: string,
     mode: BackseatMode,
     game?: BackseatGameSelection,
+    /** 261023 (analytics): what started the share. */
+    trigger?: BackseatStartTrigger,
   ): Promise<BackseatState>;
   /** 260929: a pasted game link (one game) or a search (a list). Never rejects
    *  for a lookup failure; that is a typed result. */
@@ -2200,7 +2204,9 @@ export interface RendererApi {
   backseatGameDetails(gameId: string, universeId: number): Promise<BackseatGameInfo | null>;
   backseatGetState(characterId: string): Promise<BackseatState | null>;
   /** Raise a tick. Main decides whether it becomes a spoken line. */
-  backseatTick(tick: BackseatTick): Promise<void>;
+  /** Resolves at once for every tick but the opening look ('start'), which
+   *  resolves with its outcome when its turn is over (261023). */
+  backseatTick(tick: BackseatTick): Promise<BackseatTickOutcome | undefined>;
   /** macOS only: start the bundled system-audio tap; PCM arrives on
    *  onBackseatPcm. Null when the tap cannot run on this machine. */
   backseatAudioStart(): Promise<{ sampleRate: number; channels: number } | null>;
@@ -2218,7 +2224,9 @@ export interface RendererApi {
   backseatSaveClip(characterId: string, requestId: string, webmBase64: string | null): Promise<void>;
   /** Open a saved clip in the OS player (the chat clip card's click action). */
   backseatRevealClip(clipPath: string): Promise<void>;
-  backseatEnd(characterId: string): Promise<void>;
+  /** `reason` (261023): why the share ended, for backseat_ended. Main
+   *  validates it (callEndReasons.ts); a missing one is 'unspecified'. */
+  backseatEnd(characterId: string, reason?: BackseatEndReasonArg): Promise<void>;
   onBackseatState(cb: (state: BackseatState) => void): Unsubscribe;
   onBackseatLine(cb: (l: BackseatLine & { characterId: string }) => void): Unsubscribe;
   onBackseatClipRequest(cb: (r: { characterId: string; requestId: string }) => void): Unsubscribe;
@@ -2389,6 +2397,8 @@ export interface RendererApi {
     active: boolean;
     connectedMs?: number;
     live?: boolean;
+    /** Hang-up only (261023): why the call ended, for voice_call_ended. */
+    reason?: CallEndReason;
   }): Promise<void>;
   /**
    * The call pipeline just went LIVE — ask the companion to speak first (like

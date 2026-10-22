@@ -58,7 +58,7 @@ export function endLiveSurfaces(): void {
     // endCall is the single call teardown (mic, TTS queue, timers, overlay).
     // Its hang-up reports reach main after main closed these calls itself,
     // and main drops them (voice/callState consumeClosedByMain).
-    if (voice.participants.length > 0 || voice.status !== 'idle') voice.endCall();
+    if (voice.participants.length > 0 || voice.status !== 'idle') voice.endCall('scope_reset');
   } catch { /* keep going */ }
   try { useChessStore.getState().resetForScope(); } catch { /* keep going */ }
   try { useDrawStore.getState().resetForScope(); } catch { /* keep going */ }

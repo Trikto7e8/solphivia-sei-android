@@ -361,6 +361,13 @@
   min-width: 0;
 }
 
+/* 261023: the thin rule between the games and the non-game tabs (Web search). */
+.gamesNavRule {
+  height: 1px;
+  margin: var(--space-xs) var(--space-md);
+  background: var(--border);
+}
+
 @media (max-width: 560px) {
   .gamesLayout {
     grid-template-columns: minmax(0, 1fr);
@@ -380,5 +387,10 @@
   }
   .gamesNavItemOn {
     border-bottom-color: var(--accent);
+  }
+  .gamesNavRule {
+    width: 1px;
+    height: auto;
+    margin: var(--space-xs) var(--space-xs);
   }
 }

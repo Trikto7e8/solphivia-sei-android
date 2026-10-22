@@ -23,6 +23,8 @@
  *        - local + signed out  → inline "Switch to cloud?" confirm dialog →
  *          SignInModal; once signed in the switch completes automatically.
  *   8. Settings icon
+ *   9. "Update Sei" (UpdateRailButton, 261023): only while an update is
+ *      downloading or ready; full rail width, flush with the bottom edge
  *
  * Removed: Minecraft button, Add-game (Plus → coming-soon) button.
  * Scrollbar hidden on the avatar cluster; only the avatar cluster scrolls.
@@ -47,6 +49,7 @@ import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
 import { SignInModal } from './SignInModal';
 import { SwitchBackendConfirmModal } from './SwitchBackendConfirmModal';
+import { UpdateRailButton } from './UpdateRailButton';
 import { sei } from '../lib/ipcClient';
 import { lastInteractionAt } from '../lib/lastInteraction';
 import { isHomeCharacter } from '../lib/homeLibrary';
@@ -563,6 +566,11 @@ export function IconRail(): React.ReactElement {
             <SettingsIcon size={22} />
           </RailButton>
         </div>
+
+        {/* 261023: "Update Sei", full-bleed at the rail's foot while an update
+            is downloading (quiet bar) or ready (the gradient button). Renders
+            nothing otherwise. */}
+        <UpdateRailButton setHover={setHoverTip} />
       </nav>
 
       {/*

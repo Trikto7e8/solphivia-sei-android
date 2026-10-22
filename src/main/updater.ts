@@ -21,9 +21,10 @@
  *      not-available/available/error to the renderer.
  *   C. Optional accept — downloadUpdate(), progress ticks, then ready-to-install.
  *      Both C and the mandatory on-restart tail are BACKGROUND on the renderer
- *      side (260801): progress and the ready prompt render as a corner pill, and
- *      nothing installs until the user says so or the app quits. Only
- *      apply:'now' still takes the window.
+ *      side (260801): progress and the ready prompt render in the sidebar
+ *      "Update Sei" button (261023, was a corner pill), and nothing installs
+ *      until the user clicks it or the app quits. Only apply:'now' still
+ *      takes the window.
  *   D. Post-update what's-new — on launch, show stashed/ fallback changelog.
  *
  * Source:
@@ -41,6 +42,7 @@ import {
   type ApplyTiming,
 } from './updatePolicy';
 import { loadUpdateState, saveUpdateState } from './updateStateStore';
+import { restartInstallArgs } from './updateInstall';
 import { refreshNotices } from './notices';
 import { updaterLog } from './updaterLog';
 
@@ -181,6 +183,14 @@ let allowPrerelease = false;
  * flow.
  */
 let mandatoryApply: ApplyTiming | null = null;
+
+/**
+ * The optional update last offered through app:update-available, kept so an
+ * accepted download can stash it as a `brief` pending record (261023). After
+ * the relaunch the renderer then shows a small "Updated to vX" toast instead
+ * of repeating the changelog the user already read in the popup.
+ */
+let offeredOptional: { version: string; changelog: string } | null = null;
 
 /**
  * True while the in-flight checkForUpdates() came from the background timer.
@@ -404,8 +414,12 @@ function ensureAutoUpdater(): AutoUpdater | null {
     send(IpcChannel.app.updateProgress, { percent });
   });
 
-  autoUpdater.on('update-downloaded', () => {
-    void handleUpdateDownloaded();
+  autoUpdater.on('update-downloaded', (info: unknown) => {
+    const version =
+      info && typeof info === 'object' && typeof (info as { version?: unknown }).version === 'string'
+        ? (info as { version: string }).version
+        : undefined;
+    void handleUpdateDownloaded(version);
   });
 
   autoUpdater.on('error', (err: unknown) => {
@@ -474,6 +488,7 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
 
   if (level === 'optional') {
     mandatoryApply = null;
+    offeredOptional = { version: latestVersion, changelog: changelog ?? '' };
     send(IpcChannel.app.updateAvailable, {
       latestVersion,
       currentVersion,
@@ -515,43 +530,43 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
  *   - mandatory + apply==='now'  → push downloaded{forced:true}, then
  *     quitAndInstall() after a brief overlay delay.
  *   - mandatory + apply==='on-restart' → push downloaded{forced:false,
- *     onRestart:true}; the renderer offers a restart from the corner pill.
+ *     onRestart:true}; the renderer shows the sidebar "Update Sei" button.
  *     autoInstallOnAppQuit applies it on the next quit either way.
- *   - optional (consented) → push downloaded{forced:false}; same pill, same
- *     deal. The renderer no longer auto-installs (260801): the user may have
+ *   - optional (consented) → push downloaded{forced:false}; same button,
+ *     same deal. The renderer no longer auto-installs (260801): the user may have
  *     accepted the download minutes ago and be mid-game by the time it lands,
  *     so the restart is theirs to trigger via app:update-install.
  */
-async function handleUpdateDownloaded(): Promise<void> {
+async function handleUpdateDownloaded(version?: string): Promise<void> {
   updateReadyToInstall = true;
   const apply = mandatoryApply;
   if (apply === null) {
     // Optional consented flow.
-    send(IpcChannel.app.updateDownloaded, { forced: false });
+    send(IpcChannel.app.updateDownloaded, { forced: false, version });
     return;
   }
   // Mandatory flow.
   if (apply === 'now') {
-    send(IpcChannel.app.updateDownloaded, { forced: true });
+    send(IpcChannel.app.updateDownloaded, { forced: true, version });
     setTimeout(() => {
       try {
-        autoUpdater?.quitAndInstall();
+        autoUpdater?.quitAndInstall(...restartInstallArgs(process.platform));
       } catch (err) {
         logger.warn(`updater: forced quitAndInstall failed (${(err as Error).message})`);
       }
     }, FORCED_RESTART_DELAY_MS);
     return;
   }
-  // apply === 'on-restart' → surface a DISMISSABLE "ready, restart to apply"
-  // card so the download indicator doesn't hang at 100% (it previously sent
-  // nothing here, leaving the renderer stuck in the 'downloading' state). The
-  // update still installs on the next quit via autoInstallOnAppQuit; the card
-  // just adds a "Restart now" affordance.
-  send(IpcChannel.app.updateDownloaded, { forced: false, onRestart: true });
+  // apply === 'on-restart' → surface the "ready, restart to apply" state so
+  // the download indicator doesn't hang at 100% (it previously sent nothing
+  // here, leaving the renderer stuck in the 'downloading' state). The update
+  // still installs on the next quit via autoInstallOnAppQuit; the sidebar
+  // "Update Sei" button just lets the user restart into it now.
+  send(IpcChannel.app.updateDownloaded, { forced: false, onRestart: true, version });
   // "next quit" means a real process quit: Cmd-Q, or the quit-on-last-window-
   // close that index.ts adds on macOS when this update is ready. Closing the
   // window alone never installed anything on macOS (260909).
-  logger.info('updater: mandatory update downloaded; applies on next quit (pill offers restart now)');
+  logger.info('updater: mandatory update downloaded; applies on next quit (sidebar button offers restart now)');
 }
 
 /* -------------------------------------------------------------------------- */
@@ -624,7 +639,9 @@ async function runWhatsNewCheck(): Promise<void> {
 
   let shown = false;
   if (state.pending && state.pending.version === cur) {
-    pendingWhatsNew = { version: cur, changelog: state.pending.changelog };
+    pendingWhatsNew = state.pending.brief
+      ? { version: cur, changelog: state.pending.changelog, brief: true }
+      : { version: cur, changelog: state.pending.changelog };
     send(IpcChannel.app.whatsNew, pendingWhatsNew);
     shown = true;
   } else if (shouldShowWhatsNew(state.lastSeenVersion, cur)) {
@@ -866,6 +883,21 @@ export async function downloadAcceptedUpdate(): Promise<void> {
   const au = ensureAutoUpdater();
   if (!au) return;
   mandatoryApply = null; // optional/consented flow.
+  // Stash the accepted version so the relaunch confirms it ("Updated to vX")
+  // without repeating the changelog the user just read. It also makes the
+  // launch's update_installed event report via:'in_app' for this path.
+  const offered = offeredOptional;
+  if (offered && offered.version) {
+    try {
+      const state = await loadUpdateState();
+      await saveUpdateState({
+        ...state,
+        pending: { version: offered.version, changelog: offered.changelog, brief: true },
+      });
+    } catch (err) {
+      logger.warn(`updater: failed to stash accepted update (${(err as Error).message})`);
+    }
+  }
   try {
     await au.downloadUpdate();
   } catch (err) {
@@ -876,14 +908,15 @@ export async function downloadAcceptedUpdate(): Promise<void> {
 }
 
 /**
- * Quit and install a downloaded update (optional flow, after the renderer's
- * brief "restarting…" state). No-op in dev.
+ * Quit and install a downloaded update (the sidebar "Update Sei" button). On
+ * Windows this runs the installer silently and relaunches Sei when it is done
+ * (see updateInstall.ts for the exact installer arguments). No-op in dev.
  */
 export function installDownloadedUpdate(): void {
   const au = ensureAutoUpdater();
   if (!au) return;
   try {
-    au.quitAndInstall();
+    au.quitAndInstall(...restartInstallArgs(process.platform));
   } catch (err) {
     logger.warn(`updater: quitAndInstall failed (${(err as Error).message})`);
   }

@@ -32,6 +32,9 @@
  *     http://localhost:5173/?dashshot=chatui&part=chat|picker|settings  the rail + a screen, for theme/accent checks
  *                                                  (&lang=zh on any of these for the Chinese copy)
  *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open)
+ *                                                  (&update=downloading|ready|restarting|updated: the sidebar
+ *                                                  "Update Sei" button / "Updated to vX" toast, 261023;
+ *                                                  &live=game: a companion online, so a click asks first)
  *
  * It seeds useMcDashboardStore with fixture snapshots and useDataStore with
  * two named characters (window.sei is stubbed by devHarnessStubs.ts, which
@@ -61,6 +64,9 @@ import { OnboardApp } from '../../onboard/OnboardApp';
 import { useFirstMomentStore } from '../../lib/stores/useFirstMomentStore';
 import { useChessStore } from '../../lib/stores/useChessStore';
 import { useVoiceStore } from '../../lib/stores/useVoiceStore';
+import { useUpdateStore } from '../../lib/stores/useUpdateStore';
+import { topChangelogLine } from '../../lib/changelog';
+import { UpdatedToast } from '../UpdatedToast';
 import { useUiStore } from '../../lib/stores/useUiStore';
 import { useLangStore } from '../../lib/i18n';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
@@ -296,7 +302,27 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   }
   if (which === 'home') return <DevHomeShot />;
   if (which === 'chatui') {
-    const part = new URLSearchParams(window.location.search).get('part') ?? 'chat';
+    const qs = new URLSearchParams(window.location.search);
+    const part = qs.get('part') ?? 'chat';
+    const update = qs.get('update');
+    if (update === 'downloading') useUpdateStore.setState({ rail: { kind: 'downloading', percent: 42 } });
+    if (update === 'ready') useUpdateStore.setState({ rail: { kind: 'ready', version: '0.7.0' } });
+    if (update === 'restarting') useUpdateStore.setState({ rail: { kind: 'restarting', version: '0.7.0' } });
+    if (update === 'updated') {
+      useUpdateStore.setState({
+        toast: {
+          version: '0.7.0',
+          headline: topChangelogLine(
+            "## What's new in 0.7.0\n- New: use your own ElevenLabs voices. Save your key in Settings and pick them in the voice picker\n- Fixes",
+          ),
+        },
+      });
+    }
+    if (qs.get('live') === 'game') {
+      useDataStore.setState((s) => ({
+        summons: { ...s.summons, [DST_ID]: { kind: 'online', characterId: DST_ID, game: 'dontstarve', uptimeMs: 0, startedAtMs: Date.now() } },
+      }));
+    }
     return (
       <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--window)' }}>
         <IconRail />
@@ -305,6 +331,7 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
           {part === 'settings' ? <SettingsScreen /> : part === 'credits' ? <CreditsScreen /> : <ChatScreen characterId={SDV_ID} />}
         </div>
         {part === 'picker' ? <GamesPickerModal characterId={SDV_ID} /> : null}
+        {update === 'updated' ? <UpdatedToast /> : null}
       </div>
     );
   }

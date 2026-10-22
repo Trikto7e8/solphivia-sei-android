@@ -40,3 +40,25 @@ export function stripDuplicateTitleHeading(text: string, titles: string[]): stri
     .join('\n')
     .replace(/^\s*\n/, '');
 }
+
+/**
+ * The headline of a changelog for the post-update "Updated to vX" toast
+ * (261023): the first bullet, cut to its first sentence when it runs on, with
+ * markdown emphasis removed. Falls back to the first plain line. Empty string
+ * when there is nothing to show. The feed is cumulative, newest section first,
+ * so the first bullet belongs to the version that was just installed.
+ */
+export function topChangelogLine(text: string): string {
+  const lines = text
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '');
+  const bullet = lines.find((l) => /^[-*•]\s+/.test(l));
+  const plain = lines.find((l) => !/^#{1,6}\s/.test(l));
+  let line = (bullet ?? plain ?? '').replace(/^[-*•]\s+/, '');
+  line = line.replace(/\*\*(.+?)\*\*/g, '$1').replace(/__(.+?)__/g, '$1').replace(/`([^`]+)`/g, '$1');
+  const sentence = /^(.{20,}?[.!?])\s+\S/.exec(line);
+  if (sentence && line.length > 80) line = sentence[1];
+  return line.trim();
+}

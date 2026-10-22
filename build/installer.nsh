@@ -30,23 +30,44 @@
 ;   uninstaller that every update runs first (uninstallOldVersion) deletes
 ;   HKCU "Software\<APP_GUID>", so a value there would be wiped each time.
 ;
-;   Never in silent mode. electron-updater runs the installer with /S when an
-;   update is applied on app quit (autoInstallOnAppQuit), and a UAC prompt
-;   after the user closed Sei would come out of nowhere. A silent run leaves
-;   the marker unset, so the one attempt happens on the next non-silent run:
-;   the in-app "restart to update" (quitAndInstall() without isSilent, the
-;   one-click banner is on screen) or a manual install from sei.gg.
+;   Never on the update-on-quit run. electron-updater runs the installer with
+;   `--updated /S` when an update is applied on app quit
+;   (autoInstallOnAppQuit), and a UAC prompt after the user closed Sei would
+;   come out of nowhere. That run leaves the marker unset, so the one attempt
+;   happens on the next run the user started on purpose:
+;     - the in-app "Update Sei" restart. Since 261023 it is silent too
+;       (quitAndInstall(true, true) = `--updated /S --force-run`, see
+;       src/main/updateInstall.ts), so `--force-run` is what tells it apart
+;       from the quit run: the user just clicked, and Sei reopens after.
+;     - a manual install from sei.gg (not silent).
+;   So: silent AND no --force-run means skip.
 ;
 ; The registry keys are the same ones the old installer wrote: APP_GUID is
 ; derived from the appId (com.sei.app, LOCKED), not from the installer mode.
 
 !define SEI_MIGRATION_KEY "Software\Sei\Installer"
+; FileFunc (GetParameters / GetOptions) is already included by electron-builder's
+; multiUser.nsh; including it again is harmless (it is include-guarded).
+!include FileFunc.nsh
 
 !macro customInstall
+  Push $R5
   Push $R6
   Push $R7
   Push $R8
   Push $R9
+
+  ; $R5 = "1" when this run should stay hands-off (the update-on-quit run).
+  StrCpy $R5 ""
+  ${if} ${Silent}
+    ${GetParameters} $R7
+    ClearErrors
+    ${GetOptions} $R7 "--force-run" $R8
+    ${if} ${Errors}
+      StrCpy $R5 "1"
+    ${endIf}
+    ClearErrors
+  ${endIf}
 
   ReadRegStr $R8 HKLM "${UNINSTALL_REGISTRY_KEY}" UninstallString
   ReadRegStr $R9 HKLM "${INSTALL_REGISTRY_KEY}" InstallLocation
@@ -56,8 +77,8 @@
   ${andIf} $R9 != $INSTDIR
     ${if} $R6 != ""
       DetailPrint `An earlier all-users install is still in $R9. Removal was already tried once; it can be uninstalled from Apps & features.`
-    ${elseIf} ${Silent}
-      DetailPrint `An earlier all-users install is in $R9. Silent run, so its removal waits for the next interactive install.`
+    ${elseIf} $R5 == "1"
+      DetailPrint `An earlier all-users install is in $R9. Update-on-quit run, so its removal waits for an in-app restart or a manual install.`
     ${else}
       !insertmacro GetInQuotes $R7 "$R8"
       ${if} ${FileExists} "$R7"
@@ -81,4 +102,5 @@
   Pop $R8
   Pop $R7
   Pop $R6
+  Pop $R5
 !macroend

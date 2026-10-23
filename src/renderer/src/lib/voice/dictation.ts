@@ -27,6 +27,7 @@
 import { dbOf, pushEnv, type EnvSample, type MicEchoInfo } from './echoGate';
 import { createSttArbiter } from './sttArbiter';
 import { whisperMirrorFirst } from './mirrorPref';
+import { tagCallSetupStage } from './callSetupFailure';
 
 export type DictationStatus = 'loading-model' | 'ready' | 'error';
 
@@ -413,21 +414,47 @@ export async function createDictation(opts: {
   let ready: Promise<void> = Promise.resolve();
   if (useWorker) {
     opts.onStatus('loading-model');
-    const w = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' });
+    let w: Worker;
+    try {
+      w = new Worker(new URL('./whisperWorker.ts', import.meta.url), { type: 'module' });
+    } catch (err) {
+      opts.onStatus('error', 'speech recognition failed to start');
+      throw tagCallSetupStage(err, 'stt_boot');
+    }
     worker = w;
     ready = new Promise<void>((resolve, reject) => {
+      // Every failure here is the local speech model's (261023: the stage and
+      // a fixed error name ride the call_setup_failed event, see
+      // callSetupFailure.ts). The names are ours, never the worker's text.
+      let settled = false;
+      const fail = (name: string, message: string): void => {
+        settled = true;
+        clearTimeout(watchdog);
+        const err = new Error(message);
+        err.name = name;
+        reject(tagCallSetupStage(err, 'stt_boot'));
+      };
       const watchdog = setTimeout(
-        () => reject(new Error('voice recognition took too long to download, check your connection and retry')),
+        () => fail('TimeoutError', 'voice recognition took too long to download, check your connection and retry'),
         MODEL_LOAD_TIMEOUT_MS,
       );
+      // The worker script itself failed to load or threw at top level. Without
+      // this the call sat on "Connecting" for the whole download watchdog and
+      // then blamed the connection. After 'ready' it leaves the error to the
+      // console as before; per-utterance failures already answer with empty text.
+      w.onerror = (e: ErrorEvent) => {
+        if (settled) return;
+        e.preventDefault?.();
+        fail('WorkerLoadError', 'speech recognition worker failed to load');
+      };
       w.onmessage = (e: MessageEvent) => {
         const msg = e.data as { type: string; id?: number; text?: string; message?: string; pct?: number };
         if (msg.type === 'ready') {
+          settled = true;
           clearTimeout(watchdog);
           resolve();
         } else if (msg.type === 'init-error') {
-          clearTimeout(watchdog);
-          reject(new Error(msg.message ?? 'model load failed'));
+          fail('ModelLoadError', msg.message ?? 'model load failed');
         } else if (msg.type === 'progress' && typeof msg.pct === 'number') {
           // First-run download progress — surfaced so "Connecting…" shows a
           // moving percentage instead of looking hung for ~40MB.
@@ -461,7 +488,9 @@ export async function createDictation(opts: {
   } catch (err) {
     worker?.terminate();
     opts.onStatus('error', 'microphone permission denied');
-    throw err;
+    // Refusals and every other getUserMedia failure (no mic, held by another
+    // app) share this tag; callSetupFailureProps splits out the refusals.
+    throw tagCallSetupStage(err, 'mic_capture');
   }
   // Output path is now settled (see onMicReady): anything the caller wants to
   // PLAY can be scheduled from here without the AEC switch swallowing it.
@@ -473,32 +502,42 @@ export async function createDictation(opts: {
     stream.getTracks().forEach((t) => t.stop());
     worker?.terminate();
     opts.onStatus('error', (err as Error).message);
-    throw err;
+    throw tagCallSetupStage(err, 'stt_boot');
   }
   opts.onStatus('ready');
 
-  const ctx = new AudioContext({ sampleRate: SAMPLE_RATE });
-  const source = ctx.createMediaStreamSource(stream);
+  // The audio graph. 261023: the AudioContext and the stream source used to be
+  // built outside the try below, so a throw there skipped the cleanup and left
+  // the mic stream open (and the worker running) after the call had already
+  // failed.
+  let graphCtx: AudioContext | null = null;
+  let graphSource: MediaStreamAudioSourceNode | null = null;
   // AudioWorklet capture (replaces the deprecated ScriptProcessorNode). The
   // module is a blob URL built from WORKLET_SRC above.
-  const workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }));
-  let captureNode: AudioWorkletNode;
+  let workletUrl: string | null = null;
+  let graphNode: AudioWorkletNode | null = null;
   try {
-    await ctx.audioWorklet.addModule(workletUrl);
-    captureNode = new AudioWorkletNode(ctx, 'sei-vad-capture', {
+    graphCtx = new AudioContext({ sampleRate: SAMPLE_RATE });
+    graphSource = graphCtx.createMediaStreamSource(stream);
+    workletUrl = URL.createObjectURL(new Blob([WORKLET_SRC], { type: 'text/javascript' }));
+    await graphCtx.audioWorklet.addModule(workletUrl);
+    graphNode = new AudioWorkletNode(graphCtx, 'sei-vad-capture', {
       numberOfInputs: 1,
       numberOfOutputs: 1,
       channelCount: 1,
     });
   } catch (err) {
-    URL.revokeObjectURL(workletUrl);
-    void ctx.close().catch(() => {});
+    if (workletUrl) URL.revokeObjectURL(workletUrl);
+    if (graphCtx) void graphCtx.close().catch(() => {});
     stream.getTracks().forEach((t) => t.stop());
     worker?.terminate();
     opts.onStatus('error', 'audio capture failed');
-    throw err;
+    throw tagCallSetupStage(err, 'audio_graph');
   }
   URL.revokeObjectURL(workletUrl);
+  const ctx: AudioContext = graphCtx;
+  const source: MediaStreamAudioSourceNode = graphSource;
+  const captureNode: AudioWorkletNode = graphNode;
 
   let muted = false;
   let hold = false;

@@ -168,6 +168,13 @@ export const ZH_MISC: Record<string, string> = {
   'No microphone was found. Connect one and try again.': '没有找到麦克风。请连接后重试。',
   'Microphone access is off for Sei.': 'Sei 的麦克风权限已关闭。',
   'Voice call failed to start. Try again in a moment.': '语音通话启动失败。请稍后再试。',
+  // 261023: call-start failures that used to fall through to the line above.
+  'Your microphone could not be opened. Close other apps that use it, or pick a different microphone in your sound settings, then try again.':
+    '无法打开你的麦克风。请关闭正在使用它的其他应用，或在声音设置中选择其他麦克风，然后重试。',
+  'Voice recognition took too long to download. Check your connection and try again.':
+    '语音识别下载时间过长。请检查网络连接后重试。',
+  'Voice recognition could not start. Check your connection and try again.':
+    '语音识别无法启动。请检查网络连接后重试。',
 
   // ── OS permission cards (MicAccessCard / ScreenAccessGate, 260929) ────
   'Turn on your microphone': '开启麦克风',

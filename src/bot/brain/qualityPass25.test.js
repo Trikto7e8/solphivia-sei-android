@@ -338,3 +338,51 @@ describe('orchestrator: a player task is not started by her own other work', () 
     expect(allText(later)).toContain(`build a house with Steve later ${NOTE_JSON}`)
   })
 })
+
+// Review of 9d6d51e3: an action run by the post-teardown drain starts the
+// player's task too. The drain dispatches without startLongRunner, so a
+// gather for their logs that only ran there left the task marked not started.
+describe('orchestrator: a drained action starts the player task', () => {
+  it('does not mark the task once the drain has started its gather', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const started = []
+    const adapter = {
+      ...makeAdapter({}),
+      listActions: () => ['goTo', 'gather'],
+      getActionSchema: () => z.object({ x: z.number().optional(), y: z.number().optional(), z: z.number().optional(), name: z.string().optional(), count: z.number().optional() }),
+      executeAction: (name, _args, opts = {}) => {
+        started.push(name)
+        if (name === 'goTo') return new Promise(() => {})
+        return new Promise((resolve) => opts.signal?.addEventListener?.('abort', () => resolve('aborted'), { once: true }))
+      },
+    }
+    const provider = makeProvider([
+      turn(act('g1', 'setGoal', { text: 'get Steve 16 oak logs', for_player: true }), say('s1', 'on it'),
+        act('m1', 'goTo', { x: 5, y: 64, z: 5 }), act('a1', 'gather', { name: 'oak_log', count: 16 })),
+      turn(say('s2', 'ow'), act('e1', 'end_loop')),
+      turn(say('s3', 'yep'), act('e2', 'end_loop')),
+    ])
+    const orch = createOrchestrator({
+      adapter, config: config(),
+      sessionState: { playerData: () => ({}), onLoopTerminal: async () => {} },
+      playerStore: { formatPlayerSeedBlock: () => 'PLAYER' },
+      reenqueue: () => {},
+      _anthropicOverride: provider,
+    })
+    orch.recordIncomingChat('Steve', 'get me 16 logs')
+    await orch.handleDispatch('sei:chat_received', line('get me 16 logs'))
+    await flush()
+    expect(orch.currentLoop?._pendingToolUses?.map((e) => e.use.name)).toEqual(['gather'])
+    await orch.handleDispatch('sei:attacked', { attackerLabel: 'zombie', attackerKind: 'mob' })
+    await flush()
+    expect(started).toEqual(['goTo', 'gather'])
+    orch.recordIncomingChat('Steve', 'hows it going')
+    await orch.handleDispatch('sei:chat_received', line('hows it going'))
+    await flush()
+    const next = provider.calls.find((c) => lastUser(c).includes('hows it going'))
+    expect(next).toBeTruthy()
+    expect(allText(next)).toContain('get Steve 16 oak logs')
+    expect(allText(next)).not.toContain(`get Steve 16 oak logs ${NOTE_JSON}`)
+    expect(allText(next)).not.toContain('you have not started')
+  })
+})

@@ -3630,6 +3630,10 @@ function maybeWarnByteCap(loop, warned) {
           // also aborts the run, this covers a pause that landed between tools.
           if (controller.signal.aborted || gamePaused) { cutFrom = i; break }
           const entry = worldTools[i]
+          // A drained action is started for the player's task as much as one
+          // from startLongRunner (pass 25b taskStartedAt): without this a
+          // drained gather for their logs left the task "not started".
+          noteTaskStarted(entry.use.name, entry.use.input)
           const handle = inflight.start({ name: entry.use.name, args: entry.use.input })
           let outcome = null
           try {

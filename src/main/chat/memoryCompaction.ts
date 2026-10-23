@@ -107,6 +107,14 @@ const chatAnthropicAdapter = {
       console.warn(`[sei] compaction model ${opts.model} rejected (${msg}); compacting with ${fallbackModel}`);
       res = await run(fallbackModel);
     }
+    // 261024: a reply cut off at maxTokens is a partial list. The compactor
+    // only checks that it got some entry lines back, so a truncated reply
+    // would replace the whole segment and silently drop every entry after
+    // the cut (seen with Sonnet on a 255-entry segment: 22 originals lost).
+    // Throwing makes compactEntries keep the originals for this segment.
+    if (res.stopReason === 'max_tokens') {
+      throw new Error(`compaction reply hit max_tokens (${opts.maxTokens}); keeping original entries`);
+    }
     const text = res.content
       .map((b) => (b.type === 'text' ? (b as unknown as { text: string }).text : ''))
       .join('');

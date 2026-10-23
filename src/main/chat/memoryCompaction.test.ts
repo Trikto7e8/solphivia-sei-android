@@ -109,6 +109,19 @@ describe('maybeCompactChatMemory (260810)', () => {
     expect(call[0].system).toContain('test persona voice');
   });
 
+  it('keeps the original entries when the compaction reply is cut off at max_tokens (261024)', async () => {
+    const id = 'aaaaaaaa-0000-4000-8000-000000000005';
+    const { file, raw } = await seedBigMemory(id);
+    createSpy.mockImplementationOnce(async () => ({
+      content: [{ type: 'text', text: '- [2026-08-08] first half of a list that got cut' }],
+      stop_reason: 'max_tokens',
+    }));
+
+    expect(await maybeCompactChatMemory(id)).toBe(false);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(await readFile(file, 'utf8')).toBe(raw);
+  });
+
   it('single-flights per character: a concurrent trigger is a no-op', async () => {
     const id = 'aaaaaaaa-0000-4000-8000-000000000004';
     await seedBigMemory(id);

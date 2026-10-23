@@ -106,9 +106,17 @@ registerPortraitScheme();
 // documented path, and the day Chromium fixes it macOS gains audio with no code
 // change. Until then macOS falls back to a virtual audio device if the player
 // has one (see captureController.findLoopbackDevice), else video-only.
+// 261024: every enable-features flag goes in this ONE switch. Chromium keeps
+// only the last value of a repeated switch, so the SharedArrayBuffer switch
+// that used to be appended separately below silently dropped these two.
+// SharedArrayBuffer (voice calls, 260705): lets the local Whisper dictation
+// (onnxruntime WASM in a worker) run multi-threaded. Chromium normally gates
+// SAB behind cross-origin isolation (COOP/COEP headers), which our
+// file://-served renderer can't opt into; the flag re-exposes it. Safe here:
+// the renderer only loads our own bundled content. Must be set before ready.
 app.commandLine.appendSwitch(
   'enable-features',
-  'MacSckSystemAudioLoopbackOverride,MacLoopbackAudioForScreenShare',
+  'MacSckSystemAudioLoopbackOverride,MacLoopbackAudioForScreenShare,SharedArrayBuffer',
 );
 
 const logger = {
@@ -1536,14 +1544,8 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-// Voice calls (260705): expose SharedArrayBuffer in the renderer so the local
-// Whisper dictation (onnxruntime WASM in a worker) can run MULTI-threaded —
-// single-threaded transcription is the longest fixed cost in the voice-reply
-// loop. Chromium normally gates SAB behind cross-origin isolation (COOP/COEP
-// headers), which our file://-served renderer can't opt into; the feature
-// flag re-exposes it. Safe here: the renderer only loads our own bundled
-// content, never arbitrary web pages. Must be set before app ready.
-app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+// SharedArrayBuffer for voice dictation is enabled in the single enable-features
+// switch near the top of this file.
 
 // Single-instance lock — second launch focuses existing window
 const gotLock = app.requestSingleInstanceLock();

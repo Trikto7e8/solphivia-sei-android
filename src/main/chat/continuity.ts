@@ -47,6 +47,7 @@ import { COMPANION_MODEL } from '../../shared/llmCatalog';
 // model override and fold with their single configured model.
 import { buildLlmProvider } from '../llm';
 import { buildFoldSystem, buildFoldUserText, extractSummaryTag, formatChatTimestamp } from './foldPrompt';
+import { isModelRequestRejection } from './modelRejection';
 import { maybeCompactChatMemory } from './memoryCompaction';
 import { resolvePersonaText } from './personaText';
 
@@ -369,8 +370,7 @@ async function foldIntoSummary(
       res = await runFold(SUMMARY_MODEL, SUMMARY_EXTRA);
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
-      const modelRejected = /invalid_model|model|thinking/i.test(msg) && /\b400\b|not_found|invalid/i.test(msg);
-      if (modelRejected) {
+      if (isModelRequestRejection(msg)) {
         console.warn(`[sei] summary fold request rejected (${msg}); folding with ${CHAT_MODEL} without thinking`);
         res = await runFold(CHAT_MODEL);
       } else {

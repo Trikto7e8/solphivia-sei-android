@@ -38,6 +38,7 @@ import { paths } from '../paths';
 import { buildLlmProvider } from '../llm';
 import { createMemoryCompactor } from '../../bot/brain/memory/compactor.js';
 import { COMPANION_MODEL } from '../../shared/llmCatalog';
+import { isModelRequestRejection } from './modelRejection';
 
 /**
  * Trigger threshold, deliberately 4x the bot's 8192.
@@ -97,8 +98,7 @@ const chatAnthropicAdapter = {
       res = await run(opts.model);
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
-      const modelRejected = /invalid_model|model/i.test(msg) && /\b400\b|not_found|invalid/i.test(msg);
-      if (!modelRejected) throw err;
+      if (!isModelRequestRejection(msg)) throw err;
       // Lazy sdk re-import for the fallback model id only: several existing
       // test files mock './sdk' with just { buildChatSdk }, and a static
       // named import of CHAT_MODEL here would break their module graphs.

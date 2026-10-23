@@ -59,6 +59,7 @@ import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
 import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey, tasksOfAction } from './memory/heartbeat.js'
+import { countsAsGoalWork, goalNotStarted } from './goalProgress.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -692,6 +693,10 @@ export async function composeSeedBlocks({
   // 261022 (pass 22): (heartbeat line) => { who, line } | null, a player task
   // she stopped on the player's word (renderHeartbeat heldTask).
   heldTask = null,
+  // 261023 (pass 25): when world work last finished this session (ms), for
+  // marking this session's goals that no work has followed yet
+  // (goalProgress.js). Omitted = no goal is marked.
+  lastWorkAt = undefined,
   voiceCall = false,
   // 261020: the game this session is in (adapter caps.gameName). Labels the
   // heartbeat and says that memories and the app chat span every game while
@@ -856,7 +861,10 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, { sessionStartMs, onHold: goalsOnHold, gameName, heldTask }),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, {
+        sessionStartMs, onHold: goalsOnHold, gameName, heldTask,
+        notStarted: lastWorkAt === undefined ? null : (line) => goalNotStarted(line, { sessionStartMs, lastWorkAt }),
+      }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -1085,6 +1093,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // logs" was answered without a clearGoal: told to clear "a goal in your
   // heartbeat", she had none in view.
   let heartbeatGoals = []
+  // 261023 (pass 25): the same goals as full heartbeat lines (with their
+  // stamps), and when world work last finished this session (noteActionEvent,
+  // goalProgress.countsAsGoalWork). A goal set this session with no work
+  // since is marked not started, in the seed heartbeat and in heartbeatNow,
+  // so her goodbye says "start" for it and not "finish".
+  let heartbeatGoalLines = []
+  let lastWorkAt = null
   // 261022 (pass 22): the player's tasks as of the last read ({ at, text,
   // key }, heartbeat.js playerTaskEntries), when each was set this session
   // (key -> Date.now() at the setGoal), and the ones she stopped on the
@@ -1111,11 +1126,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   let clearedTasks = []
   const CLEARED_TASK_MS = config?.memory?.cleared_task_note_ms ?? 180_000
   async function refreshPlayerTaskInGoals() {
-    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; playerTasks = []; taskHolds.clear(); return }
+    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; heartbeatGoalLines = []; playerTasks = []; taskHolds.clear(); return }
     try {
       const full = await heartbeatLog.readAll()
       playerTaskInGoals = hasPlayerTask(full)
       heartbeatGoals = goalEntries(full)
+      heartbeatGoalLines = String(full ?? '').split('\n').filter((l) => goalEntries(l).length > 0)
       playerTasks = playerTaskEntries(full)
       const keys = new Set(playerTasks.map((t) => t.key))
       for (const k of [...taskHolds.keys()]) if (!keys.has(k)) taskHolds.delete(k)
@@ -2578,7 +2594,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   function heartbeatNowTail() {
-    const t = NUDGES.heartbeatNow(heartbeatGoals)
+    const goals = heartbeatGoalLines.length === heartbeatGoals.length
+      ? heartbeatGoalLines.map((l, i) => ({ text: heartbeatGoals[i], notStarted: goalNotStarted(l, { sessionStartMs: sessionStartedAt, lastWorkAt }) }))
+      : heartbeatGoals
+    const t = NUDGES.heartbeatNow(goals)
     return t ? `\n\n${t}` : ''
   }
 
@@ -3382,6 +3401,7 @@ function maybeWarnByteCap(loop, warned) {
           goalsOnHold: !!stayNote,
           // 261022 (pass 22): tasks she stopped on the player's word.
           heldTask: heldTaskOfLine,
+          lastWorkAt,
           voiceCall: voiceCallActive,
           gameName: caps.gameName,
           logger,
@@ -3987,7 +4007,7 @@ function maybeWarnByteCap(loop, warned) {
         // boolean as the string "true".
         const fp = use.input?.for_player
         const forPlayer = fp === true || String(fp).toLowerCase() === 'true' || isPlayerTask(text)
-        const added = await heartbeatLog.append(text, new Date(), { forPlayer })
+        const added = await heartbeatLog.append(text, new Date(Date.now()), { forPlayer })
         lastActionResult = 'goal set'
         // 261022 (pass 22): when this task was set, and setting it again
         // picks a held task back up.
@@ -4089,6 +4109,7 @@ function maybeWarnByteCap(loop, warned) {
     try {
       const line = describeActionEvent(name, r)
       if (line) convoMemory.recentChat.pushEvent(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
+      if (countsAsGoalWork(name, r)) lastWorkAt = Date.now()
     } catch {}
   }
 

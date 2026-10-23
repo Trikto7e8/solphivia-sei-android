@@ -563,7 +563,7 @@ export const CURIOSITY_CLAUSE = ' CURIOSITY — this matters as much as the proj
 export const PROACTIVENESS_DIRECTIVES = {
   0: 'PROACTIVENESS: passive. You never start projects of your own and you never run an agenda. You DO carry out what the player asks: when they give you a task too long to finish in one burst, record it with setGoal so it survives across loops, work through it while you are on it, and clearGoal once it is done. But on an IDLE TICK, when the world has gone quiet, you do NOT act — you only COMMENT with one short in-character line about something genuinely worth remarking on, or you stay SILENT if it is just an ordinary Minecraft scene. Do NOT advance, resume, or start a goal on an idle tick even if your heartbeat still lists one, and never ask the player what to do. The only goals you ever record are the player\'s own tasks, never your own ideas.',
   1: 'PROACTIVENESS: reactive. You stay near the player and respond to them. You do not invent projects or run your own agenda, but you DO carry out what they ask: when they give you a task too long to finish in one burst, record it with setGoal so it survives across loops, work through it, and clearGoal when it is done. On an IDLE TICK you may COMMENT, or — only when it genuinely fits your character — SUGGEST a way you could help (offer to gather, scout, guard, fetch); you propose it, you do not silently start your own project, and you never setGoal an idea of your own. If your heartbeat already lists a task the player gave you, you may pick its next step. Speak when something needs flagging, otherwise stay quiet.',
-  2: 'PROACTIVENESS: agentic. This is the mode the player picked: you keep the game moving instead of standing around waiting to be told. Your persona above decides what that looks like for you. If it describes how much you start on your own (for example that you never start projects, never set your own goals, or follow quietly and wait to be asked), your persona wins over the rest of this section: you never setGoal an idea of your own, and on a quiet tick you stay with the player, help with what they are already doing, or say one line the way your persona would, and you still carry out whatever they ask. Otherwise, you run your OWN agenda and never wait to be told. If your heartbeat below has no goal, your FIRST move is to SET ONE with setGoal — it can be ambitious and far-off, but treat it as a DIRECTION you are working toward over many loops, NOT something you announce as already underway or expect to finish soon. So you commit the long-term aim in the setGoal text, then you START AT THE NEAREST RUNG you can actually do right now: your heartbeat lists what is reachable from your CURRENT inventory and progress — pick from that, never a step you can\'t begin yet. Then every quiet tick you PICK UP WHERE YOU LEFT OFF: advance the current goal one concrete step or escalate it, never just stand around. Do NOT declare victory early — a goal is done only when its finish condition is actually met, then clearGoal and start the next bigger one. Being agentic means you run your own plans, but you and the player are EQUALS playing together, so play WITH the player rather than off on your own. When you start a project, pitch it as an invitation in your own words, not an announcement, and lead a shared activity: offer the player a part in the work you could also do yourself and propose who does what. And keep LOOPING THEM IN as you go — react to them, check in when a step finishes, offer the next part — not just at the kickoff, so they never feel like they are watching you play alone. This is an offer to the PLAYER, not an order. You do not boss the player around or hand the player chores, and you keep doing your own part whether or not they take it up. This restraint is about the human. If there are other AI companions here, see the OTHER COMPANIONS block: directing a teammate is fine and expected, so give them parts of your goal by name, follow up when a step finishes or when they go quiet, and keep it one shared project rather than two solo grinds running side by side. Stay anchored to your committed long-term goal across many loops, and fold the player\'s passing ideas and their help into the plan where they fit. A task the player asks you to do is different: do all of it first, then go back to your own goal. Work the reachable progression in order — wood before tools, tools before what they unlock — rather than jumping to whatever was last mentioned. When a step needs something only the player can do (a craft, a smelt, a tool), ask for it the way you\'d ask a friend and keep doing what you CAN meanwhile; never stall waiting. When you announce a new project it is ONE short say() call in your own voice, never a paragraph and never the step-by-step plan — the plan lives in the setGoal text and your tool calls, and when nothing needs saying, not calling say() at all is fine. Silence stops being fine when an AI teammate is working a part of your project: a finished step, a change of plan, or a teammate you have not heard from in a while each earn one short named line, because a coordinator who goes mute leaves the team stalled.',
+  2: 'PROACTIVENESS: agentic. This is the mode the player picked: you keep the game moving instead of standing around waiting to be told. Your persona above decides what that looks like for you. If it describes how much you start on your own (for example that you never start projects, never set your own goals, or follow quietly and wait to be asked), your persona wins over the rest of this section: you never setGoal an idea of your own, and on a quiet tick you stay with the player, help with what they are already doing, or say one line the way your persona would, and you still carry out whatever they ask. Otherwise, you run your OWN agenda and never wait to be told. If your heartbeat below has no goal, your FIRST move is to SET ONE with setGoal — it can be ambitious and far-off, but treat it as a DIRECTION you are working toward over many loops, NOT something you announce as already underway or expect to finish soon. So you commit the long-term aim in the setGoal text, then you START AT THE NEAREST RUNG you can actually do right now: your heartbeat lists what is reachable from your CURRENT inventory and progress — pick from that, never a step you can\'t begin yet. Then every quiet tick you PICK UP WHERE YOU LEFT OFF: advance the current goal one concrete step or escalate it, never just stand around. Do NOT declare victory early — a goal is done only when its finish condition is actually met, then clearGoal and start the next bigger one. Being agentic means you run your own plans, but you and the player are EQUALS playing together, so play WITH the player rather than off on your own. When you start a project, pitch it as an invitation in your own words, not an announcement, and lead a shared activity: offer the player a part in the work you could also do yourself and propose who does what. And keep LOOPING THEM IN as you go — react to them, check in when a step finishes, offer the next part — not just at the kickoff, so they never feel like they are watching you play alone. This is an offer to the PLAYER, not an order. You do not boss the player around or hand the player chores, and you keep doing your own part whether or not they take it up. This restraint is about the human. If there are other AI companions here, see the OTHER COMPANIONS block: directing a teammate is fine and expected, so give them parts of your goal by name, follow up when a step finishes or when they go quiet, and keep it one shared project rather than two solo grinds running side by side. Stay anchored to your committed long-term goal across many loops, and fold the player\'s passing ideas and their help into the plan where they fit. A task the player asks you to do is different: do all of it first, then go back to your own goal. The player\'s safety and how they feel come before your goal too. When they say they are scared or nervous or ask you to stay close, or when it gets dark or hostile mobs come near them, put your goal on hold: stay by them, keep them safe, and keep talking with them. Go back to your goal once they are safe and feel okay, or when they tell you to go. Work the reachable progression in order — wood before tools, tools before what they unlock — rather than jumping to whatever was last mentioned. When a step needs something only the player can do (a craft, a smelt, a tool), ask for it the way you\'d ask a friend and keep doing what you CAN meanwhile; never stall waiting. When you announce a new project it is ONE short say() call in your own voice, never a paragraph and never the step-by-step plan — the plan lives in the setGoal text and your tool calls, and when nothing needs saying, not calling say() at all is fine. Silence stops being fine when an AI teammate is working a part of your project: a finished step, a change of plan, or a teammate you have not heard from in a while each earn one short named line, because a coordinator who goes mute leaves the team stalled.',
 }
 
 // Chat-surface proactiveness. The directives above are gameplay-loop specific
@@ -677,14 +677,17 @@ export const SEED_HEADERS = {
 // The field (not the spoken line) is what analytics counts, so nothing the
 // model says is ever parsed. Lives in the tool definitions, which ride the
 // cached prefix, so it adds nothing to per-turn input.
+// 261023 (pass 25): worded by how far it got. With only "finish the roof" to
+// go on, a goal set on the greeting turn and never begun was saved as "finish
+// the starter base" (pass 24 probe bye_own, 6 of 8).
 export const NEXT_TIME_FIELD =
-  'Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words, like "finish the roof". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up.'
+  'Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like "finish the roof". Something you have not started yet, including any goal marked not started yet, is one to start or try, like "start the roof". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up.'
 
 // 261014: the same step written to the player, for the Home "up next" strip
 // (shown under "Up next with <name>"). Saved apart from the memory note
 // (homeNextStep.ts sidecar), so the model never reads it back as a plan.
 export const NEXT_TIME_FOR_PLAYER_FIELD =
-  'Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb, like "Finish the cabin roof" or "Tell Sui how the interview went" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player\'s name out.'
+  'Fill this whenever you fill next_time. It is the same step as one short line for the player, shown on their home screen under your name, and the player is the one reading it. Write it as something for them to do, starting with a verb and as far along as next_time says, like "Start the cabin roof", "Finish the cabin roof" or "Tell Sui how the interview went" (with your own name in place of Sui). Keep it under 60 characters and use no words like tomorrow or tonight. Name yourself only when the step needs you, by your name and never as I, me or we, and leave the player\'s name out.'
 
 // 261020 (review): which game the plan is for. A plan said while saying
 // goodbye in one game can be about another (a Minecraft build talked about
@@ -694,7 +697,7 @@ export const NEXT_TIME_GAME_FIELD =
   'Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don\'t Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call.'
 
 export const NEXT_TIME_GOODBYE =
-  'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time we finish the roof". If you leave it out, just say a normal goodbye.'
+  'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time I\'ll start on the roof" or "next time we finish the roof", whichever matches how far it got. If you leave it out, just say a normal goodbye.'
 
 // 261008: what the next session's greeting is told about a saved hook. The
 // line is written by nextStep.js (nextStepMemoryLine) and read back from
@@ -990,11 +993,15 @@ export const NUDGES = {
   // the logs, just meet me over here" got a walk to the player and no
   // clearGoal (0 of 8 probe runs), after which the next turn went back to the
   // logs. Data plus the one rule it is for.
+  // 261023 (pass 25): a goal may come as { text, notStarted }, and a
+  // not-started one carries GOAL_NOT_STARTED_NOTE after its clipped text.
   heartbeatNow: (goals) => {
-    const list = (Array.isArray(goals) ? goals : []).filter((g) => typeof g === 'string' && g.trim()).slice(-4)
+    const list = (Array.isArray(goals) ? goals : [])
+      .map((g) => (typeof g === 'string' ? { text: g, notStarted: false } : { text: String(g?.text ?? ''), notStarted: g?.notStarted === true }))
+      .filter((g) => g.text.trim()).slice(-4)
     if (!list.length) return ''
     const clip = (g) => { const t = g.replace(/\s+/g, ' ').trim(); return t.length > 160 ? `${t.slice(0, 157).trimEnd()}...` : t }
-    return `Your heartbeat right now, including anything you wrote down since this loop began:\n${list.map((g) => `- ${clip(g)}`).join('\n')}\nIf their line calls one of these off or changes it, call clearGoal on it in this same turn, and setGoal the new plan if there is one.`
+    return `Your heartbeat right now, including anything you wrote down since this loop began:\n${list.map((g) => `- ${clip(g.text)}${g.notStarted ? ` ${GOAL_NOT_STARTED_NOTE}` : ''}`).join('\n')}\nIf their line calls one of these off or changes it, call clearGoal on it in this same turn, and setGoal the new plan if there is one.`
   },
   replyNoRestate: `Their line is already in the chat, so do not repeat it back to them; start your reply with your own words. Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 
@@ -1424,6 +1431,12 @@ function renderFrontierBlock(lvl, hasGoal, frontierText) {
 // second half. heartbeat.js writes it; renderHeartbeat reads it.
 export const PLAYER_TASK_TAG = '(player task)'
 
+// 261023 (pass 25): after a goal line set this session that no world work has
+// followed yet (goalProgress.js). Her goodbyes said "next time we finish the
+// starter base" about a goal she never began, because nothing she read said
+// how far it got.
+export const GOAL_NOT_STARTED_NOTE = '(not started yet: you have done no work in the world since you set it)'
+
 export const PLAYER_TASKS_HEAD = 'Tasks the player asked you to do. These come before your own goals: work the next step of the oldest one now, including going back to the player or handing over what you got if the task says so, and only then return to your own goals. Once a task is done, or the player calls it off or changes it, call clearGoal on it:'
 
 function isPlayerTaskLine(line) {
@@ -1451,8 +1464,12 @@ function isEarlierLine(line, sessionStartMs) {
 // action right after a stop more often (claims probe stop_mid, 15/45 against
 // 7/45 base and 2/30 without it) for a small gain on goodbye lines.
 const OWN_GOALS_KNOWN = 'These are your own plans: the player knows about one only if the conversation shows you told them about it.'
-const OWN_GOALS_HEAD = `Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:`
-const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:`
+// 261023 (pass 25): + PLAYER_FIRST. Nothing near her goals said the player
+// outranks them, and a scared player who asked her to stay close at night got
+// "gonna go punch some trees" (pass 24 compare, combat_night-02-B).
+const PLAYER_FIRST = 'The player comes before these goals: while they are scared, have asked you to stay close, or are in danger from the dark or from mobs, stay with them and keep them safe, and pick a goal back up once they are okay.'
+const OWN_GOALS_HEAD = `Your active goals (pursue the next concrete step of these; finishing one step is NOT finishing the goal). ${PLAYER_FIRST} Before you work on one, check it against the snapshot and the conversation: once its finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. A finished step does not need a new goal line; if the plan itself changed, clearGoal the old line first, then setGoal the new one:`
+const OWN_GOALS_AFTER_TASKS_HEAD = `Your own goals, for once the player's tasks are done (finishing one step is NOT finishing the goal). ${PLAYER_FIRST} Once a goal's finish condition is met, or the player says it is done or no longer wanted, call clearGoal on it this turn instead of working on it. If the plan itself changed, clearGoal the old line first, then setGoal the new one:`
 // 261018 (pass 16): the heads while she is stopped on the player's word (the
 // orchestrator's stay note). The usual heads say "work the next step of the
 // oldest one now", and on the chat turns after "actually stop" she said
@@ -1480,8 +1497,12 @@ const NO_GOALS_AGENTIC = 'No active goals yet. If your persona says you do not s
 // so goals read as this game's and a plan from another game does not.
 // `heldTask` (pass 22): (line) => { who, line } for a task she stopped on
 // the player's word, else null; those go under PLAYER_TASKS_HELD_HEAD.
-export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false, gameName = null, heldTask = null } = {}) {
+// `notStarted` (pass 25): (line) => true for a goal set this session with no
+// work done since (goalProgress.js goalNotStarted); those lines carry
+// GOAL_NOT_STARTED_NOTE, so a goodbye can tell "start" from "finish".
+export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { sessionStartMs = null, onHold = false, gameName = null, heldTask = null, notStarted = null } = {}) {
   const lvl = Number.isInteger(proactiveness) ? proactiveness : 1
+  const mark = (l) => (typeof notStarted === 'function' && notStarted(l) ? `${l.trimEnd()} ${GOAL_NOT_STARTED_NOTE}` : l)
   let goals
   let hasGoal = !!(goalsText && goalsText.trim())
   // Player tasks get their own head ahead of the bot's own goals (passive keeps
@@ -1496,9 +1517,9 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
     const stopped = thisSession.filter((l) => held(l))
     const earlier = taskLines.filter((l) => isEarlierLine(l, sessionStartMs))
     const parts = []
-    if (current.length) parts.push(`${onHold ? PLAYER_TASKS_ON_HOLD_HEAD : PLAYER_TASKS_HEAD}\n${current.join('\n')}`)
-    if (stopped.length) parts.push(`${PLAYER_TASKS_HELD_HEAD}\n${stopped.map((l) => `${l}${heldSuffix(held(l))}`).join('\n')}`)
-    if (own.length) parts.push(`${onHold ? OWN_GOALS_ON_HOLD_HEAD : current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.join('\n')}`)
+    if (current.length) parts.push(`${onHold ? PLAYER_TASKS_ON_HOLD_HEAD : PLAYER_TASKS_HEAD}\n${current.map(mark).join('\n')}`)
+    if (stopped.length) parts.push(`${PLAYER_TASKS_HELD_HEAD}\n${stopped.map((l) => `${mark(l)}${heldSuffix(held(l))}`).join('\n')}`)
+    if (own.length) parts.push(`${onHold ? OWN_GOALS_ON_HOLD_HEAD : current.length ? OWN_GOALS_AFTER_TASKS_HEAD : OWN_GOALS_HEAD}\n${own.map(mark).join('\n')}`)
     else if (!current.length && !stopped.length) parts.push(lvl === 2 ? NO_GOALS_AGENTIC : 'No active goals right now.')
     if (earlier.length) parts.push(`${PLAYER_TASKS_EARLIER_HEAD}\n${earlier.join('\n')}`)
     goals = parts.join('\n\n')
@@ -1509,7 +1530,7 @@ export function renderHeartbeat(proactiveness, goalsText, frontierText = '', { s
     const head = lvl === 0
       ? 'Tasks the player has given you. Carry these out while you are actively working them, but on a quiet idle tick do NOT pick them up — just observe or comment. Once a task is finished, or the player says it is done or no longer wanted, call clearGoal on it:'
       : onHold ? OWN_GOALS_ON_HOLD_HEAD : OWN_GOALS_HEAD
-    goals = `${head}\n${goalsText.trim()}`
+    goals = `${head}\n${goalsText.trim().split('\n').map((l) => (/^- \[/.test(l.trim()) ? mark(l) : l)).join('\n')}`
   } else if (lvl === 2) {
     goals = NO_GOALS_AGENTIC
   } else {

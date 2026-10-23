@@ -13,7 +13,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
   removeEventListener: () => undefined,
 };
 
-const { FeedbackModal } = await import('./FeedbackModal');
+const { FeedbackModal, FeedbackSent } = await import('./FeedbackModal');
 const { clearFeedbackDraft, getFeedbackDraft, setFeedbackDraft } = await import('../lib/feedbackDraft');
 const { ZH } = await import('../lib/i18n/zh');
 
@@ -41,5 +41,26 @@ describe('feedback drafts', () => {
     expect(ZH[msg]).toBeTruthy();
     expect(msg).not.toContain('—');
     expect(ZH[msg]).not.toContain('—');
+  });
+});
+
+describe('feedback sent confirmation', () => {
+  const NOTE = 'In the meantime, Backseat already works with any game on your screen.';
+
+  it('the suggest-a-game confirmation points at Backseat', () => {
+    const html = renderToStaticMarkup(React.createElement(FeedbackSent, { onClose: () => undefined, note: NOTE }));
+    expect(html).toContain('Thank you. We read all comments within 24 hrs.');
+    expect(html).toContain(NOTE);
+  });
+
+  it('the plain feedback confirmation has no extra line', () => {
+    const html = renderToStaticMarkup(React.createElement(FeedbackSent, { onClose: () => undefined }));
+    expect(html).not.toContain('Backseat');
+  });
+
+  it('the Backseat line has Chinese copy and no dashes', () => {
+    expect(ZH[NOTE]).toBeTruthy();
+    expect(NOTE).not.toMatch(/[—–]/);
+    expect(ZH[NOTE]).not.toMatch(/[—–]/);
   });
 });

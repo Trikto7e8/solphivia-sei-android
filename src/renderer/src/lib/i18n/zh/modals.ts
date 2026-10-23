@@ -204,6 +204,9 @@ export const ZH_MODALS: Record<string, string> = {
   'Suggest a game': '建议一个游戏',
   'Game': '游戏',
   'What game should we add?': '我们应该添加什么游戏？',
+  // 261023: shown on the "Feedback sent" confirmation of the suggest form.
+  'In the meantime, Backseat already works with any game on your screen.':
+    '在此之前，Backseat 已经可以陪你玩屏幕上的任何游戏。',
 
   // ── HardStopModal ──
   'Too many requests': '请求过于频繁',

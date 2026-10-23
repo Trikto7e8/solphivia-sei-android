@@ -100,7 +100,19 @@ import { HardStopModal } from './components/HardStopModal';
 import { SetNewPasswordModal } from './components/SetNewPasswordModal';
 import { MigrateLocalCharsModal } from './components/MigrateLocalCharsModal';
 import { ImportLocalProfileModal } from './components/ImportLocalProfileModal';
-import { localImportOfferTiming, shouldOfferLocalImport } from './lib/localImportOffer';
+import {
+  BOOT_OFFER_FIRST_MS,
+  BOOT_OFFER_POLL_MS,
+  checkBootImportOffer,
+  localImportOfferTiming,
+  shouldOfferLocalImport,
+  type BootOfferUi,
+} from './lib/localImportOffer';
+import { liveSessionForRestart } from './components/UpdateRailButton';
+import { useVoiceStore } from './lib/stores/useVoiceStore';
+import { useBackseatStore } from './lib/stores/useBackseatStore';
+import { useChessStore } from './lib/stores/useChessStore';
+import { useDrawStore } from './lib/stores/useDrawStore';
 import type { PeekLocalProfileResult } from '../../shared/ipc';
 import { usePermissionResume } from './lib/permissions/usePermissionResume';
 
@@ -352,6 +364,92 @@ export function App(): React.ReactElement {
     };
   }, [authState, tosAccepted]);
 
+  // ── One-time own-key import offer at boot (261023). ──────────────────────
+  //    The import used to be offered only on a local→account sign-in, so an
+  //    account that signed in on an older build never saw it and its local
+  //    companions stayed stranded. Once per account per device (main records
+  //    the answer in local-import-offered.json), only on Home with nothing
+  //    else on screen: no modal, no tour or first moment, no call or game.
+  //    Polls instead of firing once because "nothing else on screen" is often
+  //    false at launch (ToS, update popup, a call started straight away).
+  const bootOfferUiRef = useRef({ importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery });
+  bootOfferUiRef.current = { importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery };
+  const bootOfferUserId = authState.kind === 'signed_in' ? authState.user.id : null;
+  useEffect(() => {
+    if (!bootOfferUserId) return;
+    let stopped = false;
+    let running = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ui = (): BootOfferUi => {
+      const r = bootOfferUiRef.current;
+      const ui = useUiStore.getState();
+      const fm = useFirstMomentStore.getState().status;
+      const voice = useVoiceStore.getState();
+      const backseat = useBackseatStore.getState();
+      const live =
+        liveSessionForRestart({
+          callStatus: voice.status,
+          summons: useDataStore.getState().summons,
+          chessGames: useChessStore.getState().games,
+          backseat: backseat.active,
+          drawGames: useDrawStore.getState().games,
+        }) !== null ||
+        voice.participants.length > 0 ||
+        backseat.sharingFor != null ||
+        backseat.starting ||
+        backseat.watch != null;
+      return {
+        signedIn: useAuthStore.getState().state.kind === 'signed_in',
+        viewKind: ui.view.kind,
+        modalOpen:
+          ui.modal != null ||
+          r.importOffer != null ||
+          r.autoMigrateOpen ||
+          r.updatePopup != null ||
+          r.tosAccepted !== true ||
+          r.passwordRecovery ||
+          (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') != null),
+        tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
+        liveSession: live,
+      };
+    };
+    const tick = async (): Promise<void> => {
+      if (stopped || running) return;
+      running = true;
+      try {
+        const res = await checkBootImportOffer({
+          ui,
+          peek: () => sei.profilePeekLocal(),
+          offered: async () => (await sei.profileImportOffered('get')).offered,
+        });
+        if (stopped) return;
+        if (res.kind === 'show') {
+          // `after` keeps the player where they are (Home); only data reloads.
+          setImportOffer({ peek: res.peek, existingAccount: true, after: () => undefined });
+          stopped = true;
+          return;
+        }
+        if (res.kind === 'done') {
+          stopped = true;
+          return;
+        }
+      } catch {
+        // Best effort: a failed peek waits for the next launch (Settings
+        // still has the row).
+        stopped = true;
+        return;
+      } finally {
+        running = false;
+      }
+      timer = setTimeout(() => void tick(), BOOT_OFFER_POLL_MS);
+    };
+    timer = setTimeout(() => void tick(), BOOT_OFFER_FIRST_MS);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bootOfferUserId]);
+
   // ── In-app updater subscriptions (quick/260604-uoy). ──────────────────────
   //    Wired ONCE at mount. onUpdateAvailable fires only for OPTIONAL updates
   //    (mandatory ones download without asking) and opens the modal; progress /
@@ -575,6 +673,9 @@ export function App(): React.ReactElement {
   async function handleImportOfferDone(_didImport: boolean): Promise<void> {
     const after = importOffer?.after;
     setImportOffer(null);
+    // Any answer (Bring it over, Not now, Start fresh) counts: the boot offer
+    // does not ask this account again. Settings keeps a row for later.
+    void sei.profileImportOffered('set').catch(() => undefined);
     if (after) {
       try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
       try { await useLibraryStateStore.getState().refresh(); } catch { /* none */ }

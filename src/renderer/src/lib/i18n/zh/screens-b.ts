@@ -18,6 +18,8 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Copy': '复制',
   'Companion preferences': '伙伴偏好',
   'Update my preferences': '更新我的偏好',
+  'Bring companions from this computer': '从这台电脑带来伙伴',
+  'Bring over': '带过来',
   'Migrate local companions': '迁移本地伙伴',
   'Migrate': '迁移',
   'Export data': '导出数据',

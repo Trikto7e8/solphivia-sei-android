@@ -2703,6 +2703,12 @@ export interface RendererApi {
    */
   profileImportFromLocal(characterIds?: string[]): Promise<ImportLocalProfileResult>;
   /**
+   * 261023: whether the own-key import was already offered to the signed-in
+   * account on this device ('get'), or record that it was ('set'). Device
+   * global, keyed by account, so "Not now" is not asked again every launch.
+   */
+  profileImportOffered(action: 'get' | 'set'): Promise<{ offered: boolean }>;
+  /**
    * Open a URL in the user's default browser. Any https site is allowed (the
    * host allowlist was removed 260725); main still gates the PROTOCOL to
    * https/mailto, so `javascript:` / `file:` / OS-handler URIs are rejected as
@@ -3107,6 +3113,12 @@ export interface PeekLocalProfileResult {
   hasData: boolean;
   /** True when there are companions or memories to bring (not only the onboarding answers). */
   hasCompanionData: boolean;
+  /**
+   * Of the ids above: the Sui the first-run scene seeded that the player never
+   * chatted or played with (no memory entry, no transcript row of theirs).
+   * She alone does not earn the boot offer or the Settings row (261023).
+   */
+  untouchedSeedIds: string[];
 }
 
 /** Result of importing the `local` profile into the signed-in account (260603). */
@@ -3822,6 +3834,7 @@ export const IpcChannel = {
   profile: {
     peekLocal: 'profile:peek-local',
     importFromLocal: 'profile:import-from-local',
+    importOffered: 'profile:import-offered',
   },
   // Phase 12 — Browse + moderation + reports.
   //   list                  — paged listing of public moderation-clean

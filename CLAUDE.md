@@ -3631,6 +3631,21 @@ user already read; mandatory updates keep the full what's-new modal.
   Sui/Lyra/Marv keep their real owner and go into `added_world_ids`
   (stamping them made the sign-in reconcile sweep delete them as leaks).
   Idempotent; moved data is removed from `local`.
+  Accounts that signed in on an older build never saw the offer, so it is
+  also shown ONCE at boot per account per device (`checkBootImportOffer` in
+  `lib/localImportOffer.ts`; only on a calm Home: no modal, tour, first
+  moment, call, game or share), and Settings → Account has a "Bring
+  companions from this computer" row (`settings/LocalImportRow.tsx`). Any
+  answer from any entry point is recorded in the device-global
+  `<userData>/local-import-offered.json` (`profile/localImportOffered.ts`,
+  IPC `profile:import-offered`). Those two entry points ignore the Sui the
+  first-run scene seeded when the player never touched her (no memory
+  entry, knowledge, bridge, or non-assistant chat row:
+  `peek.untouchedSeedIds`); the sign-in offer does not. A failed import
+  keeps the modal up with an error line and "Try again". A local
+  `## World N` header with no `worlds.json` entry gets a fresh number above
+  every number in use, reserved in the account's registry under
+  `UNREGISTERED_WORLD_FP` so the bot never reuses it.
 - **A whole-config write reverts other writers (260929)** → every main-process
   write of the profile `config.json` goes through `configStore.updateConfig`
   (locked read-modify-write, path fixed when the call starts) and sets only

@@ -24,3 +24,11 @@
   color: var(--text-2);
   margin: 0;
 }
+
+/* A failed action's one-line error, between the body and the footer. */
+.error {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--red);
+  margin: 0;
+}

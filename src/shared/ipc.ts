@@ -1409,6 +1409,14 @@ export type ChatgptLinkResult =
   | { ok: true; planEnabled: boolean; email: string | null }
   | { ok: false; reason: ChatgptLoginFailure; message: string };
 
+/**
+ * Settings "Unlink" (261023). `removed` is false when the server had no link
+ * (still a success). An older proxy without the route reports 'unavailable'.
+ */
+export type ChatgptUnlinkResult =
+  | { ok: true; removed: boolean }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
 export interface ChatgptLoginStatus {
   /** This device knows the signed-in account is linked to a ChatGPT identity. */
   linked: boolean;
@@ -2672,6 +2680,8 @@ export interface RendererApi {
   cancelChatgptLogin(): Promise<void>;
   /** Settings: link a ChatGPT account to the signed-in Sei account. */
   linkChatgptAccount(): Promise<ChatgptLinkResult>;
+  /** Settings: unlink the signed-in Sei account's ChatGPT identity (and forget this device's registration). */
+  unlinkChatgptAccount(): Promise<ChatgptUnlinkResult>;
   chatgptLoginStatus(): Promise<ChatgptLoginStatus>;
   /** True once after a ChatGPT login/link that enabled plan usage. */
   takeChatgptPlanOffer(): Promise<boolean>;
@@ -3838,6 +3848,7 @@ export const IpcChannel = {
     chatgptResendCode: 'auth:chatgpt-resend-code',
     cancelChatgpt: 'auth:cancel-chatgpt',
     linkChatgpt: 'auth:link-chatgpt',
+    unlinkChatgpt: 'auth:unlink-chatgpt',
     chatgptLoginStatus: 'auth:chatgpt-login-status',
     chatgptTakePlanOffer: 'auth:chatgpt-take-plan-offer',
     signout: 'auth:signout',

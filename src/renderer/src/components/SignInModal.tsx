@@ -53,6 +53,14 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  /**
+   * 261023 — the failed-password message that earns the "Signed up with Google
+   * or ChatGPT?" hint. Keyed to the message so the hint goes away with it.
+   * Shown for every invalid_credentials answer, which Supabase gives for a
+   * wrong password and for an unknown address alike, so it reveals nothing
+   * about whether the account exists.
+   */
+  const [hintFor, setHintFor] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   /**
    * 260519 UAT fix #2: when signUp returns requiresVerification=true and no
@@ -163,6 +171,7 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
           setRegionBlocked(true);
         } else {
           setError(res.message);
+          setHintFor(res.code === 'invalid_credentials' ? res.message : null);
         }
       } else {
         // F-10 — DOB triple is required in signup mode. The submit button
@@ -434,6 +443,11 @@ export function SignInModal({ framingLabel, onClose }: SignInModalProps): React.
           </div>
 
           {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
+          {error && mode === 'signin' && error === hintFor ? (
+            <p className={styles.hintText}>
+              {t('Signed up with Google or ChatGPT? Use that button, or reset your password.')}
+            </p>
+          ) : null}
 
           {/*
             F-10 (quick/260525-usc) — COPPA DOB age gate. Three dropdowns

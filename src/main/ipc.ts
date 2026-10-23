@@ -3131,8 +3131,11 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   });
   ipcMain.handle(IpcChannel.chatgpt.signIn, async (_event, raw: unknown) => {
     const args = ChatgptSignInArgs.parse(raw ?? {});
-    const { chatgptSession } = await import('./chatgptPlan');
-    const r = await chatgptSession().signIn(args);
+    // 261023: with a live Sei session the plan sign-in also links the
+    // ChatGPT identity to the account (no code on the next ChatGPT login);
+    // without one, or when the link cannot run, it is the plain sign-in.
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    const r = await chatgptAccountLogin().connectPlan(args);
     // A new account brings a new model catalog (default model + vision).
     if (r.ok) void import('./llm/capability').then((m) => m.pushLlmCapability());
     return r;
@@ -3410,6 +3413,10 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   ipcMain.handle(IpcChannel.auth.linkChatgpt, async () => {
     const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
     return await chatgptAccountLogin().link();
+  });
+  ipcMain.handle(IpcChannel.auth.unlinkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().unlink();
   });
   ipcMain.handle(IpcChannel.auth.chatgptLoginStatus, async () => {
     const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');

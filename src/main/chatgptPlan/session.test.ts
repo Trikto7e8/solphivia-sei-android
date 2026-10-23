@@ -591,6 +591,25 @@ describe('account login (261023)', () => {
     expect(await session.getAccessToken()).toMatchObject({ accountId: saved.accounts[0].id });
   });
 
+  it('forceConsent asks OpenAI for the consent screen again; the default does not', async () => {
+    const { srv, session } = setup();
+    await session.signInForLogin({ nonce: 'n1' });
+    await session.signInForLogin({ nonce: 'n2', forceConsent: true });
+    expect(srv.authorizeSeen[0].params.prompt).not.toBe('consent');
+    expect(srv.authorizeSeen[1].params.prompt).toBe('consent');
+  });
+
+  it('loginTargetFor returns a saved account\'s client, hint and subject (null when unknown)', async () => {
+    const { session } = setup();
+    const r = await session.signIn();
+    if (!r.ok) throw new Error('sign-in failed');
+    const acc = r.status.accounts[0]!;
+    const t = await session.loginTargetFor(acc.id);
+    expect(t).toMatchObject({ client_id: 'client-issued-1', email: 'player@example.com', subject: 'user-1' });
+    expect(typeof t!.id_token).toBe('string');
+    expect(await session.loginTargetFor('nope')).toBeNull();
+  });
+
   it('discardLoginAccount revokes the unused refresh token', async () => {
     const { srv, session } = setup();
     const r = await session.signInForLogin({ nonce: 'n' });

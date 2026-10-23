@@ -45,9 +45,12 @@ function harness(opts: {
   current?: { accessToken: string; userId: string } | null;
   regionBlocked?: boolean;
   fetchThrows?: boolean;
+  /** Saved plan accounts loginTargetFor knows (accountId -> target). */
+  vault?: Record<string, { client_id: string; id_token: string | null; email: string | null; subject: string }>;
 } = {}) {
   const calls: Array<{ path: string; body: Record<string, unknown>; auth: string | null }> = [];
-  const signInCalls: Array<{ nonce: string; target: unknown }> = [];
+  const signInCalls: Array<{ nonce: string; target: unknown; forceConsent?: boolean }> = [];
+  const plainSignIns: Array<{ accountId?: string | null; enablePlan?: boolean } | undefined> = [];
   const discarded: PendingLoginAccount[] = [];
   const adopted: PendingLoginAccount[] = [];
   const setSessions: unknown[] = [];
@@ -78,10 +81,15 @@ function harness(opts: {
     proxyBase: () => 'https://api.test/',
     regionBlocked: async () => opts.regionBlocked ?? false,
     chatgpt: () => ({
+      signIn: async (o) => {
+        plainSignIns.push(o);
+        return { ok: true, status: { plain: true } as never, planEnabled: true };
+      },
       signInForLogin: async (o) => {
-        signInCalls.push({ nonce: o.nonce, target: o.target ?? null });
+        signInCalls.push({ nonce: o.nonce, target: o.target ?? null, ...(o.forceConsent !== undefined ? { forceConsent: o.forceConsent } : {}) });
         return signIns.shift() ?? { ok: false, reason: 'cancelled' };
       },
+      loginTargetFor: async (id) => opts.vault?.[id] ?? null,
       adoptLoginAccount: async (p) => {
         adopted.push(p);
         const a = opts.adopt ?? { ok: true, planEnabled: true };
@@ -120,10 +128,14 @@ function harness(opts: {
     login,
     calls,
     signInCalls,
+    plainSignIns,
     discarded,
     adopted,
     setSessions,
     regSaves,
+    get reg() {
+      return reg;
+    },
     get regCleared() {
       return regCleared;
     },
@@ -354,6 +366,7 @@ describe('chatgptAccountLogin.link and plan offer', () => {
     });
     const r = await h.login.link();
     expect(r).toEqual({ ok: true, planEnabled: true, email: 'shawn@example.com' });
+    expect(h.signInCalls[0]).not.toHaveProperty('forceConsent');
     const sent = h.calls.find((c) => c.path === '/auth/chatgpt/link')!;
     expect(sent.auth).toBe('Bearer sei-jwt');
     expect(sent.body).toEqual({ id_token: 'id-token-1', client_id: 'app_client_1' });
@@ -388,5 +401,172 @@ describe('chatgptAccountLogin.link and plan offer', () => {
       current: { accessToken: 't', userId: 'user-1' },
     });
     expect(await h.login.status()).toEqual({ linked: false, email: null, awaitingCode: false });
+  });
+});
+
+describe('chatgptAccountLogin.connectPlan (plan sign-in that also links)', () => {
+  const ME = { accessToken: 'sei-jwt', userId: 'user-1' };
+  const linkOk: Route = () => ({ status: 200, body: { status: 'linked' } });
+
+  it('signed out: the plain plan sign-in, no proxy call', async () => {
+    const h = harness({ current: null });
+    const r = await h.login.connectPlan({ enablePlan: true });
+    expect(r).toMatchObject({ ok: true, planEnabled: true });
+    expect(h.plainSignIns).toEqual([{ enablePlan: true }]);
+    expect(h.calls).toHaveLength(0);
+    expect(h.signInCalls).toHaveLength(0);
+  });
+
+  it('"Add account" (accountId null) stays the plain sign-in even when signed in', async () => {
+    const h = harness({ current: ME });
+    await h.login.connectPlan({ accountId: null });
+    expect(h.plainSignIns).toEqual([{ accountId: null }]);
+    expect(h.calls).toHaveLength(0);
+  });
+
+  it('signed in: one browser trip, links with the Sei JWT, adopts the plan, remembers the registration', async () => {
+    const h = harness({ current: ME, routes: { '/auth/chatgpt/link': linkOk } });
+    const r = await h.login.connectPlan();
+    expect(r).toMatchObject({ ok: true, planEnabled: true });
+    expect(h.plainSignIns).toHaveLength(0);
+    expect(h.signInCalls).toHaveLength(1);
+    const sent = h.calls.find((c) => c.path === '/auth/chatgpt/link')!;
+    expect(sent.auth).toBe('Bearer sei-jwt');
+    expect(sent.body).toEqual({ id_token: 'id-token-1', client_id: 'app_client_1' });
+    expect(h.adopted).toHaveLength(1);
+    expect(h.discarded).toHaveLength(0);
+    expect(h.regSaves).toEqual([
+      { client_id: 'app_client_1', subject: 'chatgpt-sub', email: 'shawn@example.com', id_token: 'id-token-1', user_id: 'user-1' },
+    ]);
+    expect(await h.login.status()).toMatchObject({ linked: true });
+    // The plan surface switches itself: no second offer from ChatgptPlanHost.
+    expect(h.login.takePlanOffer()).toBe(false);
+  });
+
+  it('passes the consent option through (plan usage after a decline)', async () => {
+    const h = harness({ current: ME, routes: { '/auth/chatgpt/link': linkOk } });
+    await h.login.connectPlan({ enablePlan: true });
+    expect(h.signInCalls[0]).toMatchObject({ forceConsent: true });
+  });
+
+  for (const [label, route] of [
+    ['linked_elsewhere', () => ({ status: 409, body: { error: 'chatgpt_account_conflict', reason: 'linked_elsewhere' } })],
+    ['account_conflict', () => ({ status: 409, body: { error: 'chatgpt_account_conflict', reason: 'account_linked_to_other_chatgpt' } })],
+    ['an expired Sei session', () => ({ status: 401, body: { error: 'expired_jwt' } })],
+    ['an older proxy (404)', () => ({ status: 404, body: { error: 'not_found' } })],
+    ['a proxy outage', () => ({ status: 503, body: { error: 'chatgpt_login_unavailable' } })],
+  ] as Array<[string, Route]>) {
+    it(`link refused by ${label}: the plan still connects on the same grant, nothing linked`, async () => {
+      const h = harness({ current: ME, routes: { '/auth/chatgpt/link': route } });
+      const r = await h.login.connectPlan();
+      expect(r).toMatchObject({ ok: true, planEnabled: true });
+      expect(h.signInCalls).toHaveLength(1);
+      expect(h.plainSignIns).toHaveLength(0);
+      expect(h.adopted).toHaveLength(1);
+      expect(h.discarded).toHaveLength(0);
+      expect(h.regSaves).toHaveLength(0);
+    });
+  }
+
+  it('proxy unreachable for the nonce: falls back to the plain sign-in, browser opened once', async () => {
+    const h = harness({ current: ME, routes: { '/auth/chatgpt/nonce': () => ({ status: 503, body: {} }) } });
+    const r = await h.login.connectPlan({ enablePlan: true });
+    expect(r).toMatchObject({ ok: true });
+    expect(h.signInCalls).toHaveLength(0);
+    expect(h.plainSignIns).toEqual([{ enablePlan: true }]);
+  });
+
+  it('a browser failure is reported as is, with no second browser trip', async () => {
+    const h = harness({ current: ME, signIns: [{ ok: false, reason: 'denied' }] });
+    expect(await h.login.connectPlan()).toEqual({ ok: false, reason: 'denied' });
+    expect(h.plainSignIns).toHaveLength(0);
+    expect(h.calls.map((c) => c.path)).toEqual(['/auth/chatgpt/nonce']);
+  });
+
+  it('renewing a saved plan account uses THAT account as the target and refuses a different ChatGPT account', async () => {
+    const vault = { acc1: { client_id: 'app_saved', id_token: 'old-id', email: 'shawn@example.com', subject: 'chatgpt-sub' } };
+    const h = harness({ current: ME, vault, routes: { '/auth/chatgpt/link': linkOk } });
+    expect(await h.login.connectPlan({ accountId: 'acc1', enablePlan: true })).toMatchObject({ ok: true });
+    expect(h.signInCalls[0]).toEqual({
+      nonce: 'nonce-1',
+      target: { client_id: 'app_saved', id_token: 'old-id', email: 'shawn@example.com' },
+      forceConsent: true,
+    });
+
+    const other = harness({ current: ME, vault, signIns: [{ ok: true, pending: pending(2, { subject: 'someone-else' }) }] });
+    expect(await other.login.connectPlan({ accountId: 'acc1' })).toEqual({ ok: false, reason: 'account_mismatch' });
+    expect(other.adopted).toHaveLength(0);
+    expect(other.discarded).toHaveLength(1);
+    expect(other.calls.some((c) => c.path === '/auth/chatgpt/link')).toBe(false);
+  });
+
+  it('an unknown saved account falls back to the plain sign-in (which reports it)', async () => {
+    const h = harness({ current: ME });
+    await h.login.connectPlan({ accountId: 'gone' });
+    expect(h.plainSignIns).toEqual([{ accountId: 'gone' }]);
+    expect(h.signInCalls).toHaveLength(0);
+  });
+
+  it('a plan that cannot be saved is a failure and the grant is revoked', async () => {
+    const h = harness({ current: ME, routes: { '/auth/chatgpt/link': linkOk }, adopt: { ok: false, reason: 'keychain_unavailable' } });
+    expect(await h.login.connectPlan()).toMatchObject({ ok: false, reason: 'keychain_unavailable' });
+    expect(h.discarded).toHaveLength(1);
+    expect(h.regSaves).toHaveLength(0);
+  });
+});
+
+describe('chatgptAccountLogin.unlink', () => {
+  const ME = { accessToken: 'sei-jwt', userId: 'user-1' };
+  const mine: LoginRegistration = { client_id: 'c', subject: 's', email: 'x@y.z', id_token: null, user_id: 'user-1' };
+
+  it('needs a signed-in Sei account', async () => {
+    const h = harness({ current: null, registration: mine });
+    expect(await h.login.unlink()).toMatchObject({ ok: false, reason: 'not_signed_in' });
+    expect(h.calls).toHaveLength(0);
+    expect(h.regCleared).toBe(0);
+  });
+
+  it('unlinks with the Sei JWT and forgets this account\'s device registration', async () => {
+    const h = harness({
+      current: ME,
+      registration: mine,
+      routes: { '/auth/chatgpt/unlink': () => ({ status: 200, body: { status: 'unlinked', removed: true } }) },
+    });
+    expect(await h.login.status()).toMatchObject({ linked: true });
+    expect(await h.login.unlink()).toEqual({ ok: true, removed: true });
+    const sent = h.calls.find((c) => c.path === '/auth/chatgpt/unlink')!;
+    expect(sent.auth).toBe('Bearer sei-jwt');
+    expect(h.regCleared).toBe(1);
+    expect(await h.login.status()).toMatchObject({ linked: false });
+  });
+
+  it('is fine when the server had no link (removed:false)', async () => {
+    const h = harness({ current: ME, routes: { '/auth/chatgpt/unlink': () => ({ status: 200, body: { status: 'unlinked', removed: false } }) } });
+    expect(await h.login.unlink()).toEqual({ ok: true, removed: false });
+  });
+
+  it("keeps another Sei account's registration on this device", async () => {
+    const h = harness({
+      current: ME,
+      registration: { ...mine, user_id: 'someone-else' },
+      routes: { '/auth/chatgpt/unlink': () => ({ status: 200, body: { status: 'unlinked', removed: true } }) },
+    });
+    expect(await h.login.unlink()).toEqual({ ok: true, removed: true });
+    expect(h.regCleared).toBe(0);
+  });
+
+  it('an older proxy without the route (404): unavailable, nothing forgotten', async () => {
+    const h = harness({ current: ME, registration: mine });
+    expect(await h.login.unlink()).toMatchObject({ ok: false, reason: 'unavailable' });
+    expect(h.regCleared).toBe(0);
+    expect(h.reg).toEqual(mine);
+  });
+
+  it('network failure and an expired session map through', async () => {
+    const down = harness({ current: ME, registration: mine, fetchThrows: true });
+    expect(await down.login.unlink()).toMatchObject({ ok: false, reason: 'network' });
+    const expired = harness({ current: ME, routes: { '/auth/chatgpt/unlink': () => ({ status: 401, body: { error: 'expired_jwt' } }) } });
+    expect(await expired.login.unlink()).toMatchObject({ ok: false, reason: 'not_signed_in' });
+    expect(down.regCleared + expired.regCleared).toBe(0);
   });
 });

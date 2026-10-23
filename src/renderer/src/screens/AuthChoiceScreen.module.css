@@ -97,6 +97,14 @@
   margin: 0;
 }
 
+/* 261023 — neutral follow-up under a failed password sign-in. */
+.hintText {
+  font-family: var(--sans);
+  font-size: 14px;
+  color: var(--text-2);
+  margin: 0;
+}
+
 .divider {
   display: flex;
   align-items: center;

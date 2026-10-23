@@ -14,9 +14,15 @@
  * Linked state is what this device knows (main's saved registration for the
  * current user). Another computer's link does not show here, which only
  * means the button is offered again; linking twice is a no-op on the proxy.
+ *
+ * Unlink (261023) removes the link on the proxy and this device's
+ * registration, so the next "Continue with ChatGPT" is treated as a new
+ * identity (and a different Sei account can link it). The ChatGPT plan, if
+ * connected, stays connected. Borderless quiet button, like the row's
+ * Cancel (no framed buttons in Settings, Shawn 261023).
  */
 import React, { useEffect, useRef, useState } from 'react';
-import type { ChatgptLoginStatus } from '@shared/ipc';
+import type { ChatgptLoginFailure, ChatgptLoginStatus } from '@shared/ipc';
 import { sei } from '../../lib/ipcClient';
 import { useT } from '../../lib/i18n';
 import { chatgptLoginErrorCopy } from '../../lib/useChatgptLogin';
@@ -29,10 +35,19 @@ export interface ChatgptLinkRowProps {
   errorClassName: string;
 }
 
+type Translate = (en: string, params?: Record<string, string | number>) => string;
+
+/** Copy for a failed unlink. 'unavailable' covers an older proxy without the route (404). */
+export function chatgptUnlinkErrorCopy(reason: ChatgptLoginFailure, t: Translate): string | null {
+  if (reason === 'unavailable' || reason === 'sign_in_failed') return t("Couldn't unlink right now. Try again later.");
+  return chatgptLoginErrorCopy(reason, t, 'link');
+}
+
 export function ChatgptLinkRow(props: ChatgptLinkRowProps): React.ReactElement {
   const t = useT();
   const [status, setStatus] = useState<ChatgptLoginStatus | null>(null);
   const [busy, setBusy] = useState(false);
+  const [unlinking, setUnlinking] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // Only a link THIS row started is cancelled on unmount: the cancel also
   // aborts any plan sign-in, which ChatgptPlanSettings may own.
@@ -72,6 +87,25 @@ export function ChatgptLinkRow(props: ChatgptLinkRowProps): React.ReactElement {
     }
   };
 
+  const unlink = async (): Promise<void> => {
+    if (unlinking || busy) return;
+    setUnlinking(true);
+    setError(null);
+    try {
+      const res = await sei.unlinkChatgptAccount();
+      if (res.ok) {
+        setStatus({ linked: false, email: null, awaitingCode: false });
+      } else {
+        setError(chatgptUnlinkErrorCopy(res.reason, t));
+      }
+    } catch {
+      // An older main without the channel lands here too.
+      setError(chatgptUnlinkErrorCopy('unavailable', t));
+    } finally {
+      setUnlinking(false);
+    }
+  };
+
   const cancel = (): void => {
     void sei.cancelChatgptLogin().catch(() => undefined);
   };
@@ -81,7 +115,12 @@ export function ChatgptLinkRow(props: ChatgptLinkRowProps): React.ReactElement {
       <div className={props.rowClassName}>
         <span className={props.labelClassName}>{t('ChatGPT sign-in')}</span>
         {status?.linked ? (
-          <span className={props.valueClassName}>{status.email ?? t('Linked')}</span>
+          <>
+            <span className={props.valueClassName}>{status.email ?? t('Linked')}</span>
+            <Button kind="quiet" size="sm" disabled={unlinking} onClick={() => void unlink()}>
+              {t('Unlink')}
+            </Button>
+          </>
         ) : busy ? (
           <>
             <span className={props.valueClassName}>{t('Finish in your browser')}</span>

@@ -239,11 +239,22 @@ export type LoginSignInResult =
 export interface ChatgptSession {
   status(): Promise<ChatgptStatus>;
   signIn(opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<ChatgptSignInResult>;
-  /** Account login: browser sign-in with the proxy's nonce; saves nothing. */
+  /**
+   * Account login: browser sign-in with the proxy's nonce; saves nothing.
+   * forceConsent asks OpenAI to show the consent screen again (plan usage
+   * after a decline), as signIn's enablePlan does.
+   */
   signInForLogin(opts: {
     nonce: string;
     target?: { client_id: string; id_token: string | null; email: string | null } | null;
+    forceConsent?: boolean;
   }): Promise<LoginSignInResult>;
+  /**
+   * The reauth target of a saved plan account (its issued client, last ID
+   * token as the hint, and its subject), so a login-path sign-in can renew
+   * THAT account like signIn({accountId}) does. Null for an unknown id.
+   */
+  loginTargetFor(accountId: string): Promise<{ client_id: string; id_token: string | null; email: string | null; subject: string } | null>;
   /** Save a login's registration into the CURRENT profile's vault, active. */
   adoptLoginAccount(p: PendingLoginAccount): Promise<ChatgptSignInResult>;
   /** Revoke a login's grant that will not be kept. Best effort. */
@@ -630,7 +641,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
    * vault. A reauth target here only reuses the install's issued client id;
    * a different ChatGPT account answering it is fine (the proxy decides).
    */
-  async function signInForLogin(opts: { nonce: string; target?: AuthorizeTarget | null }): Promise<LoginSignInResult> {
+  async function signInForLogin(opts: { nonce: string; target?: AuthorizeTarget | null; forceConsent?: boolean }): Promise<LoginSignInResult> {
     attempt?.abort();
     const ctrl = new AbortController();
     attempt = ctrl;
@@ -639,7 +650,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     try {
       const got = await authorize(
         ctrl,
-        { target: opts.target ?? null, nonce: opts.nonce, forceConsent: false, label: 'account login' },
+        { target: opts.target ?? null, nonce: opts.nonce, forceConsent: opts.forceConsent === true, label: 'account login' },
         (l) => (listener = l),
       );
       if (!got.ok) return got.result as LoginSignInResult;
@@ -671,6 +682,12 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
       if (attempt === ctrl) attempt = null;
       void emitStatus();
     }
+  }
+
+  async function loginTargetFor(accountId: string): Promise<(AuthorizeTarget & { subject: string }) | null> {
+    const d = await data();
+    const a = d.accounts.find((x) => x.id === accountId);
+    return a ? { client_id: a.client_id, id_token: a.id_token, email: a.email, subject: a.subject } : null;
   }
 
   /** Store a login's ChatGPT registration in the CURRENT profile's vault and activate it. */
@@ -975,6 +992,7 @@ export function createChatgptSession(deps: ChatgptSessionDeps): ChatgptSession {
     status,
     signIn,
     signInForLogin,
+    loginTargetFor,
     adoptLoginAccount,
     discardLoginAccount,
     cancelSignIn,

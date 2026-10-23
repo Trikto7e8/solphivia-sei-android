@@ -457,6 +457,7 @@ const api: RendererApi = {
   chatgptLoginResendCode: () => ipcRenderer.invoke(IpcChannel.auth.chatgptResendCode),
   cancelChatgptLogin: () => ipcRenderer.invoke(IpcChannel.auth.cancelChatgpt),
   linkChatgptAccount: () => ipcRenderer.invoke(IpcChannel.auth.linkChatgpt),
+  unlinkChatgptAccount: () => ipcRenderer.invoke(IpcChannel.auth.unlinkChatgpt),
   chatgptLoginStatus: () => ipcRenderer.invoke(IpcChannel.auth.chatgptLoginStatus),
   takeChatgptPlanOffer: () => ipcRenderer.invoke(IpcChannel.auth.chatgptTakePlanOffer),
   regionStatus: () => ipcRenderer.invoke(IpcChannel.region.status),

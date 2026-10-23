@@ -439,6 +439,8 @@ export const ZH_MISC: Record<string, string> = {
   'First time on this computer. Enter the code to confirm it is you.': '这是你第一次在这台电脑上登录。请输入验证码确认是你本人。',
   'Link ChatGPT': '关联 ChatGPT',
   'Linked': '已关联',
+  'Unlink': '取消关联',
+  "Couldn't unlink right now. Try again later.": '暂时无法取消关联，请稍后再试。',
   "Sei couldn't confirm your ChatGPT sign-in. Try again.": 'Sei 无法确认你的 ChatGPT 登录，请重试。',
   "Sei couldn't open your browser. Try again.": 'Sei 无法打开你的浏览器，请重试。',
   'Sign in to Sei first.': '请先登录 Sei。',

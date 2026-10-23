@@ -19,6 +19,17 @@
  *      ChatGPT registration in THAT account's vault and remember the
  *      registration device-wide so the next login here is one step.
  *
+ * Two more entry points reuse the same browser trip:
+ *   - connectPlan (Playtime / Settings "Use your ChatGPT plan", every
+ *     chatgpt:sign-in): with a live Sei session the plan sign-in also LINKS
+ *     the ChatGPT identity to the account (POST /auth/chatgpt/link), so the
+ *     next "Continue with ChatGPT" lands here with no code. The plan always
+ *     connects: no Sei session, or a proxy that cannot be reached for the
+ *     nonce, runs the plain plan sign-in; a refused or failed link keeps the
+ *     grant it already has for the plan alone. No second browser trip.
+ *   - unlink (Settings): POST /auth/chatgpt/unlink, then forget this
+ *     device's registration for the account.
+ *
  * The ticket and the pending ChatGPT tokens live only in this module's
  * memory between steps 4 and 5; nothing here crosses IPC except the result
  * shapes in shared/ipc.ts (no tokens, no ticket). Never logs token, code or
@@ -34,6 +45,7 @@ import type {
   ChatgptLoginFailure,
   ChatgptLoginResult,
   ChatgptLoginStatus,
+  ChatgptUnlinkResult,
 } from '../../shared/ipc';
 import type { PendingLoginAccount, LoginSignInResult } from '../chatgptPlan/session';
 import { chatgptSession } from '../chatgptPlan';
@@ -68,10 +80,14 @@ export interface ChatgptAccountLoginDeps {
   proxyBase: () => string;
   regionBlocked: () => Promise<boolean>;
   chatgpt: () => {
+    /** The plain plan sign-in (local nonce, no proxy). connectPlan's fallback. */
+    signIn(opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<ChatgptSignInResult>;
     signInForLogin(opts: {
       nonce: string;
       target?: { client_id: string; id_token: string | null; email: string | null } | null;
+      forceConsent?: boolean;
     }): Promise<LoginSignInResult>;
+    loginTargetFor(accountId: string): Promise<{ client_id: string; id_token: string | null; email: string | null; subject: string } | null>;
     adoptLoginAccount(p: PendingLoginAccount): Promise<ChatgptSignInResult>;
     discardLoginAccount(p: PendingLoginAccount): Promise<void>;
     cancelSignIn(): void;
@@ -95,6 +111,11 @@ export interface ChatgptAccountLoginDeps {
 type ProxyAnswer = { status: number; body: Record<string, unknown> };
 
 const PROXY_TIMEOUT_MS = 20_000;
+/**
+ * connectPlan's nonce fetch. Short: when the proxy hangs, the plain plan
+ * sign-in (which needs no proxy) should open the browser without a long wait.
+ */
+const PLAN_NONCE_TIMEOUT_MS = 5_000;
 
 /** Reauth failures that mean "this saved registration no longer works here". */
 const STALE_REGISTRATION: ReadonlySet<ChatgptSignInFailure> = new Set([
@@ -135,7 +156,7 @@ export function createChatgptAccountLogin(deps: ChatgptAccountLoginDeps) {
   let planOffer = false;
   let generation = 0;
 
-  async function proxyPost(p: string, body: unknown, bearer?: string): Promise<ProxyAnswer> {
+  async function proxyPost(p: string, body: unknown, bearer?: string, timeout = timeoutMs): Promise<ProxyAnswer> {
     try {
       const res = await deps.fetchImpl(`${deps.proxyBase().replace(/\/+$/, '')}${p}`, {
         method: 'POST',
@@ -144,7 +165,7 @@ export function createChatgptAccountLogin(deps: ChatgptAccountLoginDeps) {
           ...(bearer ? { authorization: `Bearer ${bearer}` } : {}),
         },
         body: JSON.stringify(body ?? {}),
-        signal: AbortSignal.timeout(timeoutMs),
+        signal: AbortSignal.timeout(timeout),
       });
       let json: Record<string, unknown> = {};
       try {
@@ -159,8 +180,8 @@ export function createChatgptAccountLogin(deps: ChatgptAccountLoginDeps) {
     }
   }
 
-  async function fetchNonce(): Promise<string | ChatgptLoginResult> {
-    const r = await proxyPost('/auth/chatgpt/nonce', {});
+  async function fetchNonce(timeout?: number): Promise<string | ChatgptLoginResult> {
+    const r = await proxyPost('/auth/chatgpt/nonce', {}, undefined, timeout);
     if (r.status === 0) return fail('network', 'Could not reach Sei');
     if (r.status === 429) return fail('rate_limited', 'Too many attempts. Try again in a minute');
     const nonce = r.body.nonce;
@@ -170,29 +191,51 @@ export function createChatgptAccountLogin(deps: ChatgptAccountLoginDeps) {
     return nonce;
   }
 
+  type SignedIn =
+    | { ok: true; account: PendingLoginAccount }
+    | {
+        ok: false;
+        result: ChatgptLoginResult;
+        /** The browser flow's own failure, when it got that far. */
+        signIn?: { reason: ChatgptSignInFailure; message?: string };
+        /** False when it stopped before any browser sign-in (nonce step). */
+        browserOpened: boolean;
+      };
+
   /**
    * Nonce + browser sign-in, reusing this device's registration. When the
    * saved registration no longer works (revoked client, OpenAI rejected the
-   * reauth), forget it and register fresh once.
+   * reauth), forget it and register fresh once. An explicit `target` (a
+   * saved plan account to renew) is tried alone, like signIn({accountId}).
    */
-  async function chatgptSignIn(): Promise<{ ok: true; account: PendingLoginAccount } | { ok: false; result: ChatgptLoginResult }> {
-    const reg = await deps.registration.load().catch(() => null);
-    for (const target of reg ? [reg, null] : [null]) {
-      const nonce = await fetchNonce();
-      if (typeof nonce !== 'string') return { ok: false, result: nonce };
+  async function chatgptSignIn(
+    opts: {
+      target?: { client_id: string; id_token: string | null; email: string | null } | null;
+      forceConsent?: boolean;
+      nonceTimeoutMs?: number;
+    } = {},
+  ): Promise<SignedIn> {
+    const targets =
+      opts.target !== undefined ? [opts.target] : await deps.registration.load().then((r) => (r ? [r, null] : [null]), () => [null]);
+    let browserOpened = false;
+    for (const target of targets) {
+      const nonce = await fetchNonce(opts.nonceTimeoutMs);
+      if (typeof nonce !== 'string') return { ok: false, result: nonce, browserOpened };
+      browserOpened = true;
       const r = await deps.chatgpt().signInForLogin({
         nonce,
         target: target ? { client_id: target.client_id, id_token: target.id_token, email: target.email } : null,
+        ...(opts.forceConsent ? { forceConsent: true } : {}),
       });
       if (r.ok) return { ok: true, account: r.pending };
-      if (target && STALE_REGISTRATION.has(r.reason)) {
+      if (target && opts.target === undefined && STALE_REGISTRATION.has(r.reason)) {
         logger.warn(`saved registration failed (${r.reason}); registering this install again`);
         await deps.registration.clear().catch(() => undefined);
         continue;
       }
-      return { ok: false, result: mapSignInFailure(r.reason, r.message) };
+      return { ok: false, result: mapSignInFailure(r.reason, r.message), signIn: { reason: r.reason, message: r.message }, browserOpened };
     }
-    return { ok: false, result: fail('sign_in_failed', 'ChatGPT sign-in failed') };
+    return { ok: false, result: fail('sign_in_failed', 'ChatGPT sign-in failed'), browserOpened };
   }
 
   function discard(account: PendingLoginAccount): void {
@@ -381,6 +424,108 @@ export function createChatgptAccountLogin(deps: ChatgptAccountLoginDeps) {
         })
         .catch(() => undefined);
       return { ok: true, planEnabled, email: signed.account.email };
+    },
+
+    /**
+     * The ChatGPT PLAN sign-in (renderer chatgpt:sign-in: Playtime, Settings,
+     * onboarding, the re-sign-in dialog). With a live Sei session it also
+     * links the ChatGPT identity to that account, silently, on the same
+     * browser trip; the plan connects either way. Returns the plain
+     * sign-in's result shape. "Add account" (accountId null) asks for a
+     * DIFFERENT ChatGPT account, so it stays the plain sign-in.
+     */
+    async connectPlan(opts: { accountId?: string | null; enablePlan?: boolean } = {}): Promise<ChatgptSignInResult> {
+      const plain = (why: string): Promise<ChatgptSignInResult> => {
+        logger.info(`plan sign-in without account link (${why})`);
+        return deps.chatgpt().signIn(opts);
+      };
+      if (opts.accountId === null) return deps.chatgpt().signIn(opts);
+      const current = await deps.currentSession().catch(() => null);
+      if (!current) return deps.chatgpt().signIn(opts);
+      let target: { client_id: string; id_token: string | null; email: string | null; subject: string } | null | undefined;
+      if (opts.accountId) {
+        target = await deps.chatgpt().loginTargetFor(opts.accountId).catch(() => null);
+        if (!target) return plain('unknown account');
+      }
+      const gen = ++generation;
+      clearPending({ revoke: true });
+      const signed = await chatgptSignIn({
+        ...(target ? { target } : {}),
+        forceConsent: opts.enablePlan === true,
+        nonceTimeoutMs: PLAN_NONCE_TIMEOUT_MS,
+      });
+      if (!signed.ok) {
+        // Nothing reached the browser (the proxy is unreachable or refused
+        // the nonce): the plain sign-in needs no proxy.
+        if (!signed.browserOpened) return plain(signed.result.ok ? 'nonce' : signed.result.reason);
+        if (signed.signIn) return { ok: false, reason: signed.signIn.reason, ...(signed.signIn.message ? { message: signed.signIn.message } : {}) };
+        return { ok: false, reason: 'exchange_failed' };
+      }
+      if (gen !== generation) {
+        discard(signed.account);
+        return { ok: false, reason: 'cancelled' };
+      }
+      if (target && signed.account.subject !== target.subject) {
+        // A different ChatGPT account answered a renewal: never overwrite.
+        discard(signed.account);
+        return { ok: false, reason: 'account_mismatch' };
+      }
+      const fresh = (await deps.currentSession().catch(() => null)) ?? current;
+      const r = await proxyPost(
+        '/auth/chatgpt/link',
+        { id_token: signed.account.idToken, client_id: signed.account.clientId },
+        fresh.accessToken,
+      );
+      const linked = r.status === 200 && r.body.status === 'linked';
+      if (!linked) {
+        // linked_elsewhere / account_conflict / an expired Sei session / an
+        // older or unreachable proxy: keep the grant for the plan alone.
+        const m = mapProxyError(r);
+        logger.info(`plan sign-in: ChatGPT identity not linked (${m.ok ? r.status : m.reason}); connecting the plan only`);
+      }
+      const adopted = await deps.chatgpt().adoptLoginAccount(signed.account);
+      if (!adopted.ok) {
+        discard(signed.account);
+        return adopted;
+      }
+      // No plan offer: the plan surface that started this switches itself.
+      deps.onPlanAccountAdded?.();
+      if (linked) {
+        await deps.registration
+          .save({
+            client_id: signed.account.clientId,
+            subject: signed.account.subject,
+            email: signed.account.email,
+            id_token: signed.account.idToken,
+            user_id: fresh.userId,
+          })
+          .catch(() => undefined);
+      }
+      return adopted;
+    },
+
+    /**
+     * Settings "Unlink": drop the account's ChatGPT link on the proxy, then
+     * forget this device's registration for it, so the next "Continue with
+     * ChatGPT" is a fresh identity (an email code when the address has an
+     * account). The plan sign-in, if any, stays connected. An older proxy
+     * without the route answers 404: reported as unavailable, nothing changed.
+     */
+    async unlink(): Promise<ChatgptUnlinkResult> {
+      const current = await deps.currentSession().catch(() => null);
+      if (!current) return fail('not_signed_in', 'Sign in to Sei first');
+      const r = await proxyPost('/auth/chatgpt/unlink', {}, current.accessToken);
+      if (r.status !== 200 || r.body.status !== 'unlinked') {
+        if (r.status === 404) return fail('unavailable', 'Unlinking is not available yet');
+        const m = mapProxyError(r);
+        return m.ok ? fail('unavailable', 'Could not unlink') : m;
+      }
+      const reg = await deps.registration.load().catch(() => null);
+      if (reg && reg.user_id === current.userId) {
+        await deps.registration.clear().catch((err) => logger.warn(`could not forget the registration: ${(err as Error).message}`));
+      }
+      logger.info(`unlinked (${r.body.removed === true ? 'link removed' : 'no link on the server'})`);
+      return { ok: true, removed: r.body.removed === true };
     },
 
     /** Linked state as far as this device knows (the proxy holds the truth). */

@@ -26,6 +26,8 @@ import { raiseUsageLimitPopup } from './usageLimit';
 import {
   buildSystemBlocks,
   markLastMessageCached,
+  appendUncachedTail,
+  clockTailNote,
   chatSurfaceTools,
   SELF_LAUNCH_GAMES,
 } from './chatPrompts';
@@ -41,7 +43,8 @@ import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
 import { isCallActive } from '../voice/callState';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from '../voice/audioTags';
-import { readChatContext, foldIfDue, formatChatTimestamp } from './continuity';
+import { readChatContext, foldIfDue } from './continuity';
+import { toMessages, voiceWindowStart } from './transcript';
 import { scopedTurnCurrent, withScopedTurn } from '../profile/scopeBarrier';
 import { maybeCompactChatMemory } from './memoryCompaction';
 import { readKnowledgeForPrompt } from '../knowledge/knowledgeStore';
@@ -206,7 +209,7 @@ async function followUpWebTools(p: {
   return { ...next, content, text: textOf(content) };
 }
 /**
- * Voice calls (260706): cap the transcript sent to the model to the last N rows.
+ * Voice calls (260706): cap the transcript sent to the model to the recent rows.
  * Memory (MEMORY.md) + the rolling summary still carry older context, so the
  * companion keeps continuity, but a live call sends a tiny window instead of the
  * full 50-99 verbatim tail — the prompt (and the cache-write during dialing) is
@@ -215,6 +218,14 @@ async function followUpWebTools(p: {
  * there and richer context reads better.
  */
 const VOICE_RECENT_CAP = 10;
+/**
+ * 261024: the voice window's start moves in steps of this many rows (so a call
+ * turn sends 10 to 19 rows), instead of sliding by one every turn. A sliding
+ * start changed the first transcript row on every turn, which re-wrote the
+ * whole window to the prompt cache each time. Divides the fold batch (50) so a
+ * fold keeps the alignment. See voiceWindowStart.
+ */
+const VOICE_WINDOW_STEP = 10;
 
 /**
  * In-flight chat turn per character (chat #9). A new send for the same character
@@ -595,89 +606,9 @@ function textOf(content: Array<{ type: string }>): string {
   return replyTextOf(content, ' ');
 }
 
-/**
- * Map the persisted transcript into an alternating Anthropic messages array.
- * Exported for testing. Every emitted row — play rows included — flows through
- * the ONE shared same-role merge at the bottom: a play row is just a `user` row
- * with bracketed content, so two adjacent play rows (or a user message followed
- * by a play row) fold into a single user turn instead of two adjacent `user`
- * messages that Anthropic rejects with 400 "roles must alternate".
- */
-export function toMessages(history: ChatMessage[]): Array<{ role: 'user' | 'assistant'; content: unknown }> {
-  const out: Array<{ role: 'user' | 'assistant'; content: unknown }> = [];
-  for (const m of history) {
-    // Per row, derive role + content first; then run the single shared merge.
-    let role: 'user' | 'assistant';
-    let content: string;
-    if (m.role === 'system' && m.event?.kind === 'play') {
-      // A finished play session is shared history, not chatter: surface it as a
-      // bracketed system fact so the companion knows you actually played together
-      // (the game→chat memory gap — otherwise chat only sees MEMORY.md, which may
-      // never have captured the session). Framed so the model doesn't read it as
-      // the player speaking or as a still-hypothetical plan.
-      role = 'user';
-      content = `[${formatChatTimestamp(m.ts)}] [Shared history: ${m.text} You were there together in the world — treat it as something you actually did, not a plan.]`;
-    } else if (m.role === 'system' && m.event?.kind === 'call') {
-      // A finished voice call is shared history the same way a play session is
-      // (260705): without it, a later turn only sees the transcript lines and
-      // may not realize they were spoken on a real call.
-      role = 'user';
-      content = `[${formatChatTimestamp(m.ts)}] [Shared history: ${m.text} That was a real voice call you were both on — treat it as a conversation you actually had.]`;
-    } else if (m.role === 'system') {
-      // Other system rows (e.g. "joined your world") are UI-only; skip them so
-      // they don't pollute the model's turn-taking.
-      continue;
-    } else {
-      // A quoted reply is surfaced to the model as a short lead-in so it knows
-      // what the user is referring to, then the actual message text.
-      content = m.text;
-      if (m.replyTo) {
-        const who = m.replyTo.role === 'companion' ? 'your earlier message' : 'their earlier message';
-        content = `(replying to ${who}: "${m.replyTo.text}")\n${m.text}`;
-      }
-      role = m.role === 'companion' ? 'assistant' : 'user';
-      // 261003b: a line spoken from a real web lookup gets the lookup in front
-      // of it, as a user-side note between the line before the search and the
-      // answer, the way the results arrived. Without it a real lookup and a
-      // "let me check" followed by a made-up answer looked the same in
-      // history, and the model copied the made-up shape.
-      const queries = role === 'assistant' ? (m.lookup?.queries ?? []).filter((q) => typeof q === 'string' && q.trim()) : [];
-      if (queries.length) {
-        const note = `[results of your web search for ${queries.map((q) => `"${q.trim()}"`).join(', ')} came back here]`;
-        const prev = out[out.length - 1];
-        if (prev && prev.role === 'user' && typeof prev.content === 'string') prev.content = `${prev.content}\n${note}`;
-        else out.push({ role: 'user', content: note });
-      }
-      // 260703: stamp USER messages with their send time so the model can feel
-      // gaps (overnight silence vs rapid-fire). Assistant turns stay unstamped —
-      // stamping the model's own prior output teaches it to emit timestamps.
-      if (role === 'user') content = `[${formatChatTimestamp(m.ts)}] ${content}`;
-    }
-    // Merge consecutive same-role turns. An interrupted turn (#9) leaves a user
-    // message with no reply, and play rows arrive as user rows, so the transcript
-    // can hold two user turns in a row; Anthropic requires strict alternation, so
-    // fold them into one.
-    const last = out[out.length - 1];
-    if (last && last.role === role && typeof last.content === 'string') {
-      last.content = `${last.content}\n${content}`;
-    } else {
-      out.push({ role, content });
-    }
-  }
-  // Anthropic requires the first message to be from the user. Never satisfy
-  // that by DROPPING a leading assistant turn: after a first-meeting greeting
-  // the transcript is [companion..., user reply], so the shifted-off assistant
-  // turn was the ENTIRE conversation — the model got the player's "the latter
-  // :)" with no antecedent and asked what it was replying to (260721 live
-  // capture). Seat a neutral marker user turn instead; it makes no claim about
-  // who spoke first or whether this is the conversation's absolute start, so
-  // it is also safe for mid-conversation windows (voice recentCap, fold
-  // watermark) that happen to open on an assistant row.
-  if (out.length && out[0].role !== 'user') {
-    out.unshift({ role: 'user', content: '[Session transcript begins here.]' });
-  }
-  return out;
-}
+// toMessages moved to ./transcript (261024) so offline harnesses can build the
+// exact messages array without electron; re-exported for existing importers.
+export { toMessages };
 
 /**
  * Fold a bracketed model-facing note into the messages array without breaking
@@ -782,12 +713,22 @@ async function prepareChatTurn(
     // 261020: every chat and voice turn offers web search (chatTools), so the
     // status block carries the search check too.
     searchGuide: true,
+    // 261024: on a call the clock rides after the last cache breakpoint (see
+    // clockNote below), so a minute rollover no longer re-writes the cached
+    // transcript.
+    clockInTail: opts.voiceCall === true,
   });
-  // Voice: only the last N rows go to the model (VOICE_RECENT_CAP). Slice the raw
-  // transcript BEFORE toMessages so role-merge + first-must-be-user still hold.
-  const windowed = opts.recentCap ? history.slice(-opts.recentCap) : history;
+  // Voice: only the recent rows go to the model (VOICE_RECENT_CAP, stepped by
+  // VOICE_WINDOW_STEP so the cached transcript prefix holds across turns; see
+  // voiceWindowStart). Slice the raw transcript BEFORE toMessages so role-merge
+  // + first-must-be-user still hold.
+  const windowed = opts.recentCap
+    ? history.slice(voiceWindowStart(history.length, opts.recentCap, VOICE_WINDOW_STEP))
+    : history;
   const messages = toMessages(windowed);
-  return { character, config, system, messages, punctuation };
+  // Voice calls append this after markLastMessageCached (appendUncachedTail).
+  const clockNote = opts.voiceCall === true ? clockTailNote() : '';
+  return { character, config, system, messages, punctuation, clockNote };
 }
 
 /**
@@ -985,6 +926,8 @@ async function sendChatMessageImpl(
     // Prompt caching (260706): mark the last message AFTER every foldUserNote —
     // the transcript is then cached prefix-incrementally across the call's turns.
     markLastMessageCached(messages);
+    // 261024: the call clock goes after the breakpoint (no-op in typed chat).
+    appendUncachedTail(messages, prep.clockNote);
     const llm = await buildLlmProvider();
 
     // Voice calls (260706): STREAM the reply so TTS can start on sentence 1 while
@@ -1668,6 +1611,7 @@ async function sendVoiceGreetingTurnImpl(
     // not a cacheRead" symptom). Matching them writes the tools+system prefix
     // here, during the ring, so the first spoken user reply is a fast cache READ.
     markLastMessageCached(messages);
+    appendUncachedTail(messages, prep.clockNote);
     const tools = chatTools(llm, true);
     const first = await llm.call({
       maxTokens: 200,
@@ -1809,6 +1753,7 @@ async function sendCompanionVoiceTurnImpl(
     foldUserNote(messages, note);
     // Share the same warm tools+system cache prefix as every other voice turn.
     markLastMessageCached(messages);
+    appendUncachedTail(messages, prep.clockNote);
 
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
@@ -1925,6 +1870,7 @@ async function sendVoiceIdleTurnImpl(
     foldUserNote(messages, note);
     // Same warm tools+system cache prefix as every other voice turn.
     markLastMessageCached(messages);
+    appendUncachedTail(messages, prep.clockNote);
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
     const first = await llm.call({

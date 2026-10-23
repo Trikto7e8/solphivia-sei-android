@@ -12,7 +12,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
   removeEventListener: () => undefined,
 };
 
-const { ImportLocalProfileModal } = await import('./ImportLocalProfileModal');
+const { ImportLocalProfileModal, ImportLocalProfileModalView, importAttemptFailed } = await import('./ImportLocalProfileModal');
 const { ZH } = await import('../lib/i18n/zh');
 
 const peek = (n: number) => ({
@@ -22,6 +22,7 @@ const peek = (n: number) => ({
   preferredName: 'Boss',
   hasData: true,
   hasCompanionData: true,
+  untouchedSeedIds: [] as string[],
 });
 
 function render(n: number, existingAccount: boolean): string {
@@ -54,5 +55,46 @@ describe('ImportLocalProfileModal', () => {
     ]) {
       expect(ZH[key], key).toBeTruthy();
     }
+  });
+
+  it('a failed import shows the error line with Continue and Try again', () => {
+    const html = renderToStaticMarkup(
+      React.createElement(ImportLocalProfileModalView, {
+        peek: peek(2),
+        existingAccount: true,
+        status: 'error',
+        onDecline: () => undefined,
+        onImport: () => undefined,
+        onContinue: () => undefined,
+      }),
+    );
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Not everything came over. Try again, or later from Settings.');
+    expect(html).toContain('Continue');
+    expect(html).toContain('Try again');
+    expect(html).not.toContain('Not now');
+    expect(ZH['Not everything came over. Try again, or later from Settings.']).toBeTruthy();
+  });
+
+  it('no error line before an attempt or while importing', () => {
+    for (const status of ['idle', 'importing'] as const) {
+      const html = renderToStaticMarkup(
+        React.createElement(ImportLocalProfileModalView, {
+          peek: peek(1),
+          existingAccount: true,
+          status,
+          onDecline: () => undefined,
+          onImport: () => undefined,
+          onContinue: () => undefined,
+        }),
+      );
+      expect(html).not.toContain('role="alert"');
+    }
+  });
+
+  it('an import that threw or left companions behind counts as failed', () => {
+    expect(importAttemptFailed(null)).toBe(true);
+    expect(importAttemptFailed({ imported: ['a'], failed: ['b'] } as never)).toBe(true);
+    expect(importAttemptFailed({ imported: ['a'], failed: [] } as never)).toBe(false);
   });
 });

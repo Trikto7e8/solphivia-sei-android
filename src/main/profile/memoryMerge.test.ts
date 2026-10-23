@@ -1,9 +1,14 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   mergeJsonlByTs,
+  mergeMemoryDir,
   mergeMemoryMarkdown,
   mergeWorldRegistries,
   renumberWorldHeaders,
+  UNREGISTERED_WORLD_FP,
 } from './memoryMerge';
 
 const HEADER = '# Memory\n\nAppend-only record. One line per entry. Written via remember(); removed via forget().\n\n';
@@ -43,6 +48,29 @@ describe('world numbering', () => {
     expect(merged.worlds.map((w) => [w.fingerprint, w.num])).toEqual([['a', 1], ['b', 4]]);
   });
 
+  it('gives a local header with no registry entry a fresh, reserved number', () => {
+    const { merged, map } = mergeWorldRegistries(
+      { version: 1, worlds: [{ num: 1, fingerprint: 'a' }, { num: 2, fingerprint: 'c' }] },
+      { version: 1, worlds: [{ num: 1, fingerprint: 'b' }] },
+      2,
+      [3, 1, 3],
+    );
+    // Registered local World 1 is new here: 3. Unregistered World 3: 4.
+    expect(map.get(1)).toBe(3);
+    expect(map.get(3)).toBe(4);
+    // The reservation keeps the bot's next new world (max + 1) off 4.
+    expect(merged.worlds.find((w) => w.num === 4)?.fingerprint).toBe(`${UNREGISTERED_WORLD_FP}3`);
+    expect(Math.max(...merged.worlds.map((w) => w.num))).toBe(4);
+  });
+
+  it('maps an unregistered header to its earlier reservation on a re-run', () => {
+    const first = mergeWorldRegistries({ version: 1, worlds: [{ num: 1, fingerprint: 'a' }] }, { version: 1, worlds: [] }, 1, [1]);
+    expect(first.map.get(1)).toBe(2);
+    const again = mergeWorldRegistries(first.merged, { version: 1, worlds: [] }, 2, [1]);
+    expect(again.map.get(1)).toBe(2);
+    expect(again.merged.worlds).toHaveLength(2);
+  });
+
   it('renumbers headers in one pass (a swap does not chain)', () => {
     const text = '## World 1 — X\n- e1\n## World 2 — Y\n- e2\n## World 12 — Z\n';
     const out = renumberWorldHeaders(text, new Map([[1, 2], [2, 1]]));
@@ -60,5 +88,39 @@ describe('mergeJsonlByTs', () => {
       .map((x) => JSON.parse(x).text);
     expect(out).toEqual(['l1', 'no-ts', 't2', 'l3', 't4']);
     expect(mergeJsonlByTs(mergeJsonlByTs(t, l), l)).toBe(mergeJsonlByTs(t, l));
+  });
+});
+
+describe('mergeMemoryDir: local World headers without a worlds.json entry', () => {
+  let tmp = '';
+  afterEach(async () => {
+    if (tmp) await rm(tmp, { recursive: true, force: true });
+    tmp = '';
+  });
+
+  it('files them under a new number instead of the account world with the same one', async () => {
+    tmp = await mkdtemp(path.join(tmpdir(), 'sei-memmerge-'));
+    const src = path.join(tmp, 'local');
+    const dest = path.join(tmp, 'account');
+    await mkdir(src, { recursive: true });
+    await mkdir(dest, { recursive: true });
+    await writeFile(
+      path.join(dest, 'MEMORY.md'),
+      HEADER + '## World 1 — Acct Base\n- [2026-10-01T00:00:00.000Z] account fact\n',
+    );
+    await writeFile(path.join(dest, 'worlds.json'), JSON.stringify({ version: 1, worlds: [{ num: 1, fingerprint: 'acct' }] }));
+    // The local registry is gone; its MEMORY.md still names World 1.
+    await writeFile(
+      path.join(src, 'MEMORY.md'),
+      HEADER + '## World 1 — Local Farm\n- [2026-09-01T00:00:00.000Z] local fact\n',
+    );
+
+    await mergeMemoryDir(src, dest);
+
+    const memory = await readFile(path.join(dest, 'MEMORY.md'), 'utf8');
+    expect(memory).toMatch(/## World 1 — Acct Base\n- \[2026-10-01T00:00:00.000Z\] account fact/);
+    expect(memory).toMatch(/## World 2 — Local Farm\n- \[2026-09-01T00:00:00.000Z\] local fact/);
+    const reg = JSON.parse(await readFile(path.join(dest, 'worlds.json'), 'utf8'));
+    expect(reg.worlds.map((w: { num: number }) => w.num)).toEqual([1, 2]);
   });
 });

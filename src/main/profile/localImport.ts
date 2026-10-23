@@ -45,6 +45,7 @@ import path from 'node:path';
 import { profileRootFor, getActiveScope, SCOPE_LOCAL } from '../paths';
 import { CharacterSchema, UserConfigSchema, type Character } from '../../shared/characterSchema';
 import { mergeKnowledgeDir, mergeMemoryDir, dirHasFiles } from './memoryMerge';
+import { DEFAULT_CHARACTER_UUIDS } from '../defaultCharacters';
 import { atomicWrite } from '../../bot/brain/storage/atomicWrite.js';
 import { withFileLock } from '../../bot/brain/storage/fileLock.js';
 
@@ -124,6 +125,49 @@ async function hasLocalMemories(id: string): Promise<boolean> {
   return (await dirHasFiles(localMemoryDir(id))) || (await dirHasFiles(localKnowledgeDir(id)));
 }
 
+async function readOrEmpty(p: string): Promise<string> {
+  try { return await readFile(p, 'utf8'); } catch { return ''; }
+}
+
+/**
+ * Whether the player ever did anything with this local companion (261023
+ * boot offer): a memory entry, a transcript row of their own (a typed
+ * message, or a game played together), a folded chat summary, or a
+ * knowledge file. The greeting a companion sends first, the MEMORY.md title
+ * block and `## World N` headers, PLAYER.md (seeded with the player's name
+ * at summon) and other derived files do not count.
+ */
+async function localCompanionTouched(id: string): Promise<boolean> {
+  if (await dirHasFiles(localKnowledgeDir(id))) return true;
+  const dir = localMemoryDir(id);
+  for (const f of ['MEMORY.md', 'MEMORY.archive.md']) {
+    if ((await readOrEmpty(path.join(dir, f))).split('\n').some((l) => l.startsWith('- '))) return true;
+  }
+  if ((await exists(path.join(dir, 'bridge.json'))) || (await exists(path.join(dir, 'bridge.prev.json')))) return true;
+  for (const line of (await readOrEmpty(path.join(dir, 'chat.jsonl'))).split('\n')) {
+    if (!line.trim()) continue;
+    try {
+      const role = (JSON.parse(line) as { role?: unknown }).role;
+      if (role !== 'assistant') return true;
+    } catch { /* a torn line is not the player's */ }
+  }
+  return false;
+}
+
+/**
+ * Local companions only the app put there: Sui, seeded into the party by the
+ * first-run scene, with nothing the player did with her. Bringing her over
+ * would add nothing the account cannot get from the World tab, so she alone
+ * is not worth a prompt at boot or a Settings row.
+ */
+async function untouchedSeedIds(ids: string[]): Promise<string[]> {
+  const out: string[] = [];
+  for (const id of ids) {
+    if (id === DEFAULT_CHARACTER_UUIDS.sui && !(await localCompanionTouched(id))) out.push(id);
+  }
+  return out;
+}
+
 /**
  * Whether a local character sits in the local roster. Mirrors countsAsHomeSlot
  * for a signed-out profile: an own (owner null) companion always does; a
@@ -147,6 +191,8 @@ export interface PeekLocalResult {
   hasData: boolean;
   /** True when there are companions or memories to bring (not just onboarding answers). */
   hasCompanionData: boolean;
+  /** Of the ids above: the app-seeded Sui the player never touched (261023). */
+  untouchedSeedIds: string[];
 }
 
 /** Inspect the `local` profile for importable data (companions, memories, onboarding answers). */
@@ -184,6 +230,7 @@ export async function peekLocalProfile(): Promise<PeekLocalResult> {
     preferredName,
     hasData: hasCompanionData || mcUsername != null,
     hasCompanionData,
+    untouchedSeedIds: await untouchedSeedIds([...migratable, ...memoryOnly]),
   };
 }
 

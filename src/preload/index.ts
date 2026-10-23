@@ -487,6 +487,7 @@ const api: RendererApi = {
   profilePeekLocal: () => ipcRenderer.invoke(IpcChannel.profile.peekLocal),
   profileImportFromLocal: (characterIds?: string[]) =>
     ipcRenderer.invoke(IpcChannel.profile.importFromLocal, characterIds),
+  profileImportOffered: (action: 'get' | 'set') => ipcRenderer.invoke(IpcChannel.profile.importOffered, action),
 
   // --- Browse + moderation (Phase 12) ---
   browseList: (args) => ipcRenderer.invoke(IpcChannel.browse.list, args),

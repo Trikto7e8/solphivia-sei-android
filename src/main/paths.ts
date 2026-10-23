@@ -115,6 +115,10 @@ export const paths = {
   // 260603: one-shot marker that the global→profile partition has run for
   // this install. Device-global (the partition is a one-time layout upgrade).
   partitionMarkerPath: () => path.join(userDataRoot(), 'profiles-partitioned.json'),
+  // 261023: which accounts were already offered the own-key (local profile)
+  // import on this device. Device-global like the local profile it is about:
+  // the offer is for whoever signs in here, and must not repeat every launch.
+  localImportOfferedPath: () => path.join(userDataRoot(), 'local-import-offered.json'),
 
   // ── Anti-abuse / DDOS-guard (260603) — DEVICE-GLOBAL by design ────────────
   // These describe the MACHINE, not any signed-in account, so they MUST stay

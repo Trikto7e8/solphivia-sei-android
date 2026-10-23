@@ -14,7 +14,9 @@
  *   - worlds.json: worlds are matched by fingerprint. A local world the
  *     account already knows takes the account's number; a new one gets the
  *     next free number, and the local MEMORY.md `## World N` headers are
- *     renumbered to match, so two different worlds never share a number.
+ *     renumbered to match, so two different worlds never share a number. A
+ *     local header with no worlds.json entry gets a fresh number too, held
+ *     by a reservation entry in the account's worlds.json.
  *   - chat.jsonl: line union, sorted by `ts` (stable).
  *   - anything else (bridge, HEARTBEAT, PLAYER.md, NEXT_STEP.json, ...):
  *     derived state. Moved when the account has none, otherwise the
@@ -88,15 +90,31 @@ export function maxWorldHeaderNum(text: string): number {
 }
 
 /**
+ * Fingerprint prefix of a registry entry that only reserves the number given
+ * to a local `## World N` header with no worlds.json entry. No spawn ever
+ * produces it, so the bot never resolves into one; it only keeps the bot's
+ * next new world (max registered number + 1) off that number.
+ */
+export const UNREGISTERED_WORLD_FP = 'unregistered-local-world:';
+
+/**
  * Merge the local world registry into the account's. Returns the merged
  * registry and the local→account number map. `reservedMax` is the highest
  * world number the account already uses anywhere (its MEMORY.md can name a
  * world its registry lost), so a new world never reuses one.
+ *
+ * `unregistered` are local `## World N` numbers with no local registry entry
+ * (a lost or older worlds.json). Kept as they were, they would be filed under
+ * the account's world of the same number. Each gets a fresh number above
+ * every one in use, and a reservation entry (UNREGISTERED_WORLD_FP + N) so
+ * the bot's next new world does not take it. The fingerprint is derived from
+ * N, so a re-run after a crash between two memory files maps N the same way.
  */
 export function mergeWorldRegistries(
   target: WorldRegistry,
   local: WorldRegistry,
   reservedMax = 0,
+  unregistered: readonly number[] = [],
 ): { merged: WorldRegistry; map: Map<number, number> } {
   const merged: WorldRegistry = { version: target.version || 1, worlds: target.worlds.map((w) => ({ ...w })) };
   const map = new Map<number, number>();
@@ -114,7 +132,30 @@ export function mergeWorldRegistries(
       merged.worlds.push({ ...lw, num });
     }
   }
+  const registered = new Set(local.worlds.map((w) => w.num));
+  for (const n of [...new Set(unregistered)].sort((a, b) => a - b)) {
+    if (registered.has(n)) continue;
+    const fingerprint = `${UNREGISTERED_WORLD_FP}${n}`;
+    const hit = merged.worlds.find((w) => w.fingerprint === fingerprint);
+    if (hit) {
+      map.set(n, hit.num);
+      continue;
+    }
+    const num = next++;
+    map.set(n, num);
+    merged.worlds.push({ num, fingerprint, label: `World ${num}` });
+  }
   return { merged, map };
+}
+
+/** Every `## World N` number in a memory file. */
+export function worldHeaderNums(text: string): number[] {
+  const out: number[] = [];
+  for (const line of text.split('\n')) {
+    const m = WORLD_HEADER_RE.exec(line);
+    if (m) out.push(Number(m[1]));
+  }
+  return out;
 }
 
 /** Rewrite `## World N` headers through `map` (numbers not in it are kept). */
@@ -267,13 +308,21 @@ export async function mergeMemoryDir(srcDir: string, destDir: string): Promise<v
   const destWorlds = path.join(destDir, 'worlds.json');
   let worldMap = new Map<number, number>();
   const localReg = parseRegistry(await readText(srcWorlds));
-  if (localReg.worlds.length) {
+  // Local headers the local registry does not know (it was lost, or predates
+  // them): renumbered too, or they would land in another world's section.
+  const unregistered: number[] = [];
+  for (const f of MEMORY_TEXT_FILES) {
+    for (const n of worldHeaderNums((await readText(path.join(srcDir, f))) ?? '')) {
+      if (!localReg.worlds.some((w) => w.num === n)) unregistered.push(n);
+    }
+  }
+  if (localReg.worlds.length || unregistered.length) {
     let reserved = 0;
     for (const f of MEMORY_TEXT_FILES) {
       reserved = Math.max(reserved, maxWorldHeaderNum((await readText(path.join(destDir, f))) ?? ''));
     }
     await mergeInto(destWorlds, (current) => {
-      const { merged, map } = mergeWorldRegistries(parseRegistry(current || null), localReg, reserved);
+      const { merged, map } = mergeWorldRegistries(parseRegistry(current || null), localReg, reserved, unregistered);
       worldMap = map;
       return JSON.stringify(merged, null, 2) + '\n';
     });

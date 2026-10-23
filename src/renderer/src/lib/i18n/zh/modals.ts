@@ -235,6 +235,7 @@ export const ZH_MODALS: Record<string, string> = {
   'Importing…': '导入中…',
   'Start fresh': '重新开始',
   'Bring it over': '带过来',
+  'Not everything came over. Try again, or later from Settings.': '没能全部带过来。可以再试一次，或稍后在设置里操作。',
 
   // ── KnowledgeModal / CompactKnowledgeModal ──
   "{name}'s knowledge": '{name} 的知识',

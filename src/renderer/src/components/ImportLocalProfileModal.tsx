@@ -13,6 +13,11 @@
  *     they are offered again on the next sign-in from it.
  *
  * Never offered account→account, so switching between accounts starts fresh.
+ * Also offered once at boot to an account that signed in on an older build
+ * (App.tsx, checkBootImportOffer), and from Settings → Account.
+ *
+ * A failed import (261023) keeps the modal up with a short error line and a
+ * "Try again"; the import is idempotent, so a retry only redoes what failed.
  *
  * Renders through ModalShell; dismissal is button-only (choice is required).
  */
@@ -21,7 +26,7 @@ import { sei } from '../lib/ipcClient';
 import { useT } from '../lib/i18n';
 import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
-import type { PeekLocalProfileResult } from '../../../shared/ipc';
+import type { ImportLocalProfileResult, PeekLocalProfileResult } from '../../../shared/ipc';
 import styles from './confirmModal.module.css';
 
 export interface ImportLocalProfileModalProps {
@@ -32,22 +37,71 @@ export interface ImportLocalProfileModalProps {
   onDone: (didImport: boolean) => void;
 }
 
+export type ImportOfferStatus = 'idle' | 'importing' | 'error';
+
+/**
+ * Whether an import attempt failed: the call threw (`null`), or some
+ * companions could not be brought over.
+ */
+export function importAttemptFailed(result: ImportLocalProfileResult | null): boolean {
+  return result == null || result.failed.length > 0;
+}
+
 export function ImportLocalProfileModal({ peek, existingAccount = false, onDone }: ImportLocalProfileModalProps): React.ReactElement {
-  const t = useT();
-  const [submitting, setSubmitting] = useState(false);
-  const count = peek.migratableCharacterIds.length;
+  const [status, setStatus] = useState<ImportOfferStatus>('idle');
+  const [importedAny, setImportedAny] = useState(false);
 
   async function handleImport(): Promise<void> {
-    setSubmitting(true);
+    setStatus('importing');
+    let result: ImportLocalProfileResult | null = null;
     try {
-      await sei.profileImportFromLocal();
-    } catch {
-      // Best-effort — even on partial failure we proceed; the user can still
-      // continue into the account (whatever imported is now theirs).
-    } finally {
-      onDone(true);
+      result = await sei.profileImportFromLocal();
+    } catch (err) {
+      console.warn(`[sei] local import failed: ${(err as Error)?.message ?? String(err)}`);
     }
+    const any = importedAny || (result?.imported.length ?? 0) > 0;
+    setImportedAny(any);
+    if (importAttemptFailed(result)) {
+      // Stay up with the error. Whatever did come across is the account's now.
+      setStatus('error');
+      return;
+    }
+    onDone(true);
   }
+
+  return (
+    <ImportLocalProfileModalView
+      peek={peek}
+      existingAccount={existingAccount}
+      status={status}
+      onDecline={() => onDone(false)}
+      onImport={() => void handleImport()}
+      onContinue={() => onDone(importedAny)}
+    />
+  );
+}
+
+export interface ImportLocalProfileModalViewProps {
+  peek: PeekLocalProfileResult;
+  existingAccount: boolean;
+  status: ImportOfferStatus;
+  onDecline: () => void;
+  onImport: () => void;
+  /** After a failed attempt: leave the modal without retrying. */
+  onContinue: () => void;
+}
+
+/** The modal's markup for a given status (stateless, so tests can render each one). */
+export function ImportLocalProfileModalView({
+  peek,
+  existingAccount,
+  status,
+  onDecline,
+  onImport,
+  onContinue,
+}: ImportLocalProfileModalViewProps): React.ReactElement {
+  const t = useT();
+  const count = peek.migratableCharacterIds.length;
 
   return (
     <ModalShell title={t('Bring your companion to this account?')} escClose={false}>
@@ -76,14 +130,28 @@ export function ImportLocalProfileModal({ peek, existingAccount = false, onDone 
                 )
             : t('Bring your existing setup into this account, or start fresh.')}
       </p>
-      {submitting ? (
+      {status === 'error' ? (
+        <p className={styles.error} role="alert">
+          {t('Not everything came over. Try again, or later from Settings.')}
+        </p>
+      ) : null}
+      {status === 'importing' ? (
         <p className={styles.status}>{t('Importing…')}</p>
+      ) : status === 'error' ? (
+        <ModalFooter>
+          <Button kind="ghost" onClick={onContinue}>
+            {t('Continue')}
+          </Button>
+          <Button kind="primary" onClick={onImport}>
+            {t('Try again')}
+          </Button>
+        </ModalFooter>
       ) : (
         <ModalFooter>
-          <Button kind="ghost" onClick={() => onDone(false)}>
+          <Button kind="ghost" onClick={onDecline}>
             {existingAccount ? t('Not now') : t('Start fresh')}
           </Button>
-          <Button kind="primary" onClick={() => void handleImport()}>
+          <Button kind="primary" onClick={onImport}>
             {t('Bring it over')}
           </Button>
         </ModalFooter>

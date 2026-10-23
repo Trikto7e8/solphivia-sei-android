@@ -103,9 +103,10 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   }));
   // ?dashshot=chatfirst (260926): the guided first moment. An empty
   // transcript, so the armed greeting fires, answered after a short think with
-  // a two-bubble greeting that ends on the chess offer. `&nomc=1` reports no
-  // Minecraft install (chess + call only); `&lan=1` has a LAN world open
-  // (Minecraft leads).
+  // a two-bubble greeting that ends on the Backseat offer (261023). `&nomc=1`
+  // reports no Minecraft install (Backseat + chess + call); `&lan=1` has a LAN
+  // world open (Minecraft leads); `&novision=1` is a text-only model (chess
+  // leads, no Backseat).
   const firstMode = params.get('dashshot') === 'chatfirst';
   const noMc = params.has('nomc');
   const firstGreeting = async (): Promise<unknown[]> => {
@@ -116,7 +117,11 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
       {
         id: 'fm-2',
         role: 'companion',
-        text: lan ? "i see your world is open. want me to hop in right now?" : 'wanna play a quick game of chess with me? i promise to go easy. maybe.',
+        text: lan
+          ? "i see your world is open. want me to hop in right now?"
+          : params.has('novision')
+            ? 'wanna play a quick game of chess with me? i promise to go easy. maybe.'
+            : "put a game on and share your screen, i'll watch and talk along.",
         ts: Date.now(),
       },
     ];

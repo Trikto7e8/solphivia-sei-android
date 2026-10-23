@@ -9,6 +9,9 @@
  *   - chess / Minecraft go through the same cross-launch gate + openGame the
  *     "Play together" tiles use (chess slides its board into the chat's game
  *     area; Minecraft opens its launch panel, which owns setup and summon);
+ *   - Backseat is the top bar's Backseat button (the share-screen picker,
+ *     opened cold: confirming a source starts the call too), behind the same
+ *     cross-launch gate so an open chess game is ended first;
  *   - the call is the top bar's phone button (startOrOpenCall).
  * "Not now" just retires the card. Any click is final for the session.
  */
@@ -17,8 +20,9 @@ import { useFirstMomentStore } from '../lib/stores/useFirstMomentStore';
 import { firstMomentButtons, type FirstMomentAction } from '../lib/firstMoment';
 import { openGame, requestGameLaunch } from '../lib/gameLaunch';
 import { startOrOpenCall } from '../lib/callLaunch';
-import { PhoneIcon } from './icons';
-import { useT } from '../lib/i18n';
+import { useUiStore } from '../lib/stores/useUiStore';
+import { BackseatIcon, PhoneIcon } from './icons';
+import { t as tNow, useT } from '../lib/i18n';
 import styles from './FirstMomentCard.module.css';
 
 /** Same renderer-relative art as the picker tiles (lib/games.ts). */
@@ -29,7 +33,11 @@ const ART: Record<'chess' | 'minecraft', string> = {
 
 export function runFirstMomentAction(characterId: string, action: FirstMomentAction): void {
   useFirstMomentStore.getState().act(action);
-  if (action === 'chess' || action === 'minecraft') {
+  if (action === 'backseat') {
+    requestGameLaunch(characterId, { id: 'backseat', name: tNow('Screen share') }, () =>
+      useUiStore.getState().openModal({ kind: 'share-screen', characterId }),
+    );
+  } else if (action === 'chess' || action === 'minecraft') {
     const name = action === 'chess' ? 'Chess' : 'Minecraft';
     requestGameLaunch(characterId, { id: action, name }, () => openGame(characterId, action));
   } else if (action === 'call') {
@@ -57,24 +65,31 @@ export function FirstMomentCard({ characterId }: FirstMomentCardProps): React.Re
   if (!plan) return null;
 
   const label = (a: Exclude<FirstMomentAction, 'dismiss'>): string =>
-    a === 'chess' ? t('Play chess now') : a === 'minecraft' ? t('Summon me in Minecraft') : t('Call me');
+    a === 'chess'
+      ? t('Play chess now')
+      : a === 'minecraft'
+        ? t('Summon me in Minecraft')
+        : a === 'backseat'
+          ? t('Show me your game')
+          : t('Call me');
 
   return (
     <div className={styles.root} data-first-moment>
       <div className={styles.tiles}>
         {firstMomentButtons(plan).map((a) => {
           const primary = a === plan.primary;
-          if (a === 'call') {
+          if (a === 'call' || a === 'backseat') {
             return (
               <button
                 key={a}
                 type="button"
                 data-action={a}
-                className={`${styles.tile} ${styles.callTile}`}
+                data-primary={primary ? 'true' : undefined}
+                className={`${styles.tile} ${styles.callTile} ${primary ? styles.primaryFill : ''}`}
                 onClick={() => runFirstMomentAction(characterId, a)}
               >
                 <span className={styles.callIcon}>
-                  <PhoneIcon size={22} />
+                  {a === 'call' ? <PhoneIcon size={22} /> : <BackseatIcon size={22} />}
                 </span>
                 <span className={styles.label}>{label(a)}</span>
               </button>

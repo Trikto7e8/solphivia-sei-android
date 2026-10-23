@@ -34,7 +34,8 @@ vi.doMock('../lib/stores/useFirstMomentStore', () => ({
   }),
 }));
 
-const { FirstMomentCard } = await import('./FirstMomentCard');
+const { FirstMomentCard, runFirstMomentAction } = await import('./FirstMomentCard');
+const { useUiStore } = await import('../lib/stores/useUiStore');
 const { ZH } = await import('../lib/i18n/zh');
 
 function render(characterId = 'c1'): string {
@@ -52,7 +53,7 @@ beforeEach(() => {
 describe('FirstMomentCard', () => {
   it('renders nothing unless the moment is ready for this companion', () => {
     expect(render()).toBe('');
-    setState({ characterId: 'c1', status: 'greeting', plan: { primary: 'chess', minecraft: false } });
+    setState({ characterId: 'c1', status: 'greeting', plan: { primary: 'backseat', minecraft: false, backseat: true } });
     expect(render()).toBe('');
     setState({ status: 'ready' });
     expect(render('other')).toBe('');
@@ -60,40 +61,60 @@ describe('FirstMomentCard', () => {
   });
 
   it('renders nothing after a click or a failed greeting', () => {
-    setState({ characterId: 'c1', status: 'done', plan: { primary: 'chess', minecraft: false } });
+    setState({ characterId: 'c1', status: 'done', plan: { primary: 'backseat', minecraft: false, backseat: true } });
     expect(render()).toBe('');
     setState({ status: 'failed' });
     expect(render()).toBe('');
   });
 
-  it('chess only: chess tile (primary), call, then Not now', () => {
-    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'chess', minecraft: false } });
+  it('leads with Backseat: Backseat tile (primary), chess, call, then Not now', () => {
+    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'backseat', minecraft: false, backseat: true } });
     const html = render();
-    expect(actions(html)).toEqual(['chess', 'call', 'dismiss']);
+    expect(actions(html)).toEqual(['backseat', 'chess', 'call', 'dismiss']);
+    expect(html).toContain('Show me your game');
     expect(html).toContain('Play chess now');
     expect(html).toContain('Call me');
     expect(html).toContain('Not now');
     expect(html).not.toContain('Minecraft');
-    expect(html).toMatch(/data-action="chess" data-primary="true"/);
+    expect(html).toMatch(/data-action="backseat" data-primary="true"/);
+    expect(html).not.toMatch(/data-action="chess" data-primary/);
   });
 
   it('offers Minecraft second when installed', () => {
-    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'chess', minecraft: true } });
+    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'backseat', minecraft: true, backseat: true } });
     const html = render();
-    expect(actions(html)).toEqual(['chess', 'minecraft', 'call', 'dismiss']);
+    expect(actions(html)).toEqual(['backseat', 'minecraft', 'chess', 'call', 'dismiss']);
     expect(html).toContain('Summon me in Minecraft');
     expect(html).not.toMatch(/data-action="minecraft" data-primary/);
   });
 
   it('leads with Minecraft when a world is open', () => {
-    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'minecraft', minecraft: true } });
+    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'minecraft', minecraft: true, backseat: true } });
     const html = render();
-    expect(actions(html)).toEqual(['minecraft', 'chess', 'call', 'dismiss']);
+    expect(actions(html)).toEqual(['minecraft', 'backseat', 'chess', 'call', 'dismiss']);
     expect(html).toMatch(/data-action="minecraft" data-primary="true"/);
+    expect(html).not.toMatch(/data-action="backseat" data-primary/);
+  });
+
+  it('chess leads when the model cannot see images (no Backseat tile)', () => {
+    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'chess', minecraft: false, backseat: false } });
+    const html = render();
+    expect(actions(html)).toEqual(['chess', 'call', 'dismiss']);
+    expect(html).not.toContain('Show me your game');
+    expect(html).toMatch(/data-action="chess" data-primary="true"/);
+  });
+
+  it('the Backseat tile retires the card and opens the cold share-screen picker for this companion', () => {
+    const act = vi.fn();
+    setState({ characterId: 'c1', status: 'ready', plan: { primary: 'backseat', minecraft: false, backseat: true }, act });
+    useUiStore.getState().closeModal();
+    runFirstMomentAction('c1', 'backseat');
+    expect(act).toHaveBeenCalledWith('backseat');
+    expect(useUiStore.getState().modal).toEqual({ kind: 'share-screen', characterId: 'c1' });
   });
 
   it('every label has a zh translation and no em dash', () => {
-    for (const s of ['Play chess now', 'Summon me in Minecraft', 'Call me', 'Not now']) {
+    for (const s of ['Show me your game', 'Play chess now', 'Summon me in Minecraft', 'Call me', 'Not now']) {
       expect(ZH[s], s).toBeTruthy();
       expect(s).not.toContain('—');
       expect(ZH[s]).not.toContain('—');

@@ -898,11 +898,11 @@ export interface SpokenLineContext {
 }
 
 /**
- * The first game the guided first moment offers (260926). Chess needs no
- * install, so it is the default; Minecraft leads only when a LAN world is
- * already open.
+ * What the guided first moment offers first (260926, 261023). Backseat (a
+ * screen share) is the default; Minecraft leads when a LAN world is already
+ * open, and chess when the model cannot see images.
  */
-export type FirstMomentGame = 'chess' | 'minecraft';
+export type FirstMomentGame = 'chess' | 'minecraft' | 'backseat';
 
 /** Options for `chatOpened` (see RendererApi.chatOpened). */
 export interface ChatOpenedOptions {

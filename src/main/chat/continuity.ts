@@ -297,7 +297,7 @@ export async function foldIfDue(characterId: string, personaExpanded?: string): 
  */
 export async function readChatContext(
   characterId: string,
-): Promise<{ summary: string; history: ChatMessage[] }> {
+): Promise<{ summary: string; history: ChatMessage[]; base: number }> {
   const { bridge, raw, watermark } = await readWindow(characterId);
   const history: ChatMessage[] = [];
   let seen = 0;
@@ -311,7 +311,10 @@ export async function readChatContext(
       history.push(m);
     }
   }
-  return { summary: bridge.summary, history };
+  // base (261024): the absolute position, among user/companion rows, of the
+  // first such row in `history`. The voice window counts its steps from it so
+  // they stay put when the front of `history` moves (voiceWindowStart).
+  return { summary: bridge.summary, history, base: watermark };
 }
 
 /**

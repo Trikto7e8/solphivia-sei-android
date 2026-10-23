@@ -15,19 +15,35 @@ import { formatChatTimestamp } from './foldPrompt';
  * re-written to cache on every call turn (the ~1,100 cache-write tokens per turn
  * seen on free calls) and nothing of it was ever read back.
  *
- * Now the start only moves in steps of `step` rows, so the window holds between
- * `cap` and `cap + step - 1` rows and keeps the same first row for `step` rows
- * in a row: each turn reads the cached transcript and writes only what is new.
- * The start is a multiple of `step` from the start of the unsummarized tail;
- * a fold drops a 50-row batch from that tail (a multiple of the step), and it
- * rewrites the summary block above the transcript anyway.
+ * Now the start only moves in steps of `step` conversation rows, so the window
+ * holds between `cap` and `cap + step - 1` user/companion rows (plus any system
+ * rows among them) and keeps the same first row for `step` turns in a row: each
+ * turn reads the cached transcript and writes only what is new.
  *
- * Returns the slice start index into a history of length `n`.
+ * The step is counted on each row's ABSOLUTE position in the whole transcript,
+ * not on its index in `history`. `history` is the unsummarized tail, and its
+ * front moves on its own: a fold drops a batch from it, and while folds keep
+ * failing readWindow caps it at the newest MAX_UNSUMMARIZED rows, so its
+ * length stays constant and its front advances by one row every turn. Counted
+ * from the front of `history`, that brought the sliding window back. `base` is
+ * the absolute position of the first user/companion row in `history` (the
+ * clamped watermark from readChatContext). System rows are not counted, the
+ * same as the watermark.
+ *
+ * Returns the slice start index into `history`.
  */
-export function voiceWindowStart(n: number, cap: number, step: number): number {
-  if (n <= cap) return 0;
+export function voiceWindowStart(history: readonly ChatMessage[], base: number, cap: number, step: number): number {
   const s = Math.max(1, Math.floor(step));
-  return Math.floor((n - cap) / s) * s;
+  const counted: number[] = [];
+  history.forEach((m, i) => {
+    if (m.role === 'user' || m.role === 'companion') counted.push(i);
+  });
+  if (counted.length <= cap) return 0;
+  const b = Math.max(0, Math.floor(base) || 0);
+  const total = b + counted.length;
+  // First row to keep, as an absolute position, then as a history index.
+  const absStart = Math.max(b, Math.floor((total - cap) / s) * s);
+  return counted[absStart - b];
 }
 
 /**

@@ -219,11 +219,12 @@ async function followUpWebTools(p: {
  */
 const VOICE_RECENT_CAP = 10;
 /**
- * 261024: the voice window's start moves in steps of this many rows (so a call
- * turn sends 10 to 19 rows), instead of sliding by one every turn. A sliding
- * start changed the first transcript row on every turn, which re-wrote the
- * whole window to the prompt cache each time. Divides the fold batch (50) so a
- * fold keeps the alignment. See voiceWindowStart.
+ * 261024: the voice window's start moves in steps of this many conversation
+ * rows (so a call turn sends 10 to 19 of them), instead of sliding by one every
+ * turn. A sliding start changed the first transcript row on every turn, which
+ * re-wrote the whole window to the prompt cache each time. The steps are
+ * counted on absolute transcript positions, so neither a fold nor the
+ * MAX_UNSUMMARIZED cap on the tail moves them. See voiceWindowStart.
  */
 const VOICE_WINDOW_STEP = 10;
 
@@ -680,7 +681,7 @@ async function prepareChatTurn(
   // Watermark-based context (260702): every not-yet-summarized message verbatim
   // (50-99 between folds) + the rolling summary. Pure read — the batch fold runs
   // in the background AFTER the reply (see foldIfDue).
-  const [{ summary, history }, memory, knowledge] = await Promise.all([
+  const [{ summary, history, base }, memory, knowledge] = await Promise.all([
     readChatContext(characterId),
     readMemoryTail(characterId),
     readKnowledgeForPrompt(characterId).catch(() => ''),
@@ -723,7 +724,7 @@ async function prepareChatTurn(
   // voiceWindowStart). Slice the raw transcript BEFORE toMessages so role-merge
   // + first-must-be-user still hold.
   const windowed = opts.recentCap
-    ? history.slice(voiceWindowStart(history.length, opts.recentCap, VOICE_WINDOW_STEP))
+    ? history.slice(voiceWindowStart(history, base ?? 0, opts.recentCap, VOICE_WINDOW_STEP))
     : history;
   const messages = toMessages(windowed);
   // Voice calls append this after markLastMessageCached (appendUncachedTail).

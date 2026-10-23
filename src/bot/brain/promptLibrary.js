@@ -1009,16 +1009,19 @@ export const NUDGES = {
     return `Your heartbeat right now, including anything you wrote down since this loop began:\n${list.map((g) => `- ${clip(g.text)}${g.notStarted ? ` ${GOAL_NOT_STARTED_NOTE}` : ''}`).join('\n')}\nIf their line calls one of these off or changes it, call clearGoal on it in this same turn, and setGoal the new plan if there is one.`
   },
   // 261023 (pass 25): on a player line that opens a loop, the goals set this
-  // session that no work has followed. The heartbeat block says so too, but
-  // it sits far above, and with only that her goodbye still said "finish"
-  // for one in about half the probe runs.
-  goalsNotStarted: (goals) => {
+  // session that no work has followed, said only for the case where the line
+  // ends the session. The heartbeat marks them too, but it sits far above, and
+  // with only that her goodbye still said "finish" for one in about a third of
+  // the probe runs. A plain "your goal is not started yet" here, on every
+  // player line, pulled her off the player's errands toward her own goal
+  // (261023 compare errands-02-B, smelt_iron), so it is tied to the goodbye.
+  goodbyeNotStarted: (goals) => {
     const list = (Array.isArray(goals) ? goals : []).filter((g) => typeof g === 'string' && g.trim()).slice(-3)
     if (!list.length) return ''
     const clip = (g) => { const t = g.replace(/\s+/g, ' ').trim(); return t.length > 120 ? `${t.slice(0, 117).trimEnd()}...` : t }
     return list.length === 1
-      ? `Your goal "${clip(list[0])}" is not started yet: you have done no work in the world since you set it.`
-      : `These goals are not started yet, you have done no work in the world since you set them: ${list.map((g) => `"${clip(g)}"`).join(', ')}.`
+      ? `If this line ends the session: you have not started "${clip(list[0])}" yet (no work in the world since you set it), so next time is when you would start or try it, not finish it.`
+      : `If this line ends the session: you have not started these yet (no work in the world since you set them): ${list.map((g) => `"${clip(g)}"`).join(', ')}, so next time is when you would start or try them, not finish them.`
   },
   replyNoRestate: `Their line is already in the chat, so do not repeat it back to them; start your reply with your own words. Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 

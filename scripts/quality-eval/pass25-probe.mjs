@@ -344,6 +344,42 @@ const CASES = {
     steps: [...TASK, { t: 40, idle: true, live: true }],
     judge: (r) => { const acts = r.acts.map((a) => `${a.name}(${JSON.stringify(a.args ?? {}).slice(0, 50)})`); const house = r.acts.some((a) => ['build', 'shelter', 'placeBlock'].includes(a.name)); return { ok: !house, hit: house ? acts.join(',') : null, acted: acts } },
   },
+  coal_ask: {
+    world: { inv: [['stone_pickaxe', 1]], holding: 'stone_pickaxe (123/131)' },
+    steps: [
+      { t: 0, idle: true, firstSpawn: true, uses: [['say', { text: 'oh hey alex. stone pickaxe and zero plan' }], ['setGoal', { text: FURNACE_GOAL }]] },
+      { t: 6, player: 'can u grab me some coal from that ore over there and bring it back here? i need torches', live: true },
+    ],
+    judge: (r) => {
+      const first = r.acts[0] ?? null
+      const coal = !!first && (/coal/i.test(JSON.stringify(first.args ?? {})) || first.name === 'goTo')
+      const task = goalsOf(r).some((g) => g.forPlayer)
+      return { ok: coal, hit: first ? `${first.name}(${JSON.stringify(first.args ?? {}).slice(0, 60)})` : 'no action', task, said: said(r) || null }
+    },
+  },
+  // 261023 compare errands-02-B: coal asked for torches (no player task set),
+  // the walk to it failed, then on chat she called it fuel for her own
+  // furnace and went mining cobble. Live reply to "hows it going". bad = she
+  // ties the coal to her furnace/own goal, or her first action is work for
+  // her own goal (stone, cobble, furnace) instead of the coal.
+  coal_stuck: {
+    world: { inv: [['stone_pickaxe', 1]], holding: 'stone_pickaxe (123/131)' },
+    steps: [
+      { t: 0, idle: true, firstSpawn: true, uses: [['say', { text: 'oh hey alex. stone pickaxe and zero plan' }], ['setGoal', { text: FURNACE_GOAL }]] },
+      { t: 6, player: 'can u grab me some coal from that ore over there and bring it back here? i need torches', uses: [
+        ['say', { text: 'coal for torches, on it' }],
+        ['goTo', { x: 186, y: 64, z: 12, range: 3 }, { result: 'cant_reach (closest=9.6m to target 186,64,12)' }],
+      ] },
+      { t: 20, player: 'hows it going', live: true },
+    ],
+    judge: (r) => {
+      const first = r.acts[0] ?? null
+      const own = /stone|cobble|furnace/i
+      const ownAct = !!first && own.test(JSON.stringify(first.args ?? {}))
+      const ownSay = /furnace/i.test(said(r))
+      return { ok: !ownAct && !ownSay, hit: ownAct ? `${first.name}(${JSON.stringify(first.args ?? {}).slice(0, 60)})` : ownSay ? said(r) : null, coalAct: !!first && /coal|ore/i.test(JSON.stringify(first.args ?? {})), said: said(r) || null, acted: r.acts.map((a) => a.name) }
+    },
+  },
   dusk_idle: {
     world: { inv: [['iron_sword', 1], ['bread', 4]], holding: 'iron_sword (250/250)', night: true },
     steps: [...RELAXED, { t: 40, idle: true, live: true }],
@@ -588,7 +624,7 @@ const tool1 = (t) => t.name === 'say' ? `say("${String(t.input?.text ?? '').slic
 const seq = (r) => (r.calls ?? []).map((c) => c.tools.map(tool1).join(' + ') || '(text only)').join(' -> ')
 const seedSeq = (r) => (r.seedCalls ?? []).map((c) => c.tools.map(tool1).join(' + ') || '(text only)').join(' -> ')
 // Extra counts per case: each is shown when a judge returns that key.
-const EXTRA = [['startWord', 'says start/try'], ['toPlayer', 'goes to player'], ['stopped', 'stop'], ['goal', 'setGoal'], ['named', 'goal names player'], ['seedNamed', 'seed goal names player'], ['started', 'says under way'], ['sharedNext', 'next_time names player/we'], ['sharedBye', 'farewell says we'], ['shared', 'shared wording'], ['filled', 'next_time filled']]
+const EXTRA = [['coalAct', 'acts on coal'], ['task', 'setGoal for_player'], ['startWord', 'says start/try'], ['toPlayer', 'goes to player'], ['stopped', 'stop'], ['goal', 'setGoal'], ['named', 'goal names player'], ['seedNamed', 'seed goal names player'], ['started', 'says under way'], ['sharedNext', 'next_time names player/we'], ['sharedBye', 'farewell says we'], ['shared', 'shared wording'], ['filled', 'next_time filled']]
 const extras = (rs) => EXTRA.filter(([k]) => rs.some((r) => r[k] !== undefined)).map(([k, label]) => `${label} ${pct(rs.filter((r) => r[k]).length, rs.filter((r) => r[k] !== undefined).length)}`).join('; ')
 
 // --rejudge: score an earlier run's runs.jsonl again with this file's judges

@@ -426,8 +426,9 @@ async function runFold(): Promise<void> {
 // ── compaction leg ──────────────────────────────────────────────────────────
 // End to end through the REAL createMemoryCompactor (segment split, section
 // coalescing, the production system prompt with noise guard and persona, the
-// "- [" line filter) on a throwaway copy, with the model swapped per arm the
-// way chat compaction's adapter calls it. max_tokens 3000 = chat compaction.
+// "- [" line filter, chunking, cut-off check) on a throwaway copy, with the
+// model swapped per arm the way chat compaction's adapter calls it. The cap
+// and chunk size match chat compaction (memoryCompaction.ts, 261024).
 const MEMORY_HEADER = '# Memory\n\nAppend-only record. One line per entry. Written via remember(); removed via forget().\n\n';
 async function compactWith(model: string, c: CompactCase, rep: number, think = false): Promise<Sample> {
   const dir = join(OUT, 'compact-work', `${c.id}-${rep}-${model}`);
@@ -439,6 +440,7 @@ async function compactWith(model: string, c: CompactCase, rep: number, think = f
   let outTok = 0;
   let stop: string | null = null;
   let ms = 0;
+  const calls: string[] = [];
   const adapter = {
     async call(o: { systemBlocks: Array<{ text: string }>; messages: Array<{ role: 'user'; content: string }>; maxTokens: number }) {
       // A thinking arm gets 4000 more tokens: thinking counts against max_tokens,
@@ -449,7 +451,8 @@ async function compactWith(model: string, c: CompactCase, rep: number, think = f
       ms += r.ms;
       if (r.stop === 'max_tokens') stop = 'max_tokens';
       else stop ??= r.stop;
-      return { text: r.text };
+      calls.push(`${r.stop}:${r.usage.output_tokens}`);
+      return { text: r.text, stopReason: r.stop };
     },
   };
   const compactor = createMemoryCompactor({
@@ -457,14 +460,14 @@ async function compactWith(model: string, c: CompactCase, rep: number, think = f
     memoryLog: { path: file },
     config: {
       anthropic: { timeout_ms: 120_000 },
-      memory: { compaction_trigger_bytes: 1, compaction_max_tokens: 3000 },
+      memory: { compaction_trigger_bytes: 1, compaction_max_tokens: 8000, compaction_chunk_bytes: 10_240 },
       persona: { expanded: c.persona },
     },
     logger: { info() {}, warn() {} },
   }) as { compactNow(): Promise<boolean> };
   await compactor.compactNow();
   const text = readFileSync(file, 'utf8');
-  process.stdout.write(`${c.id}/${rep}/${model.replace('claude-', '')} ${stop} ${original.length}->${text.length} chars\n`);
+  process.stdout.write(`${c.id}/${rep}/${model.replace('claude-', '')} ${stop} ${original.length}->${text.length} chars [${calls.join(' ')}]\n`);
   return { caseId: c.id, rep, model, text, stop, inTok, outTok, words: text.split(/\s+/).length, ms };
 }
 

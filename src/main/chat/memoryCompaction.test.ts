@@ -109,17 +109,68 @@ describe('maybeCompactChatMemory (260810)', () => {
     expect(call[0].system).toContain('test persona voice');
   });
 
-  it('keeps the original entries when the compaction reply is cut off at max_tokens (261024)', async () => {
+  it('compacts a ~300-entry section in chunks, and a chunk cut off at max_tokens keeps its originals (261024)', async () => {
     const id = 'aaaaaaaa-0000-4000-8000-000000000005';
-    const { file, raw } = await seedBigMemory(id);
+    const memDir = paths.memoryDir(id);
+    await mkdir(memDir, { recursive: true });
+    // About what a mostly-chat user has at the 32 KB trigger: one section,
+    // ~300 entries of ~110 bytes.
+    const entries: string[] = [];
+    for (let i = 0; i < 300; i++) {
+      entries.push(`- [2026-08-${String(1 + (i % 28)).padStart(2, '0')}] chat note ${String(i).padStart(3, '0')} ${'y'.repeat(80)}`);
+    }
+    const raw = HEADER + '## App chats\n' + entries.join('\n') + '\n';
+    expect(Buffer.byteLength(raw, 'utf8')).toBeGreaterThan(CHAT_COMPACTION_TRIGGER_BYTES);
+    const file = path.join(memDir, 'MEMORY.md');
+    await writeFile(file, raw, 'utf8');
+
+    // First chunk's reply is cut off; the rest compact normally.
     createSpy.mockImplementationOnce(async () => ({
-      content: [{ type: 'text', text: '- [2026-08-08] first half of a list that got cut' }],
+      content: [{ type: 'text', text: '- [2026-08-08] the first part of a list that got cut' }],
       stop_reason: 'max_tokens',
     }));
 
-    expect(await maybeCompactChatMemory(id)).toBe(false);
-    expect(createSpy).toHaveBeenCalledTimes(1);
-    expect(await readFile(file, 'utf8')).toBe(raw);
+    expect(await maybeCompactChatMemory(id)).toBe(true);
+    const calls = createSpy.mock.calls as unknown as Array<[{ messages: Array<{ content: string }>; max_tokens: number }]>;
+    expect(calls.length).toBeGreaterThanOrEqual(3);
+    const sent: string[] = [];
+    for (const [req] of calls) {
+      const lines = req.messages[0].content.split('\n').filter((l) => l.startsWith('- ['));
+      // Every call stays well under what the output cap can hold verbatim.
+      expect(Buffer.byteLength(lines.join('\n'), 'utf8')).toBeLessThanOrEqual(10_240);
+      expect(req.max_tokens).toBeGreaterThanOrEqual(4000);
+      sent.push(...lines);
+    }
+    // All entries went out exactly once, in file order.
+    expect(sent).toEqual(entries);
+
+    const after = await readFile(file, 'utf8');
+    const firstChunk = calls[0][0].messages[0].content.split('\n').filter((l) => l.startsWith('- ['));
+    // The cut-off chunk is kept verbatim; its partial reply is not written.
+    for (const l of firstChunk) expect(after).toContain(l);
+    expect(after).not.toContain('a list that got cut');
+    // Later chunks compacted.
+    expect(after).toContain('- [2026-08-08] one merged entry about the player');
+    expect(after).not.toContain(entries[entries.length - 1]);
+    expect(after).toContain('## App chats');
+  });
+
+  it('leaves the file untouched when every compaction reply is cut off (261024)', async () => {
+    const id = 'aaaaaaaa-0000-4000-8000-000000000006';
+    const { file, raw } = await seedBigMemory(id);
+    createSpy.mockImplementation(async () => ({
+      content: [{ type: 'text', text: '- [2026-08-08] first half of a list that got cut' }],
+      stop_reason: 'max_tokens',
+    }));
+    try {
+      expect(await maybeCompactChatMemory(id)).toBe(false);
+      expect(createSpy).toHaveBeenCalled();
+      expect(await readFile(file, 'utf8')).toBe(raw);
+    } finally {
+      createSpy.mockImplementation(async () => ({
+        content: [{ type: 'text', text: '- [2026-08-08] one merged entry about the player' }],
+      }));
+    }
   });
 
   it('single-flights per character: a concurrent trigger is a no-op', async () => {

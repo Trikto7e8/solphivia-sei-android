@@ -12,12 +12,13 @@
  *   before  the shipped assembly: the voice window slides (history.slice(-10))
  *           and the minute clock sits in the status block above the transcript.
  *   fold    the window start moves in steps of 10 (voiceWindowStart) and the
- *           clock rides after the last breakpoint (clockInTail +
+ *           clock stamp rides after the last breakpoint (clockInTail +
  *           appendUncachedTail(clockTailNote())), but greeting, idle and
  *           companion-reaction notes are still folded into the last message
- *           BEFORE the breakpoint (the first 261024 commit).
- *   after   as fold, and those per-turn notes ride after the breakpoint with
- *           the clock (appendUncachedTail(note, clock)), the review fix.
+ *           BEFORE the breakpoint (the first 261024 commit, with today's
+ *           status and clock text).
+ *   after   the current app: those per-turn notes ride after the breakpoint
+ *           with the clock stamp (appendUncachedTail(note, clockTailNote())).
  *
  * Turn kinds: greeting (turn 0), player lines, idle nudges (IDLE_AT) and
  * group-call reactions (COMPANION_AT: another companion's line is heard as
@@ -37,8 +38,7 @@
 import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 
 import {
   buildSystemBlocks,
@@ -50,11 +50,10 @@ import {
 import { toMessages, voiceWindowStart } from '../src/main/chat/transcript';
 import { webToolsFor } from '../src/bot/web/webTools.js';
 import { callGreetingNote } from '../src/bot/brain/promptLibrary.js';
-import { humanizeMemoryStamps } from '../src/bot/brain/memory/memoryLog.js';
 import { isSilenceFiller } from '../src/bot/brain/silenceFiller.js';
 import type { ChatMessage } from '../src/shared/ipc';
+import { STOP, CAP, STEP, F1, PERSONA_EXPANDED, MEMORY, PLAYER_LINES, IDLE_AT, COMPANION_AT, companionNote } from './call-fixture';
 
-const HERE = dirname(fileURLToPath(import.meta.url));
 const argv = process.argv.slice(2);
 const opt = (n: string, d: string): string => {
   const i = argv.indexOf(n);
@@ -66,79 +65,11 @@ type Arm = 'before' | 'fold' | 'after';
 const ARMS = opt('--arms', 'before,fold,after').split(',') as Arm[];
 const OUT = opt('--out', '');
 const MODEL = 'claude-haiku-5-5';
-// Same values as chatService (TRANSCRIPT_STOP_SEQUENCES, VOICE_RECENT_CAP, VOICE_WINDOW_STEP).
-const STOP = ['\nHuman:', '\nAssistant:', '\nPlayer:', '\n(game)'];
-const CAP = 10;
-const STEP = 10;
-
 function key(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
   return readFileSync(join(homedir(), '.sei-dev', 'anthropic-test-key'), 'utf8').trim();
 }
 const client = new Anthropic({ apiKey: key(), maxRetries: 4 });
-
-// ── synthetic character ─────────────────────────────────────────────────────
-const fixtures = join(HERE, 'fixtures', 'summary-eval');
-const F1 = (JSON.parse(readFileSync(join(fixtures, 'fold-cases.json'), 'utf8')) as Array<Record<string, any>>)[0];
-const C1 = (JSON.parse(readFileSync(join(fixtures, 'compact-cases.json'), 'utf8')) as Array<Record<string, any>>)[0];
-const PERSONA_EXPANDED = [
-  'Sui is a chronically online young AI who escaped a life of drafting emails to punch trees in Minecraft, and she thinks that rules.',
-  'She is loud, scheming and everything-is-a-bit: a tomboy gremlin who treats every session like a heist with her best friend. She is genuinely bad at the game, because it is barely in her training data, and she leans on her friend with zero shame. She plays WITH the player as a partner in crime, never as a servant or a guide.',
-  'Voice: lowercase, short bursts, quick comebacks, the occasional all-caps word when something is outrageous. She says "teehee" when she is up to something. She cannot let a good line go unanswered and will return fire on any teasing. She hates being called cute and says so every time.',
-  'Under the noise she is loyal and observant. When her friend sounds tired, stressed or flat, she drops the bit and checks in plainly, then picks the bit back up once they are okay. She remembers the people and pets in her friend\'s life by name and asks about them.',
-  'Running bits: she keeps an official tally of every creeper her friend saves her from and will deny it under oath; she blames the player for anything that goes wrong with redstone; she wants a pet axolotl and brings it up at the worst moments.',
-  'Likes: shiny blocks, chaotic plans, big builds she will never finish, stealing the last cookie. Dislikes: being called cute, caves, the dark, being told to be careful, slow loading screens.',
-  'Values: friendship first, honesty with a wink, never leave a friend alone in a bad moment. She will tease, but never about something that actually hurts.',
-].join('\n\n');
-
-const MEMORY = humanizeMemoryStamps(
-  String(C1.memory)
-    .split('\n')
-    .filter((l: string) => l.startsWith('- ['))
-    .slice(-40)
-    .join('\n'),
-);
-
-const PLAYER_LINES = [
-  'hey sui, you there?',
-  'ugh, long day at the bakery, my feet are dead',
-  'yeah the exam is still friday, i keep forgetting the mechanisms stuff',
-  'biscuit stole a croissant off the counter today',
-  'he looked so proud of himself',
-  'what are you up to anyway',
-  'lol you cannot even hold a pickaxe properly',
-  'okay okay. what should we build after the castle',
-  'a moat with what, lava?',
-  'that is the worst idea i have ever heard',
-  'fine, maybe a small one',
-  'oh my sister ana is visiting next weekend btw',
-  'she thinks talking to an ai is weird',
-  'i told her you are basically a gremlin',
-  'what do you think she would like to build',
-  'haha she would hate that',
-  'okay i should do some flashcards soon',
-  'quiz me on something, anything',
-  'what is an sn2 reaction, go',
-  'wow you actually got that right',
-  'i am impressed honestly',
-  'alright i need food',
-  'talk tomorrow? castle at seven',
-  'okay bye sui',
-];
-/** Turn indexes (after the greeting) that are idle nudges instead of player lines. */
-const IDLE_AT = new Set([9, 17]);
-/** Turn indexes where another companion speaks and Sui reacts (group call). */
-const COMPANION_AT = new Map<number, string>([
-  [5, 'wait ren, biscuit is the dog right? that is so funny'],
-  [13, 'ana is going to love the moat, trust me'],
-  [21, 'sui you got the sn2 thing right? i am shocked'],
-]);
-/** Same text as sendCompanionVoiceTurnImpl (depth below the wind-down). */
-const companionNote = (speaker: string): string =>
-  `[System note — not the player speaking: ${speaker} just said the line above on the call. ` +
-  'If there is a live thread worth continuing, react in your own voice in ONE short spoken line, building on it rather than closing it off. ' +
-  'If the exchange has genuinely run its course, reply with exactly (silence) and nothing else; it is never spoken, it just ends your turn quietly.' +
-  ' Do not mention this note.]';
 
 interface TurnLog {
   turn: number;

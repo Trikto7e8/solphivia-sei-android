@@ -175,10 +175,16 @@ export interface BuildSystemArgs {
    * 261024: voice calls. The status block sits above every message, so its
    * minute clock re-wrote the whole cached transcript on each minute rollover
    * (several times a minute on a call's rapid turns). With this set, the
-   * status block points at a clock note instead, and the caller appends that
-   * note (clockTailNote) after the last cache breakpoint with
-   * appendUncachedTail, where it costs a few plain input tokens per turn.
-   * Ignored for surface 'game'.
+   * status block points at a clock stamp instead, and the caller appends that
+   * stamp (clockTailNote, "[now: Sat 24 Oct 2026, 03:05]") after the last
+   * cache breakpoint with appendUncachedTail, where it costs a few plain input
+   * tokens per turn. The stamp is bare on purpose: the earlier "[System note,
+   * not the player speaking: ...]" wording was answered as text the player
+   * had typed in 10 of 354 sampled replies ("that bracket isn't from Ren, I'm
+   * ignoring it"), the bare stamp in 0 of 354. Dropping the clock and reading
+   * the time off the player line's own stamp also scored 0 misreads but made
+   * player turns go silent more often (19 of 304 vs 1 of 152), see
+   * scripts/call-clock-eval.ts. Ignored for surface 'game'.
    */
   clockInTail?: boolean;
   /**
@@ -437,7 +443,7 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
         // surface's whole cached tool thread on every minute rollover.
         `The current date and time is ${args.pinnedClock ?? formatNow()}.`
       : (args.clockInTail
-          ? 'The current date and time is in the note at the end of the latest message.\n'
+          ? 'The current date and time is the "now" stamp at the end of the latest message.\n'
           : `The current date and time is ${formatNow()}.\n`) +
         `${connLine}\n` +
         (args.openWorldDetected
@@ -502,11 +508,12 @@ export function markLastMessageCached(
 }
 
 /**
- * 261024: the per-turn clock for a voice call, as the note appendUncachedTail
- * adds after the last breakpoint (see BuildSystemArgs.clockInTail).
+ * 261024: the per-turn clock for a voice call, as the stamp appendUncachedTail
+ * adds after the last breakpoint (see BuildSystemArgs.clockInTail). No
+ * "System note" wording: that read as text the player typed.
  */
 export function clockTailNote(): string {
-  return `[System note, not the player speaking: the current date and time is ${formatNow()}.]`;
+  return `[now: ${formatNow()}]`;
 }
 
 /**

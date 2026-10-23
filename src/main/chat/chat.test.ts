@@ -390,13 +390,15 @@ describe('foldUserNote — alternation-safe note fold (three call sites)', () =>
 });
 
 /** The nth fold call's request body, as the summarizer saw it. */
-function foldCall(n: number): { system: string; model: string; prompt: string } {
+function foldCall(n: number): { system: string; model: string; prompt: string; thinking?: unknown; maxTokens?: number } {
   const req = (createSpy.mock.calls as unknown as Array<unknown[]>)[n][0] as {
     system: string;
     model: string;
     messages: Array<{ content: string }>;
+    thinking?: unknown;
+    max_tokens?: number;
   };
-  return { system: req.system, model: req.model, prompt: req.messages[0].content };
+  return { system: req.system, model: req.model, prompt: req.messages[0].content, thinking: req.thinking, maxTokens: req.max_tokens };
 }
 
 describe('continuity watermark (batch cadence, background folds)', () => {
@@ -472,15 +474,22 @@ describe('continuity watermark (batch cadence, background folds)', () => {
     expect(fold2.prompt).not.toContain('msg 100');
   });
 
-  it('folds with the latest Sonnet and carries the persona into the fold prompt', async () => {
+  it('folds with Haiku 5.5 and adaptive thinking and carries the persona into the fold prompt', async () => {
     await seed(100);
     await foldIfDue(CHAR, 'MONOTONE ROBOT PERSONA');
     expect(createSpy).toHaveBeenCalledTimes(1);
     const fold = foldCall(0);
-    expect(fold.model).toBe('claude-sonnet-5');
+    // 261024: off Sonnet 5 (scripts/summary-model-eval.ts). Thinking is what
+    // kept Haiku from asserting traps, so it must survive the Haiku 5 default
+    // (thinking disabled) in anthropicModelDefaults.
+    expect(fold.model).toBe('claude-haiku-5-5');
+    expect(fold.thinking).toEqual({ type: 'adaptive' });
+    expect(fold.maxTokens).toBeGreaterThanOrEqual(4000);
     expect(fold.system).toContain('MONOTONE ROBOT PERSONA');
     // Guard against baking in unverified world state ("we're playing now").
-    expect(fold.system).toContain('never assert current world/game state');
+    expect(fold.system).toContain('never assert current world or game state');
+    // The calendar line rides the user text.
+    expect(fold.prompt).toContain('Calendar for working out dates:');
   });
 
   it('readChatContext returns summary + the unsummarized tail after a fold', async () => {

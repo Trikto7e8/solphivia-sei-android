@@ -23,11 +23,16 @@
  * messages without chat turns) just means the next read ships a bigger
  * verbatim tail until the next chat turn drains it.
  *
- * The fold is written by the LATEST SONNET (not the chat Haiku): it receives
- * the persona so the summary is in the companion's own voice, and it is told
- * to record only what was actually said — an earlier Haiku fold asserted
- * "we're playing now" off a join that never landed, and that false fact was
- * re-injected into every subsequent turn.
+ * The fold is written by Haiku 5.5 with adaptive thinking (261024; it was
+ * Sonnet 5 before). It receives the persona so the summary is in the
+ * companion's own voice, and it is told to record only what was actually
+ * said: an earlier Haiku 4.5 fold asserted "we're playing now" off a join that
+ * never landed, and that false fact was re-injected into every later turn.
+ * The switch was gated on scripts/summary-model-eval.ts (12 synthetic call and
+ * chat batches built around traps, 3 runs each, judged by Opus): with the
+ * 261024 prompt and thinking on, Haiku invented less than Sonnet did on the old
+ * prompt, never asserted a trap, and costs about a twelfth as much per fold.
+ * The fold was the largest Sonnet cost on free voice calls.
  */
 import { readFile, writeFile, mkdir, rm, rename, copyFile } from 'node:fs/promises';
 import path from 'node:path';
@@ -36,11 +41,12 @@ import { paths, getActiveScope } from '../paths';
 import { isAccountTeardownActive } from '../profile/scopeBarrier';
 import { readAll } from './chatStore';
 import { CHAT_MODEL } from './sdk';
+import { COMPANION_MODEL } from '../../shared/llmCatalog';
 // The multi-provider layer (china-compat W1). Anthropic (cloud + BYOK) rides
 // the exact old SDK path inside it; other local providers ignore the SUMMARY
 // model override and fold with their single configured model.
 import { buildLlmProvider } from '../llm';
-import { buildFoldSystem, buildFoldTranscript, extractSummaryTag, formatChatTimestamp } from './foldPrompt';
+import { buildFoldSystem, buildFoldUserText, extractSummaryTag, formatChatTimestamp } from './foldPrompt';
 import { maybeCompactChatMemory } from './memoryCompaction';
 import { resolvePersonaText } from './personaText';
 
@@ -67,23 +73,29 @@ const FOLD_BATCH = 50;
  */
 const MAX_UNSUMMARIZED = 150;
 /**
- * Latest Sonnet family alias for the summary fold (260702) — quality matters
- * more than cost here (it runs at most once per 50 messages and its output is
- * re-read every turn). The interactive chat stays on CHAT_MODEL (Haiku).
+ * The summary fold's model (261024): the companion model, Haiku 5.5, with
+ * adaptive thinking (SUMMARY_EXTRA). Measured on scripts/summary-model-eval.ts
+ * against claude-sonnet-5, which folded before: over 72 runs per arm Haiku
+ * with thinking invented a fact in 20 runs (Sonnet 43), hit no trap (Sonnet
+ * 2), and its worst case was 2 of 3 runs on one batch (Sonnet 3 of 3 on
+ * several). It drops more side details (a pet's quirk, a joke's backstory);
+ * names, dates, plans and requests held. Without thinking Haiku asserted traps
+ * (a wrong birthday, "you promised I could come") and stayed off. Cost per
+ * fold on the eval batches: about $0.0008 against $0.009.
  * Cloud-proxy note: this rides the metered /v1/messages route, so the proxy's
- * PRICING table must know this model id.
+ * PRICING table must know this model id (it does: every chat turn uses it).
  */
-const SUMMARY_MODEL = 'claude-sonnet-5';
+const SUMMARY_MODEL = COMPANION_MODEL;
+/** Haiku 5 defaults thinking off in this app (anthropicModelDefaults.js); the fold asks for it. */
+const SUMMARY_EXTRA = { thinking: { type: 'adaptive' } };
 /**
- * 260810: 400 → 800. Measured on the offline fold eval: claude-sonnet-5 spends
- * ~190-200 OUTPUT tokens on hidden thinking (an implicit `thinking` block rides
- * the response), and those count against max_tokens — at 400 the actual summary
- * text truncated mid-sentence with stop_reason=max_tokens in 2 of 3 samples.
- * The live corpus carries the scar: Sui's bridge.json summary ends mid-sentence
- * ("... back to back —"). 800 leaves ~600 tokens for a 150-word summary.
+ * Thinking tokens count against max_tokens, and a summary cut off by the cap
+ * is discarded (see the max_tokens check in foldIntoSummary). The eval's
+ * largest fold output with thinking was about 1,450 tokens; 4000 leaves room.
+ * (260810: Sonnet's hidden thinking had already pushed this from 400 to 800.)
  */
-const SUMMARY_MAX_TOKENS = 800;
-const SUMMARY_TIMEOUT_MS = 20_000;
+const SUMMARY_MAX_TOKENS = 4000;
+const SUMMARY_TIMEOUT_MS = 30_000;
 
 interface BridgeState {
   summary: string;
@@ -336,32 +348,30 @@ async function foldIntoSummary(
     // offline eval harness runs the byte-identical prompt. The 260810
     // noise-robustness instruction (low-signal batches must not displace
     // durable facts) is part of buildFoldSystem.
-    const transcript = buildFoldTranscript(newMsgs);
     const system = buildFoldSystem(personaExpanded);
-    const userText = `Existing summary:\n${bridge.summary || '(none yet)'}\n\nNew messages:\n${transcript}`;
-    // The fold prefers Sonnet for quality, but the cloud proxy only meters an
-    // allowlist of model ids — a build pointed at a proxy that hasn't listed
-    // SUMMARY_MODEL 400s with `invalid_model`, which would pin the watermark and
-    // silently break compaction forever. Fall back to CHAT_MODEL (Haiku, always
-    // allowlisted since the interactive chat rides it) so folds still drain. One
-    // retry, only for a model-rejection 400 — real errors (timeouts, auth) still
-    // surface to the catch below.
-    const runFold = (model: string) =>
+    const userText = buildFoldUserText(bridge.summary, newMsgs);
+    // A model-rejection 400 must not pin the watermark and silently stop folds
+    // forever (the cloud proxy only meters an allowlist of model ids, and a
+    // BYOK key may refuse a request shape). Retry once with CHAT_MODEL and no
+    // thinking, the exact request a chat turn sends, so folds still drain.
+    // Real errors (timeouts, auth) still surface to the catch below.
+    const runFold = (model: string, extra?: Record<string, unknown>) =>
       llm.call({
         model,
         maxTokens: SUMMARY_MAX_TOKENS,
         system,
         messages: [{ role: 'user', content: userText }],
         timeoutMs: SUMMARY_TIMEOUT_MS,
+        ...(extra ? { anthropicExtra: extra } : {}),
       });
     let res: Awaited<ReturnType<typeof runFold>>;
     try {
-      res = await runFold(SUMMARY_MODEL);
+      res = await runFold(SUMMARY_MODEL, SUMMARY_EXTRA);
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
-      const modelRejected = /invalid_model|model/i.test(msg) && /\b400\b|not_found|invalid/i.test(msg);
+      const modelRejected = /invalid_model|model|thinking/i.test(msg) && /\b400\b|not_found|invalid/i.test(msg);
       if (modelRejected) {
-        console.warn(`[sei] summary model ${SUMMARY_MODEL} rejected (${msg}); folding with ${CHAT_MODEL}`);
+        console.warn(`[sei] summary fold request rejected (${msg}); folding with ${CHAT_MODEL} without thinking`);
         res = await runFold(CHAT_MODEL);
       } else {
         throw err;

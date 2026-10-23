@@ -73,6 +73,8 @@ import { useLangStore } from '../../lib/i18n';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
 import { VoiceCallScreen } from '../../screens/VoiceCallScreen';
 import { SettingsScreen } from '../../screens/SettingsScreen';
+import { AuthChoiceScreen } from '../../screens/AuthChoiceScreen';
+import { SignInModal } from '../SignInModal';
 import { CreditsScreen } from '../../screens/CreditsScreen';
 import { CharactersScreen } from '../../screens/CharactersScreen';
 import { IconRail } from '../IconRail';
@@ -278,6 +280,10 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   // ?dashshot=onboard (261012): the first-run scene, for the intro's stage
   // gates (watchdog, skip, reduced motion). onComplete goes nowhere.
   if (which === 'onboard') return <OnboardApp onComplete={() => undefined} />;
+  // ?dashshot=authchoice|signinmodal (261023): the sign-in surfaces with
+  // "Continue with ChatGPT" (stubs in devHarnessStubs.ts).
+  if (which === 'authchoice') return <AuthChoiceScreen onChooseLocal={() => undefined} />;
+  if (which === 'signinmodal') return <SignInModal framingLabel={null} onClose={() => undefined} />;
   // ?dashshot=chat (Stardew) | chatdst: the dashboard hosted inside the real
   // ChatScreen (260917), for the game/chat split, the drag handle and the
   // composer. The fixture summon is online, so the dashboard slot opens.

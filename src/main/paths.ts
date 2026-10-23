@@ -138,6 +138,12 @@ export const paths = {
   // DEVICE-GLOBAL: the SIWC docs define it per HOST (the machine the app runs
   // on), stable across sign-ins and accounts. Opaque, not a credential.
   chatgptHostIdPath: () => path.join(userDataRoot(), 'chatgpt-host-id.json'),
+  // 261023: "Continue with ChatGPT" Sei-login registration (issued client id,
+  // subject, email, last ID token as the reauth hint), so the next login on
+  // this machine reuses the client the proxy already trusts (one step, no
+  // email code). DEVICE-GLOBAL because it is read while signed out.
+  // safeStorage-encrypted; holds no access or refresh token.
+  chatgptLoginRegistrationPath: () => path.join(userDataRoot(), 'chatgpt-login-registration.bin'),
 
   // ── Profile-scoped (one per account; re-points on account switch) ─────────
   /** Active profile's data root. */

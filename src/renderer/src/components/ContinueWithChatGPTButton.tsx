@@ -21,13 +21,15 @@ interface Props {
   format?: 'black' | 'white';
   /** Accessible busy state while the browser sign-in is open. */
   busy?: boolean;
+  /** Stretch to the container, matching a full-width Google button beside it. */
+  fullWidth?: boolean;
 }
 
-export function ContinueWithChatGPTButton({ onClick, disabled, format, busy }: Props): React.ReactElement {
+export function ContinueWithChatGPTButton({ onClick, disabled, format, busy, fullWidth }: Props): React.ReactElement {
   return (
     <button
       type="button"
-      className={styles.button}
+      className={fullWidth ? `${styles.button} ${styles.fullWidth}` : styles.button}
       data-format={format}
       onClick={onClick}
       disabled={disabled}

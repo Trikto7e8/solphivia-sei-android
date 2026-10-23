@@ -156,11 +156,15 @@ export function buildAuthorizeUrl(p: AuthorizeParams): string {
   return u.toString();
 }
 
-/** For logs: the authorize URL with every hint and one-time value masked. */
+/**
+ * For logs: the authorize URL with every hint, one-time value and install
+ * identifier masked. client_id is the per-install issued client and
+ * ext_agent_host_id a stable host id; both tie a log to one install.
+ */
 export function redactAuthorizeUrl(url: string): string {
   try {
     const u = new URL(url);
-    for (const k of ['id_token_hint', 'login_hint', 'state', 'nonce', 'code_challenge']) {
+    for (const k of ['id_token_hint', 'login_hint', 'state', 'nonce', 'code_challenge', 'client_id', 'ext_agent_host_id']) {
       if (u.searchParams.has(k)) u.searchParams.set(k, '[redacted]');
     }
     return u.toString();

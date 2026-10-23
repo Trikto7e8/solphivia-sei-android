@@ -37,6 +37,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sei } from '../lib/ipcClient';
 import { t, useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
+import { useChatgptLogin, chatgptCodeReasonCopy } from '../lib/useChatgptLogin';
 import { CodeInput } from '../components/CodeInput';
 import { OnboardScene, type SceneInstant, type SuiPose } from './OnboardScene';
 import {
@@ -1505,6 +1506,10 @@ function AuthPanel(props: {
   const [codeSentTo, setCodeSentTo] = useState<string | null>(null);
   const codeState = useEmailCode(codeSentTo);
   const [oauth, setOauth] = useState(false);
+  // 261023: "Continue with ChatGPT" account sign-in. The session lands via the
+  // auth push and OnboardApp proceeds from there, exactly as after Google.
+  const gpt = useChatgptLogin();
+  const gptCode = gpt.phase === 'code' || gpt.phase === 'verifying';
   /**
    * W7 region gate (260816). Pre-checked on mount over region:status so the
    * blocking panel appears before a failed submit; the submit paths below
@@ -1515,9 +1520,18 @@ function AuthPanel(props: {
   const { onSubStep } = props;
   useEffect(() => {
     onSubStep?.(
-      regionBlocked ? 'region_blocked' : codeSentTo !== null ? 'code' : oauth ? 'oauth_wait' : 'form',
+      regionBlocked
+        ? 'region_blocked'
+        : codeSentTo !== null || gptCode
+          ? 'code'
+          : oauth || gpt.phase === 'browser'
+            ? 'oauth_wait'
+            : 'form',
     );
-  }, [onSubStep, regionBlocked, codeSentTo, oauth]);
+  }, [onSubStep, regionBlocked, codeSentTo, oauth, gptCode, gpt.phase]);
+  useEffect(() => {
+    if (gpt.failure === 'region_blocked') setRegionBlocked(true);
+  }, [gpt.failure]);
   useEffect(() => {
     let cancelled = false;
     sei.regionStatus().then(
@@ -1708,6 +1722,62 @@ function AuthPanel(props: {
 
   if (oauth) return <GoogleWaitPanel onDone={() => setOauth(false)} onLocal={props.onLocal} />;
 
+  if (gptCode) {
+    return (
+      <div className={styles.panel}>
+        <p className={styles.panelText}>{chatgptCodeReasonCopy(gpt.reason, tt)}</p>
+        <p className={styles.panelText}>
+          {tt('We sent a 6-digit code to {email}. Check spam if it is not there.', { email: gpt.emailHint })}
+        </p>
+        <CodeInput
+          value={gpt.code}
+          onChange={gpt.setCode}
+          onComplete={(v) => void gpt.submit(v)}
+          disabled={gpt.phase === 'verifying'}
+          invalid={!!gpt.error}
+          autoFocus
+          rowClassName={styles.codeRow}
+          cellClassName={styles.codeCell}
+          aria-label={tt('Verification code')}
+        />
+        {gpt.error ? (
+          <p className={styles.panelError} role="alert">
+            {gpt.error}
+          </p>
+        ) : null}
+        <button
+          className={`${styles.pill} ${styles.pillWide}`}
+          disabled={gpt.phase === 'verifying' || gpt.code.length === 0}
+          onClick={() => void gpt.submit()}
+        >
+          {gpt.phase === 'verifying' ? tt('Checking...') : tt('Verify')}
+        </button>
+        <button className={styles.quietLink} disabled={gpt.resending} onClick={() => void gpt.resend()}>
+          {gpt.resending ? tt('Sending...') : tt('Send a new code')}
+        </button>
+        {gpt.note ? <p className={styles.panelNote}>{gpt.note}</p> : null}
+        <button className={styles.quietLink} onClick={gpt.cancel}>
+          {tt('Back')}
+        </button>
+      </div>
+    );
+  }
+
+  if (gpt.phase === 'browser') {
+    return (
+      <div className={styles.panel}>
+        <p className={styles.panelText}>
+          {tt(
+            "We opened a browser tab to finish signing in with ChatGPT. Come back when you're done; this picks up on its own.",
+          )}
+        </p>
+        <button className={styles.quietLink} onClick={gpt.cancel}>
+          {tt('Cancel sign-in')}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.panel}>
       <img className={styles.panelLogo} src="./img/sei-text.png" alt="Sei" draggable={false} />
@@ -1846,6 +1916,21 @@ function AuthPanel(props: {
         <GoogleG />
         {tt('Continue with Google')}
       </button>
+      <ContinueWithChatGPTButton
+        format="black"
+        fullWidth
+        disabled={submitting}
+        onClick={() => {
+          setError(null);
+          props.onIntent('oauth');
+          void gpt.start();
+        }}
+      />
+      {gpt.error && gpt.failure !== 'region_blocked' ? (
+        <p className={styles.panelError} role="alert">
+          {gpt.error}
+        </p>
+      ) : null}
       {mode === 'new' ? (
         <button className={styles.quietLink} onClick={() => setSignup((s) => !s)}>
           {signup ? tt('I already have an account') : tt('New here? Create an account')}

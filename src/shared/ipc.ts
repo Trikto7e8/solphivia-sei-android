@@ -1374,6 +1374,57 @@ export type OAuthResult =
   // opens when the detected IP region is unsupported (fail open on unknown).
   | { ok: false; reason: 'user_cancelled' | 'timeout' | 'browser_closed' | 'google_rejected' | 'exchange_failed' | 'port_collision' | 'network' | 'region_blocked'; message: string };
 
+/**
+ * 261023 "Continue with ChatGPT" as a Sei account login
+ * (src/main/auth/chatgptAccountLogin.ts). Only these shapes cross IPC: no
+ * tokens, no ticket, no code.
+ */
+export type ChatgptLoginCodeReason = 'existing_account' | 'new_device' | 'unverified_email';
+
+export type ChatgptLoginFailure =
+  | 'region_blocked'
+  | 'cancelled'
+  | 'denied'
+  | 'timeout'
+  | 'browser_failed'
+  | 'network'
+  | 'unavailable'
+  | 'no_email'
+  | 'account_conflict'
+  | 'linked_elsewhere'
+  | 'rate_limited'
+  | 'token_rejected'
+  | 'sign_in_failed'
+  | 'invalid_code'
+  | 'code_expired'
+  | 'not_signed_in';
+
+export type ChatgptLoginResult =
+  | { ok: true; kind: 'signed_in'; created: boolean; planEnabled: boolean }
+  /** A one-time code went to the account email; redeem it with chatgptLoginVerifyCode. */
+  | { ok: true; kind: 'email_code'; emailHint: string; reason: ChatgptLoginCodeReason }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+export type ChatgptLinkResult =
+  | { ok: true; planEnabled: boolean; email: string | null }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+/**
+ * Settings "Unlink" (261023). `removed` is false when the server had no link
+ * (still a success). An older proxy without the route reports 'unavailable'.
+ */
+export type ChatgptUnlinkResult =
+  | { ok: true; removed: boolean }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+export interface ChatgptLoginStatus {
+  /** This device knows the signed-in account is linked to a ChatGPT identity. */
+  linked: boolean;
+  email: string | null;
+  /** A login is waiting on its email code. */
+  awaitingCode: boolean;
+}
+
 export type DeleteAccountResult =
   | { ok: true }
   | { ok: false; code: 'network' | 'edge_function_error'; message: string };
@@ -2619,6 +2670,22 @@ export interface RendererApi {
   signInGoogle(): Promise<OAuthResult>;
   cancelGoogle(): Promise<void>;
   /**
+   * 261023 "Continue with ChatGPT": sign in (or sign up) to Sei with a
+   * ChatGPT account. Opens the browser; may answer `email_code`, in which
+   * case the code from the account email goes to chatgptLoginVerifyCode.
+   */
+  signInChatgpt(): Promise<ChatgptLoginResult>;
+  chatgptLoginVerifyCode(code: string): Promise<ChatgptLoginResult>;
+  chatgptLoginResendCode(): Promise<{ ok: true } | { ok: false; reason: ChatgptLoginFailure; message: string }>;
+  cancelChatgptLogin(): Promise<void>;
+  /** Settings: link a ChatGPT account to the signed-in Sei account. */
+  linkChatgptAccount(): Promise<ChatgptLinkResult>;
+  /** Settings: unlink the signed-in Sei account's ChatGPT identity (and forget this device's registration). */
+  unlinkChatgptAccount(): Promise<ChatgptUnlinkResult>;
+  chatgptLoginStatus(): Promise<ChatgptLoginStatus>;
+  /** True once after a ChatGPT login/link that enabled plan usage. */
+  takeChatgptPlanOffer(): Promise<boolean>;
+  /**
    * 260816 W7 region gate — cached region verdict for the renderer's
    * pre-check, so the AuthPanel / SignInModal blocking popup can appear
    * immediately instead of after a failed submit. Purely advisory: the
@@ -3775,6 +3842,15 @@ export const IpcChannel = {
     signupPassword: 'auth:signup-password',
     signinGoogle: 'auth:signin-google',
     cancelGoogle: 'auth:cancel-google',
+    // 261023 "Continue with ChatGPT" account login.
+    signinChatgpt: 'auth:signin-chatgpt',
+    chatgptVerifyCode: 'auth:chatgpt-verify-code',
+    chatgptResendCode: 'auth:chatgpt-resend-code',
+    cancelChatgpt: 'auth:cancel-chatgpt',
+    linkChatgpt: 'auth:link-chatgpt',
+    unlinkChatgpt: 'auth:unlink-chatgpt',
+    chatgptLoginStatus: 'auth:chatgpt-login-status',
+    chatgptTakePlanOffer: 'auth:chatgpt-take-plan-offer',
     signout: 'auth:signout',
     deleteAccount: 'auth:delete-account',
     exportData: 'auth:export-data',

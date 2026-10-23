@@ -569,6 +569,8 @@ export const ZH_MODALS: Record<string, string> = {
   'Terms of Service': '服务条款',
   'Privacy Policy': '隐私政策',
   'Forgot your password?': '忘记密码？',
+  'Signed up with Google or ChatGPT? Use that button, or reset your password.':
+    '用 Google 或 ChatGPT 注册的？请用对应的按钮登录，或重置密码。',
   'or': '或',
   'Sign up with Google': '使用 Google 注册',
   'Sign in with Google': '使用 Google 登录',

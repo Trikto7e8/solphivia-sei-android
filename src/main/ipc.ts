@@ -3131,8 +3131,11 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   });
   ipcMain.handle(IpcChannel.chatgpt.signIn, async (_event, raw: unknown) => {
     const args = ChatgptSignInArgs.parse(raw ?? {});
-    const { chatgptSession } = await import('./chatgptPlan');
-    const r = await chatgptSession().signIn(args);
+    // 261023: with a live Sei session the plan sign-in also links the
+    // ChatGPT identity to the account (no code on the next ChatGPT login);
+    // without one, or when the link cannot run, it is the plain sign-in.
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    const r = await chatgptAccountLogin().connectPlan(args);
     // A new account brings a new model catalog (default model + vision).
     if (r.ok) void import('./llm/capability').then((m) => m.pushLlmCapability());
     return r;
@@ -3387,6 +3390,41 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   ipcMain.handle(IpcChannel.auth.cancelGoogle, async () => {
     const { cancelGoogle } = await import('./auth/authHandlers');
     return await cancelGoogle();
+  });
+  // 261023 "Continue with ChatGPT" account login. Tokens, the ticket and the
+  // code never come back over IPC; see shared/ipc.ts ChatgptLoginResult.
+  ipcMain.handle(IpcChannel.auth.signinChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().login();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptVerifyCode, async (_e, codeRaw: unknown) => {
+    const code = z.string().trim().min(4).max(16).regex(/^[0-9\s]+$/).parse(codeRaw);
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().verifyCode(code);
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptResendCode, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().resendCode();
+  });
+  ipcMain.handle(IpcChannel.auth.cancelChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    chatgptAccountLogin().cancel();
+  });
+  ipcMain.handle(IpcChannel.auth.linkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().link();
+  });
+  ipcMain.handle(IpcChannel.auth.unlinkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().unlink();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptLoginStatus, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().status();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptTakePlanOffer, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return chatgptAccountLogin().takePlanOffer();
   });
   ipcMain.handle(IpcChannel.auth.signout, async () => {
     const { signOut } = await import('./auth/authHandlers');

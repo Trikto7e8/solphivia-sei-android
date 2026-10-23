@@ -425,4 +425,37 @@ export const ZH_MISC: Record<string, string> = {
   'Sei voice': 'Sei 声音',
   'Voice for others: {name}': '其他人听到的声音：{name}',
   'Voice for others: a Sei voice': '其他人听到的声音：一个 Sei 声音',
+
+  // ── 261023: Continue with ChatGPT as a Sei account sign-in ────────────
+  'ChatGPT did not confirm this email, so Sei checks it once.': 'ChatGPT 没有确认这个邮箱，所以 Sei 需要验证一次。',
+  'ChatGPT sign-in': 'ChatGPT 登录',
+  'ChatGPT sign-in hit a snag. Try again.': 'ChatGPT 登录出了点问题，请重试。',
+  'ChatGPT sign-in is having trouble right now. Try again in a moment.': 'ChatGPT 登录暂时有问题，请稍后再试。',
+  "ChatGPT sign-in isn't available in your region.": '你所在的地区无法使用 ChatGPT 登录。',
+  'ChatGPT sign-in was declined. Try again, or use another way to sign in.': 'ChatGPT 登录被拒绝。请重试，或换一种方式登录。',
+  "Couldn't reach Sei. Check your internet and try again.": '无法连接到 Sei。请检查网络后重试。',
+  'Finish in your browser': '请在浏览器中完成',
+  'Finish signing in to ChatGPT in the browser tab that opened.': '请在打开的浏览器标签页中完成 ChatGPT 登录。',
+  'First time on this computer. Enter the code to confirm it is you.': '这是你第一次在这台电脑上登录。请输入验证码确认是你本人。',
+  'Link ChatGPT': '关联 ChatGPT',
+  'Linked': '已关联',
+  'Unlink': '取消关联',
+  "Couldn't unlink right now. Try again later.": '暂时无法取消关联，请稍后再试。',
+  "Sei couldn't confirm your ChatGPT sign-in. Try again.": 'Sei 无法确认你的 ChatGPT 登录，请重试。',
+  "Sei couldn't open your browser. Try again.": 'Sei 无法打开你的浏览器，请重试。',
+  'Sign in to Sei first.': '请先登录 Sei。',
+  'That Sei account is already linked to a different ChatGPT account. Sign in with your email or Google instead.':
+    '这个 Sei 账户已经关联了另一个 ChatGPT 账户。请改用邮箱或 Google 登录。',
+  'That code expired or had too many tries. Start again.': '验证码已过期或尝试次数过多，请重新开始。',
+  "That code isn't right. Check it and try again.": '验证码不正确，请检查后重试。',
+  'The ChatGPT sign-in took too long. Try again.': 'ChatGPT 登录用时过长，请重试。',
+  'This ChatGPT account is already linked to a different Sei account.': '这个 ChatGPT 账户已经关联了另一个 Sei 账户。',
+  'This email already has a Sei account. Enter the code to sign in to it with ChatGPT.':
+    '这个邮箱已经有 Sei 账户。输入验证码，即可用 ChatGPT 登录该账户。',
+  'Too many tries. Wait a bit, or continue with Google.': '尝试次数过多，请稍等一会儿，或使用 Google 继续。',
+  'Too many tries. Wait a bit and try again.': '尝试次数过多，请稍等一会儿再试。',
+  "We opened a browser tab to finish signing in with ChatGPT. Come back when you're done; this picks up on its own.":
+    '我们打开了一个浏览器标签页来完成 ChatGPT 登录。完成后回到这里，会自动继续。',
+  "Your ChatGPT account didn't share an email address, so Sei can't make an account from it.":
+    '你的 ChatGPT 账户没有提供邮箱地址，所以 Sei 无法用它创建账户。',
 };

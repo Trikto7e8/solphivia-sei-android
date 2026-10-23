@@ -12,7 +12,8 @@
  *   3. Embedded email + password form
  *   4. Accent "Sign In" button (full width)
  *   5. "or" divider
- *   6. Official "Sign in with Google" button (full width)
+ *   6. Official "Sign in with Google" button (full width), then
+ *      "Continue with ChatGPT" (261023, full width, own code sub-state)
  *   7. Toggle link "New here? Create an account" / "Already have an account? Sign in"
  *   8. DOB triple + ToS checkbox (signup mode only — mirrors SignInModal)
  *   9. "Continue locally →" text link at the very bottom (calls onChooseLocal)
@@ -31,10 +32,12 @@ import React, { useEffect, useState } from 'react';
 import { sei } from '../lib/ipcClient';
 import { useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
+import { useChatgptLogin, chatgptCodeReasonCopy } from '../lib/useChatgptLogin';
 import { SeiPixelMark } from '../components/SeiPixelMark';
 import { Button } from '../components/Button';
 import { CodeInput } from '../components/CodeInput';
 import { GoogleSignInButton } from '../components/GoogleSignInButton';
+import { ContinueWithChatGPTButton } from '../components/ContinueWithChatGPTButton';
 import { TextField } from '../components/TextField';
 import { OAuthInterstitialModal } from '../components/OAuthInterstitialModal';
 import styles from './AuthChoiceScreen.module.css';
@@ -68,6 +71,14 @@ export function AuthChoiceScreen({
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
+  /**
+   * 261023 — the failed-password message that earns the "Signed up with Google
+   * or ChatGPT?" hint. Keyed to the message so the hint goes away with it.
+   * Shown for every invalid_credentials answer, which Supabase gives for a
+   * wrong password and for an unknown address alike, so it reveals nothing
+   * about whether the account exists.
+   */
+  const [hintFor, setHintFor] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   /**
    * 260804 — ONE code panel for every path that emails something: a signup
@@ -91,18 +102,22 @@ export function AuthChoiceScreen({
   // subscriber on the session the redemption lands, so there is nothing to do
   // on success here.
   const codeState = useEmailCode(codeSentTo);
+  // 261023: "Continue with ChatGPT" as an account sign-in. Success routes
+  // through the same auth-state subscriber as Google.
+  const gpt = useChatgptLogin();
+  const gptCodeStep = gpt.phase === 'code' || gpt.phase === 'verifying';
 
   useEffect(() => {
     // ESC routes to local mode (when not mid-submit). The screen is the
     // first interactive surface, so ESC = back-out = continue locally.
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !submitting && codeSentTo === null) {
+      if (e.key === 'Escape' && !submitting && codeSentTo === null && gpt.phase === 'idle') {
         onChooseLocal();
       }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onChooseLocal, submitting, codeSentTo]);
+  }, [onChooseLocal, submitting, codeSentTo, gpt.phase]);
 
   const onSubmit = async (e: React.FormEvent): Promise<void> => {
     e.preventDefault();
@@ -127,6 +142,7 @@ export function AuthChoiceScreen({
           if (res.needsVerification) setCodeSentTo(email);
         } else {
           setError(res.message);
+          setHintFor(res.code === 'invalid_credentials' ? res.message : null);
         }
       } else {
         const res = await sei.signUpPassword({
@@ -152,7 +168,7 @@ export function AuthChoiceScreen({
   };
 
   const onGoogleClick = (): void => {
-    if (submitting) return;
+    if (submitting || gpt.phase !== 'idle') return;
     setError(null);
     setOauthInFlight(true);
   };
@@ -192,6 +208,58 @@ export function AuthChoiceScreen({
       : t('Create Account');
   const toggleLabel =
     mode === 'signin' ? t('New here? Create an account') : t('Already have an account? Sign in');
+
+  // 261023 ChatGPT code sub-state: the proxy asked for a one-time email code
+  // (existing Sei account with this email, a new computer, or an email ChatGPT
+  // did not vouch for). Same layout as the code panel below.
+  if (gptCodeStep) {
+    return (
+      <div className={styles.shell}>
+        <div className={styles.brandRow}>
+          <SeiPixelMark height={44} />
+        </div>
+        <div className={styles.formPanel}>
+          <h1 className={styles.title}>{t('Enter your code')}</h1>
+          <p className={styles.bodyText}>{chatgptCodeReasonCopy(gpt.reason, t)}</p>
+          <p className={styles.bodyText}>
+            {t('We sent a 6-digit code to {email}. Check spam if it is not there.', {
+              email: gpt.emailHint,
+            })}
+          </p>
+          <CodeInput
+            value={gpt.code}
+            onChange={gpt.setCode}
+            onComplete={(v) => void gpt.submit(v)}
+            disabled={gpt.phase === 'verifying'}
+            invalid={!!gpt.error}
+            autoFocus
+            aria-label={t('Verification code')}
+          />
+          {gpt.error ? (
+            <p className={styles.errorText} role="alert">
+              {gpt.error}
+            </p>
+          ) : null}
+          {gpt.note ? <p className={styles.bodyText}>{gpt.note}</p> : null}
+          <Button
+            kind="accent"
+            size="md"
+            fullWidth
+            disabled={gpt.phase === 'verifying' || gpt.code.length === 0}
+            onClick={() => void gpt.submit()}
+          >
+            {gpt.phase === 'verifying' ? t('Checking…') : t('Verify')}
+          </Button>
+          <Button kind="quiet" size="md" disabled={gpt.resending} onClick={() => void gpt.resend()}>
+            {gpt.resending ? t('Sending…') : t('Send a new code')}
+          </Button>
+          <Button kind="quiet" size="md" onClick={gpt.cancel}>
+            {t('Back')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // 260804 code sub-state. Copy is deliberately account-existence-neutral and
   // identical for signup, unconfirmed sign-in and password reset.
@@ -387,6 +455,11 @@ export function AuthChoiceScreen({
           ) : null}
 
           {error ? <p className={styles.errorText} role="alert">{error}</p> : null}
+          {error && mode === 'signin' && error === hintFor ? (
+            <p className={styles.hintText}>
+              {t('Signed up with Google or ChatGPT? Use that button, or reset your password.')}
+            </p>
+          ) : null}
 
           <Button
             kind="accent"
@@ -422,10 +495,28 @@ export function AuthChoiceScreen({
 
         <GoogleSignInButton
           onClick={onGoogleClick}
-          disabled={submitting}
+          disabled={submitting || gpt.phase !== 'idle'}
           fullWidth
           label={mode === 'signup' ? t('Sign up with Google') : t('Sign in with Google')}
         />
+
+        <ContinueWithChatGPTButton
+          onClick={() => void gpt.start()}
+          disabled={submitting || gpt.phase !== 'idle'}
+          busy={gpt.phase === 'browser'}
+          fullWidth
+        />
+        {gpt.phase === 'browser' ? (
+          <p className={styles.bodyText}>
+            {t('Finish signing in to ChatGPT in the browser tab that opened.')}{' '}
+            <button type="button" className={styles.toggleLink} onClick={gpt.cancel}>
+              {t('Cancel')}
+            </button>
+          </p>
+        ) : null}
+        {gpt.phase === 'idle' && gpt.error ? (
+          <p className={styles.errorText} role="alert">{gpt.error}</p>
+        ) : null}
 
         <div className={styles.toggleRow}>
           <button

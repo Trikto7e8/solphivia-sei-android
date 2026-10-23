@@ -15,6 +15,14 @@
  * every turn: "Sign in to ChatGPT again" (a 401 even after a fresh token)
  * and "ChatGPT rejected the request" (a 400 on Sei's request format).
  *
+ * 261023: after "Continue with ChatGPT" as an ACCOUNT sign-in (or Settings'
+ * Link ChatGPT) granted plan usage, main holds a one-shot plan offer. The host
+ * takes it on a calm screen (Home or Settings, no tour running) and routes to
+ * Settings with view.useChatgptPlan, which runs the existing switch path: the
+ * cloud -> local confirm when Sei credits are in use (the user can say no),
+ * or just the provider pick on the local backend. Nothing switches silently
+ * away from Sei credits.
+ *
  * The welcome waits until ChatGPT is the backend actually in use (the main
  * push behind useUiStore.llmProvider), so it never claims "You're using your
  * ChatGPT plan" while the cloud plan is still selected or the switch failed.
@@ -25,6 +33,8 @@ import { useT } from '../lib/i18n';
 import { sei } from '../lib/ipcClient';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { useUiStore } from '../lib/stores/useUiStore';
+import { useAuthStore } from '../lib/stores/useAuthStore';
+import { useTutorialStore } from '../lib/stores/useTutorialStore';
 import { Button } from './Button';
 import { ChatgptLogo } from './ChatgptLogo';
 import { ContinueWithChatGPTButton } from './ContinueWithChatGPTButton';
@@ -42,6 +52,10 @@ export function ChatgptPlanHost(): React.ReactElement | null {
   const closeBlockDialog = useChatgptStore((s) => s.closeBlockDialog);
   const signIn = useChatgptStore((s) => s.signIn);
   const llmProvider = useUiStore((s) => s.llmProvider);
+  const viewKind = useUiStore((s) => s.view.kind);
+  const signedIn = useAuthStore((s) => s.state.kind === 'signed_in');
+  const tourActive = useTutorialStore((s) => s.active);
+  const ready = chatgptReady(status);
 
   useEffect(() => {
     const store = useChatgptStore.getState();
@@ -49,6 +63,22 @@ export function ChatgptPlanHost(): React.ReactElement | null {
     void store.load();
     return off;
   }, []);
+
+  // Plan offer after a ChatGPT account sign-in (see header).
+  useEffect(() => {
+    if (!signedIn || !ready || tourActive) return;
+    if (viewKind !== 'home' && viewKind !== 'settings') return;
+    // No cleanup-cancel: the offer is one-shot in main, so a re-run of this
+    // effect while the answer is in flight must not drop it.
+    void sei
+      .takeChatgptPlanOffer()
+      .then((offer) => {
+        if (!offer) return;
+        if (useUiStore.getState().llmProvider === 'chatgpt') return;
+        useUiStore.getState().navigate({ kind: 'settings', useChatgptPlan: true });
+      })
+      .catch(() => undefined);
+  }, [signedIn, ready, tourActive, viewKind, status?.activeId]);
 
   if (limitDialog && status?.usageLimited) {
     return (

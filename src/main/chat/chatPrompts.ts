@@ -172,6 +172,16 @@ export interface BuildSystemArgs {
    */
   pinnedClock?: string;
   /**
+   * 261024: voice calls. The status block sits above every message, so its
+   * minute clock re-wrote the whole cached transcript on each minute rollover
+   * (several times a minute on a call's rapid turns). With this set, the
+   * status block points at a clock note instead, and the caller appends that
+   * note (clockTailNote) after the last cache breakpoint with
+   * appendUncachedTail, where it costs a few plain input tokens per turn.
+   * Ignored for surface 'game'.
+   */
+  clockInTail?: boolean;
+  /**
    * 261008: the chat surface offers CHAT_REMEMBER_TOOL, so the status block
    * ends with CHAT_MEMORY_CHECK. Set by chatService only: backseat,
    * chess and Draw! offer the plain REMEMBER_TOOL under their own contracts.
@@ -426,7 +436,9 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
         // session when the caller provides it — a live clock here re-bills the
         // surface's whole cached tool thread on every minute rollover.
         `The current date and time is ${args.pinnedClock ?? formatNow()}.`
-      : `The current date and time is ${formatNow()}.\n` +
+      : (args.clockInTail
+          ? 'The current date and time is in the note at the end of the latest message.\n'
+          : `The current date and time is ${formatNow()}.\n`) +
         `${connLine}\n` +
         (args.openWorldDetected
           ? 'World status: an open Minecraft world is detected, so you could join if asked. ' +
@@ -457,9 +469,10 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
   //     churn re-bills only the memory/summary tail.
   //   • the last STABLE block (memory/summary when present) — unchanged during
   //     a session unless the companion remembers or the summary folds;
-  //   • the status block — its only volatile part is the minute-granular clock,
-  //     so within a minute (i.e. across the rapid turns of a live call) the WHOLE
-  //     system prompt is a cache hit; a minute rollover misses only this tail.
+  //   • the status block — its only volatile part is the minute-granular clock.
+  //     A rollover changes it, and everything cached after it (the transcript)
+  //     is re-written, so voice calls move the clock below the transcript
+  //     (clockInTail, 261024) and their status block stays stable.
   // markLastMessageCached() adds the fourth breakpoint (the transcript) per
   // turn — exactly Anthropic's 4-breakpoint budget (3 when persona IS the
   // stable block, i.e. no memory or summary yet). All four are spoken for, so
@@ -486,6 +499,45 @@ export function markLastMessageCached(
   messages: Array<{ role: 'user' | 'assistant'; content: unknown }>,
 ): void {
   markMessageCached(messages, messages.length - 1);
+}
+
+/**
+ * 261024: the per-turn clock for a voice call, as the note appendUncachedTail
+ * adds after the last breakpoint (see BuildSystemArgs.clockInTail).
+ */
+export function clockTailNote(): string {
+  return `[System note, not the player speaking: the current date and time is ${formatNow()}.]`;
+}
+
+/**
+ * 261024: add per-turn text AFTER the last cache breakpoint. Call it after
+ * markLastMessageCached: the note becomes a second, unmarked text block of the
+ * last user message, so the cached prefix ends right before it and the next
+ * turn (which rebuilds that message without the note) still reads the cache.
+ * When the last message is not a user turn, the note becomes its own user
+ * message. A blank note is a no-op. Per-turn system notes (a greeting, idle or
+ * group-call reaction note) go here too, never before the breakpoint: folded
+ * into the last message they made the cached prefix end on text that no later
+ * turn sends, so its cache write was never read back.
+ */
+export function appendUncachedTail(
+  messages: Array<{ role: 'user' | 'assistant'; content: unknown }>,
+  ...notes: string[]
+): void {
+  // 261024: several per-turn notes (a turn's own system note, then the clock)
+  // ride as one block, in order; blank ones are skipped.
+  const note = notes.filter((n) => typeof n === 'string' && n.trim()).join('\n');
+  if (!note) return;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user') {
+    messages.push({ role: 'user', content: note });
+    return;
+  }
+  if (typeof last.content === 'string') {
+    last.content = [{ type: 'text', text: last.content }, { type: 'text', text: note }];
+  } else if (Array.isArray(last.content)) {
+    last.content.push({ type: 'text', text: note });
+  }
 }
 
 /**

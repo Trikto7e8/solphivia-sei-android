@@ -110,10 +110,47 @@ export function coalesceSegments(segments) {
 }
 
 /**
+ * 261024: split one segment's entries into chronological chunks of at most
+ * `maxBytes` of entry text each, sized evenly so the last chunk is not a
+ * sliver. Each chunk is one compaction call, so its reply (even a nearly
+ * verbatim one, plus Sonnet's own thinking) must fit the output cap: before
+ * this a large segment went out whole, the reply hit max_tokens, and the
+ * entries after the cut were lost. A single entry longer than `maxBytes`
+ * becomes its own chunk. Order is kept. Pure; exported for tests.
+ *
+ * @param {string[]} entries
+ * @param {number} maxBytes
+ * @returns {string[][]}
+ */
+export function chunkEntries(entries, maxBytes) {
+  const size = (l) => Buffer.byteLength(l, 'utf8') + 1
+  const total = entries.reduce((n, l) => n + size(l), 0)
+  if (!(maxBytes > 0) || total <= maxBytes) return entries.length ? [entries] : []
+  const target = total / Math.ceil(total / maxBytes)
+  const chunks = []
+  let cur = []
+  let curBytes = 0
+  for (const l of entries) {
+    const b = size(l)
+    if (cur.length && (curBytes + b > maxBytes || curBytes >= target)) {
+      chunks.push(cur)
+      cur = []
+      curBytes = 0
+    }
+    cur.push(l)
+    curBytes += b
+  }
+  if (cur.length) chunks.push(cur)
+  return chunks
+}
+
+/**
  * @param {Object} opts
  * @param {{call: Function}} opts.anthropic     Anthropic client (createAnthropicClient instance).
  * @param {Object} opts.memoryLog               createMemoryLog() instance — used for .path only.
- * @param {Object} opts.config                  Validated config. Reads memory.compaction_trigger_bytes and anthropic.timeout_ms.
+ * @param {Object} opts.config                  Validated config. Reads memory.compaction_trigger_bytes and anthropic.timeout_ms,
+ *                                              plus the optional memory.compaction_max_tokens, compaction_chunk_bytes and
+ *                                              compaction_timeout_ms knobs.
  * @param {{info?:Function,warn?:Function,error?:Function,debug?:Function}} [opts.logger]
  */
 export function createMemoryCompactor({ anthropic, memoryLog, config, logger = console } = {}) {
@@ -123,12 +160,21 @@ export function createMemoryCompactor({ anthropic, memoryLog, config, logger = c
 
   const filePath = memoryLog.path
   const triggerBytes = config?.memory?.compaction_trigger_bytes ?? 4096
-  const timeoutMs = config.anthropic.timeout_ms
-  // 260810: output budget. The bot compacts at 8 KB where 1024 tokens is
-  // plenty; the chat-side compactor triggers at 32 KB (memoryCompaction.ts),
-  // where a single segment can legitimately need a larger compacted output.
-  // Optional knob so the bot's behavior is byte-identical when unset.
-  const maxTokens = config?.memory?.compaction_max_tokens ?? 1024
+  // 261024: compaction runs fire-and-forget after remember(), so it gets at
+  // least a minute instead of the turn timeout (the bot's is 12 s, and a
+  // Sonnet compaction of an 8 KB file took 5-11 s even in small chunks).
+  const timeoutMs = config?.memory?.compaction_timeout_ms ?? Math.max(config.anthropic.timeout_ms, 60_000)
+  // 260810: output budget; the chat-side compactor (memoryCompaction.ts)
+  // passes its own. 261024: the bot default was 1024, but Sonnet 5 thinks by
+  // default and the thinking counts against this cap: in a measured run on
+  // 8.6 KB files, 3 of 12 calls stopped at 1024 (two spent all 1023 tokens
+  // thinking). Such a cut-off reply used to be written as the whole chunk,
+  // losing the entries after the cut. Unused headroom costs nothing.
+  const maxTokens = config?.memory?.compaction_max_tokens ?? 4096
+  // 261024: most entry text sent in one call (see chunkEntries). 10 KB keeps a
+  // normal 8 KB bot file to one call and its reply, thinking included, well
+  // inside the cap.
+  const chunkBytes = config?.memory?.compaction_chunk_bytes ?? 10_240
 
   let inFlight = false
 
@@ -194,6 +240,13 @@ export function createMemoryCompactor({ anthropic, memoryLog, config, logger = c
       return null
     }
 
+    // 261024: a reply cut off at the output cap is a partial list. Taking it
+    // would replace the whole chunk and drop every entry after the cut, so
+    // the originals are kept instead.
+    if ((resp?.stopReason ?? resp?.stop_reason) === 'max_tokens') {
+      logger.warn?.(`[sei/compact] reply hit max_tokens (${maxTokens}) on ${entries.length} entries, keeping them as they are`)
+      return null
+    }
     const text = (resp?.text ?? '').trim()
     if (!text) return null
     const compacted = text
@@ -230,13 +283,19 @@ export function createMemoryCompactor({ anthropic, memoryLog, config, logger = c
     let totalAfter = 0
     const outParts = []
     for (const seg of segments) {
-      let entries = seg.entries
-      if (entries.length >= COMPACT_SEGMENT_MIN) {
-        const compacted = await compactEntries(entries)
-        if (compacted && compacted.length < entries.length) {
-          entries = compacted
-          changed = true
+      const entries = []
+      // 261024: a large segment goes out in chunks so every reply fits the
+      // output cap; a chunk that fails or does not shrink keeps its originals.
+      for (const chunk of chunkEntries(seg.entries, chunkBytes)) {
+        if (chunk.length >= COMPACT_SEGMENT_MIN) {
+          const compacted = await compactEntries(chunk)
+          if (compacted && compacted.length < chunk.length) {
+            entries.push(...compacted)
+            changed = true
+            continue
+          }
         }
+        entries.push(...chunk)
       }
       totalAfter += entries.length
       if (seg.marker) outParts.push(seg.marker)

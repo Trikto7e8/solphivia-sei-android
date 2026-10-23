@@ -38,6 +38,7 @@ import { paths } from '../paths';
 import { buildLlmProvider } from '../llm';
 import { createMemoryCompactor } from '../../bot/brain/memory/compactor.js';
 import { COMPANION_MODEL } from '../../shared/llmCatalog';
+import { isModelRequestRejection } from './modelRejection';
 
 /**
  * Trigger threshold, deliberately 4x the bot's 8192.
@@ -54,13 +55,26 @@ import { COMPANION_MODEL } from '../../shared/llmCatalog';
  */
 export const CHAT_COMPACTION_TRIGGER_BYTES = 32768;
 
-/** Chat turns get 30s (CHAT_TIMEOUT_MS); a rare background Sonnet call over a
- *  big segment deserves the same, not the bot's 20s. */
-const COMPACTION_TIMEOUT_MS = 30_000;
+/** Background only. 261024: raised from 30s, since a chunk's reply with
+ *  Sonnet's thinking can run to ~5k tokens (measured 4,728 on a 10 KB chunk),
+ *  about a minute. */
+const COMPACTION_TIMEOUT_MS = 120_000;
 
-/** Output budget per segment call. The bot keeps its 1024 (8 KB trigger); a
- *  32 KB file's dominant segment can need a one-third target well past that. */
-const COMPACTION_MAX_TOKENS = 3000;
+/** Output budget per compaction call (the bot's default is 4096 at its 8 KB trigger).
+ *  261024: sized with COMPACTION_CHUNK_BYTES so a nearly verbatim reply plus
+ *  Sonnet's default thinking still fits: a reply cut off here is thrown away
+ *  (the chunk keeps its originals), so a cap that is too small means the chunk
+ *  never compacts. */
+const COMPACTION_MAX_TOKENS = 8000;
+
+/** 261024: most entry text sent in one compaction call (about 2,900 input
+ *  tokens). At the 32 KB trigger a mostly-chat user has one section of about
+ *  290 entries; sent whole, its reply ran past the old 3000-token cap (Sonnet
+ *  kept 240 of 255 entries on one eval file) and the entries after the cut
+ *  were lost. Measured on that file with chunks of this size: 3 calls, no
+ *  cut-off, 19.6 KB down to 6.5-6.9 KB, replies of 650-4,730 output tokens
+ *  (Sonnet's thinking included). */
+const COMPACTION_CHUNK_BYTES = 10_240;
 
 interface CompactorLike {
   maybeCompact(): Promise<boolean>;
@@ -81,7 +95,7 @@ const chatAnthropicAdapter = {
     timeoutMs: number;
     maxTokens: number;
     model: string;
-  }): Promise<{ text: string }> {
+  }): Promise<{ text: string; stopReason: string | null }> {
     const llm = await buildLlmProvider();
     const system = opts.systemBlocks.map((b) => b.text).join('\n\n');
     const run = (model: string) =>
@@ -97,8 +111,7 @@ const chatAnthropicAdapter = {
       res = await run(opts.model);
     } catch (err) {
       const msg = String((err as Error)?.message ?? err);
-      const modelRejected = /invalid_model|model/i.test(msg) && /\b400\b|not_found|invalid/i.test(msg);
-      if (!modelRejected) throw err;
+      if (!isModelRequestRejection(msg)) throw err;
       // Lazy sdk re-import for the fallback model id only: several existing
       // test files mock './sdk' with just { buildChatSdk }, and a static
       // named import of CHAT_MODEL here would break their module graphs.
@@ -107,10 +120,12 @@ const chatAnthropicAdapter = {
       console.warn(`[sei] compaction model ${opts.model} rejected (${msg}); compacting with ${fallbackModel}`);
       res = await run(fallbackModel);
     }
+    // 261024: the stop reason goes back to the compactor, which keeps the
+    // originals when a reply was cut off at maxTokens (a partial list).
     const text = res.content
       .map((b) => (b.type === 'text' ? (b as unknown as { text: string }).text : ''))
       .join('');
-    return { text };
+    return { text, stopReason: res.stopReason ?? null };
   },
 };
 
@@ -143,6 +158,8 @@ function getCompactor(characterId: string, filePath: string, personaExpanded: st
       memory: {
         compaction_trigger_bytes: CHAT_COMPACTION_TRIGGER_BYTES,
         compaction_max_tokens: COMPACTION_MAX_TOKENS,
+        compaction_chunk_bytes: COMPACTION_CHUNK_BYTES,
+        compaction_timeout_ms: COMPACTION_TIMEOUT_MS,
       },
       ...(personaExpanded ? { persona: { expanded: personaExpanded } } : {}),
     },

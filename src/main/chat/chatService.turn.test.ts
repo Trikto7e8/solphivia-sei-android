@@ -61,9 +61,9 @@ vi.mock('../llm/webSearchSettings', () => ({
 
 import type { ChatDeps } from './chatService';
 import type { LanHost } from '../../shared/ipc';
-import { sendChatMessage, sendLaunchFailedTurn, sendVoiceIdleTurn, sendCompanionVoiceTurn, cancelInflightTurn, CHAT_ABORTED } from './chatService';
+import { sendChatMessage, sendLaunchFailedTurn, sendVoiceIdleTurn, sendCompanionVoiceTurn, sendVoiceGreetingTurn, cancelInflightTurn, CHAT_ABORTED } from './chatService';
 import { setCallActive } from '../voice/callState';
-import { readAll as chatStoreRead } from './chatStore';
+import { readAll as chatStoreRead, appendMessage } from './chatStore';
 import { consumeGoodbye, _resetGoodbyeNotes } from '../sessionGoodbye';
 
 const CHAR = '55555555-5555-4555-8555-555555555555';
@@ -1138,5 +1138,80 @@ describe('one player message gets one reply round (261020)', () => {
     expect(createSpy).toHaveBeenCalledTimes(2);
     expect(pushed).toEqual(['lemme check']);
     expect(result.replies.map((r) => r.text)).toEqual(['smithing table, diamond gear plus an ingot']);
+  });
+});
+
+// 261024: a single-shot voice turn's own system note rides AFTER the last cache
+// breakpoint, with the clock. Folded in before it, the cached prefix ended on
+// text no later turn sends, so the cache write was never read back.
+describe('single-shot voice turns keep their note after the cache breakpoint (261024)', () => {
+  type Block = { type: string; text?: string; cache_control?: unknown };
+  type Msg = { role: string; content: string | Block[] };
+
+  /** Text of every block after the last cache_control block, and of the marked block itself. */
+  function split(messages: Msg[]): { marked: string; tail: string; tailRole: string } {
+    let mi = -1;
+    let bi = -1;
+    messages.forEach((m, i) => {
+      if (Array.isArray(m.content)) m.content.forEach((b, j) => { if (b.cache_control) { mi = i; bi = j; } });
+    });
+    expect(mi).toBeGreaterThanOrEqual(0);
+    const after: string[] = [];
+    messages.forEach((m, i) => {
+      const blocks: Block[] = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+      blocks.forEach((b, j) => { if (i > mi || (i === mi && j > bi)) after.push(b.text ?? ''); });
+    });
+    const markedBlock = (messages[mi].content as Block[])[bi];
+    return { marked: markedBlock.text ?? '', tail: after.join('\n'), tailRole: messages[messages.length - 1].role };
+  }
+
+  async function seed(rows: Array<['user' | 'companion', string]>): Promise<void> {
+    let t = Date.now() - rows.length * 1000;
+    for (const [role, text] of rows) {
+      await appendMessage(CHAR, { id: `r${t}`, role, text, ts: t++, voice: true } as never);
+    }
+  }
+
+  it('idle nudge: the breakpoint is on the last transcript line and the note follows it', async () => {
+    await seed([['user', 'hey marv'], ['companion', 'hey.']]);
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'so, about that robot arm.' }] });
+
+    await sendVoiceIdleTurn(CHAR, 30, []);
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail, tailRole } = split(req.messages);
+    expect(marked).toBe('hey.');
+    expect(tail).toContain('quiet for about 30 seconds');
+    expect(tail).toContain('the current date and time is');
+    expect(tail.indexOf('quiet for about')).toBeLessThan(tail.indexOf('the current date and time is'));
+    expect(tailRole).toBe('user');
+  });
+
+  it('companion reaction: the breakpoint is on the heard line, which later turns resend unchanged', async () => {
+    await seed([['user', 'hey both']]);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'lol true' }] });
+
+    await sendCompanionVoiceTurn(CHAR, { speakerName: 'Sui', text: 'this game is chaos', peers: ['Sui'] });
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail } = split(req.messages);
+    expect(marked).toContain('(Sui, on the call): this game is chaos');
+    expect(marked).not.toContain('System note');
+    expect(tail).toContain('Sui just said the line above on the call');
+    expect(tail).toContain('the current date and time is');
+  });
+
+  it('greeting: the note follows the breakpoint', async () => {
+    await seed([['user', 'bye for now'], ['companion', 'later.']]);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'oh hey.' }] });
+
+    await sendVoiceGreetingTurn(CHAR, [], { plan: null });
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail } = split(req.messages);
+    expect(marked).toBe('later.');
+    expect(tail).toMatch(/System note/);
+    expect(tail).toContain('the current date and time is');
   });
 });

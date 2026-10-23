@@ -40,6 +40,9 @@ export interface FeedbackModalProps {
   framing?: string;
   fieldLabel?: string;
   placeholder?: string;
+  /** One extra line on the "Feedback sent" confirmation (261023: the games
+   * picker points a game wish at Backseat, which already covers any game). */
+  doneNote?: string;
 }
 
 export function FeedbackModal({
@@ -48,6 +51,7 @@ export function FeedbackModal({
   framing = "Tell us anything you like or don't like! We read all comments within 24 hrs.",
   fieldLabel = 'Feedback',
   placeholder = 'What should we improve?',
+  doneNote,
 }: FeedbackModalProps): React.ReactElement {
   const t = useT();
   const [email, setEmail] = useState('');
@@ -90,18 +94,7 @@ export function FeedbackModal({
     }
   };
 
-  if (done) {
-    return (
-      <ModalShell title={t('Feedback sent')} onClose={onClose} scrimClose width={440}>
-        <p className={styles.framing}>{t('Thank you. We read all comments within 24 hrs.')}</p>
-        <ModalFooter>
-          <Button kind="accent" size="md" onClick={onClose}>
-            {t('Close')}
-          </Button>
-        </ModalFooter>
-      </ModalShell>
-    );
-  }
+  if (done) return <FeedbackSent onClose={onClose} note={doneNote} />;
 
   return (
     <ModalShell title={t(title)} onClose={onClose} scrimClose width={440}>
@@ -146,6 +139,22 @@ export function FeedbackModal({
           </Button>
         </ModalFooter>
       </form>
+    </ModalShell>
+  );
+}
+
+/** The confirmation that replaces the form after a successful send. */
+export function FeedbackSent({ onClose, note }: { onClose: () => void; note?: string }): React.ReactElement {
+  const t = useT();
+  return (
+    <ModalShell title={t('Feedback sent')} onClose={onClose} scrimClose width={440}>
+      <p className={styles.framing}>{t('Thank you. We read all comments within 24 hrs.')}</p>
+      {note ? <p className={styles.framing}>{t(note)}</p> : null}
+      <ModalFooter>
+        <Button kind="accent" size="md" onClick={onClose}>
+          {t('Close')}
+        </Button>
+      </ModalFooter>
     </ModalShell>
   );
 }

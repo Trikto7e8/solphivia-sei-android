@@ -86,6 +86,7 @@ import {
 } from '../voice/callTones';
 import { warm as warmPitchBus } from '../voice/pitchBus';
 import { isPermissionRefusal, micPreflight } from '../permissions/permissionFlow';
+import { callSetupFailureProps } from '../voice/callSetupFailure';
 
 /**
  * 260929: a call held up by microphone access. MicAccessCard (mounted in
@@ -616,10 +617,24 @@ function friendlyError(err: unknown): string {
   if (name === 'NotFoundError' || /device not found/i.test(msg)) {
     return t('No microphone was found. Connect one and try again.');
   }
+  // 261023: the mic exists but would not open. On Windows this is most often
+  // another app holding it (exclusive mode, a game or chat app's voice), and
+  // "try again in a moment" sent people round the same failure several times.
+  if (name === 'NotReadableError' || name === 'AbortError' || name === 'OverconstrainedError') {
+    return t('Your microphone could not be opened. Close other apps that use it, or pick a different microphone in your sound settings, then try again.');
+  }
   if (name === 'NotAllowedError' || /permission/i.test(msg)) {
     // 260929: the fix lives on MicAccessCard (why, Open Settings, and the call
     // starts by itself once access is on), so this line only names the state.
     return t('Microphone access is off for Sei.');
+  }
+  // 261023: the local speech model's own failures (dictation.ts names them).
+  // Before this the download watchdog's message was built and then thrown away.
+  if (name === 'TimeoutError') {
+    return t('Voice recognition took too long to download. Check your connection and try again.');
+  }
+  if (name === 'ModelLoadError') {
+    return t('Voice recognition could not start. Check your connection and try again.');
   }
   return t('Voice call failed to start. Try again in a moment.');
 }
@@ -1950,10 +1965,17 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         // capture init, dictation boot). A superseded/ended session returned
         // above, so this is a genuine failure, not a hang-up. Shape only: a
         // fixed class token, never the error text the user sees.
+        // 261023: plus WHERE it failed — `stage` and a fixed-vocab
+        // `error_name` (callSetupFailure.ts), and which STT path the call was
+        // booting, so the Windows failure rate can be split into a refused
+        // mic, a busy or missing mic, and a speech model that never loaded.
         sei.track('surface_error', {
           surface: 'voice',
           error_class: 'call_setup_failed',
           character_id: characterId,
+          ...callSetupFailureProps(err),
+          stt_local: policy.localModel,
+          stt_engine: policy.localEngine,
         });
         // A refused mic gets the card, not just a line of text (260929). If
         // macOS already reports access as granted, the grant has not reached

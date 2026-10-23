@@ -2693,12 +2693,13 @@ export interface RendererApi {
   migrationShown(action: 'get' | 'set'): Promise<{ shown: boolean }>;
   /**
    * 260603: inspect the anonymous `local` profile for data importable into the
-   * just-signed-in account (user-created characters + onboarding answers).
+   * just-signed-in account (companions, their memories, onboarding answers).
    */
   profilePeekLocal(): Promise<PeekLocalProfileResult>;
   /**
-   * Move the `local` profile's user-created characters (+ memory/skins/portraits)
-   * and onboarding answers into the active account profile. Optional id subset.
+   * Move the `local` profile's companions (+ memory/skins/portraits) and
+   * onboarding answers into the active account profile, merging into what the
+   * account already has without replacing it. Idempotent. Optional id subset.
    */
   profileImportFromLocal(characterIds?: string[]): Promise<ImportLocalProfileResult>;
   /**
@@ -3088,12 +3089,24 @@ export interface ScopeChangedEvent {
 
 /** Result of inspecting the `local` profile for importable data (260603). */
 export interface PeekLocalProfileResult {
-  /** Non-default, user-created character ids present in the local profile. */
+  /**
+   * Companions in the local profile's roster that the import brings across:
+   * the player's own (made without an account) plus World companions and the
+   * former defaults (Sui, Lyra, Marv) they had added (261023).
+   */
   migratableCharacterIds: string[];
+  /**
+   * Companions that are not in the local roster but still have memories
+   * there (removed from the library, memories kept). Their memories are
+   * merged too; they are not added back to the roster (261023).
+   */
+  memoryOnlyCharacterIds: string[];
   mcUsername: string | null;
   preferredName: string | null;
   /** True when there is anything worth offering to import. */
   hasData: boolean;
+  /** True when there are companions or memories to bring (not only the onboarding answers). */
+  hasCompanionData: boolean;
 }
 
 /** Result of importing the `local` profile into the signed-in account (260603). */

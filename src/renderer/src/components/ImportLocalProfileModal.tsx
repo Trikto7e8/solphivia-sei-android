@@ -1,15 +1,18 @@
 /**
- * ImportLocalProfileModal — offered once on FIRST sign-in to a fresh account
- * (260603 per-profile partitioning).
+ * ImportLocalProfileModal — offered on a sign-in from the anonymous `local`
+ * (own key) profile (260603 per-profile partitioning; 261023 existing accounts).
  *
- * With per-profile partitioning, signing into a brand-new account starts from
- * an empty profile. If the user built a companion while signed out (in the
- * anonymous `local` profile), this modal offers to bring it across:
- * user-created characters + their local memory + the MC username / preferred
- * name they already entered. Declining starts the account fresh (onboarding).
+ * With per-profile partitioning, everything built while signed out stays in
+ * the `local` profile when the player signs in. This modal offers to bring it
+ * across: their companions (own ones, plus World companions and Sui they had
+ * added), the companions' memories, and the name they already entered.
  *
- * Only offered on local→account first sign-in — never account→account, so
- * switching between accounts always starts fresh.
+ *   - New account: "Start fresh" declines and goes to onboarding.
+ *   - Existing account (261023): the merge adds to the account and replaces
+ *     nothing in it. "Not now" leaves the companions on this computer, where
+ *     they are offered again on the next sign-in from it.
+ *
+ * Never offered account→account, so switching between accounts starts fresh.
  *
  * Renders through ModalShell; dismissal is button-only (choice is required).
  */
@@ -23,11 +26,13 @@ import styles from './confirmModal.module.css';
 
 export interface ImportLocalProfileModalProps {
   peek: PeekLocalProfileResult;
+  /** The account already has a profile: merge copy + "Not now". */
+  existingAccount?: boolean;
   /** Called after the user chooses. `didImport` = the local data was imported. */
   onDone: (didImport: boolean) => void;
 }
 
-export function ImportLocalProfileModal({ peek, onDone }: ImportLocalProfileModalProps): React.ReactElement {
+export function ImportLocalProfileModal({ peek, existingAccount = false, onDone }: ImportLocalProfileModalProps): React.ReactElement {
   const t = useT();
   const [submitting, setSubmitting] = useState(false);
   const count = peek.migratableCharacterIds.length;
@@ -47,23 +52,36 @@ export function ImportLocalProfileModal({ peek, onDone }: ImportLocalProfileModa
   return (
     <ModalShell title={t('Bring your companion to this account?')} escClose={false}>
       <p className={styles.body}>
-        {count > 0
-          ? count === 1
-            ? t(
-                'You set up 1 companion before signing in. Bring it, along with your memories together, into this account, or start fresh.',
-              )
+        {existingAccount
+          ? count > 0
+            ? count === 1
+              ? t(
+                  'You have 1 companion on this computer from before you signed in. Add it and its memories to this account? Nothing already in your account is replaced.',
+                )
+              : t(
+                  'You have {count} companions on this computer from before you signed in. Add them and their memories to this account? Nothing already in your account is replaced.',
+                  { count },
+                )
             : t(
-                'You set up {count} companions before signing in. Bring them, along with your memories together, into this account, or start fresh.',
-                { count },
+                'You have companion memories on this computer from before you signed in. Add them to this account? Nothing already in your account is replaced.',
               )
-          : t('Bring your existing setup into this account, or start fresh.')}
+          : count > 0
+            ? count === 1
+              ? t(
+                  'You set up 1 companion before signing in. Bring it, along with your memories together, into this account, or start fresh.',
+                )
+              : t(
+                  'You set up {count} companions before signing in. Bring them, along with your memories together, into this account, or start fresh.',
+                  { count },
+                )
+            : t('Bring your existing setup into this account, or start fresh.')}
       </p>
       {submitting ? (
         <p className={styles.status}>{t('Importing…')}</p>
       ) : (
         <ModalFooter>
           <Button kind="ghost" onClick={() => onDone(false)}>
-            {t('Start fresh')}
+            {existingAccount ? t('Not now') : t('Start fresh')}
           </Button>
           <Button kind="primary" onClick={() => void handleImport()}>
             {t('Bring it over')}

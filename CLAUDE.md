@@ -3619,6 +3619,18 @@ user already read; mandatory updates keep the full what's-new modal.
     is kept in `callState` (`endCallFromCompanion`) so the switch closes it
     and writes its row in the old account; `applyCallReport` is the pure
     composition the `voice:call-state` handler runs.
+- **Own-key companions stranded or mis-owned on sign-in (261023)** → the
+  `local` profile → account import (`src/main/profile/localImport.ts`) is
+  offered on EVERY local→account sign-in that finds companions or memories,
+  new account or existing (App.tsx; a sign-in inside the first-run scene is
+  offered when the scene hands off). It merges, never replaces
+  (`profile/memoryMerge.ts`): an account copy of the same id keeps its JSON
+  and art, MEMORY.md / archive / chat.jsonl are line-unioned, `worlds.json`
+  merges by fingerprint and renumbers the local `## World N` headers. Only
+  owner-null companions are stamped with the account; World companions and
+  Sui/Lyra/Marv keep their real owner and go into `added_world_ids`
+  (stamping them made the sign-in reconcile sweep delete them as leaks).
+  Idempotent; moved data is removed from `local`.
 - **A whole-config write reverts other writers (260929)** → every main-process
   write of the profile `config.json` goes through `configStore.updateConfig`
   (locked read-modify-write, path fixed when the call starts) and sets only

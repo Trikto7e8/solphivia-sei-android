@@ -100,6 +100,7 @@ import { HardStopModal } from './components/HardStopModal';
 import { SetNewPasswordModal } from './components/SetNewPasswordModal';
 import { MigrateLocalCharsModal } from './components/MigrateLocalCharsModal';
 import { ImportLocalProfileModal } from './components/ImportLocalProfileModal';
+import { localImportOfferTiming, shouldOfferLocalImport } from './lib/localImportOffer';
 import type { PeekLocalProfileResult } from '../../shared/ipc';
 import { usePermissionResume } from './lib/permissions/usePermissionResume';
 
@@ -171,9 +172,19 @@ export function App(): React.ReactElement {
   // local-only character + has not yet seen this prompt. Re-openable from
   // Settings independently of this flag.
   const [autoMigrateOpen, setAutoMigrateOpen] = useState<boolean>(false);
-  // 260603: on first sign-in to a fresh account, offer to import the anonymous
-  // `local` profile's companion. Non-null = the import-offer modal is shown.
-  const [importOffer, setImportOffer] = useState<PeekLocalProfileResult | null>(null);
+  // 260603: on a sign-in from the anonymous `local` (own key) profile, offer to
+  // import its companions. 261023: for an existing account too, and after the
+  // first-run scene when the sign-in happened inside it. Non-null = the
+  // import-offer modal is shown. `after` = what to do once the player chooses
+  // (the scene's hand-off); absent = the scope-change routing.
+  const [importOffer, setImportOffer] = useState<{
+    peek: PeekLocalProfileResult;
+    existingAccount: boolean;
+    after?: () => void;
+  } | null>(null);
+  // A sign-in landed while the first-run scene was up: offer the import when
+  // the scene hands off (handleOnboardComplete).
+  const importAfterOnboardRef = useRef(false);
   // RESEARCH §Pitfall 3 — Linux-only basic_text safeStorage warning. Main
   // computes this from `apiKeyStore.safeStorageBackendKind()` and exposes it via the
   // app:warnings IPC. The keychain banner (api_key.bin) is dismissed for the
@@ -496,7 +507,11 @@ export function App(): React.ReactElement {
         // race against the authState push because app:scope-changed is
         // emitted after the async scope teardown, so the sign-out routing
         // must live here.
-        if (ev.reason === 'sign-out') { navigate({ kind: 'onboard', signin: true }); return; }
+        if (ev.reason === 'sign-out') {
+          importAfterOnboardRef.current = false;
+          navigate({ kind: 'onboard', signin: true });
+          return;
+        }
         // Re-seed the credits store now that the scope has ACTUALLY switched.
         // The authState-keyed effect above already reset()+init()'d it from the
         // SYNCHRONOUS signed_in push — which fires BEFORE this async scope switch
@@ -515,8 +530,27 @@ export function App(): React.ReactElement {
         // 260728 Sui onboarding: while the first-run scene is driving (view
         // 'onboard'), it owns navigation — the sign-in that just landed came
         // from the scene's own panel, and the scene continues into setup +
-        // generation itself. The data reloads above still ran.
+        // generation itself. The data reloads above still ran. 261023: the
+        // local-import offer waits for the scene's hand-off.
+        const offerTiming = localImportOfferTiming(ev.reason, useUiStore.getState().view.kind === 'onboard');
+        if (offerTiming === 'after-onboarding') {
+          importAfterOnboardRef.current = true;
+          return;
+        }
         if (useUiStore.getState().view.kind === 'onboard') return;
+        // Own-key (local) companions: offer to bring them into the account,
+        // new or existing (261023: existing accounts used to skip this and
+        // strand them). The modal routes onward (handleImportOfferDone).
+        if (offerTiming === 'now') {
+          try {
+            const peek = await sei.profilePeekLocal();
+            const existingAccount = Boolean(onboardedName);
+            if (shouldOfferLocalImport(peek, existingAccount)) {
+              setImportOffer({ peek, existingAccount });
+              return;
+            }
+          } catch { /* no offer; route as usual */ }
+        }
         // Onboarded but skin-setup still pending → resume the dedicated step.
         if (onboardedName && skinPending) { navigate({ kind: 'skin-setup' }); return; }
         // Onboarded account → home, on the HOME tab (which shows the welcome
@@ -530,15 +564,7 @@ export function App(): React.ReactElement {
           navigate({ kind: 'home' });
           return;
         }
-        // Fresh account. On FIRST sign-in only (never account→account), offer to
-        // import the anonymous local profile's companion if there's anything to
-        // bring across; the modal routes onward. Otherwise → onboarding.
-        if (ev.reason === 'sign-in') {
-          try {
-            const peek = await sei.profilePeekLocal();
-            if (peek.hasData) { setImportOffer(peek); return; }
-          } catch { /* fall through to onboarding */ }
-        }
+        // Fresh account with nothing to import (offered above) → onboarding.
         navigate({ kind: 'onboard' });
       })();
     });
@@ -547,7 +573,14 @@ export function App(): React.ReactElement {
   // Resolve the import-offer modal: re-read config (the import may have copied
   // preferred_name across) + reload characters, then route home-or-onboarding.
   async function handleImportOfferDone(_didImport: boolean): Promise<void> {
+    const after = importOffer?.after;
     setImportOffer(null);
+    if (after) {
+      try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
+      try { await useLibraryStateStore.getState().refresh(); } catch { /* none */ }
+      after();
+      return;
+    }
     let onboardedName = '';
     let skinPending = false;
     try {
@@ -556,6 +589,8 @@ export function App(): React.ReactElement {
       skinPending = cfg.skin_setup_pending === true;
     } catch { /* onboarding */ }
     try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
+    // The import can add World companions / Sui to the roster (added_world_ids).
+    try { await useLibraryStateStore.getState().refresh(); } catch { /* none */ }
     if (!onboardedName) { navigate({ kind: 'onboard' }); return; }
     if (skinPending) { navigate({ kind: 'skin-setup' }); return; }
     useUiStore.getState().setHomeTab('home');
@@ -814,6 +849,23 @@ export function App(): React.ReactElement {
         // acceptance insert, and a stale `false` mounts the blocking legal
         // modal over the tutorial (260729).
         void useAuthStore.getState().refreshTosStatus();
+        // 261023: a sign-in landed inside the scene. Offer the own-key
+        // companions first; the routing below runs once the player chooses.
+        // The account has a profile by now, so only companions or memories
+        // are worth asking about.
+        if (importAfterOnboardRef.current) {
+          importAfterOnboardRef.current = false;
+          try {
+            const peek = await sei.profilePeekLocal();
+            if (useAuthStore.getState().state.kind === 'signed_in' && shouldOfferLocalImport(peek, true)) {
+              setImportOffer({ peek, existingAccount: true, after: () => void routeAfterOnboard() });
+              return;
+            }
+          } catch { /* no offer */ }
+        }
+        await routeAfterOnboard();
+      })();
+      async function routeAfterOnboard(): Promise<void> {
         if (res.tutorial) {
           // The guided first moment (260926): a NEW player's tour ends in their
           // companion's chat, greeted first, with a next step to click. Only
@@ -837,7 +889,7 @@ export function App(): React.ReactElement {
           setHomeTab('home');
           navigate({ kind: 'home' });
         }
-      })();
+      }
     },
     [navigate, setHomeTab, resumeSavedTutorial],
   );
@@ -848,6 +900,17 @@ export function App(): React.ReactElement {
   // rather than mounting the prior boot pulse.
   if (view.kind === 'loading') return <></>;
 
+  // 260603 / 261023: the own-key (local) import offer. Rendered on the
+  // first-run scene too, because a sign-in made there is offered when the
+  // scene hands off, before the routing that follows.
+  const importOfferModal = importOffer ? (
+    <ImportLocalProfileModal
+      peek={importOffer.peek}
+      existingAccount={importOffer.existingAccount}
+      onDone={(d) => void handleImportOfferDone(d)}
+    />
+  ) : null;
+
   // 260728: the Sui onboarding scene is chromeless — no MacosWindow drag
   // strip, no version tag, no rail; the mac traffic lights hide over IPC
   // while it is mounted (OnboardApp's own effect).
@@ -855,12 +918,15 @@ export function App(): React.ReactElement {
     // key: a signin-variant mount must not reuse a full-scene instance's
     // state (and vice versa) if the view flips between them.
     return (
-      <OnboardApp
-        key={view.signin ? 'signin' : 'full'}
-        startAtSignIn={view.signin === true}
-        onStartFresh={() => navigate({ kind: 'onboard' })}
-        onComplete={handleOnboardComplete}
-      />
+      <>
+        <OnboardApp
+          key={view.signin ? 'signin' : 'full'}
+          startAtSignIn={view.signin === true}
+          onStartFresh={() => navigate({ kind: 'onboard' })}
+          onComplete={handleOnboardComplete}
+        />
+        {importOfferModal}
+      </>
     );
   }
 
@@ -1213,13 +1279,12 @@ export function App(): React.ReactElement {
         <MigrateLocalCharsModal onClose={() => setAutoMigrateOpen(false)} />
       ) : null}
       {/*
-        260603 — first sign-in to a fresh account: offer to bring the anonymous
-        local profile's companion (characters + memory + onboarding) into the
-        account. onScopeChanged sets importOffer; the modal routes onward.
+        260603 / 261023 — a sign-in from the anonymous local (own key)
+        profile, to a new or existing account: offer to bring its companions
+        (characters + memory + onboarding) into the account. onScopeChanged
+        sets importOffer; the modal routes onward.
       */}
-      {importOffer ? (
-        <ImportLocalProfileModal peek={importOffer} onDone={(d) => void handleImportOfferDone(d)} />
-      ) : null}
+      {importOfferModal}
       {/*
         Phase 13 — Plan 13-19 (PROXY-06). HardStopModal mounts at the App
         root so the out-of-credits / rate-limited blocking overlay sits

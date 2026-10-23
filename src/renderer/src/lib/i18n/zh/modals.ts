@@ -226,6 +226,12 @@ export const ZH_MODALS: Record<string, string> = {
     '你在登录前已设置了 {count} 位伙伴。把它们连同你们共同的回忆带进这个账户，或重新开始。',
   'Bring your existing setup into this account, or start fresh.':
     '把你现有的设置带进这个账户，或重新开始。',
+  'You have 1 companion on this computer from before you signed in. Add it and its memories to this account? Nothing already in your account is replaced.':
+    '这台电脑上有 1 位你登录前的伙伴。要把它和它的回忆加到这个账户吗？账户里已有的内容都不会被替换。',
+  'You have {count} companions on this computer from before you signed in. Add them and their memories to this account? Nothing already in your account is replaced.':
+    '这台电脑上有 {count} 位你登录前的伙伴。要把它们和它们的回忆加到这个账户吗？账户里已有的内容都不会被替换。',
+  'You have companion memories on this computer from before you signed in. Add them to this account? Nothing already in your account is replaced.':
+    '这台电脑上有你登录前和伙伴的回忆。要把它们加到这个账户吗？账户里已有的内容都不会被替换。',
   'Importing…': '导入中…',
   'Start fresh': '重新开始',
   'Bring it over': '带过来',

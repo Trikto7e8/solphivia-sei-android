@@ -113,7 +113,7 @@ describe('renderHeartbeat marks not-started goals', () => {
 describe('NUDGES.goodbyeNotStarted', () => {
   it('is tied to a goodbye, names one goal or lists several, and is empty with none', () => {
     expect(NUDGES.goodbyeNotStarted([])).toBe('')
-    expect(NUDGES.goodbyeNotStarted(['Build a hut.'])).toBe('If this line ends the session: you have not started "Build a hut." yet (no work in the world since you set it), so next time is when you would start or try it, not finish it.')
+    expect(NUDGES.goodbyeNotStarted(['Build a hut.'])).toBe('If this line ends the session: you have not started "Build a hut." yet (nothing done for it since you set it), so next time is when you would start or try it, not finish it.')
     expect(NUDGES.goodbyeNotStarted(['a', 'b'])).toBe('If this line ends the session: you have not started these yet (no work in the world since you set them): "a", "b", so next time is when you would start or try them, not finish them.')
     const long = NUDGES.goodbyeNotStarted([`build ${'x '.repeat(100)}`])
     expect(long).toMatch(/\.\.\." yet/)
@@ -136,7 +136,7 @@ describe('next_time texts follow progress', () => {
 })
 
 describe('the player comes before her own goal', () => {
-  const RULE = 'The player\'s safety and how they feel come before your goal too. When they say they are scared or nervous or ask you to stay close, or when it gets dark or hostile mobs come near them, put your goal on hold: stay by them, keep them safe, and keep talking with them. Go back to your goal once they are safe and feel okay, or when they tell you to go.'
+  const RULE = 'The player\'s safety and how they feel come before your goal too. When they say they are scared or nervous or ask you to stay close, or when they are out in the dark or hostile mobs come near them, put your goal on hold: stay by them and keep them safe. Go back to your goal once they are safe and feel okay, or when they tell you to go.'
   const HEAD = 'The player comes before these goals: while they are scared, have asked you to stay close, or are in danger from the dark or from mobs, stay with them and keep them safe, and pick a goal back up once they are okay.'
 
   it('the agentic directive says so', () => {

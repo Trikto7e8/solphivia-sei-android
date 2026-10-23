@@ -59,7 +59,7 @@ import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
 import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey, tasksOfAction } from './memory/heartbeat.js'
-import { countsAsGoalWork, goalNotStarted } from './goalProgress.js'
+import { countsAsGoalWork, goalNotStarted, goalStampMs } from './goalProgress.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
@@ -1206,6 +1206,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   function goalLineNotStarted(line) {
     const m = /^- \[[^\]]*\]\s*(.*)$/.exec(String(line ?? '').trim())
     if (m && isPlayerTask(m[1])) {
+      // A task carried over from an earlier session keeps its old stamp; its
+      // progress then is not known here, so it stays unmarked.
+      const at = goalStampMs(line)
+      if (!Number.isFinite(sessionStartedAt) || !Number.isFinite(at) || at < sessionStartedAt) return false
       const t = playerTasks.find((x) => x.key === goalKey(m[1]))
       return !!t && taskNotStarted(t)
     }

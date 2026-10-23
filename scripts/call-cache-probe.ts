@@ -7,13 +7,21 @@
  * chat-surface assembly (buildSystemBlocks, toMessages, the shared tool list,
  * markLastMessageCached, the call's stop sequences, Haiku 5.5 with thinking
  * disabled as the app sends it) and logs input / cache_read / cache_write /
- * output per turn, for two arms run side by side in real time:
+ * output per turn, for up to three arms run side by side in real time:
  *
  *   before  the shipped assembly: the voice window slides (history.slice(-10))
  *           and the minute clock sits in the status block above the transcript.
- *   after   the 261024 assembly: the window start moves in steps of 10
- *           (voiceWindowStart) and the clock rides after the last breakpoint
- *           (clockInTail + appendUncachedTail(clockTailNote())).
+ *   fold    the window start moves in steps of 10 (voiceWindowStart) and the
+ *           clock rides after the last breakpoint (clockInTail +
+ *           appendUncachedTail(clockTailNote())), but greeting, idle and
+ *           companion-reaction notes are still folded into the last message
+ *           BEFORE the breakpoint (the first 261024 commit).
+ *   after   as fold, and those per-turn notes ride after the breakpoint with
+ *           the clock (appendUncachedTail(note, clock)), the review fix.
+ *
+ * Turn kinds: greeting (turn 0), player lines, idle nudges (IDLE_AT) and
+ * group-call reactions (COMPANION_AT: another companion's line is heard as
+ * "(Marv, on the call): ..." and Sui gets the reaction note, no player line).
  *
  * Turns are paced at the free-call average (6.4 requests a minute, one about
  * every 9.4 s) so the minute rollovers land where they would on a real call.
@@ -24,7 +32,7 @@
  * All content is synthetic. Key (dev-only): ANTHROPIC_API_KEY env wins, else
  * ~/.sei-dev/anthropic-test-key; never printed.
  *
- * Usage: npx tsx scripts/call-cache-probe.ts [--turns 24] [--gap 9.4] [--arms before,after] [--out file.json]
+ * Usage: npx tsx scripts/call-cache-probe.ts [--turns 24] [--gap 9.4] [--arms before,fold,after] [--out file.json]
  */
 import Anthropic from '@anthropic-ai/sdk';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -54,7 +62,8 @@ const opt = (n: string, d: string): string => {
 };
 const TURNS = Number(opt('--turns', '24'));
 const GAP_MS = Number(opt('--gap', '9.4')) * 1000;
-const ARMS = opt('--arms', 'before,after').split(',') as Array<'before' | 'after'>;
+type Arm = 'before' | 'fold' | 'after';
+const ARMS = opt('--arms', 'before,fold,after').split(',') as Arm[];
 const OUT = opt('--out', '');
 const MODEL = 'claude-haiku-5-5';
 // Same values as chatService (TRANSCRIPT_STOP_SEQUENCES, VOICE_RECENT_CAP, VOICE_WINDOW_STEP).
@@ -118,6 +127,18 @@ const PLAYER_LINES = [
 ];
 /** Turn indexes (after the greeting) that are idle nudges instead of player lines. */
 const IDLE_AT = new Set([9, 17]);
+/** Turn indexes where another companion speaks and Sui reacts (group call). */
+const COMPANION_AT = new Map<number, string>([
+  [5, 'wait ren, biscuit is the dog right? that is so funny'],
+  [13, 'ana is going to love the moat, trust me'],
+  [21, 'sui you got the sn2 thing right? i am shocked'],
+]);
+/** Same text as sendCompanionVoiceTurnImpl (depth below the wind-down). */
+const companionNote = (speaker: string): string =>
+  `[System note — not the player speaking: ${speaker} just said the line above on the call. ` +
+  'If there is a live thread worth continuing, react in your own voice in ONE short spoken line, building on it rather than closing it off. ' +
+  'If the exchange has genuinely run its course, reply with exactly (silence) and nothing else; it is never spoken, it just ends your turn quietly.' +
+  ' Do not mention this note.]';
 
 interface TurnLog {
   turn: number;
@@ -140,7 +161,7 @@ function micro(u: { input_tokens: number; cache_read_input_tokens?: number | nul
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-async function runArm(arm: 'before' | 'after', nonce: string): Promise<TurnLog[]> {
+async function runArm(arm: Arm, nonce: string): Promise<TurnLog[]> {
   const t0 = Date.now();
   // Earlier typed chat today (the F1 batch, shifted to end 3h ago).
   const lastMin = F1.messages[F1.messages.length - 1].min as number;
@@ -166,6 +187,10 @@ async function runArm(arm: 'before' | 'after', nonce: string): Promise<TurnLog[]
       note =
         '[System note, not the player speaking: the conversation has been quiet for about 12 seconds. ' +
         'You can start a topic in one short spoken line, or reply with exactly (silence). Do not mention this note.]';
+    } else if (COMPANION_AT.has(turn)) {
+      kind = 'companion';
+      history.push({ id: `k-${turn}`, role: 'user', text: `(Marv, on the call): ${COMPANION_AT.get(turn)}`, ts: Date.now(), voice: true });
+      note = companionNote('Marv');
     } else {
       kind = 'player';
       history.push({ id: `u-${turn}`, role: 'user', text: PLAYER_LINES[p++ % PLAYER_LINES.length], ts: Date.now(), voice: true });
@@ -184,18 +209,19 @@ async function runArm(arm: 'before' | 'after', nonce: string): Promise<TurnLog[]
       language: 'en',
       memoryGuide: true,
       searchGuide: true,
-      ...(arm === 'after' ? { clockInTail: true } : {}),
+      ...(arm !== 'before' ? { clockInTail: true } : {}),
     } as any);
-    const start = arm === 'after' ? voiceWindowStart(history.length, CAP, STEP) : Math.max(0, history.length - CAP);
+    const start = arm !== 'before' ? voiceWindowStart(history, 0, CAP, STEP) : Math.max(0, history.length - CAP);
     const window = history.slice(start);
     const messages = toMessages(window);
-    if (note) {
+    if (note && arm !== 'after') {
       const last = messages[messages.length - 1];
       if (last && last.role === 'user' && typeof last.content === 'string') last.content = `${last.content}\n${note}`;
       else messages.push({ role: 'user', content: note });
     }
     markLastMessageCached(messages);
-    if (arm === 'after') appendUncachedTail(messages, clockTailNote());
+    if (arm === 'after') appendUncachedTail(messages, note, clockTailNote());
+    else if (arm === 'fold') appendUncachedTail(messages, clockTailNote());
     const tq = Date.now();
     const res = await client.messages.create({
       model: MODEL,
@@ -248,6 +274,25 @@ function summarize(arm: string, logs: TurnLog[]): void {
       `write=${avg((l) => l.cacheWrite).toFixed(0)} out=${avg((l) => l.output).toFixed(0)} cost=${avg((l) => l.micro).toFixed(1)}µ$/turn ` +
       `(${(avg((l) => l.micro) * 6.4).toFixed(0)}µ$/min at 6.4 req/min) greeting=${logs[0].micro.toFixed(0)}µ$`,
   );
+  // Per kind, plus the turn right after each idle/companion turn (a wasted
+  // write on the note turn can also leave the next turn without a warm prefix).
+  for (const k of ['player', 'idle', 'companion']) {
+    const ls = steady.filter((l) => l.kind === k);
+    if (!ls.length) continue;
+    const a = (f: (l: TurnLog) => number) => ls.reduce((n, l) => n + f(l), 0) / ls.length;
+    console.log(
+      `${arm.padEnd(6)}   ${k.padEnd(9)} n=${String(ls.length).padStart(2)} in=${a((l) => l.input).toFixed(0)} read=${a((l) => l.cacheRead).toFixed(0)} ` +
+        `write=${a((l) => l.cacheWrite).toFixed(0)} out=${a((l) => l.output).toFixed(0)} cost=${a((l) => l.micro).toFixed(1)}µ$`,
+    );
+  }
+  const next = logs.filter((l, i) => i > 0 && (logs[i - 1].kind === 'idle' || logs[i - 1].kind === 'companion'));
+  if (next.length) {
+    const a = (f: (l: TurnLog) => number) => next.reduce((n, l) => n + f(l), 0) / next.length;
+    console.log(
+      `${arm.padEnd(6)}   ${'next-turn'.padEnd(9)} n=${String(next.length).padStart(2)} in=${a((l) => l.input).toFixed(0)} read=${a((l) => l.cacheRead).toFixed(0)} ` +
+        `write=${a((l) => l.cacheWrite).toFixed(0)} out=${a((l) => l.output).toFixed(0)} cost=${a((l) => l.micro).toFixed(1)}µ$`,
+    );
+  }
 }
 
 async function main(): Promise<void> {

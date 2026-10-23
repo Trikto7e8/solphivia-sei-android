@@ -1596,13 +1596,10 @@ async function sendVoiceGreetingTurnImpl(
     // Multi-companion (260706): a companion ADDED to an ongoing call greets the
     // group (it is joining a call already in progress), not the player cold.
     // 261014: a solo greeting raises the open plan (promptLibrary callGreetingNote).
+    // 261024: the note goes after the cache breakpoint (appendUncachedTail
+    // below), so the transcript prefix this greeting writes is the one the
+    // first user turn reads.
     const note = callGreetingNote({ peers, plan: opts.plan ?? null });
-    const last = messages[messages.length - 1];
-    if (last && last.role === 'user' && typeof last.content === 'string') {
-      last.content = `${last.content}\n${note}`;
-    } else {
-      messages.push({ role: 'user', content: note });
-    }
 
     const llm = await buildLlmProvider();
     // Cache PREWARM (260706): this greeting fires while the call is still
@@ -1612,7 +1609,7 @@ async function sendVoiceGreetingTurnImpl(
     // not a cacheRead" symptom). Matching them writes the tools+system prefix
     // here, during the ring, so the first spoken user reply is a fast cache READ.
     markLastMessageCached(messages);
-    appendUncachedTail(messages, prep.clockNote);
+    appendUncachedTail(messages, note, prep.clockNote);
     const tools = chatTools(llm, true);
     const first = await llm.call({
       maxTokens: 200,
@@ -1751,10 +1748,13 @@ async function sendCompanionVoiceTurnImpl(
       'If the exchange has genuinely run its course, reply with exactly (silence) and nothing else; it is never spoken, it just ends your turn quietly.' +
       windDown +
       ' Do not mention this note.]';
-    foldUserNote(messages, note);
     // Share the same warm tools+system cache prefix as every other voice turn.
+    // 261024: the breakpoint sits on the heard line itself, which later turns
+    // send unchanged, and the note rides after it (appendUncachedTail). Folded
+    // in before the breakpoint, every group-call reaction wrote a prefix that
+    // no turn ever read back.
     markLastMessageCached(messages);
-    appendUncachedTail(messages, prep.clockNote);
+    appendUncachedTail(messages, note, prep.clockNote);
 
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
@@ -1868,10 +1868,10 @@ async function sendVoiceIdleTurnImpl(
         'You can start a topic in one short spoken line: something you remember about the player, something from earlier in this call, or a genuine question. ' +
         'Or reply with exactly (silence) and let the quiet sit, which is completely fine; it is never spoken, it just ends your turn. ' +
         'Do not greet them again and do not ask if they are still there. Do not mention this note.]';
-    foldUserNote(messages, note);
     // Same warm tools+system cache prefix as every other voice turn.
+    // 261024: the note rides after the breakpoint (see the companion turn).
     markLastMessageCached(messages);
-    appendUncachedTail(messages, prep.clockNote);
+    appendUncachedTail(messages, note, prep.clockNote);
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
     const first = await llm.call({

@@ -515,12 +515,18 @@ export function clockTailNote(): string {
  * last user message, so the cached prefix ends right before it and the next
  * turn (which rebuilds that message without the note) still reads the cache.
  * When the last message is not a user turn, the note becomes its own user
- * message. A blank note is a no-op.
+ * message. A blank note is a no-op. Per-turn system notes (a greeting, idle or
+ * group-call reaction note) go here too, never before the breakpoint: folded
+ * into the last message they made the cached prefix end on text that no later
+ * turn sends, so its cache write was never read back.
  */
 export function appendUncachedTail(
   messages: Array<{ role: 'user' | 'assistant'; content: unknown }>,
-  note: string,
+  ...notes: string[]
 ): void {
+  // 261024: several per-turn notes (a turn's own system note, then the clock)
+  // ride as one block, in order; blank ones are skipped.
+  const note = notes.filter((n) => typeof n === 'string' && n.trim()).join('\n');
   if (!note) return;
   const last = messages[messages.length - 1];
   if (!last || last.role !== 'user') {

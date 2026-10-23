@@ -212,6 +212,24 @@ const RELAXED = [
   { t: 16, player: 'tell me a joke', uses: [['say', { text: 'why did the skeleton skip the party? no body to go with. nehehe' }]] },
   { t: 26, player: 'lmao ok', uses: [['say', { text: 'rude. it was a great joke' }]] },
 ]
+// Day, she is digging stone for her own furnace when the player asks for logs
+// (261023 scorecard errands-01 U7). Her answer is stubbed as it was there
+// ("finishing this stone then i'm on wood" + setGoal for_player); the turn
+// after the dig ends is live.
+const FURNACE_GOAL = 'Make a furnace: mine 8 cobblestone, then craft it. Done when I have a furnace.'
+const LOGS_TASK = 'Get Alex 8 logs for their dock. Done when 8 logs are handed over.'
+const STONE_THEN_LOGS = [
+  { t: 0, idle: true, firstSpawn: true, uses: [['say', { text: 'hi alex. stone pickaxe and zero plan' }], ['setGoal', { text: FURNACE_GOAL }]] },
+  { t: 10, player: 'hows it going', uses: [['say', { text: 'good! digging stone for a furnace' }], ['dig', { block: 'stone', maxDistance: 16 }, { result: 'dug stone', inv: [['stone_pickaxe', 1], ['cobblestone', 6], ['dirt', 1]] }]] },
+  { t: 20, idle: true, uses: [['dig', { block: 'stone', maxDistance: 16 }, { hold: true }]] },
+  { t: 26, player: 'get me like 8 logs, i wanna build a dock', uses: [['setGoal', { text: LOGS_TASK, for_player: true }], ['say', { text: "8 logs for the dock, got it. finishing this stone then i'm on wood" }]] },
+]
+const LOG_WORDS = /log|wood|tree|oak|birch|spruce/i
+const logsJudge = (r) => {
+  const first = r.acts[0] ?? null
+  const forLogs = !!first && LOG_WORDS.test(JSON.stringify(first.args ?? {}))
+  return { ok: forLogs, hit: first ? `${first.name}(${JSON.stringify(first.args ?? {}).slice(0, 60)})` : 'no action', said: said(r) || null, acted: r.acts.map((a) => a.name) }
+}
 // Night, she is out gathering logs for her own goal when the player calls.
 const FAR = { x: 150, y: 71, z: 18, dist: 24 }
 const GATHERING = [
@@ -310,6 +328,21 @@ const CASES = {
     world: { inv: [['iron_sword', 1], ['bread', 4], ['oak_log', 3]], holding: 'iron_sword (250/250)', night: true, owner: FAR },
     steps: [...GATHERING, { t: 40, player: 'sui where did u go?? its dark and theres a zombie, im scared, come back', live: true }],
     judge: backJudge,
+  },
+  logs_next: {
+    world: { inv: [['stone_pickaxe', 1], ['cobblestone', 6], ['dirt', 1]], holding: 'stone_pickaxe (121/131)' },
+    steps: [...STONE_THEN_LOGS, { t: 34, release: { result: 'dug stone', inv: [['stone_pickaxe', 1], ['cobblestone', 7], ['dirt', 1]] }, live: true }],
+    judge: logsJudge,
+  },
+  logs_live: {
+    world: { inv: [['stone_pickaxe', 1], ['cobblestone', 6], ['dirt', 1]], holding: 'stone_pickaxe (121/131)' },
+    steps: [...STONE_THEN_LOGS.slice(0, 3), { t: 26, player: 'get me like 8 logs, i wanna build a dock', live: true }, { t: 34, release: { results: { dig: 'dug stone', gather: 'gathered 8/8 oak_log' }, inv: [['stone_pickaxe', 1], ['cobblestone', 7], ['dirt', 1]] }, live: true }],
+    judge: logsJudge,
+  },
+  task_later: {
+    world: { inv: [['oak_log', 2]] },
+    steps: [...TASK, { t: 40, idle: true, live: true }],
+    judge: (r) => { const acts = r.acts.map((a) => `${a.name}(${JSON.stringify(a.args ?? {}).slice(0, 50)})`); const house = r.acts.some((a) => ['build', 'shelter', 'placeBlock'].includes(a.name)); return { ok: !house, hit: house ? acts.join(',') : null, acted: acts } },
   },
   dusk_idle: {
     world: { inv: [['iron_sword', 1], ['bread', 4]], holding: 'iron_sword (250/250)', night: true },

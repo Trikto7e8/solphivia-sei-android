@@ -956,6 +956,11 @@ export const NUDGES = {
   // they said that line. That can be a detour as well as a call-off, so she
   // decides which it was.
   taskSwitched: ({ task, who, line, secs }) => `switched: ${who || 'the player'}'s task "${clipNote(task)}". You left it for something else ${secs}s ago when they said "${clipNote(line, 120)}". If that line called the task off, call clearGoal on it and hand nothing over for it. If it was only a detour, go back to the task once that is done.`,
+  // taskNotStarted (pass 25b): set this session, and no action of hers has
+  // been for it yet (orchestrator taskNotStarted). "get me like 8 logs" got
+  // "finishing this stone then i'm on wood", then more stone for her own
+  // furnace (261023 scorecard errands-01).
+  taskNotStarted: ({ task, who }) => `not started: ${who || 'the player'}'s task "${clipNote(task)}". Since they asked, you have only worked on other things. Their task comes before your own goal: unless they asked for it later or you need to keep them safe first, make its first step your next action.`,
   // taskCleared: she cleared it in answer to that line, a few minutes ago.
   taskCleared: ({ task, who, line, secs }) => `cleared: ${who || 'the player'}'s task "${clipNote(task)}". You cleared it ${secs}s ago, after they said "${clipNote(line, 120)}". Nothing is owed for it now: do not hand anything over for it or set it again unless they ask for it again.`,
   // taskSince: the player has said something since they asked for it.

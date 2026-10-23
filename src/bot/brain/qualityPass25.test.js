@@ -275,3 +275,64 @@ describe('orchestrator: a goal is marked not started until work finishes after i
     expect(allText(after)).not.toContain('is not started yet')
   })
 })
+
+// 261023 (pass 25b): a player task is started only by an action for it (its
+// things in the args, or aimed at the player), not by her other work. The
+// snapshot says so once she has done other things since they asked
+// (261023 scorecard errands-01: "finishing this stone then i'm on wood").
+describe('orchestrator: a player task is not started by her own other work', () => {
+  const TASK = 'get Steve 8 oak logs for his dock and hand them over'
+  const NOTE = `not started: Steve's task \\"${TASK}\\"`
+
+  it('notes the task after her stone finishes, and drops it once she gathers logs', async () => {
+    const { orch, provider, running, drain } = setup([
+      turn(say('s1', 'stone time'), act('a1', 'gather', { name: 'cobblestone', count: 4 })),
+      turn(act('g1', 'setGoal', { text: TASK, for_player: true }), say('s2', 'logs, got it. finishing this stone first')),
+      turn(act('a2', 'gather', { name: 'cobblestone', count: 4 })),
+      turn(act('a3', 'gather', { name: 'oak_log', count: 8 })),
+      turn(act('e1', 'end_loop')),
+    ])
+    orch.recordIncomingChat('Steve', 'hows it going')
+    await orch.handleDispatch('sei:chat_received', line('hows it going'))
+    await flush()
+    orch.recordIncomingChat('Steve', 'get me like 8 logs, i wanna build a dock')
+    await orch.handleDispatch('sei:chat_received', line('get me like 8 logs, i wanna build a dock'))
+    await flush(); await drain(); await flush()
+    // The answering turn carries no note of its own.
+    const answer = provider.calls.find((c) => lastUser(c).includes('get me like 8 logs'))
+    expect(answer).toBeTruthy()
+    expect(lastUser(answer)).not.toContain(NOTE)
+    // Her stone finishes: the next turn says the task is not started.
+    running.gather('gathered 4/4 cobblestone')
+    await flush(); await drain(); await flush()
+    const n = provider.calls.length
+    expect(allText(provider.calls[n - 1])).toContain(NOTE)
+    // More stone: still not started, and that turn starts the logs gather.
+    running.gather('gathered 4/4 cobblestone')
+    await flush(); await drain(); await flush()
+    expect(allText(provider.calls.at(-1))).toContain(NOTE)
+    const m = provider.calls.length
+    running.gather('gathered 8/8 oak_log')
+    await flush(); await drain(); await flush()
+    expect(provider.calls.length).toBeGreaterThan(m)
+    expect(lastUser(provider.calls.at(-1))).not.toContain(NOTE)
+  })
+
+  it('no note for a task she has done nothing else since (asked for later)', async () => {
+    const { orch, provider, drain } = setup([
+      turn(act('g1', 'setGoal', { text: 'build a house with Steve later', for_player: true }), say('s1', 'a house later, ok')),
+      turn(say('s2', 'dirt. boring but everywhere'), act('e1', 'end_loop')),
+    ])
+    orch.recordIncomingChat('Steve', 'wanna build a house with me later?')
+    await orch.handleDispatch('sei:chat_received', line('wanna build a house with me later?'))
+    await flush(); await drain(); await flush()
+    orch.recordIncomingChat('Steve', 'whats ur favorite block')
+    await orch.handleDispatch('sei:chat_received', line('whats ur favorite block'))
+    await flush(); await drain(); await flush()
+    const later = provider.calls.find((c) => lastUser(c).includes('whats ur favorite block'))
+    expect(later).toBeTruthy()
+    expect(allText(later)).not.toContain('not started: Steve')
+    // The heartbeat line itself is marked as not started.
+    expect(allText(later)).toContain(`build a house with Steve later ${NOTE_JSON}`)
+  })
+})

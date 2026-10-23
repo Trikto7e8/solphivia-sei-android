@@ -3757,6 +3757,24 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return importLocalProfileInto(scope, characterIds ? { characterIds } : undefined);
   });
 
+  // 261023: "already offered the own-key import" for the signed-in account
+  // (device-global, keyed by the active scope). Signed out reads as offered.
+  ipcMain.handle(IpcChannel.profile.importOffered, async (_event, actionArg: unknown): Promise<{ offered: boolean }> => {
+    const action = z.enum(['get', 'set']).parse(actionArg);
+    const { getActiveScope } = await import('./paths');
+    const { wasLocalImportOffered, markLocalImportOffered } = await import('./profile/localImportOffered');
+    const scope = getActiveScope();
+    if (action === 'set') {
+      try {
+        await markLocalImportOffered(scope);
+      } catch (err) {
+        console.warn(`[sei] profile.importOffered set failed: ${(err as Error).message}`);
+      }
+      return { offered: true };
+    }
+    return { offered: await wasLocalImportOffered(scope) };
+  });
+
   // === Phase 12 — Browse + moderation + reports + capabilities ===
   //
   // Three-layer contract: channel strings in src/shared/ipc.ts (already

@@ -2750,14 +2750,21 @@ export interface RendererApi {
   migrationShown(action: 'get' | 'set'): Promise<{ shown: boolean }>;
   /**
    * 260603: inspect the anonymous `local` profile for data importable into the
-   * just-signed-in account (user-created characters + onboarding answers).
+   * just-signed-in account (companions, their memories, onboarding answers).
    */
   profilePeekLocal(): Promise<PeekLocalProfileResult>;
   /**
-   * Move the `local` profile's user-created characters (+ memory/skins/portraits)
-   * and onboarding answers into the active account profile. Optional id subset.
+   * Move the `local` profile's companions (+ memory/skins/portraits) and
+   * onboarding answers into the active account profile, merging into what the
+   * account already has without replacing it. Idempotent. Optional id subset.
    */
   profileImportFromLocal(characterIds?: string[]): Promise<ImportLocalProfileResult>;
+  /**
+   * 261023: whether the own-key import was already offered to the signed-in
+   * account on this device ('get'), or record that it was ('set'). Device
+   * global, keyed by account, so "Not now" is not asked again every launch.
+   */
+  profileImportOffered(action: 'get' | 'set'): Promise<{ offered: boolean }>;
   /**
    * Open a URL in the user's default browser. Any https site is allowed (the
    * host allowlist was removed 260725); main still gates the PROTOCOL to
@@ -3145,12 +3152,30 @@ export interface ScopeChangedEvent {
 
 /** Result of inspecting the `local` profile for importable data (260603). */
 export interface PeekLocalProfileResult {
-  /** Non-default, user-created character ids present in the local profile. */
+  /**
+   * Companions in the local profile's roster that the import brings across:
+   * the player's own (made without an account) plus World companions and the
+   * former defaults (Sui, Lyra, Marv) they had added (261023).
+   */
   migratableCharacterIds: string[];
+  /**
+   * Companions that are not in the local roster but still have memories
+   * there (removed from the library, memories kept). Their memories are
+   * merged too; they are not added back to the roster (261023).
+   */
+  memoryOnlyCharacterIds: string[];
   mcUsername: string | null;
   preferredName: string | null;
   /** True when there is anything worth offering to import. */
   hasData: boolean;
+  /** True when there are companions or memories to bring (not only the onboarding answers). */
+  hasCompanionData: boolean;
+  /**
+   * Of the ids above: the Sui the first-run scene seeded that the player never
+   * chatted or played with (no memory entry, no transcript row of theirs).
+   * She alone does not earn the boot offer or the Settings row (261023).
+   */
+  untouchedSeedIds: string[];
 }
 
 /** Result of importing the `local` profile into the signed-in account (260603). */
@@ -3204,12 +3229,20 @@ export interface UpdateDownloadedEvent {
    * `forced`; absent/false on the optional consented flow.
    */
   onRestart?: boolean;
+  /** The downloaded version (from electron-updater's UpdateInfo), when known. */
+  version?: string;
 }
 
 /** Post-update "what's new" changelog shown on the next launch (Flow D). */
 export interface WhatsNewEvent {
   version: string;
   changelog: string;
+  /**
+   * True when the user already read this changelog before accepting the
+   * update (optional flow). The renderer shows a small "Updated to vX" toast
+   * with the top changelog line instead of the full what's-new modal.
+   */
+  brief?: boolean;
 }
 
 /**
@@ -3866,6 +3899,7 @@ export const IpcChannel = {
   profile: {
     peekLocal: 'profile:peek-local',
     importFromLocal: 'profile:import-from-local',
+    importOffered: 'profile:import-offered',
   },
   // Phase 12 — Browse + moderation + reports.
   //   list                  — paged listing of public moderation-clean

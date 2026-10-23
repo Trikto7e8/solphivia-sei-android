@@ -3479,18 +3479,41 @@ updates install from the zip artifact.
 **The download never blocks the app (260801).** Two renderer surfaces, split by
 whether the state needs a decision right now: `UpdatePopup` is the modal (the
 optional-update offer with its changelog, the post-update what's-new, and the
-`apply:'now'` restart), `UpdatePill` is a corner card that never takes the
-pointer (download progress, then "ready, restart to apply"). Before the split,
-`app:update-progress` drove the popup into a scrimmed `downloading` state with
-no dismiss path, so a routine MANDATORY patch, which updater.ts deliberately
-downloads without asking, locked the user out of the app until it finished.
-The consented flow no longer auto-installs either: the accepted download may
-land minutes later with the user mid-game, so `autoInstallOnAppQuit` applies it
-on the next quit and the pill only OFFERS the restart. `forced` is the one
-state that still takes the window, because main quits a few seconds later
-regardless. The `downloading` pill has no dismiss (nothing to decide while it
-works), so `App.tsx` must clear it on `app:update-error` or a dead download
-pins it at whatever percent it reached.
+`apply:'now'` restart); everything else lives in `useUpdateStore` and never
+takes the pointer. Before the split, `app:update-progress` drove the popup into
+a scrimmed `downloading` state with no dismiss path, so a routine MANDATORY
+patch, which updater.ts deliberately downloads without asking, locked the user
+out of the app until it finished. The consented flow no longer auto-installs
+either: the accepted download may land minutes later with the user mid-game,
+so `autoInstallOnAppQuit` applies it on the next quit and the UI only OFFERS
+the restart. `forced` is the one state that still takes the window, because
+main quits a few seconds later regardless. The downloading state has no
+dismiss (nothing to decide while it works), so `App.tsx` clears it on
+`app:update-error` or a dead download pins it at whatever percent it reached
+(`clearRail` never clears a READY update).
+
+**"Update Sei" is a sidebar button, and one click finishes the job (261023).**
+`UpdateRailButton` sits full-bleed at the foot of `IconRail` (Telegram's
+"Update Telegram" footer is the reference): a quiet hairline bar while
+downloading, a `--green` to `--accent-strong` block when ready, a spinner while
+restarting. It replaced the corner `UpdatePill`, which was easy to dismiss and
+forget. A click while a call, a companion bot, chess, a screen share or a
+Draw! turn is live confirms first (`liveSessionForRestart`). The install args
+come from `src/main/updateInstall.ts` (`restartInstallArgs`): on Windows
+`quitAndInstall(true, true)`, which NsisUpdater turns into
+`--updated /S --force-run`, so no installer window appears and the one-click
+installer reopens Sei when it is done (the old bare `quitAndInstall()` was
+`--updated --force-run`: it also reopened Sei, but showed the "Installing,
+please wait" banner meanwhile). macOS ignores the args (Squirrel relaunches).
+The update-on-quit run stays `--updated /S` with no relaunch.
+`build/installer.nsh` tells the two silent runs apart by `--force-run`: the
+one-time legacy per-machine cleanup (a UAC prompt) runs on the in-app restart
+but never on the quit run. `.github/workflows/nsis-upgrade-check.yml` covers
+both paths (relaunch or not, no visible installer window, the timing). An
+accepted OPTIONAL download stashes `pending` with `brief: true`, so the
+relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
+changelog bullet, `topChangelogLine`) instead of reopening the changelog the
+user already read; mandatory updates keep the full what's-new modal.
 
 ---
 
@@ -3596,6 +3619,33 @@ pins it at whatever percent it reached.
     is kept in `callState` (`endCallFromCompanion`) so the switch closes it
     and writes its row in the old account; `applyCallReport` is the pure
     composition the `voice:call-state` handler runs.
+- **Own-key companions stranded or mis-owned on sign-in (261023)** → the
+  `local` profile → account import (`src/main/profile/localImport.ts`) is
+  offered on EVERY local→account sign-in that finds companions or memories,
+  new account or existing (App.tsx; a sign-in inside the first-run scene is
+  offered when the scene hands off). It merges, never replaces
+  (`profile/memoryMerge.ts`): an account copy of the same id keeps its JSON
+  and art, MEMORY.md / archive / chat.jsonl are line-unioned, `worlds.json`
+  merges by fingerprint and renumbers the local `## World N` headers. Only
+  owner-null companions are stamped with the account; World companions and
+  Sui/Lyra/Marv keep their real owner and go into `added_world_ids`
+  (stamping them made the sign-in reconcile sweep delete them as leaks).
+  Idempotent; moved data is removed from `local`.
+  Accounts that signed in on an older build never saw the offer, so it is
+  also shown ONCE at boot per account per device (`checkBootImportOffer` in
+  `lib/localImportOffer.ts`; only on a calm Home: no modal, tour, first
+  moment, call, game or share), and Settings → Account has a "Bring
+  companions from this computer" row (`settings/LocalImportRow.tsx`). Any
+  answer from any entry point is recorded in the device-global
+  `<userData>/local-import-offered.json` (`profile/localImportOffered.ts`,
+  IPC `profile:import-offered`). Those two entry points ignore the Sui the
+  first-run scene seeded when the player never touched her (no memory
+  entry, knowledge, bridge, or non-assistant chat row:
+  `peek.untouchedSeedIds`); the sign-in offer does not. A failed import
+  keeps the modal up with an error line and "Try again". A local
+  `## World N` header with no `worlds.json` entry gets a fresh number above
+  every number in use, reserved in the account's registry under
+  `UNREGISTERED_WORLD_FP` so the bot never reuses it.
 - **A whole-config write reverts other writers (260929)** → every main-process
   write of the profile `config.json` goes through `configStore.updateConfig`
   (locked read-modify-write, path fixed when the call starts) and sets only

@@ -11,7 +11,8 @@
  *   - whats-new → post-update changelog with [Got it].
  *
  * The download itself is NOT here (260801): progress and the "ready, restart to
- * apply" prompt moved to UpdatePill, a corner card that doesn't block the app.
+ * apply" prompt moved out of the modal (260801), and since 261023 they live in
+ * the sidebar "Update Sei" button (UpdateRailButton), which never blocks.
  * `forced` is the one updater state that still takes over the window, because
  * main quits and installs a few seconds later either way.
  *

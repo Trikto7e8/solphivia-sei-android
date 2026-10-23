@@ -54,6 +54,7 @@ import type { LlmListModelsResult, SpeechPackStatePush } from '@shared/ipc';
 import styles from './SettingsScreen.module.css';
 import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
 import { SearchSettingsSection } from '../components/settings/SearchSettingsSection';
+import { LocalImportRow } from '../components/settings/LocalImportRow';
 import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
 import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
@@ -1077,6 +1078,10 @@ export function SettingsScreen(): React.ReactElement {
                 {t('Update my preferences')}
               </Button>
             </div>
+
+            {/* 261023: the own-key (local profile) import, for a player who
+                said "Not now" to the offer. Hidden when there is nothing. */}
+            <LocalImportRow accountId={authState.user.id} />
 
             <div className={styles.row}>
               <span className={styles.label}>{t('Migrate local companions')}</span>

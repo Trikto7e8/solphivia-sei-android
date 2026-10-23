@@ -11,7 +11,9 @@
  *   - pending — set when a MANDATORY update was silently downloaded but its
  *     changelog hasn't been shown yet. On the next launch, if
  *     `pending.version === app.getVersion()`, we show `pending.changelog` and
- *     clear the record. `{ version, changelog }` or null.
+ *     clear the record. `{ version, changelog, brief? }` or null. An accepted
+ *     OPTIONAL download stashes it too with `brief: true` (261023), so the
+ *     relaunch can confirm "Updated to vX" without repeating the changelog.
  *
  * Atomic writes via `atomicWrite` + `withFileLock` — same discipline as
  * wizardStateStore.ts / characterStore.ts. Defensive parsing: any structural
@@ -41,6 +43,13 @@ export interface PendingWhatsNew {
   version: string;
   /** Human-readable changelog (markdown-ish) to render in the what's-new popup. */
   changelog: string;
+  /**
+   * True when the user already read this changelog up front (an OPTIONAL
+   * update they accepted from the "Update now" popup). The next launch then
+   * shows a small "Updated to vX" toast instead of the full what's-new modal.
+   * Absent for mandatory downloads, whose changelog was never shown.
+   */
+  brief?: boolean;
 }
 
 /** Device-global updater state shape. */
@@ -76,7 +85,9 @@ function coercePending(raw: unknown): PendingWhatsNew | null {
   ) {
     return null;
   }
-  return { version: obj.version, changelog: obj.changelog };
+  return obj.brief === true
+    ? { version: obj.version, changelog: obj.changelog, brief: true }
+    : { version: obj.version, changelog: obj.changelog };
 }
 
 /**

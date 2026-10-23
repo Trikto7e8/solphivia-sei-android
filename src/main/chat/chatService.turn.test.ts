@@ -1183,8 +1183,9 @@ describe('single-shot voice turns keep their note after the cache breakpoint (26
     const { marked, tail, tailRole } = split(req.messages);
     expect(marked).toBe('hey.');
     expect(tail).toContain('quiet for about 30 seconds');
-    expect(tail).toContain('the current date and time is');
-    expect(tail.indexOf('quiet for about')).toBeLessThan(tail.indexOf('the current date and time is'));
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
+    expect(tail.indexOf('quiet for about')).toBeLessThan(tail.indexOf('[now: '));
     expect(tailRole).toBe('user');
   });
 
@@ -1199,7 +1200,8 @@ describe('single-shot voice turns keep their note after the cache breakpoint (26
     expect(marked).toContain('(Sui, on the call): this game is chaos');
     expect(marked).not.toContain('System note');
     expect(tail).toContain('Sui just said the line above on the call');
-    expect(tail).toContain('the current date and time is');
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
   });
 
   it('greeting: the note follows the breakpoint', async () => {
@@ -1212,6 +1214,7 @@ describe('single-shot voice turns keep their note after the cache breakpoint (26
     const { marked, tail } = split(req.messages);
     expect(marked).toBe('later.');
     expect(tail).toMatch(/System note/);
-    expect(tail).toContain('the current date and time is');
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
   });
 });

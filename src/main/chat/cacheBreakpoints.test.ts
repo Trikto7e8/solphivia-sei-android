@@ -108,7 +108,7 @@ describe('a voice call turn (261024)', () => {
     const blocks = buildSystemBlocks(sysArgs(true));
     const status = blocks[blocks.length - 1].text;
     expect(status).not.toMatch(/\d{2}:\d{2}/);
-    expect(status).toContain('in the note at the end of the latest message');
+    expect(status).toContain('the "now" stamp at the end of the latest message');
     // Typed chat (and every caller that does not opt in) keeps the live clock.
     const plain = buildSystemBlocks(sysArgs(false));
     expect(plain[plain.length - 1].text).toMatch(/The current date and time is .+\d{2}:\d{2}\./);
@@ -140,7 +140,7 @@ describe('a voice call turn (261024)', () => {
       expect(blocks).toHaveLength(2);
       expect(blocks[0]).toEqual({ type: 'text', text: '[24 Oct 10:34] hey', cache_control: { type: 'ephemeral' } });
       expect(blocks[1].cache_control).toBeUndefined();
-      expect(blocks[1].text).toContain('Sat 24 Oct 2026, 10:34');
+      expect(blocks[1].text).toBe('[now: Sat 24 Oct 2026, 10:34]');
 
       // Next turn the same row is rebuilt without the note: its cached block is
       // exactly what turn 1 wrote, so the read covers it.

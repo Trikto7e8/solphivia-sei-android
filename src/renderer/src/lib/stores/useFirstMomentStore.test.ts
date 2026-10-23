@@ -55,20 +55,35 @@ describe('greetingOptions: only the armed companion steers its greeting', () => 
     expect(useFirstMomentStore.getState().status).toBe('armed');
   });
 
-  it('chess leads with no Minecraft installed', async () => {
+  it('Backseat leads with no Minecraft installed', async () => {
     const { useFirstMomentStore } = await load();
     useFirstMomentStore.getState().arm('c1');
-    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'chess' } });
-    expect(useFirstMomentStore.getState().plan).toEqual({ primary: 'chess', minecraft: false });
+    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'backseat' } });
+    expect(useFirstMomentStore.getState().plan).toEqual({ primary: 'backseat', minecraft: false, backseat: true });
     expect(useFirstMomentStore.getState().status).toBe('greeting');
   });
 
-  it('an installed Minecraft is offered, chess still leads', async () => {
+  it('an installed Minecraft is offered, Backseat still leads', async () => {
     detectMock.mockResolvedValue({ installs: [{ id: 'vanilla' }] });
     const { useFirstMomentStore } = await load();
     useFirstMomentStore.getState().arm('c1');
+    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'backseat' } });
+    expect(useFirstMomentStore.getState().plan).toEqual({ primary: 'backseat', minecraft: true, backseat: true });
+  });
+
+  it('a text-only model (vision probe says no) gets chess and no Backseat', async () => {
+    const { useFirstMomentStore, useUiStore } = await load();
+    useUiStore.getState().setLlmVision('no');
+    useFirstMomentStore.getState().arm('c1');
     expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'chess' } });
-    expect(useFirstMomentStore.getState().plan).toEqual({ primary: 'chess', minecraft: true });
+    expect(useFirstMomentStore.getState().plan).toEqual({ primary: 'chess', minecraft: false, backseat: false });
+  });
+
+  it('an unknown vision answer still offers Backseat', async () => {
+    const { useFirstMomentStore, useUiStore } = await load();
+    useUiStore.getState().setLlmVision('unknown');
+    useFirstMomentStore.getState().arm('c1');
+    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'backseat' } });
   });
 
   it('an open LAN world makes the greeting invite into Minecraft', async () => {
@@ -115,7 +130,7 @@ describe('greetingOptions: only the armed companion steers its greeting', () => 
       useFirstMomentStore.getState().arm('c1');
       const p = useFirstMomentStore.getState().greetingOptions('c1');
       await vi.advanceTimersByTimeAsync(MC_PROBE_WAIT_MS + 10);
-      expect(await p).toEqual({ firstMoment: { primary: 'chess' } });
+      expect(await p).toEqual({ firstMoment: { primary: 'backseat' } });
       expect(useFirstMomentStore.getState().plan?.minecraft).toBe(false);
     } finally {
       vi.useRealTimers();
@@ -126,7 +141,8 @@ describe('greetingOptions: only the armed companion steers its greeting', () => 
     detectMock.mockRejectedValue(new Error('scan failed'));
     const { useFirstMomentStore } = await load();
     useFirstMomentStore.getState().arm('c1');
-    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'chess' } });
+    expect(await useFirstMomentStore.getState().greetingOptions('c1')).toEqual({ firstMoment: { primary: 'backseat' } });
+    expect(useFirstMomentStore.getState().plan?.minecraft).toBe(false);
   });
 
   it('is one-shot: a second open after the greeting gets undefined', async () => {
@@ -192,7 +208,7 @@ describe('markShown + act: the two analytics events', () => {
     useFirstMomentStore.getState().markShown();
     useFirstMomentStore.getState().markShown();
     expect(eventsNamed('first_moment_shown')).toEqual([
-      { primary: 'chess', minecraft_offered: false, companion: 'generated' },
+      { primary: 'backseat', minecraft_offered: false, backseat_offered: true, companion: 'generated' },
     ]);
   });
 
@@ -201,7 +217,7 @@ describe('markShown + act: the two analytics events', () => {
     const { useFirstMomentStore } = await ready(DEFAULT_CHARACTER_UUIDS.sui);
     useFirstMomentStore.getState().markShown();
     expect(eventsNamed('first_moment_shown')).toEqual([
-      { primary: 'chess', minecraft_offered: false, companion: 'sui' },
+      { primary: 'backseat', minecraft_offered: false, backseat_offered: true, companion: 'sui' },
     ]);
   });
 
@@ -219,7 +235,7 @@ describe('markShown + act: the two analytics events', () => {
     useFirstMomentStore.getState().act('call');
     const actions = eventsNamed('first_moment_action') as Array<Record<string, unknown>>;
     expect(actions).toHaveLength(1);
-    expect(actions[0]).toMatchObject({ action: 'chess', primary: 'chess' });
+    expect(actions[0]).toMatchObject({ action: 'chess', primary: 'backseat' });
     expect(typeof actions[0].ms_since_shown).toBe('number');
     expect(useFirstMomentStore.getState().status).toBe('done');
   });

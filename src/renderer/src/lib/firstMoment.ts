@@ -19,10 +19,12 @@ import type { FirstMomentGame } from '@shared/ipc';
 export type FirstMomentAction = FirstMomentGame | 'call' | 'dismiss';
 
 export interface FirstMomentPlan {
-  /** The game the companion invites to, and the accent button. */
+  /** What the companion invites to, and the accent button. */
   primary: FirstMomentGame;
   /** Whether the card offers Minecraft at all. */
   minecraft: boolean;
+  /** Whether the card offers Backseat (a screen share) at all. */
+  backseat: boolean;
 }
 
 /**
@@ -44,23 +46,42 @@ export function firstMomentCompanion(
 }
 
 /**
- * Which games the card offers. Chess needs no install, so it leads for
- * everyone except a player who already has a Minecraft LAN world open. The
- * Minecraft button only shows when it can go somewhere: a world is open, or a
- * Minecraft install was found on this machine (the launch panel then walks
- * them through setup). Someone with no Minecraft never sees it.
+ * Which games the card offers (261023).
+ *
+ * Backseat leads for everyone except a player who already has a Minecraft LAN
+ * world open. It needs no install and works over any game, and it is what most
+ * new players came for: on fresh 0.6.8 installs (10-10 to 10-22) it was the
+ * first activity for 80 people against 27 for Minecraft and 15 for chess, the
+ * site page they downloaded from most after the home page is
+ * /ai-backseat-gamer, and the old chess lead was tapped by 13 of the 258
+ * people who saw it. Backseat is left out only when the model cannot see
+ * images (a confident 'no' from the vision probe), and then chess leads, since
+ * it also needs no install. The Minecraft button only shows when it can go
+ * somewhere: a world is open, or a Minecraft install was found on this machine
+ * (the launch panel then walks them through setup). Someone with no Minecraft
+ * never sees it.
  */
-export function planFirstMoment(env: { lanOpen: boolean; mcInstalled: boolean }): FirstMomentPlan {
+export function planFirstMoment(env: {
+  lanOpen: boolean;
+  mcInstalled: boolean;
+  backseatOk: boolean;
+}): FirstMomentPlan {
   return {
-    primary: env.lanOpen ? 'minecraft' : 'chess',
+    primary: env.lanOpen ? 'minecraft' : env.backseatOk ? 'backseat' : 'chess',
     minecraft: env.lanOpen || env.mcInstalled,
+    backseat: env.backseatOk,
   };
 }
 
-/** The card's buttons in display order: primary game first, then the other
- *  game when offered, then the call. */
+/** The card's buttons in display order: the primary first, then the other
+ *  offered options in a fixed order (Backseat, Minecraft, chess), then the
+ *  call. Chess and the call are always offered. */
 export function firstMomentButtons(plan: FirstMomentPlan): Array<Exclude<FirstMomentAction, 'dismiss'>> {
-  const games: FirstMomentGame[] =
-    plan.primary === 'minecraft' ? ['minecraft', 'chess'] : plan.minecraft ? ['chess', 'minecraft'] : ['chess'];
-  return [...games, 'call'];
+  const offered: FirstMomentGame[] = [
+    ...(plan.backseat ? (['backseat'] as const) : []),
+    ...(plan.minecraft ? (['minecraft'] as const) : []),
+    'chess',
+  ];
+  const rest = offered.filter((g) => g !== plan.primary);
+  return [plan.primary, ...rest, 'call'];
 }

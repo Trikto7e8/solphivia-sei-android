@@ -31,7 +31,8 @@
  *     http://localhost:5173/?dashshot=art&part=browse|page|call&art=<url>  names over character art (DevArtShot, 261023)
  *     http://localhost:5173/?dashshot=chatui&part=chat|picker|settings  the rail + a screen, for theme/accent checks
  *                                                  (&lang=zh on any of these for the Chinese copy)
- *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open)
+ *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open;
+ *                                                  &novision=1: text-only model, chess leads)
  *                                                  (&update=downloading|ready|restarting|updated: the sidebar
  *                                                  "Update Sei" button / "Updated to vX" toast, 261023;
  *                                                  &live=game: a companion online, so a click asks first)
@@ -253,6 +254,7 @@ function seed(): void {
   }
   if (params.get('dashshot') === 'chatfirst') {
     if (params.has('lan')) useDataStore.setState({ lan: { kind: 'open', port: 25565, motd: 'My World', lastSeenAt: Date.now() } });
+    if (params.has('novision')) useUiStore.getState().setLlmVision('no');
     useFirstMomentStore.getState().arm(FIRST_ID);
   }
 }

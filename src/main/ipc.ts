@@ -2599,7 +2599,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   // greeting also ends on an offer to play `primary`. A malformed options arg
   // degrades to a plain greeting rather than failing the open.
   const ChatOpenedOptsSchema = z
-    .object({ firstMoment: z.object({ primary: z.enum(['chess', 'minecraft']) }).optional() })
+    .object({ firstMoment: z.object({ primary: z.enum(['chess', 'minecraft', 'backseat']) }).optional() })
     .optional();
   ipcMain.handle(IpcChannel.chat.opened, async (_event, idArg: unknown, optsArg?: unknown): Promise<ChatMessage[]> => {
     const id = IdSchema.parse(idArg);

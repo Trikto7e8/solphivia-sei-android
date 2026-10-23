@@ -225,4 +225,6 @@ export const ZH_CHATUI: Record<string, string> = {
   'Play chess now': '现在来下棋',
   'Summon me in Minecraft': '叫我进 Minecraft',
   'Call me': '给我打电话',
+  // 261023: Backseat leads the card (a screen share, over any game).
+  'Show me your game': '让我看你玩游戏',
 };

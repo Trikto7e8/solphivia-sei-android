@@ -395,7 +395,7 @@ describe('useChatStore.load: guided first moment', () => {
     const { store, fm } = await setup();
     fm.getState().arm('c1');
     await store.getState().load('c1');
-    expect(chatOpenedMock).toHaveBeenCalledWith('c1', { firstMoment: { primary: 'chess' } });
+    expect(chatOpenedMock).toHaveBeenCalledWith('c1', { firstMoment: { primary: 'backseat' } });
     expect(store.getState().messages['c1']).toHaveLength(2);
     expect(fm.getState().status).toBe('ready');
   });

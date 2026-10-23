@@ -110,11 +110,21 @@ describe('renderHeartbeat marks not-started goals', () => {
   })
 })
 
+describe('NUDGES.goalsNotStarted', () => {
+  it('names one goal, lists several, and is empty with none', () => {
+    expect(NUDGES.goalsNotStarted([])).toBe('')
+    expect(NUDGES.goalsNotStarted(['Build a hut.'])).toBe('Your goal "Build a hut." is not started yet: you have done no work in the world since you set it.')
+    expect(NUDGES.goalsNotStarted(['a', 'b'])).toBe('These goals are not started yet, you have done no work in the world since you set them: "a", "b".')
+    const long = NUDGES.goalsNotStarted([`build ${'x '.repeat(100)}`])
+    expect(long).toMatch(/\.\.\." is not started yet/)
+  })
+})
+
 describe('next_time texts follow progress', () => {
   it('asks for start or try on what was not started and finish on what was worked on', () => {
     expect(NEXT_TIME_FIELD).toContain('Write it in a few words that match how far it really got.')
-    expect(NEXT_TIME_FIELD).toContain('Something you have worked on is one to finish or keep going, like "finish the roof".')
-    expect(NEXT_TIME_FIELD).toContain('Something you have not started yet, including any goal marked not started yet, is one to start or try, like "start the roof".')
+    expect(NEXT_TIME_FIELD).toContain('A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like "start the roof".')
+    expect(NEXT_TIME_FIELD).toContain('Say finish or keep going only for something you actually worked on, like "finish the roof" once part of it is built.')
     expect(NEXT_TIME_GOODBYE).toContain('"next time I\'ll start on the roof" or "next time we finish the roof", whichever matches how far it got')
     expect(NEXT_TIME_FOR_PLAYER_FIELD).toContain('"Start the cabin roof", "Finish the cabin roof"')
   })
@@ -247,8 +257,10 @@ describe('orchestrator: a goal is marked not started until work finishes after i
     await flush()
     const before = provider.calls.find((c) => lastUser(c).includes('grab some wood'))
     expect(before).toBeTruthy()
-    // Seed heartbeat of the new loop and the heartbeatNow list both carry it.
+    // The seed heartbeat of the new loop marks it, and the player-line turn
+    // says it right above their line.
     expect(allText(before)).toContain(`Build a starter hut. Done when it has a roof. ${NOTE_JSON}`)
+    expect(lastUser(before)).toContain('Your goal \\"Build a starter hut. Done when it has a roof.\\" is not started yet')
 
     running.gather('gathered 4/4 oak_log')
     await flush(); await drain(); await flush()
@@ -260,5 +272,6 @@ describe('orchestrator: a goal is marked not started until work finishes after i
     expect(after).toBeTruthy()
     expect(allText(after)).toContain('Build a starter hut. Done when it has a roof.')
     expect(allText(after)).not.toContain(NOTE_JSON)
+    expect(allText(after)).not.toContain('is not started yet')
   })
 })

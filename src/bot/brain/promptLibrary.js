@@ -681,7 +681,7 @@ export const SEED_HEADERS = {
 // go on, a goal set on the greeting turn and never begun was saved as "finish
 // the starter base" (pass 24 probe bye_own, 6 of 8).
 export const NEXT_TIME_FIELD =
-  'Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like "finish the roof". Something you have not started yet, including any goal marked not started yet, is one to start or try, like "start the roof". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up.'
+  'Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like "start the roof". Say finish or keep going only for something you actually worked on, like "finish the roof" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up.'
 
 // 261014: the same step written to the player, for the Home "up next" strip
 // (shown under "Up next with <name>"). Saved apart from the memory note
@@ -1002,6 +1002,18 @@ export const NUDGES = {
     if (!list.length) return ''
     const clip = (g) => { const t = g.replace(/\s+/g, ' ').trim(); return t.length > 160 ? `${t.slice(0, 157).trimEnd()}...` : t }
     return `Your heartbeat right now, including anything you wrote down since this loop began:\n${list.map((g) => `- ${clip(g.text)}${g.notStarted ? ` ${GOAL_NOT_STARTED_NOTE}` : ''}`).join('\n')}\nIf their line calls one of these off or changes it, call clearGoal on it in this same turn, and setGoal the new plan if there is one.`
+  },
+  // 261023 (pass 25): on a player line that opens a loop, the goals set this
+  // session that no work has followed. The heartbeat block says so too, but
+  // it sits far above, and with only that her goodbye still said "finish"
+  // for one in about half the probe runs.
+  goalsNotStarted: (goals) => {
+    const list = (Array.isArray(goals) ? goals : []).filter((g) => typeof g === 'string' && g.trim()).slice(-3)
+    if (!list.length) return ''
+    const clip = (g) => { const t = g.replace(/\s+/g, ' ').trim(); return t.length > 120 ? `${t.slice(0, 117).trimEnd()}...` : t }
+    return list.length === 1
+      ? `Your goal "${clip(list[0])}" is not started yet: you have done no work in the world since you set it.`
+      : `These goals are not started yet, you have done no work in the world since you set them: ${list.map((g) => `"${clip(g)}"`).join(', ')}.`
   },
   replyNoRestate: `Their line is already in the chat, so do not repeat it back to them; start your reply with your own words. Leave out anything you already told them in the conversation above (where you are, what you have, your plan, a joke you made); answer what they just said. When you talk about something from earlier, keep to what the conversation above shows they said and what happened; a line of yours shows only what you said, not what they did or felt.`,
 

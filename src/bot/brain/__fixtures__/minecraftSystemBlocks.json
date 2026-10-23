@@ -130,7 +130,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",
@@ -156,7 +156,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",
@@ -1184,7 +1184,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",
@@ -1210,7 +1210,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",
@@ -2237,7 +2237,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",
@@ -2263,7 +2263,7 @@
             },
             "next_time": {
               "type": "string",
-              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. Something you have worked on is one to finish or keep going, like \"finish the roof\". Something you have not started yet, including any goal marked not started yet, is one to start or try, like \"start the roof\". It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
+              "description": "Optional. Fill this only when there is something real to pick up next session: a goal you have not finished, something you two were in the middle of, or a plan from your memory. Write it in a few words that match how far it really got. A goal you wrote down but never worked on, like one marked not started yet, is something to start or try, like \"start the roof\". Say finish or keep going only for something you actually worked on, like \"finish the roof\" once part of it is built. It is saved to your memory so you can bring it up next time. Leave it out when there is nothing like that, and never make one up."
             },
             "next_time_for_player": {
               "type": "string",

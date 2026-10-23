@@ -2593,6 +2593,16 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     })) + crossedTail + (humanLine ? heartbeatNowTail() + ownRepeatsTail(crossed ? 'greeted' : 'reply') : '')
   }
 
+  // 261023 (pass 25): NUDGES.goalsNotStarted for a player line that opens a
+  // loop (the mid-loop line has heartbeatNowTail, which marks them itself).
+  function notStartedTail() {
+    const list = heartbeatGoalLines.length === heartbeatGoals.length
+      ? heartbeatGoals.filter((_, i) => goalNotStarted(heartbeatGoalLines[i], { sessionStartMs: sessionStartedAt, lastWorkAt }))
+      : []
+    const t = NUDGES.goalsNotStarted(list)
+    return t ? `\n\n${t}` : ''
+  }
+
   function heartbeatNowTail() {
     const goals = heartbeatGoalLines.length === heartbeatGoals.length
       ? heartbeatGoalLines.map((l, i) => ({ text: heartbeatGoals[i], notStarted: goalNotStarted(l, { sessionStartMs: sessionStartedAt, lastWorkAt }) }))
@@ -3298,6 +3308,7 @@ function maybeWarnByteCap(loop, warned) {
               // given while she was idle ("grab coal then come back") were
               // never recorded (0/18 in the goals harness).
               (fromTeammate ? '' : MEMORY_GOAL_TAIL)) +
+          (fromTeammate ? '' : notStartedTail()) +
           `\n\nTheir line, ${lineSpeaker}: ${lineText}` +
           // Said again right under the line. Ending the block on the line
           // alone read as a transcript to continue: she wrote say("...") in

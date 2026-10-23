@@ -232,10 +232,18 @@ async function moveIntoPlace(src: string, dest: string): Promise<void> {
   await rename(src, dest);
 }
 
-async function writeMerged(dest: string, body: string): Promise<void> {
+/**
+ * Read-merge-write `dest` under its file lock, so a writer that appends while
+ * the import runs (a chat remember(), a transcript row) is not overwritten by
+ * a merge computed from an older read. `merge` gets the current text ('' when
+ * missing) and returns the new one; nothing is written when it is unchanged.
+ */
+async function mergeInto(dest: string, merge: (current: string) => string): Promise<void> {
   await mkdir(path.dirname(dest), { recursive: true });
   await withFileLock(dest, async () => {
-    await atomicWrite(dest, body);
+    const current = (await readText(dest)) ?? '';
+    const next = merge(current);
+    if (next !== current) await atomicWrite(dest, next);
   });
 }
 
@@ -264,14 +272,20 @@ export async function mergeMemoryDir(srcDir: string, destDir: string): Promise<v
     for (const f of MEMORY_TEXT_FILES) {
       reserved = Math.max(reserved, maxWorldHeaderNum((await readText(path.join(destDir, f))) ?? ''));
     }
-    const { merged, map } = mergeWorldRegistries(parseRegistry(await readText(destWorlds)), localReg, reserved);
-    worldMap = map;
-    await writeMerged(destWorlds, JSON.stringify(merged, null, 2) + '\n');
+    await mergeInto(destWorlds, (current) => {
+      const { merged, map } = mergeWorldRegistries(parseRegistry(current || null), localReg, reserved);
+      worldMap = map;
+      return JSON.stringify(merged, null, 2) + '\n';
+    });
   }
-  await rm(srcWorlds, { force: true });
+  // The local worlds.json is removed LAST (below): it is what maps the local
+  // `## World N` headers, and a re-run after a crash before the memory files
+  // are merged must still be able to renumber them. Re-merging it is a no-op
+  // (every world matches by fingerprint).
 
   const entries = await readdir(srcDir, { withFileTypes: true });
   for (const e of entries) {
+    if (e.name === 'worlds.json') continue;
     const src = path.join(srcDir, e.name);
     const dest = path.join(destDir, e.name);
     if (e.isDirectory()) {
@@ -285,14 +299,11 @@ export async function mergeMemoryDir(srcDir: string, destDir: string): Promise<v
     if (!e.isFile()) continue;
     if (MEMORY_TEXT_FILES.has(e.name)) {
       const local = renumberWorldHeaders((await readText(src)) ?? '', worldMap);
-      const target = (await readText(dest)) ?? '';
-      const merged = mergeMemoryMarkdown(target, local);
-      if (merged !== target) await writeMerged(dest, merged);
+      await mergeInto(dest, (target) => mergeMemoryMarkdown(target, local));
       await rm(src, { force: true });
     } else if (e.name.endsWith('.jsonl')) {
-      const target = (await readText(dest)) ?? '';
-      const merged = mergeJsonlByTs(target, (await readText(src)) ?? '');
-      if (merged !== target) await writeMerged(dest, merged);
+      const local = (await readText(src)) ?? '';
+      await mergeInto(dest, (target) => mergeJsonlByTs(target, local));
       await rm(src, { force: true });
     } else if (!(await exists(dest))) {
       await moveIntoPlace(src, dest);
@@ -339,12 +350,24 @@ export async function mergeKnowledgeDir(srcDir: string, destDir: string): Promis
     if (have.has(entry.id)) continue;
     const src = path.join(srcDir, `${entry.id}.md`);
     const dest = path.join(destDir, `${entry.id}.md`);
-    if (!(await exists(src))) continue;
-    if (!(await exists(dest))) await moveIntoPlace(src, dest);
+    // A file already in the account (moved by a run that crashed before the
+    // manifest write) is listed too, or it would stay there unseen.
+    if (!(await exists(dest))) {
+      if (!(await exists(src))) continue;
+      await moveIntoPlace(src, dest);
+    }
     target.entries.push(entry);
     have.add(entry.id);
     changed = true;
   }
-  if (changed) await writeMerged(destManifestPath, JSON.stringify(target, null, 2));
+  if (changed) {
+    await mergeInto(destManifestPath, (current) => {
+      // Entries the account gained since the read above are kept.
+      const now = parseManifest(current || null);
+      const ids = new Set(now.entries.map((e) => e.id));
+      const add = target.entries.filter((e) => !ids.has(e.id));
+      return JSON.stringify({ ...now, entries: [...now.entries, ...add] }, null, 2);
+    });
+  }
   await rm(srcDir, { recursive: true, force: true });
 }

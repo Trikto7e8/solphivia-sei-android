@@ -34,13 +34,15 @@
  * later sign-out lands on a clean local state and the offer is not repeated.
  *
  * Precondition for the import: the ACTIVE scope is already the target account
- * (set by profileScope.switchScopeForAuth before this runs), so target writes
- * go through the normal Zod-validated, index-managed stores; only the `local`
- * SOURCE is read via scope-independent paths.
+ * (set by profileScope.switchScopeForAuth before this runs), so the character
+ * write goes through the normal Zod-validated, index-managed store (re-checked
+ * against the scope right before it). File moves and memory merges use paths
+ * pinned to the target profile, and the `local` SOURCE is read via
+ * scope-independent paths.
  */
 import { access, mkdir, rename, readFile, readdir, rm } from 'node:fs/promises';
 import path from 'node:path';
-import { paths, profileRootFor, getActiveScope, SCOPE_LOCAL } from '../paths';
+import { profileRootFor, getActiveScope, SCOPE_LOCAL } from '../paths';
 import { CharacterSchema, UserConfigSchema, type Character } from '../../shared/characterSchema';
 import { mergeKnowledgeDir, mergeMemoryDir, dirHasFiles } from './memoryMerge';
 import { atomicWrite } from '../../bot/brain/storage/atomicWrite.js';
@@ -240,21 +242,41 @@ export async function importLocalProfileInto(
   const failed: string[] = [];
   /** Removed from the local roster/index once their data lives in the account. */
   const clearedFromLocal: string[] = [];
-  const addWorldIds: string[] = [];
-  const addDefaultIds: string[] = [];
+  let rosterChanged = false;
+  // An explicit World add in the local roster marks a companion as someone
+  // else's even when its local copy lost the owner stamp (a save that raced
+  // the stamp, a legacy owner-null cloud row). Claiming it would make the
+  // sign-in sweep delete it: the cloud row's owner is not this account and it
+  // would not be in added_world_ids.
+  const localAddedWorld = new Set((await readLocalConfig())?.added_world_ids ?? []);
+
+  // Target paths are pinned to the TARGET profile, never the active scope: a
+  // sign-out mid-companion would otherwise point them at the local profile
+  // itself, where "the account already has it" is true of the local file and
+  // the local copy is deleted.
+  const targetRoot = profileRootFor(targetScope);
+  const target = {
+    memoryDir: (id: string) => path.join(targetRoot, 'memory', id),
+    knowledgeDir: (id: string) => path.join(targetRoot, 'knowledge', id),
+    avatarsDir: (id: string) => path.join(targetRoot, 'avatars', id),
+    skinPath: (id: string) => path.join(targetRoot, 'skins', `${id}.png`),
+    portraitPath: (id: string) => path.join(targetRoot, 'portraits', `${id}.png`),
+    charPath: (id: string) => path.join(targetRoot, 'characters', `${id}.json`),
+  };
+  const scopeMoved = (): boolean => getActiveScope() !== targetScope;
 
   for (const id of ids) {
-    // Every target path below resolves against the ACTIVE scope; if the
-    // account changed mid-import, stop rather than write into the next one.
-    if (getActiveScope() !== targetScope) {
+    // saveCharacterRaw writes through the ACTIVE scope; if the account changed
+    // mid-import, stop rather than write into the next one.
+    if (scopeMoved()) {
       logger.warn(`scope moved during import into ${targetScope}; stopping`);
       break;
     }
     try {
       // Memories first, always merged (never replaced). saveCharacterRaw
       // pre-creates an empty target memory dir, which the merge treats as empty.
-      await mergeMemoryDir(localMemoryDir(id), paths.memoryDir(id));
-      await mergeKnowledgeDir(localKnowledgeDir(id), paths.knowledgeDir(id));
+      await mergeMemoryDir(localMemoryDir(id), target.memoryDir(id));
+      await mergeKnowledgeDir(localKnowledgeDir(id), target.knowledgeDir(id));
 
       if (roster.has(id)) {
         const char = await readLocalCharacter(id);
@@ -263,15 +285,39 @@ export async function importLocalProfileInto(
         // Anyone else's (a World companion, Sui) keeps its real author: the
         // cloud row's owner is who wrote it, and the sign-in sweep deletes a
         // local copy whose owner disagrees with the cloud.
-        const own = char.is_default !== true && (char.owner == null || char.owner === targetScope);
-        await moveUnlessPresent(localAvatarsDir(id), paths.avatarsDir(id));
-        await moveUnlessPresent(localSkinPath(id), paths.skinPngPath(id));
-        await moveUnlessPresent(localPortraitPath(id), paths.portraitPath(id));
+        const own =
+          char.is_default !== true &&
+          !localAddedWorld.has(id) &&
+          (char.owner == null || char.owner === targetScope);
+        await moveUnlessPresent(localAvatarsDir(id), target.avatarsDir(id));
+        await moveUnlessPresent(localSkinPath(id), target.skinPath(id));
+        await moveUnlessPresent(localPortraitPath(id), target.portraitPath(id));
         // The account's copy of the same companion wins; only a missing one is written.
-        if (!(await exists(paths.characterPath(id)))) {
+        if (!(await exists(target.charPath(id)))) {
+          // Checked right before the active-scope write; the local character
+          // JSON stays put if the scope moved, and the next sign-in offers it.
+          if (scopeMoved()) {
+            logger.warn(`scope moved before writing ${id}; stopping`);
+            failed.push(id);
+            break;
+          }
           await saveCharacterRaw(own ? { ...char, owner: targetScope } : char);
         }
-        if (!own) (char.is_default === true ? addDefaultIds : addWorldIds).push(id);
+        // Foreign companions only show on Home when they are in the roster.
+        // Recorded BEFORE the local copy is removed, so a crash in between
+        // cannot leave an account copy outside the roster (the sweep's leak).
+        if (!own) {
+          const key = char.is_default === true ? 'added_default_ids' : 'added_world_ids';
+          await updateConfig(
+            (cfg) => {
+              const list = cfg[key] ?? [];
+              if (list.includes(id)) return cfg;
+              rosterChanged = true;
+              return { ...cfg, [key]: [...list, id] };
+            },
+            { scope: targetScope },
+          );
+        }
         try { await rm(localCharPath(id), { force: true }); } catch { /* best-effort */ }
         clearedFromLocal.push(id);
       }
@@ -282,28 +328,10 @@ export async function importLocalProfileInto(
     }
   }
 
-  // Foreign companions only show on Home when they are in the roster.
-  if (addWorldIds.length || addDefaultIds.length) {
-    let changed = false;
-    await updateConfig(
-      (cfg) => {
-        const world = new Set(cfg.added_world_ids ?? []);
-        const defaults = new Set(cfg.added_default_ids ?? []);
-        const before = world.size + defaults.size;
-        addWorldIds.forEach((x) => world.add(x));
-        addDefaultIds.forEach((x) => defaults.add(x));
-        changed = world.size + defaults.size !== before;
-        return changed
-          ? { ...cfg, added_world_ids: Array.from(world), added_default_ids: Array.from(defaults) }
-          : cfg;
-      },
-      { scope: targetScope },
-    );
-    if (changed) {
-      void import('../cloud/librarySync')
-        .then((m) => m.syncLibraryRoster('local-import'))
-        .catch(() => {});
-    }
+  if (rosterChanged) {
+    void import('../cloud/librarySync')
+      .then((m) => m.syncLibraryRoster('local-import'))
+      .catch(() => {});
   }
 
   // Leave the local profile clean: drop what moved from its index and roster.

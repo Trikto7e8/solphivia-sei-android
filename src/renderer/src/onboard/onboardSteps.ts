@@ -70,6 +70,10 @@ export const LINE_STEPS: Record<string, OnboardStep> = {
   nameQ: 'name',
   iSee: 'name_ack',
   heardQ: 'attribution',
+  // The optional follow-up (261012) is part of the same step: a new step name
+  // would shift every later `index` that funnels already sort on.
+  heardAi: 'attribution',
+  heardGoogle: 'attribution',
   job: 'job',
   skipConfirm: 'skip_confirm',
   fiveQs: 'five_qs',
@@ -162,6 +166,7 @@ export class OnboardStepTracker {
   private current: OnboardStep | null = null;
   private enteredAt = 0;
   private marked: Exclude<OnboardStepAction, 'view'> | null = null;
+  private extra: Record<string, Scalar> = {};
   private readonly startedAt: number;
   private viewed = 0;
   private ended = false;
@@ -179,12 +184,24 @@ export class OnboardStepTracker {
     this.marked = action;
   }
 
+  /**
+   * Extra shape props for the CURRENT step's closing event (and its
+   * `onboarding_abandoned`), merged across calls and dropped when the step
+   * changes. Used for how the intro advanced (`intro_advanced_by`, 261012).
+   * Shape only, like everything else here.
+   */
+  annotate(props: Record<string, Scalar>): void {
+    if (this.ended) return;
+    this.extra = { ...this.extra, ...props };
+  }
+
   /** The visible step changed. null = a transition; the current step stays open. */
   enter(step: OnboardStep | null): void {
     if (this.ended || step === null || step === this.current) return;
     const from = this.current;
     if (from !== null) this.emit(from, leaveAction(from, step, this.marked), this.now() - this.enteredAt);
     this.marked = null;
+    this.extra = {};
     this.current = step;
     this.enteredAt = this.now();
     this.viewed += 1;
@@ -235,6 +252,7 @@ export class OnboardStepTracker {
         path: ctx.path,
         skipped_creation: ctx.skipped_creation,
         trigger,
+        ...this.extra,
       });
     } catch {
       /* analytics is never load-bearing */
@@ -251,6 +269,9 @@ export class OnboardStepTracker {
         ms_in_step: Math.max(0, ms),
         path: ctx.path,
         skipped_creation: ctx.skipped_creation,
+        // Only a closing event carries the step's annotations; its view
+        // event fires before anything could have been noted.
+        ...(action === 'view' ? {} : this.extra),
       });
     } catch {
       /* analytics is never load-bearing */

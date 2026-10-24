@@ -84,7 +84,22 @@ export type ErrorClass =
   // again by the brain mid-session (orchestrator.js).
   | 'OLLAMA_NOT_RUNNING'
   | 'OLLAMA_MODEL_MISSING'
-  | 'OLLAMA_MODEL_NO_TOOLS';
+  | 'OLLAMA_MODEL_NO_TOOLS'
+  // 261017 (issue #46): ChatGPT plan ("Continue with ChatGPT"). Terminal plan
+  // answers the brain stops on (orchestrator.js) and the summon refuses on
+  // (botSupervisor). USAGE_LIMIT is the shared 5-hour / weekly plan limit:
+  // the app pauses and links to Manage usage, it never guesses a reset time.
+  | 'CHATGPT_USAGE_LIMIT'
+  | 'CHATGPT_NOT_ELIGIBLE'
+  | 'CHATGPT_FORBIDDEN'
+  // AUTH_REJECTED: a 401 again right after a forced token refresh (the
+  // sign-in itself is refused; re-sign-in dialog). REQUEST_REJECTED: a 400 on
+  // the first request or first tool round trip (Sei's request shape).
+  | 'CHATGPT_AUTH_REJECTED'
+  | 'CHATGPT_REQUEST_REJECTED'
+  | 'CHATGPT_UNSUPPORTED'
+  | 'CHATGPT_SIGNED_OUT'
+  | 'CHATGPT_PLAN_DISABLED';
 
 export const ALL_ERROR_CLASSES: readonly ErrorClass[] = Object.freeze([
   'BOT_START_TIMEOUT',
@@ -127,4 +142,12 @@ export const ALL_ERROR_CLASSES: readonly ErrorClass[] = Object.freeze([
   'OLLAMA_NOT_RUNNING',
   'OLLAMA_MODEL_MISSING',
   'OLLAMA_MODEL_NO_TOOLS',
+  'CHATGPT_USAGE_LIMIT',
+  'CHATGPT_NOT_ELIGIBLE',
+  'CHATGPT_FORBIDDEN',
+  'CHATGPT_AUTH_REJECTED',
+  'CHATGPT_REQUEST_REJECTED',
+  'CHATGPT_UNSUPPORTED',
+  'CHATGPT_SIGNED_OUT',
+  'CHATGPT_PLAN_DISABLED',
 ]);

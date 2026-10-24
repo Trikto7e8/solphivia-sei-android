@@ -44,6 +44,16 @@ const MinecraftAdapterSchema = z.object({
   // ours and walking in would only drag more of the world along.
   defend_owner: z.boolean().default(true),
   defend_radius_blocks: z.number().min(0).default(16),
+  // 261012 — the owner-threat watch (combat.js). The defend engagement above
+  // starts only once a mob has HIT the owner; at low health that is too late
+  // (quality eval protect_player: a 10 hp player and two zombies, the
+  // companion walked over to stand beside them and the second zombie killed
+  // them). When a hostile within owner_threat_radius_blocks of the owner is
+  // closing on them, and the owner is at owner_threat_hp or less (or two or
+  // more are closing), sei:owner_attacked fires with threat:true so the model
+  // can meet the mob before it arrives. Nothing is swung automatically.
+  owner_threat_hp: z.number().min(0).default(12),
+  owner_threat_radius_blocks: z.number().min(0).default(12),
   // Reflex evasion micro-controller (Phase 17, D-05). A ~20 Hz physicsTick
   // survival loop (behaviors/reflex.js) that evades incoming damage BEFORE it
   // lands — arrow sidestep, creeper goal-owning flee, melee circle-strafe. It
@@ -216,7 +226,7 @@ const AdapterSchema = z.object({
 export const LLM_PROVIDER_KINDS = [
   'anthropic', 'openai', 'gemini', 'grok', 'openrouter', 'ollama',
   'deepseek', 'qwen', 'mistral', 'together', 'groq', 'fireworks',
-  'cerebras', 'perplexity',
+  'cerebras', 'perplexity', 'chatgpt',
 ]
 
 const ConfigObjectSchema = z.object({
@@ -365,6 +375,12 @@ const ConfigObjectSchema = z.object({
       fireworks:  z.object({ api_key: z.string().default(''), model: z.string().default('accounts/fireworks/models/llama-v3p1-70b-instruct'), base_url: z.string().url().optional() }).default({}),
       cerebras:   z.object({ api_key: z.string().default(''), model: z.string().default('llama-3.3-70b'),                                     base_url: z.string().url().optional() }).default({}),
       perplexity: z.object({ api_key: z.string().default(''), model: z.string().default('sonar'),                                              base_url: z.string().url().optional() }).default({}),
+      // 261017 (issue #46): ChatGPT plan. api_key carries the short-lived
+      // OAuth ACCESS token main hands over (never the refresh token);
+      // token_expires_at (epoch ms) lets the provider ask main for a fresh one
+      // before it lapses. reasoning_effort ships only when the account's model
+      // catalog lists levels. vision follows the catalog's input modalities.
+      chatgpt:    z.object({ api_key: z.string().default(''), model: z.string().default('gpt-6-luna'), reasoning_effort: z.string().optional(), token_expires_at: z.number().optional(), vision: z.boolean().optional() }).default({}),
       ollama:     z.object({ model: z.string().default('llama3.1'),                                                                            base_url: z.string().default('http://localhost:11434') }).default({}),
     }).default({}),
   }).default({}),

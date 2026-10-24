@@ -109,7 +109,14 @@ export function startChat(bot, config, orchestrator = null) {
     // The bot's own death has a dedicated event (sei:death) carrying the death
     // position and the last real hit; a second, weaker copy here would only
     // make it react twice.
-    if (sameName(death.subject, bot.username)) { _deathHandled = death.text; return }
+    // 261019 (pass 19): keep the world's own wording of her death for the
+    // death turn (deathTracker.js): "Sui drowned while trying to escape
+    // Drowned" is more exact than the last mob that hit her.
+    if (sameName(death.subject, bot.username)) {
+      _deathHandled = death.text
+      bot._seiOwnDeathText = { text: death.text, at: Date.now() }
+      return
+    }
     const isOwner = sameName(death.subject, config.player_username) ||
       sameName(death.subject, config.player_display_name)
     const who = isOwner

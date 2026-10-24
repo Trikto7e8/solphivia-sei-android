@@ -38,6 +38,10 @@ describe('step names', () => {
   it('stepFor maps phases and panel sub-screens; transitions are null', () => {
     expect(stepFor({ k: 'intro' }, SUB)).toBe('intro');
     expect(stepFor({ k: 'line', id: 'qDyn' }, SUB)).toBe('q_dynamics');
+    // 261012: the attribution follow-up is part of the attribution step.
+    expect(stepFor({ k: 'line', id: 'heardAi' }, SUB)).toBe('attribution');
+    expect(stepFor({ k: 'line', id: 'heardGoogle' }, SUB)).toBe('attribution');
+    expect(stepIndex('job')).toBe(stepIndex('attribution') + 1);
     expect(stepFor({ k: 'auth' }, { ...SUB, auth: 'code' })).toBe('auth_code');
     expect(stepFor({ k: 'auth' }, { ...SUB, auth: 'code', needsTos: true })).toBe('auth_tos');
     expect(stepFor({ k: 'local-setup' }, { ...SUB, local: 'stt' })).toBe('local_stt');
@@ -117,6 +121,45 @@ describe('OnboardStepTracker', () => {
       path: 'byok',
       skipped_creation: true,
       trigger: 'left_view',
+    });
+  });
+
+  it('annotations ride the open step\'s closing event only, then reset (261012)', () => {
+    const h = harness();
+    h.tracker.enter('intro');
+    h.tracker.annotate({ intro_advanced_by: 'watchdog' });
+    h.tracker.annotate({ intro_watchdog_stage: 'ground_in' });
+    h.tick(4000);
+    h.tracker.enter('hey');
+    h.tick(10);
+    h.tracker.enter('run_place');
+    const [introView, introDone, heyView, heyDone] = h.events.map((e) => e.props);
+    expect(introView).not.toHaveProperty('intro_advanced_by');
+    expect(introDone).toMatchObject({
+      step: 'intro',
+      action: 'complete',
+      ms_in_step: 4000,
+      intro_advanced_by: 'watchdog',
+      intro_watchdog_stage: 'ground_in',
+    });
+    expect(heyView).not.toHaveProperty('intro_advanced_by');
+    expect(heyDone).not.toHaveProperty('intro_advanced_by');
+  });
+
+  it('annotations also reach finish and abandon', () => {
+    const fin = harness();
+    fin.tracker.enter('ready');
+    fin.tracker.annotate({ scene_watchdog: 'sui_entered' });
+    fin.tracker.finish();
+    expect(fin.events[1].props).toMatchObject({ step: 'ready', scene_watchdog: 'sui_entered' });
+
+    const ab = harness();
+    ab.tracker.enter('job');
+    ab.tracker.annotate({ scene_watchdog: 'sui_left' });
+    ab.tracker.abandon('left_view');
+    expect(ab.events.find((e) => e.event === 'onboarding_abandoned')?.props).toMatchObject({
+      step: 'job',
+      scene_watchdog: 'sui_left',
     });
   });
 

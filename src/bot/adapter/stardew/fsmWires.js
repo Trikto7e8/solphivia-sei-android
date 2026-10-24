@@ -176,7 +176,11 @@ export function wireStardewEvents(client, handlers, { botName, companions = () =
     if (pendingDayTimer) { clearTimer(pendingDayTimer); pendingDayTimer = null }
     let morning = ''
     try { morning = morningText(obs) } catch { morning = '' }
-    systemLine(`[A new day: ${f.season ?? ''} ${f.day ?? ''}, ${f.weather ?? 'sunny'}. Your energy and health are full.${morning} This is a game event, not the player talking; act on it, and only speak if it fits.]`)
+    const date = `${f.season ?? ''} ${f.day ?? ''}`.replace(/\s+/g, ' ').trim()
+    systemLine(
+      `[A new day: ${f.season ?? ''} ${f.day ?? ''}, ${f.weather ?? 'sunny'}. Your energy and health are full.${morning} This is a game event, not the player talking; act on it, and only speak if it fits.]`,
+      `a new day began${date ? ` (${date}, ${f.weather ?? 'sunny'})` : ''}`,
+    )
   }
 
   // Player activity (mod 0.1.3 host.holding): a tool that stays in their
@@ -242,10 +246,13 @@ export function wireStardewEvents(client, handlers, { botName, companions = () =
   // never gets silence"), which contradicts the notice's own "only speak if
   // it fits" and produced a second "morning" seconds after the first; it also
   // filed the notice in the chat transcript as a speaker.
-  const systemLine = (text) => {
+  // `eventFact` (261014) is the plain fact for the session's event record
+  // (brain/sessionEvents.js); `text` stays the instruction the turn reads.
+  const systemLine = (text, eventFact) => {
     handlers.onChat?.({
       username: 'sei',
       text,
+      ...(eventFact ? { eventFact } : {}),
       playerSpoke: false,
       gameEvent: true,
       addressed: true,
@@ -258,7 +265,7 @@ export function wireStardewEvents(client, handlers, { botName, companions = () =
     pendingDayTimer = setTimer(() => { pendingDayTimer = null; try { flushDay(null) } catch (err) { logger.error?.(`[sei/stardew wires] day flush threw: ${err && err.message}`) } }, DAY_OBS_WAIT_MS)
   })
   const onNightSoon = safe('onNightSoon', () => {
-    systemLine('[It is 10 PM. The day ends at 2 AM and you pass out if you are still up. This is a game event, not the player talking; wrap up what you are doing and consider heading home, and only speak if it fits.]')
+    systemLine('[It is 10 PM. The day ends at 2 AM and you pass out if you are still up. This is a game event, not the player talking; wrap up what you are doing and consider heading home, and only speak if it fits.]', 'it got to 10 PM')
   })
 
   client.on('chat', onChat)

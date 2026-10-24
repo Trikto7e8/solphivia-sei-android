@@ -204,6 +204,9 @@ export const ZH_MODALS: Record<string, string> = {
   'Suggest a game': '建议一个游戏',
   'Game': '游戏',
   'What game should we add?': '我们应该添加什么游戏？',
+  // 261023: shown on the "Feedback sent" confirmation of the suggest form.
+  'In the meantime, Backseat already works with any game on your screen.':
+    '在此之前，Backseat 已经可以陪你玩屏幕上的任何游戏。',
 
   // ── HardStopModal ──
   'Too many requests': '请求过于频繁',
@@ -226,9 +229,16 @@ export const ZH_MODALS: Record<string, string> = {
     '你在登录前已设置了 {count} 位伙伴。把它们连同你们共同的回忆带进这个账户，或重新开始。',
   'Bring your existing setup into this account, or start fresh.':
     '把你现有的设置带进这个账户，或重新开始。',
+  'You have 1 companion on this computer from before you signed in. Add it and its memories to this account? Nothing already in your account is replaced.':
+    '这台电脑上有 1 位你登录前的伙伴。要把它和它的回忆加到这个账户吗？账户里已有的内容都不会被替换。',
+  'You have {count} companions on this computer from before you signed in. Add them and their memories to this account? Nothing already in your account is replaced.':
+    '这台电脑上有 {count} 位你登录前的伙伴。要把它们和它们的回忆加到这个账户吗？账户里已有的内容都不会被替换。',
+  'You have companion memories on this computer from before you signed in. Add them to this account? Nothing already in your account is replaced.':
+    '这台电脑上有你登录前和伙伴的回忆。要把它们加到这个账户吗？账户里已有的内容都不会被替换。',
   'Importing…': '导入中…',
   'Start fresh': '重新开始',
   'Bring it over': '带过来',
+  'Not everything came over. Try again, or later from Settings.': '没能全部带过来。可以再试一次，或稍后在设置里操作。',
 
   // ── KnowledgeModal / CompactKnowledgeModal ──
   "{name}'s knowledge": '{name} 的知识',
@@ -562,6 +572,8 @@ export const ZH_MODALS: Record<string, string> = {
   'Terms of Service': '服务条款',
   'Privacy Policy': '隐私政策',
   'Forgot your password?': '忘记密码？',
+  'Signed up with Google or ChatGPT? Use that button, or reset your password.':
+    '用 Google 或 ChatGPT 注册的？请用对应的按钮登录，或重置密码。',
   'or': '或',
   'Sign up with Google': '使用 Google 注册',
   'Sign in with Google': '使用 Google 登录',
@@ -597,7 +609,7 @@ export const ZH_MODALS: Record<string, string> = {
   'Buy extra credits': '购买额外积分',
   'Extra credits do not expire and do not reset. Your companions use your weekly allowance first, then these.':
     '额外积分不会过期也不会重置。你的伙伴会先使用每周额度，然后再使用这些积分。',
-  'Buy': '购买',
+  'Buy for {price}': '{price} 购买',
 
   // ── UnsupportedVersionModal ──
   'Minecraft version not supported': '不支持的 Minecraft 版本',
@@ -616,14 +628,25 @@ export const ZH_MODALS: Record<string, string> = {
     'Sei {latest} 已就绪。你当前的版本是 {current}。',
   'Later': '以后再说',
   'Update now': '立即更新',
-  'Downloading update…': '正在后台下载更新…',
   'Downloading update, {percent} percent': '正在下载更新，{percent}%',
   'Update ready': '更新已就绪',
-  'Restart Sei to apply it.': '重启 Sei 即可应用。',
-  'Restart now': '立即重启',
   'Applying the update. Sei will restart in a moment…':
     '正在应用更新。Sei 稍后将重启…',
   'What’s new in {version}': '{version} 版本更新内容',
+
+  // ── UpdateRailButton + UpdatedToast (261023) ──
+  'Update Sei': '更新 Sei',
+  'Restarting': '正在重启',
+  'Restarting to update': '正在重启以完成更新',
+  'Restart into Sei {version}': '重启并进入 Sei {version}',
+  'Restart into the new version': '重启并进入新版本',
+  'Restart to update?': '要重启来更新吗？',
+  'Sei closes and reopens to finish the update, which ends your call.':
+    'Sei 会关闭并重新打开来完成更新，你的通话会因此结束。',
+  'Sei closes and reopens to finish the update, which ends what your companions are doing right now.':
+    'Sei 会关闭并重新打开来完成更新，你的伙伴正在做的事会因此中断。',
+  'Restart and update': '重启并更新',
+  'Updated to Sei {version}': '已更新到 Sei {version}',
 
   // ── RecoveryPrompt (260810 phantom-call recovery) ──
   'Is your companion acting weird?': '你的伙伴是不是不太对劲？',

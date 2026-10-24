@@ -110,7 +110,7 @@ export function BackseatGameModal({
       ...(picked ? { universeId: picked.universeId } : {}),
     };
     const bs = useBackseatStore.getState();
-    if (bs.sharingFor === characterId) await bs.stopSharing();
+    if (bs.sharingFor === characterId) await bs.stopSharing('game_switch');
     openModal({ kind: 'share-screen', characterId, game: sel });
   };
 

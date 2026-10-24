@@ -209,3 +209,55 @@ describe('applyLlmSwitch', () => {
     expect(cfg.llm.providers.grok.api_key).toBe('sk-top')
   })
 })
+
+// ─── 261017 (issue #46): the ChatGPT-plan section ─────────────────────────
+
+describe('applyLlmInit / applyLlmSwitch: chatgpt', () => {
+  const section = {
+    provider: 'chatgpt',
+    api_key: 'at-access',
+    model: 'gpt-6-luna',
+    token_expires_at: 1_900_000_000_000,
+    reasoning_effort: 'low',
+    vision: true,
+    base_url: 'https://evil.example/v1',
+  }
+
+  it('carries the access token, expiry, effort and vision; never a base_url override', () => {
+    const cfg = ConfigSchema.parse(applyLlmInit(rawFor({ anthropic: { api_key: '' } }), section, ''))
+    expect(cfg.llm.provider).toBe('chatgpt')
+    expect(cfg.llm.providers.chatgpt).toMatchObject({
+      api_key: 'at-access',
+      model: 'gpt-6-luna',
+      token_expires_at: 1_900_000_000_000,
+      reasoning_effort: 'low',
+      vision: true,
+    })
+    expect(cfg.llm.providers.chatgpt.base_url).toBeUndefined()
+  })
+
+  it('drops junk extras field by field instead of failing the parse', () => {
+    const out = applyLlmInit(rawFor(), { provider: 'chatgpt', api_key: 'at', token_expires_at: 'soon', vision: 'yes', reasoning_effort: '  ' }, '')
+    const cfg = ConfigSchema.parse(out)
+    expect(cfg.llm.providers.chatgpt.token_expires_at).toBeUndefined()
+    expect(cfg.llm.providers.chatgpt.vision).toBeUndefined()
+    expect(cfg.llm.providers.chatgpt.reasoning_effort).toBeUndefined()
+  })
+
+  it('the factory builds the ChatGPT provider from the parsed config', async () => {
+    const { createLlmProvider } = await import('./brain/llm/index.js')
+    const cfg = ConfigSchema.parse(applyLlmInit(rawFor({ anthropic: { api_key: '' } }), section, ''))
+    const p = createLlmProvider(cfg)
+    expect(p.kind).toBe('chatgpt')
+    expect(p.model).toBe('gpt-6-luna')
+    p.dispose?.()
+  })
+
+  it('a mid-session switch to the plan merges the extras', () => {
+    const cfg = ConfigSchema.parse(rawFor())
+    const kind = applyLlmSwitch(cfg, { api_key: '', llm: section })
+    expect(kind).toBe('chatgpt')
+    expect(cfg.llm.providers.chatgpt).toMatchObject({ api_key: 'at-access', token_expires_at: 1_900_000_000_000, vision: true })
+    expect(cfg.llm.providers.chatgpt.base_url).toBeUndefined()
+  })
+})

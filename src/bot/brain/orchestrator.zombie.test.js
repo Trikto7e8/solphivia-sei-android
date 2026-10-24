@@ -112,14 +112,14 @@ describe('260611 zombie-loop regression', () => {
     expect(provider.calls.length).toBe(3) // the third chat reached the model
   })
 
-  it('260703: a chat answered with only end_loop still speaks — the scratchpad reply is salvaged', async () => {
-    // Observed failure (playlog 2026-07-03T17-40): "i wanna be alone for a
-    // bit" → model wrote its reply into the invisible text scratchpad and
-    // called only end_loop — the player got pure silence, twice in a row.
-    // The backstop routes that scratchpad through the say pipeline.
+  it('261011: a chat answered with only end_loop stays silent — the scratchpad is never spoken', async () => {
+    // The 260703 salvage spoke the text output when a player line ended in
+    // end_loop with no say(). Quality eval 2026-10-11 (Haiku 5.5): 8 of 8
+    // salvages were private reasoning ("alex has been repeating the same
+    // line, and i already answered it twice"), so it was removed.
     _setTickIntervalForTests(10_000_000)
     const provider = makeProvider([
-      { text: "I read that. you've made that clear.", toolUses: [{ id: 'el1', name: 'end_loop', input: {} }] },
+      { text: 'alex said bring the stone back and i already told them im on it', toolUses: [{ id: 'el1', name: 'end_loop', input: {} }] },
     ])
     const adapter = makeAdapter()
     const orch = createOrchestrator({
@@ -129,56 +129,9 @@ describe('260611 zombie-loop regression', () => {
       _anthropicOverride: provider,
     })
 
-    await orch.handleDispatch('sei:chat_received', chat('i wanna be alone for a bit'))
-    expect(orch.currentLoop).toBeNull() // end_loop still terminates the loop
-    expect(adapter.chat).toHaveBeenCalled() // …but the reply reached chat
-    // postProcessSay may normalize casing — compare case-insensitively.
-    const said = adapter.chat.mock.calls.map((c) => c[0]).join(' ').toLowerCase()
-    expect(said).toContain('i read that')
-  })
-
-  it('260704: the salvage also fires on the action-tick interrupt path — a say() from BEFORE the interrupt does not count as answering it', async () => {
-    // The 260703 backstop reset _spokeThisLoop only in interruptTurnText, but
-    // the COMMON delivery path for a chat landing mid-action is handleActionTick
-    // (dispatcher Change 1), which builds its own actionTurn. A say() earlier in
-    // the loop left the flag stale-true there, so the salvage predicate skipped
-    // and the player got silence — the exact failure the backstop exists for.
-    _setTickIntervalForTests(10_000_000)
-    const provider = makeProvider([
-      // Turn 1 (chat "lets go explore"): speak AND start following → the say()
-      // sets _spokeThisLoop; the loop suspends on follow.
-      {
-        text: '',
-        toolUses: [
-          { id: 'say1', name: 'say', input: { text: 'sure, lets go' } },
-          { id: 'fu1', name: 'follow', input: { player: 'Steve' } },
-        ],
-      },
-      // Turn 2 ("i wanna be alone for a bit", delivered via the action-tick
-      // path because follow is in flight): the model writes its reply ONLY in
-      // the scratchpad and calls end_loop — the 260703 silence shape. One
-      // sentence, so the salvage lands as a single synchronous chat call
-      // (multi-segment replies stagger on a timer).
-      { text: 'ok, ill leave you be then', toolUses: [{ id: 'el1', name: 'end_loop', input: {} }] },
-    ])
-    const adapter = makeAdapter()
-    const orch = createOrchestrator({
-      adapter,
-      config: makeConfig(),
-      reenqueue: () => {},
-      _anthropicOverride: provider,
-    })
-
-    await orch.handleDispatch('sei:chat_received', chat('lets go explore'))
-    expect(orch.currentLoop).not.toBeNull() // suspended on follow
-    expect(adapter.chat).toHaveBeenCalled() // turn 1's say() reached chat
-
-    await orch.handleDispatch('sei:chat_received', chat('i wanna be alone for a bit'))
-    expect(orch.currentLoop).toBeNull() // end_loop tore the loop down
-    // Pre-fix: the stale _spokeThisLoop=true from turn 1's say() skipped the
-    // salvage and this reply never reached chat.
-    const said = adapter.chat.mock.calls.map((c) => c[0]).join(' ').toLowerCase()
-    expect(said).toContain('leave you be')
+    await orch.handleDispatch('sei:chat_received', chat('ok cool, bring the stone back when ur done'))
+    expect(orch.currentLoop).toBeNull() // end_loop with nothing running still ends the loop
+    expect(adapter.chat).not.toHaveBeenCalled()
   })
 
   it('schedules a delayed redrive of a chat the rate limit killed', async () => {

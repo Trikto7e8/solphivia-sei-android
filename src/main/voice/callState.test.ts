@@ -19,6 +19,7 @@ import {
   clearAllCalls,
   applyCallReport,
   endCallFromCompanion,
+  liveCallsNow,
 } from './callState';
 
 beforeEach(() => {
@@ -29,6 +30,25 @@ afterEach(() => {
   clearAllCalls();
   for (const id of ['sui', 'lyra', 'marv']) consumeClosedByMain(id);
   vi.useRealTimers();
+});
+
+describe('liveCallsNow (T120 app-quit record)', () => {
+  it('lists connected calls with their live time and changes nothing', () => {
+    setCallActive('sui', true);
+    markCallLive('sui');
+    setCallActive('lyra', true); // still ringing
+    vi.advanceTimersByTime(5 * 60_000);
+    expect(liveCallsNow()).toEqual([{ characterId: 'sui', connectedMs: 5 * 60_000 }]);
+    expect(isCallActive('sui')).toBe(true);
+    expect(isCallActive('lyra')).toBe(true);
+  });
+
+  it('a call the companion hung up is not live', () => {
+    setCallActive('sui', true);
+    markCallLive('sui');
+    endCallFromCompanion('sui');
+    expect(liveCallsNow()).toEqual([]);
+  });
 });
 
 describe('closeAllCallsFromMain', () => {

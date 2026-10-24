@@ -12,9 +12,9 @@
 import os from 'node:os'
 import path from 'node:path'
 import fs from 'node:fs/promises'
-import { describe, it, expect, vi, afterEach } from 'vitest'
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest'
 import { z } from 'zod'
-import { NUDGES, GREETING_HINT } from './prompts.js'
+import { NUDGES, GREETING_HINT, memoryGameScope, chatContinuityGameScope, PERSONALITY_TOOL_DESCRIPTIONS } from './prompts.js'
 import {
   createOrchestrator,
   composeSeedBlocks,
@@ -34,19 +34,27 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
     })
     expect(t).toContain('follow Steve')
     expect(t).toContain('Steve said: "wait here"')
-    // 260616 (#2): mid-action chat defaults to CONTINUE — answer/stay silent
-    // and let the running action carry on; only switch/stop if the message
-    // actually requires it. This must be the default for every character.
+    // 260616 (#2): chat mid-action is answered while the action carries on.
+    // 261018 (pass 15): the frame is balanced, no "KEEP GOING" default: a
+    // come / follow / go / stop / stay line is a switch made in this turn.
     expect(t).toMatch(/answer with one short say\(\)|stay silent/i)
-    expect(t).toContain('KEEP GOING')
-    expect(t).toContain('reply and resume')
+    expect(t).not.toContain('KEEP GOING')
+    expect(t).toContain('answer it and let the action carry on')
+    expect(t).toContain('If they ask you to come to them or follow them, or point out where they are, call the action that takes you to them')
+    expect(t).toContain('If they ask you to stop or to stay where you are, call unfollow')
+    expect(t).toContain('make the switch in this same turn, even when the current action is one they asked for')
+    expect(t).toContain('asked for once you finish what you are doing now is not a switch')
+    // 261018 (pass 17): a changed count or item re-calls the action; a line
+    // that drops the job and asks for a new one calls only the new action.
+    expect(t).toContain('If they change the job you are on, like how many or which item, call that action again with the new details')
+    expect(t).toContain('call only the new action; calling unfollow and saying you will do it next leaves them waiting')
     expect(t).toContain('To stop, call unfollow')
     expect(t).toContain('call that action')
     // 260619 say()-leak fix: a player-addressed mid-action turn must STILL call
     // say() even when it also acts / switches / end_loops. The model was leaking
     // the spoken line into its private scratchpad and only calling the action,
     // so the player heard nothing. The action is not the reply.
-    expect(t).toContain('the action is not the reply')
+    expect(t).toContain('The action is not the reply')
     expect(t).toContain('also call say() this turn')
     // The interrupt variant must NOT carry the silent-monitor phrasing.
     expect(t).not.toContain('Nothing needs you')
@@ -72,13 +80,13 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
       who: 'Steve',
     })
     expect(t).toContain('wait for me')
-    expect(t).toContain('hold position')
-    expect(t).toMatch(/do NOT path toward them|do not follow|not.*follow/i)
+    expect(t).toContain('they are the one coming to you')
+    expect(t).toContain('do not walk toward them')
     // The "come to them" half is still spelled out so the contrast is explicit.
-    expect(t).toContain('follow me')
+    expect(t).toContain('If they ask you to come to them or follow them')
     // Silent-monitor ticks never carry the interrupt-only intent hint.
     const silent = NUDGES.actionTurn({ action: 'dig', stopTool: 'end_loop', elapsedSec: 5 })
-    expect(silent).not.toContain('hold position')
+    expect(silent).not.toContain('they are the one coming to you')
   })
 
   it('silent-monitor variant (no playerLine) shows elapsed + empty-text default', () => {
@@ -186,9 +194,9 @@ describe('NUDGES.actionTurn (260608-tik)', () => {
 })
 
 describe('NUDGES.playerInterruptHint — session-end disambiguation (260703)', () => {
-  it('names quit as distinct from ending the loop, with concrete trigger phrases', () => {
+  it('names quit as distinct from stopping a task, with concrete trigger phrases', () => {
     const t = NUDGES.playerInterruptHint
-    expect(t).toContain('end_loop')
+    expect(t).toContain('call stop')
     expect(t).toContain('ENDING THE SESSION')
     expect(t).toContain('call quit')
     expect(t).toContain('farewell')
@@ -428,6 +436,81 @@ describe('composeSeedBlocks — player_message block (260616 #2)', () => {
   it('adds no player_message block on non-chat turns (playerMessageText null)', async () => {
     const blocks = await composeSeedBlocks(baseArgs)
     expect(blocks.some((b) => b.name === 'player_message')).toBe(false)
+  })
+
+  // 261012: the note naming a word her own lines keep repeating rides right
+  // after the core (ownRepeats.js), and is absent when nothing repeats.
+  it('places own_repeats right after core, and only when given', async () => {
+    const blocks = await composeSeedBlocks({ ...baseArgs, ownRepeatsText: 'Your own recent lines keep using "nya".' })
+    const names = blocks.map((b) => b.name)
+    expect(names.indexOf('own_repeats')).toBe(names.indexOf('core') + 1)
+    const none = await composeSeedBlocks(baseArgs)
+    expect(none.some((b) => b.name === 'own_repeats')).toBe(false)
+  })
+})
+
+// ─────────── 261020: game-scoped goals, memories and app chat ───────────
+// A Stardew session read a Minecraft build from the shared memory and the app
+// chat as Stardew work. The person is shared across games; a game's plans are
+// not, and the seed now says which game the session is in.
+
+describe('composeSeedBlocks — game scope (261020)', () => {
+  let tmp
+  beforeEach(async () => {
+    tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'sei-gamescope-'))
+    await fs.writeFile(path.join(tmp, 'MEMORY.md'),
+      '# Memory\n\n## World 2 — Sei Farm (Stardew Valley)\n- [2026-10-20T06:00:00.000Z] ouen likes the farm\n' +
+      '\n## In the app (texting, calls and minigames, outside any game world)\n- [2026-10-19T22:57:00.000Z] ouen is building a copper bulb lighthouse\n' +
+      '- [2026-10-19T23:00:00.000Z] Plan for next time in Minecraft: get copper for the lighthouse\n')
+    await fs.writeFile(path.join(tmp, 'HEARTBEAT.stardew.md'), '# HEARTBEAT\n- [2026-10-20T06:00:00.000Z] Plant parsnips\n')
+  })
+  afterEach(async () => { await fs.rm(tmp, { recursive: true, force: true }) })
+
+  const args = () => ({
+    sessionState: { playerData: () => ({}) },
+    playerStore: { formatPlayerSeedBlock: () => 'PLAYER' },
+    config: {
+      memory: { memory_md_path: path.join(tmp, 'MEMORY.md'), heartbeat_md_path: path.join(tmp, 'HEARTBEAT.stardew.md') },
+      persona: { proactiveness: 2 },
+      _seiContinuity: { recent: [{ role: 'user', text: 'my favorite block is copper bulb', ts: Date.now() - 60_000 }] },
+    },
+    eventText: 'Event: sei:idle',
+    snapshotText: 'world: #2 Sei Farm',
+  })
+  const text = (blocks, name) => blocks.find((b) => b.name === name)?.text ?? ''
+
+  it('labels the heartbeat and scopes memories and the app chat to the game', async () => {
+    const blocks = await composeSeedBlocks({ ...args(), gameName: 'Stardew Valley' })
+    expect(text(blocks, 'heartbeat')).toMatch(/^# HEARTBEAT: your goals and tasks in Stardew Valley\n/)
+    const memory = text(blocks, 'memory')
+    expect(memory).toContain(memoryGameScope('Stardew Valley'))
+    expect(memory).toContain('You are playing Stardew Valley now.')
+    // The memories themselves stay: the person is shared across games.
+    expect(memory).toContain('copper bulb lighthouse')
+    expect(memory).toContain('Plan for next time in Minecraft: get copper for the lighthouse')
+    expect(memory).toContain('## In the app (texting, calls and minigames, outside any game world)')
+    expect(text(blocks, 'chat_continuity')).toContain(chatContinuityGameScope('Stardew Valley'))
+  })
+
+  it('adds nothing when no game is named (hand-built configs keep their seed)', async () => {
+    const blocks = await composeSeedBlocks(args())
+    expect(text(blocks, 'heartbeat')).toMatch(/^# HEARTBEAT\n/)
+    expect(text(blocks, 'memory')).not.toContain('You are playing')
+    expect(text(blocks, 'chat_continuity')).not.toContain('a different game')
+  })
+
+  it('the scope lines are plain prose', () => {
+    for (const t of [memoryGameScope('Minecraft'), chatContinuityGameScope('Minecraft')]) {
+      expect(t).not.toMatch(/[—–]/)
+      expect(t).toContain('Minecraft')
+    }
+    expect(memoryGameScope('')).toBe('')
+    expect(chatContinuityGameScope(null)).toBe('')
+  })
+
+  it('setGoal says a goal is for this game and asks for a headline without the player name', () => {
+    expect(PERSONALITY_TOOL_DESCRIPTIONS.setGoal).toContain('A goal is for the game you are in now')
+    expect(PERSONALITY_TOOL_DESCRIPTIONS.setGoal).toContain("leaves the player's name out")
   })
 })
 
@@ -769,7 +852,9 @@ describe('sticky greeting hint (260703b)', () => {
 
     // First idle tick opens the FIRST CONTACT loop; the LLM call is in flight.
     const p1 = orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
-    await flush()
+    // (261011: the seed now reads MEMORY.md for the FIRST CONTACT variant, so
+    // the call can take a few more ticks to start.)
+    for (let i = 0; i < 20 && provider.calls.length === 0; i++) await flush()
     expect(provider.calls.length).toBe(1)
 
     // The attack lands before the LLM returns — the FIRST CONTACT loop dies and
@@ -906,6 +991,10 @@ describe('next_time hook on goodbye tools (261008)', () => {
       const tool = tools.find((t) => t.name === name)
       expect(tool.input_schema.properties.next_time.type).toBe('string')
       expect(tool.input_schema.required ?? []).not.toContain('next_time')
+      expect(tool.input_schema.properties.next_time_for_player.type).toBe('string')
+      expect(tool.input_schema.required ?? []).not.toContain('next_time_for_player')
+      expect(tool.input_schema.properties.next_time_game.type).toBe('string')
+      expect(tool.input_schema.required ?? []).not.toContain('next_time_game')
     }
   })
 
@@ -914,7 +1003,7 @@ describe('next_time hook on goodbye tools (261008)', () => {
     _setTickIntervalForTests(10_000_000)
     const config = makeConfig()
     const provider = makeProvider([
-      { text: '', toolUses: [{ id: 'q1', name: 'quit_game', input: { farewell: 'cya, next time we finish the roof', next_time: '  finish the\n cabin roof ' } }] },
+      { text: '', toolUses: [{ id: 'q1', name: 'quit_game', input: { farewell: 'cya, next time we finish the roof', next_time: '  finish the\n cabin roof ', next_time_for_player: 'finish the cabin roof tomorrow.' } }] },
     ])
     const onQuitRequested = vi.fn()
     const { adapter } = makeAdapter()
@@ -922,11 +1011,13 @@ describe('next_time hook on goodbye tools (261008)', () => {
     await orch.handleDispatch('sei:chat_received', chat('gtg, bye'))
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
-    expect(md).toContain('Plan for next time: finish the cabin roof')
+    expect(md).toContain('Plan for next time in Minecraft: finish the cabin roof')
     // The model's own farewell is spoken as written.
     expect(adapter.chat).toHaveBeenCalledWith('cya, next time we finish the roof')
     await vi.advanceTimersByTimeAsync(11_000)
-    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true })
+    // 261014: the player line rides to main (Home card), cleaned; it is not saved to memory.
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: 'Finish the cabin roof', nextStepGame: null })
+    expect(md).not.toContain('Finish the cabin roof')
   })
 
   it('quit_game without next_time writes nothing and reports no hook', async () => {
@@ -944,14 +1035,14 @@ describe('next_time hook on goodbye tools (261008)', () => {
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8').catch(() => '')
     expect(md).not.toContain('Plan for next time')
     await vi.advanceTimersByTimeAsync(11_000)
-    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: false })
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: false, nextStepLine: null, nextStepGame: null })
   })
 
   it('end_call with next_time saves the plan and reports the hook', async () => {
     _setTickIntervalForTests(10_000_000)
     const config = makeConfig()
     const provider = makeProvider([
-      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, village hunt tomorrow', next_time: 'find a village for beds' } }] },
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, village hunt tomorrow', next_time: 'find a village for beds', next_time_game: 'Minecraft' } }] },
       { text: '', toolUses: [] },
     ])
     const onCallEndRequested = vi.fn()
@@ -961,17 +1052,121 @@ describe('next_time hook on goodbye tools (261008)', () => {
     await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
 
     const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
-    expect(md).toContain('Plan for next time: find a village for beds')
-    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true })
+    expect(md).toContain('Plan for next time in Minecraft: find a village for beds')
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'minecraft' })
+  })
+
+  // 261020 (review): a plan said while leaving one game can be for another.
+  it('quit_game with next_time_game labels and reports the named game, not this one', async () => {
+    vi.useFakeTimers()
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'q1', name: 'quit_game', input: { farewell: 'cya, parsnips next time', next_time: 'plant the parsnips on the farm', next_time_game: 'Stardew Valley' } }] },
+    ])
+    const onQuitRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onQuitRequested, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:chat_received', chat('gtg'))
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time in Stardew Valley: plant the parsnips on the farm')
+    expect(md).not.toContain('in Minecraft: plant')
+    await vi.advanceTimersByTimeAsync(11_000)
+    expect(onQuitRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'stardew' })
+  })
+
+  it('end_call with next_time_game none saves the plan with no game', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night, good luck', next_time: 'ask how the interview went', next_time_game: 'none' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const onCallEndRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onCallEndRequested, _anthropicOverride: provider })
+    orch.setVoiceCall(true)
+    await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time: ask how the interview went')
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: 'none' })
+  })
+
+  // Delta review: main tags an end_call plan with no field as a call plan
+  // (goodbyePlanPlace), so the memory line must not name this game.
+  it('end_call that leaves next_time_game out saves the plan with no game', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const config = makeConfig()
+    const provider = makeProvider([
+      { text: '', toolUses: [{ id: 'e1', name: 'end_call', input: { farewell: 'night', next_time: 'ask how the interview went' } }] },
+      { text: '', toolUses: [] },
+    ])
+    const onCallEndRequested = vi.fn()
+    const { adapter } = makeAdapter()
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, onCallEndRequested, _anthropicOverride: provider })
+    orch.setVoiceCall(true)
+    await orch.handleDispatch('sei:chat_received', { ...chat('night sui'), voice: true })
+    const md = await fs.readFile(config.memory.memory_md_path, 'utf8')
+    expect(md).toContain('Plan for next time: ask how the interview went')
+    expect(md).not.toContain('in Minecraft: ask how')
+    expect(onCallEndRequested).toHaveBeenCalledWith({ nextStepHook: true, nextStepLine: null, nextStepGame: null })
+  })
+
+  it('a plan the host says is not for this game is greeted as talk', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: ask how the interview went\n')
+    config._seiNextStepPlan = 'ask how the interview went'
+    config._seiNextStepPlanNotForGame = true
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
+    expect(turn).toContain('to pick up next time: \\"ask how the interview went\\"')
+    expect(turn).toContain('not saved as something to do in Minecraft')
   })
 
   it('the first-spawn greeting is told about a saved plan', async () => {
     _setTickIntervalForTests(10_000_000)
     const { adapter } = makeAdapter()
     const provider = makeProvider([{ text: '', toolUses: [] }])
-    const orch = createOrchestrator({ adapter, config: makeConfig(), reenqueue: () => {}, _anthropicOverride: provider })
+    // 261011: the plan hint rides the returning-player greeting, which needs a
+    // memory entry (a first-ever session has no plan to bring up).
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: find a village for beds\n')
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
     await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
     const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
     expect(turn).toContain('Plan for next time')
+  })
+
+  it('261014: an open plan from the host is named in the first-spawn greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: find a village for beds\n')
+    config._seiNextStepPlan = 'find a village for beds'
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
+    expect(turn).toContain('to pick up next time: \\"find a village for beds\\"')
+    expect(turn).not.toContain('This is only a hint')
+  })
+
+  it('261014: no open plan (host says null) drops the plan hint from the greeting', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const { adapter } = makeAdapter()
+    const provider = makeProvider([{ text: '', toolUses: [] }])
+    const config = makeConfig()
+    await fs.writeFile(config.memory.memory_md_path, '# Memory\n\n- [2026-10-07 21:00] Plan for next time: find a village for beds\n')
+    config._seiNextStepPlan = null
+    const orch = createOrchestrator({ adapter, config, reenqueue: () => {}, _anthropicOverride: provider })
+    await orch.handleDispatch('sei:idle', { reason: 'just_connected_first_spawn', quietMs: 0 })
+    const turn = JSON.stringify(provider.calls[0].messages ?? provider.calls[0])
+    expect(turn).toContain('FIRST CONTACT')
+    expect(turn).not.toContain('you can bring it up if it fits')
+    expect(turn).not.toContain('to pick up next time')
   })
 })

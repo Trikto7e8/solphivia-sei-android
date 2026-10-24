@@ -54,7 +54,10 @@ export type View =
   // a handdrawn register, canvas beside chat, rather than the chat screen's
   // top/bottom game split.
   | { kind: 'draw'; characterId: string }
-  | { kind: 'settings' }
+  // useChatgptPlan (261023): opened from the Credits page's ChatGPT plan row
+  // after its sign-in; Settings runs the "Use ChatGPT plan" switch (with the
+  // cloud confirm) once, on arrival.
+  | { kind: 'settings'; useChatgptPlan?: boolean }
   | { kind: 'credits' }
   | { kind: 'coming-soon' }
   // 260703 procgen — the "unique companion" (system-generated) flow. Both are
@@ -250,6 +253,11 @@ interface UiState {
    */
   llmModel: string | null;
   /**
+   * 261017 (issue #46): the active LOCAL provider kind (null on cloud), from
+   * the same llm:capability push. Drives the "Using ChatGPT plan" line.
+   */
+  llmProvider: string | null;
+  /**
    * Session-only flag: flips true the first time the user leaves the Home
    * screen — either by navigating to another view (character/settings/etc.)
    * or by switching CharactersScreen to the World tab. The Home header
@@ -362,6 +370,7 @@ interface UiState {
   /** china-compat W1: set from the llm:capability push/seed. */
   setLlmVision: (v: 'yes' | 'no' | 'unknown') => void;
   setLlmModel: (v: string | null) => void;
+  setLlmProvider: (v: string | null) => void;
   /** Phase 18/19: record the chat a CharacterPage was opened from (or null). */
   setChatReturnId: (id: string | null) => void;
   /** #6: set the active call's mute state (shared by both call surfaces). */
@@ -415,6 +424,7 @@ export const useUiStore = create<UiState>((set) => ({
   // (a wrong lock hides a feature silently, a wrong allow fails visibly).
   llmVision: 'unknown',
   llmModel: null,
+  llmProvider: null,
   homeGreetingDismissed: false,
   chatReturnId: null,
   callMuted: false,
@@ -457,6 +467,7 @@ export const useUiStore = create<UiState>((set) => ({
   setVisionCapable: (v) => set({ visionCapable: v }),
   setLlmVision: (v) => set({ llmVision: v }),
   setLlmModel: (v) => set({ llmModel: v }),
+  setLlmProvider: (v) => set({ llmProvider: v }),
   setChatReturnId: (id) => set({ chatReturnId: id }),
   setCallMuted: (muted) => set({ callMuted: muted }),
   setCallDeafened: (deafened) => set({ callDeafened: deafened }),

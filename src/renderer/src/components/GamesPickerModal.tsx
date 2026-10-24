@@ -264,6 +264,7 @@ export function GamesPickerModal({ characterId }: GamesPickerModalProps): React.
           framing=""
           fieldLabel={t('Game')}
           placeholder={t('What game should we add?')}
+          doneNote={t('In the meantime, Backseat already works with any game on your screen.')}
           onClose={() => setSuggestOpen(false)}
         />
       ) : null}

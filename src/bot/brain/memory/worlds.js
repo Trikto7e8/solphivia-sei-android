@@ -51,10 +51,11 @@ export function createWorldRegistry({ worldsPath, memoryLog, logger = console } 
    * world differs from the last one written. Idempotent across re-spawns in the
    * same session (noteWorld skips a duplicate trailing header).
    *
-   * @param {{ fingerprint: string, label?: string, when?: Date }} args
+   * @param {{ fingerprint: string, label?: string, game?: string, when?: Date }} args
+   *   `game` (261020): the game's display name, written into the header.
    * @returns {Promise<{num:number,label:string}|null>}
    */
-  async function resolveOnSpawn({ fingerprint, label, when } = {}) {
+  async function resolveOnSpawn({ fingerprint, label, game, when } = {}) {
     if (!fingerprint) return null
     const ts = (when instanceof Date ? when : new Date()).toISOString()
     let resolved = null
@@ -81,7 +82,7 @@ export function createWorldRegistry({ worldsPath, memoryLog, logger = console } 
       current = resolved
       if (memoryLog?.noteWorld) {
         try {
-          await memoryLog.noteWorld(resolved.num, resolved.label)
+          await memoryLog.noteWorld(resolved.num, resolved.label, game)
         } catch (err) {
           logger.warn?.(`[sei/worlds] noteWorld failed: ${err.message}`)
         }

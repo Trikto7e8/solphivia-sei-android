@@ -19,7 +19,8 @@
  *     opens the packages on arrival. The purchase then runs where the checkout
  *     watcher lives, instead of polling behind a popup with no progress UI.
  * Close and ESC dismiss it: the bot has already left or was never summoned, so
- * this is a notice, not a blocking gate.
+ * this is a notice, not a blocking gate. 261023: the two CTAs are full-width
+ * PlanButtons under the copy (Upgrade the loud one); Close stays in the footer.
  *
  * 260725 — TWO reasons, two presentations. `reason: 'rate_limited'`
  * (botSupervisor relays the proxy's IP / abuse gate as DAILY_LIMIT_REACHED and
@@ -48,6 +49,7 @@ import { useCreditsStore } from '../lib/stores/useCreditsStore';
 import { useUiStore } from '../lib/stores/useUiStore';
 import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
+import { PlanButton } from './PlanButton';
 import { useResetLine } from '../lib/useResetLine';
 import { sei } from '../lib/ipcClient';
 import styles from './HardStopModal.module.css';
@@ -226,15 +228,19 @@ export function HardStopModal(): React.ReactElement | null {
         )}
       </p>
       {resetLine ? <p className={`${styles.body} ${styles.resetLine}`}>{resetLine}</p> : null}
+      {/* 261023: the two ways forward are big targets of their own, Upgrade
+          the loud one. Close stays a quiet footer link. */}
+      <div className={styles.ctas}>
+        <PlanButton kind="secondary" size="md" onClick={handleTopUp}>
+          {t('Top up')}
+        </PlanButton>
+        <PlanButton kind="primary" size="md" arrow onClick={handleUpgrade}>
+          {t('Upgrade')}
+        </PlanButton>
+      </div>
       <ModalFooter>
         <Button kind="quiet" size="md" onClick={closeTracked}>
           {t('Close')}
-        </Button>
-        <Button kind="ghost" size="md" onClick={handleTopUp}>
-          {t('Top up')}
-        </Button>
-        <Button kind="accent" size="md" onClick={handleUpgrade}>
-          {t('Upgrade')}
         </Button>
       </ModalFooter>
     </ModalShell>

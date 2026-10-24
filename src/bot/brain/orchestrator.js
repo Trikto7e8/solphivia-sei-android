@@ -10,6 +10,7 @@
 
 import { createLlmProvider } from './llm/index.js'
 import { applyLlmSwitch } from '../llmInit.js'
+import { TERMINAL_CHATGPT_CODES } from './llm/responsesWire.js'
 import { VISION_MESSAGES_PATH } from './anthropicClient.js'
 import { createTokenBucket } from './rateLimiter.js'
 import { createDebouncer, createThrottle } from './debounce.js'
@@ -24,6 +25,8 @@ import {
   GREETING_HINT,
   renderPersona,
   renderHeartbeat,
+  memoryGameScope,
+  chatContinuityGameScope,
   renderProactivenessDirective,
   renderPunctuationDirective,
   renderLanguageDirective,
@@ -34,21 +37,36 @@ import {
   NEXT_TIME_FIELD,
   NEXT_TIME_GOODBYE,
   NEXT_TIME_GREETING,
+  NEXT_TIME_FOR_PLAYER_FIELD,
+  NEXT_TIME_GAME_FIELD,
+  FIRST_CONTACT,
+  nextTimeGreeting,
+  MEMORY_GOAL_TAIL,
 } from './prompts.js'
-import { normalizeNextStep, nextStepMemoryLine } from './nextStep.js'
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine, parsePlanGameField, PLAN_GAMES } from './nextStep.js'
 import { buildAnthropicTools } from './schemaBridge.js'
 import { createInflightTracker, describeArgs } from './inflight.js'
 import { createConvoMemory, playerLabel } from './convoMemory.js'
+import { ownRepeatsNote, recentOwnTurns } from './ownRepeats.js'
 import { createLookupLog, extractServerLookup } from './lookups.js'
+import {
+  describeActionEvent, describeAttackEvent, describeDeathEvent, actionEventKey,
+  gameEventFact, createInventoryGainRecorder,
+  HIT_COALESCE_MS, ACTION_COALESCE_MS,
+} from './sessionEvents.js'
 import { logChatOut, logActionResult } from './log.js'
 import { errLine } from './errStrings.js'
 import { createMemoryLog, readMemoryForSeed } from './memory/memoryLog.js'
 import { isSilenceFiller } from './silenceFiller.js'
-import { createHeartbeatLog, readHeartbeatForSeed } from './memory/heartbeat.js'
+import { createHeartbeatLog, readHeartbeatForSeed, isPlayerTask, hasPlayerTask, goalEntries, playerTaskEntries, goalKey, tasksOfAction } from './memory/heartbeat.js'
+import { countsAsGoalWork, goalNotStarted, goalStampMs } from './goalProgress.js'
 import { createMemoryCompactor } from './memory/compactor.js'
 import { createWorldRegistry } from './memory/worlds.js'
 import { resolveAdapterCaps } from './adapterDefaults.js'
 import { createWebSession, electronFetchProvider, botWebTools, isWebTool, runServerSearch } from '../web/webTools.js'
+import { sessionActionStats } from './actionStats.js'
+import { sessionDigest } from './sessionDigest.js'
+import { linkGoalToSpine, linkFinished } from './goalLink.js'
 
 // Post-process say() text before it hits in-game chat. Safety-only:
 // whitespace collapse (chat is single-line) and force lowercase (hardcoded).
@@ -445,7 +463,6 @@ export function replyWindowRemainingMs({ lastSelf, lastPlayer, sendDeadline = 0,
 // the iteration loop alive and the LLM hot-spams follow() each turn, starving
 // the tick. Classify them as personality so a follow-only turn is terminal.
 //
-// 260514-ngj: `stop` retired — see `end_loop` notes above.
 // 260514-ngj: `stop` tool retired, replaced by `end_loop` (clearer semantics
 // — the model uses end_loop ONLY when it has decided the current loop is done
 // or wants to abandon the current task). On P0/P1-triggered iterations, the
@@ -453,6 +470,7 @@ export function replyWindowRemainingMs({ lastSelf, lastPlayer, sendDeadline = 0,
 // new action switches in-place, text + end_loop terminates, text + end_loop
 // + new action terminates AND reseeds. On P2/P3-triggered iterations, text-
 // only still terminates the loop (unchanged).
+// 261011: `stop` restored, see BRAIN_PERSONALITY_NAMES below.
 // 260617: `say` is in this set so a say()-only turn yields ZERO movementCalls
 // → continueLoop=false → the loop ends (say is "silence" for loop purposes:
 // it speaks, but it never keeps the bot busy on its own — see the
@@ -465,7 +483,12 @@ export function replyWindowRemainingMs({ lastSelf, lastPlayer, sendDeadline = 0,
 // (their tool_result fills synchronously, see INLINE_METADATA) but they count
 // as movementCalls, so `continueLoop` stays true and runIterations calls the
 // model again with the result in hand. That one property IS the search loop.
-const BRAIN_PERSONALITY_NAMES = new Set(['remember', 'forget', 'setGoal', 'clearGoal', 'end_loop', 'say', 'quit_game', 'end_call'])
+// 261011: `stop` is back as its own tool, split from end_loop. end_loop ends
+// the TURN (a running foreground action keeps going); stop cancels the
+// running action. Measured (quality eval 2026-10-11): 21 end_loop-only turns
+// with an action in flight, ~18 of them "staying quiet, let it run", each one
+// aborting a gather/build/dig mid-way because end_loop also aborted in_flight.
+const BRAIN_PERSONALITY_NAMES = new Set(['remember', 'forget', 'setGoal', 'clearGoal', 'end_loop', 'stop', 'say', 'quit_game', 'end_call'])
 // Party redesign §2/§5: tool names that must NOT surface as a world-action verb
 // (the `onAction` presence hook). These are brain/personality tools with no
 // in-world motion — say (chat), remember/forget/end_loop (memory + loop
@@ -474,7 +497,39 @@ const BRAIN_PERSONALITY_NAMES = new Set(['remember', 'forget', 'setGoal', 'clear
 // (follow, goto, gather, dig, build, …) is a real world action and DOES emit.
 // Kept separate from PERSONALITY_NAMES so follow/unfollow still surface a verb
 // even though they're personality-tagged.
-const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
+// 261011: a player line that is only a stop order ("stop", "sui stop", "wait
+// stop!", "ok stop it", "nevermind"). Mirrors the Minecraft chat fast path's
+// STOP_VERBS with one leading word allowed (a name, "wait", "ok") and not a
+// negation ("dont stop", "cant stop", "why stop"). Used as the end_loop
+// backstop in runIterations. A question ("stop?") is not an order.
+// 261016 (pass 9c): `wordsOnly` is the stricter test for a reply that started
+// nothing (unheededPlayerStop): "nevermind" there is too often about the last
+// thing SAID, not the running action.
+const STOP_LINE_RE = /^(?:(?!(?:dont|don't|do not|never|not|cant|can't|wont|won't|why|didnt|didn't|doesnt|doesn't)\b)[\w']+[,\s]+)?(?:stop|halt|cancel|nevermind|never mind)(?:\s+(?:it|that|now|pls|please)){0,2}$/
+export function isBareStopLine(text, { wordsOnly = false } = {}) {
+  const raw = String(text ?? '').toLowerCase().trim()
+  if (/\?[\s!~.]*$/.test(raw)) return false
+  const t = raw.replace(/[.!?~]+/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!(t.length > 0 && t.length <= 40 && STOP_LINE_RE.test(t))) return false
+  return !(wordsOnly && /\bnever ?mind\b/.test(t))
+}
+// 261012 (pass 5): the player's line asks her to stop or wait (not "don't
+// stop"). Gates the idle hold, so her OWN stop() while switching to a new
+// order ("can you smelt this" answered with stop + say "on it") is no hold.
+const ASKS_STOP_RE = /(?<!\b(?:dont|don't|do not|never|not|cant|can't|wont|won't)\s+)\b(?:stop|halt|cancel|nevermind|never mind|enough|pause|freeze|hold on|hold up|wait|quit it)\b/
+export function asksToStop(text) {
+  return ASKS_STOP_RE.test(String(text ?? '').toLowerCase())
+}
+const ACTION_VERB_SKIP = new Set(['say', 'remember', 'forget', 'end_loop', 'stop', 'setGoal', 'clearGoal', 'quit_game', 'end_call', 'search', 'visit'])
+// 261017 (pass 14): world actions that keep her where she stands. A
+// player-started turn that calls only these is not new work, so it does not
+// end the stay note.
+const STATIONARY_ACTIONS = new Set(['unfollow', 'look', 'equip', 'consumeItem', 'attackEntity', 'setPvp', 'activateItem', 'readSign', 'dropItem'])
+// 261018 (pass 15): how long the stay note rides the snapshot after she
+// stopped in answer to the player.
+const STAY_NOTE_MS = 180_000
+// 261017 (pass 14): how many player lines a completion turn brings back.
+const DEFERRED_REPLY_MAX = 3
 const BYTE_WARN_THRESHOLD = 100 * 1024  // Q3 sanity assert per Loop
 
 // 260516-0yw: action-tick interval. Exported via a module-level let so the
@@ -623,10 +678,30 @@ export async function composeSeedBlocks({
   recentConversationText = null,
   // 260921: notes from earlier web lookups this session (lookups.js).
   lookupsText = null,
+  // 261012: words her own recent lines keep repeating (ownRepeats.js), or null.
+  ownRepeatsText = null,
   playerMessageText = null,
   companions = [],
   frontierText = '',
+  // 261013 (pass 6b): when this session started (ms). Player tasks stamped
+  // before it are from an earlier session; renderHeartbeat asks before
+  // working them. Omitted = every task is treated as this session's.
+  sessionStartMs = null,
+  // 261018 (pass 16): true while she is stopped on the player's word; the
+  // heartbeat then says her tasks and goals wait instead of "work it now".
+  goalsOnHold = false,
+  // 261022 (pass 22): (heartbeat line) => { who, line } | null, a player task
+  // she stopped on the player's word (renderHeartbeat heldTask).
+  heldTask = null,
+  // 261023 (pass 25): (heartbeat line) => true for a goal set this session
+  // that nothing has followed yet (orchestrator goalLineNotStarted). Omitted
+  // = no goal is marked.
+  lineNotStarted = null,
   voiceCall = false,
+  // 261020: the game this session is in (adapter caps.gameName). Labels the
+  // heartbeat and says that memories and the app chat span every game while
+  // a different game's plans are not tasks here. Omitted = no game lines.
+  gameName = null,
   logger = console,
 }) {
   const player = sessionState.playerData()
@@ -679,7 +754,9 @@ export async function composeSeedBlocks({
           'or felt together so they know you remember. Don\'t force it, don\'t recite the list, and don\'t wait to ' +
           'be asked; just don\'t act like every session is the first. ' +
           'Each memory starts with when you wrote it — mind the gap to today: a weeks-old note is an old thread, ' +
-          'not something that just happened.\n\n'
+          'not something that just happened.' +
+          (gameName ? ` ${memoryGameScope(gameName)}` : '') +
+          '\n\n'
         blocks.push({ type: 'text', name: 'memory', text: memoryPreamble + memoryText })
       }
     } catch (err) {
@@ -727,7 +804,7 @@ export async function composeSeedBlocks({
           config._seiContinuityLead = lead
         }
       } catch {}
-      const parts = [lead]
+      const parts = [gameName ? `${lead} ${chatContinuityGameScope(gameName)}` : lead]
       if (cont.summary && cont.summary.trim()) {
         parts.push('\nEarlier conversation summary:\n' + cont.summary.trim())
       }
@@ -784,7 +861,10 @@ export async function composeSeedBlocks({
       // than today. (Anthropic honours the deepest marker whose segment clears
       // the per-segment minimum.)
       cache_control: { type: 'ephemeral' },
-      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText),
+      text: renderHeartbeat(config?.persona?.proactiveness ?? 1, goalsText, frontierText, {
+        sessionStartMs, onHold: goalsOnHold, gameName, heldTask,
+        notStarted: lineNotStarted,
+      }),
     })
   }
   // 260618: companions block — only when other AI bots share this world. Sits
@@ -819,7 +899,13 @@ export async function composeSeedBlocks({
   // at maximum recency, the same anti-drift move as speak_reminder below.
   // renderCore tolerates an old-format persona with no # CORE (name-derived
   // fallback, never throws), so this block is always present.
-  blocks.push({ type: 'text', name: 'core', text: renderCore(config?.persona) })
+  blocks.push({ type: 'text', name: 'core', text: renderCore(config?.persona, { userName: config?.player_display_name }) })
+  // 261012: a signature word in every line reads as a parody over a session,
+  // and only naming the actual word moved it (ownRepeats.js). Right after the
+  // core, which is what tells her to hold her voice.
+  if (ownRepeatsText) {
+    blocks.push({ type: 'text', name: 'own_repeats', text: ownRepeatsText })
+  }
   // 260616 (#1): high-recency say() reminder on EVERY turn. The live test showed
   // Haiku ignoring the say() contract from the (cached, far-up) system prompt and
   // going fully silent, so we restate it right before generation.
@@ -975,17 +1061,243 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   const worldRegistry = config.memory.worlds_json_path
     ? createWorldRegistry({ worldsPath: config.memory.worlds_json_path, memoryLog, logger })
     : null
+  // 261020: this session's world for a memory write, so an app section opened
+  // mid-session (a group-call greeting, a late player-end save) does not take
+  // the bot's next entries (appendMemory `world`). {} before the first spawn.
+  const worldAppendOpts = () => {
+    const w = worldRegistry?.current?.() ?? null
+    return w ? { world: { num: w.num, label: w.label, game: caps.gameName } } : {}
+  }
   // 260618: progression-graph state (observers/progression.js, surfaced through
   // adapter.getProgression). `progressionFlags` are the caller-owned ONE-WAY
   // latches the graph can't re-derive from live inventory — entered_nether /
   // entered_end (latched in refreshProgressionForSeed from the current dimension)
   // and killed_dragon (set true to mark the final milestone; the entityDead →
-  // ender_dragon hookup is the one remaining integration point). `activeFrontierGoal`
-  // links the committed goal back to the spine node it came from, so JS can detect
-  // when that milestone completes, clear the goal, and re-surface the frontier —
-  // { id, text, label } or null.
+  // ender_dragon hookup is the one remaining integration point). `linkedGoals`
+  // links each committed goal to the spine nodes its finish condition names
+  // (goalLink.js), so JS can detect when ALL of them are done, clear that goal,
+  // and re-surface the frontier: [{ text, ids, id, label, procedure }].
   const progressionFlags = { entered_nether: false, entered_end: false, killed_dragon: false }
-  let activeFrontierGoal = null
+  let linkedGoals = []
+  // 261017 (pass 14): true while her goal list still holds a player task.
+  // While it does, the snapshot leaves out her own `next:` milestone, so the
+  // turn after an action is not pointed at her furnace while the logs the
+  // player asked for are still owed. Read from the heartbeat file itself (each
+  // loop seed and after setGoal/clearGoal), so it clears the moment the task
+  // leaves the list, however it was cleared.
+  let playerTaskInGoals = false
+  // 261020 (pass 20): the goal lines as of the last read, for the turn text of
+  // a player line mid-loop. The heartbeat block is read once at the loop's
+  // seed, so a goal written later in the same loop (the player's errand, set
+  // on their line) was in no heartbeat she could see, and "actually forget the
+  // logs" was answered without a clearGoal: told to clear "a goal in your
+  // heartbeat", she had none in view.
+  let heartbeatGoals = []
+  // 261023 (pass 25): the same goals as full heartbeat lines (with their
+  // stamps), and when world work last finished this session (noteActionEvent,
+  // goalProgress.countsAsGoalWork). A goal set this session with no work
+  // since is marked not started, in the seed heartbeat and in heartbeatNow,
+  // so her goodbye says "start" for it and not "finish".
+  let heartbeatGoalLines = []
+  let lastWorkAt = null
+  // 261022 (pass 22): the player's tasks as of the last read ({ at, text,
+  // key }, heartbeat.js playerTaskEntries), when each was set this session
+  // (key -> Date.now() at the setGoal), and the ones she stopped on the
+  // player's word (key -> { at, who, line }). A task is held when a player
+  // line was answered by stopping or replacing the action she was running
+  // for it, with no clearGoal or setGoal in that turn: "actually forget the
+  // logs, just meet me over here" got stop + goTo, and the turn she arrived
+  // handed the logs over (probe chain_give, 5 of 8 on dev). A held task goes
+  // under its own heartbeat head and rides the snapshot with the player's
+  // line (taskNoteText). It stays held until it is cleared or set again.
+  // 261022 (pass 22c, review): only the task the stopped action worked
+  // (tasksOfAction), and only a plain stop holds it ({ kind: 'held' }). An
+  // action replaced by another on a player line may be a detour ("come look
+  // at this a sec") as easily as a call-off, so that task is only noted as
+  // switched ({ kind: 'switched' }) with the line, and she decides. Either
+  // ends when she starts an action for the task again (startLongRunner).
+  let playerTasks = []
+  const taskSetAt = new Map()
+  const taskHolds = new Map()
+  // Tasks she cleared in answer to a player's line, for a few minutes after
+  // ({ key, text, at, who, line }). With the task gone, the request was
+  // still in the transcript, and an idle tick set it again or a walk's end
+  // handed the items over anyway (probe chain_give and chain_gather).
+  let clearedTasks = []
+  const CLEARED_TASK_MS = config?.memory?.cleared_task_note_ms ?? 180_000
+  async function refreshPlayerTaskInGoals() {
+    if (!heartbeatLog) { playerTaskInGoals = false; heartbeatGoals = []; heartbeatGoalLines = []; playerTasks = []; taskHolds.clear(); return }
+    try {
+      const full = await heartbeatLog.readAll()
+      playerTaskInGoals = hasPlayerTask(full)
+      heartbeatGoals = goalEntries(full)
+      heartbeatGoalLines = String(full ?? '').split('\n').filter((l) => goalEntries(l).length > 0)
+      playerTasks = playerTaskEntries(full)
+      const keys = new Set(playerTasks.map((t) => t.key))
+      for (const k of [...taskHolds.keys()]) if (!keys.has(k)) taskHolds.delete(k)
+      for (const k of [...taskSetAt.keys()]) if (!keys.has(k)) taskSetAt.delete(k)
+      for (const k of [...taskStartedAt.keys()]) if (!keys.has(k)) taskStartedAt.delete(k)
+    } catch { /* keep the last value */ }
+  }
+  // The player's tasks set this session before `startedAt` (an action's
+  // start), i.e. the ones that action was working.
+  const tasksBehind = (startedAt) => playerTasks.filter((t) => {
+    const at = taskSetAt.get(t.key)
+    return Number.isFinite(at) && Number.isFinite(startedAt) && at <= startedAt
+  })
+  const playerNames = () => [config?.player_display_name, config?.player_username, ...companions].filter(Boolean)
+  // The task the running action was working: the one its args name, or the
+  // only task there was. None when that is unclear.
+  const taskOfRunning = (running) => {
+    const behind = tasksBehind(running?.startedAt)
+    const named = tasksOfAction(running?.input, behind, { names: playerNames() })
+    if (named.length) return named
+    return behind.length === 1 ? behind : []
+  }
+  // She started an action for a held or switched task: it is back on.
+  function releaseTaskHolds(name, args) {
+    if (!taskHolds.size || ACTION_VERB_SKIP.has(name)) return
+    const held = playerTasks.filter((t) => taskHolds.has(t.key))
+    for (const t of tasksOfAction(args, held, { names: playerNames() })) {
+      taskHolds.delete(t.key)
+      logger.info?.(`[sei/orch] task hold lifted: she started ${name} for it`)
+    }
+  }
+  // 261023 (pass 25b): when she last started an action for each of the
+  // player's tasks (key -> ms): one whose args name the task's things
+  // (tasksOfAction), or one aimed at the player (a walk to them, follow,
+  // give), which serves every open task. A task set this session that no
+  // action has been started for is "not started": marked so in the
+  // heartbeat and noted in the snapshot (taskNoteText). In errands-01 of the
+  // 261023 scorecard "get me like 8 logs" got "finishing this stone then
+  // i'm on wood", then more stone for her own furnace and no trip to the
+  // trees, and "i'll keep the logs coming" with no log in her inventory.
+  // Work in general (lastWorkAt) does not start a task: that stone did not.
+  const taskStartedAt = new Map()
+  // When she last started, and last finished, any world action (ms). The
+  // snapshot note is only for a task she has done other things since (her
+  // own stone, above), not one she is still talking over ("wanna build a
+  // house with me later?").
+  let lastActionStartAt = null
+  let lastActionEndAt = null
+  const aimsAtPlayer = (args) => {
+    if (!args || typeof args !== 'object') return false
+    const names = new Set(playerNames().map((n) => String(n).toLowerCase()))
+    return Object.values(args).some((v) => typeof v === 'string' && names.has(v.trim().toLowerCase()))
+  }
+  function noteTaskStarted(name, args) {
+    if (ACTION_VERB_SKIP.has(name)) return
+    lastActionStartAt = Date.now()
+    if (!playerTasks.length) return
+    const open = playerTasks.filter((t) => Number.isFinite(taskSetAt.get(t.key)))
+    const linked = aimsAtPlayer(args) ? open : tasksOfAction(args, open, { names: playerNames() })
+    const now = Date.now()
+    for (const t of linked) taskStartedAt.set(t.key, now)
+  }
+  const taskNotStarted = (t) => {
+    const setAt = taskSetAt.get(t.key)
+    if (!Number.isFinite(setAt)) return false
+    const started = taskStartedAt.get(t.key)
+    return !(Number.isFinite(started) && started >= setAt)
+  }
+  // A heartbeat line set this session that nothing has followed: a player
+  // task with no action started for it, or her own goal with no world work
+  // finished since it was set (goalProgress.goalNotStarted).
+  function goalLineNotStarted(line) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(String(line ?? '').trim())
+    if (m && isPlayerTask(m[1])) {
+      // A task carried over from an earlier session keeps its old stamp; its
+      // progress then is not known here, so it stays unmarked.
+      const at = goalStampMs(line)
+      if (!Number.isFinite(sessionStartedAt) || !Number.isFinite(at) || at < sessionStartedAt) return false
+      const t = playerTasks.find((x) => x.key === goalKey(m[1]))
+      return !!t && taskNotStarted(t)
+    }
+    return goalNotStarted(line, { sessionStartMs: sessionStartedAt, lastWorkAt })
+  }
+  // For renderHeartbeat: the hold of a raw heartbeat line, or null.
+  const heldTaskOfLine = (line) => {
+    if (!taskHolds.size) return null
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(String(line ?? '').trim())
+    const h = m ? taskHolds.get(goalKey(m[1])) : null
+    return h && h.kind === 'held' ? h : null
+  }
+  // The snapshot lines for this session's open player tasks: a held one with
+  // the line she stopped on, any other with what the player has said since
+  // they asked for it and she has answered. '' when there is nothing to show.
+  const TASK_SINCE_LINES = 2
+  function taskNoteText() {
+    if (!playerTasks.length && !clearedTasks.length) return ''
+    const who = config?.player_display_name || config?.player_username || null
+    let heard = []
+    let saidAt = -Infinity
+    try {
+      const { playerLines, selfLines } = convoMemory.recentChat._internal
+      heard = playerLines ?? []
+      for (const l of selfLines ?? []) if (Number.isFinite(l?.at) && l.at > saidAt) saidAt = l.at
+    } catch { heard = [] }
+    // A player line newer than her last line means this turn answers it.
+    // The "said since" note waits for the turn after, also when an earlier
+    // line she did answer would qualify: chit-chat before the call-off put
+    // the note on the call-off turn anyway (review of 52138cdf).
+    const fromPlayer = (l) => l && l.companion !== true && Number.isFinite(l.at) && String(l.text ?? '').trim()
+    const answering = heard.some((l) => fromPlayer(l) && l.at > saidAt)
+    const out = []
+    for (const t of playerTasks) {
+      const setAt = taskSetAt.get(t.key)
+      if (!Number.isFinite(setAt)) continue
+      const h = taskHolds.get(t.key)
+      if (h) {
+        const note = h.kind === 'switched' ? NUDGES.taskSwitched : NUDGES.taskHeld
+        out.push(note({ task: t.text, who: h.who || who, line: h.line, secs: Math.max(1, Math.round((Date.now() - h.at) / 1000)) }))
+        continue
+      }
+      // 261022 (pass 22b): only lines she has already answered. On the turn
+      // that answers the player's line, the turn's own frame and the goal
+      // lines already ask about it, and this note on top ("call clearGoal
+      // on it") got clearGoal + stop + "on my way" with no goTo in 6 of 8
+      // probe runs (forget_give_near; base 0 of 8).
+      if (answering) continue
+      // 261023 (pass 25b): not while she holds on the player's word, and not
+      // for a passive companion, who works a task only while on it.
+      if (!stayNote && (config?.persona?.proactiveness ?? 1) !== 0 && taskNotStarted(t) && ((lastActionStartAt ?? -Infinity) > setAt || (lastActionEndAt ?? -Infinity) > setAt)) {
+        out.push(NUDGES.taskNotStarted({ task: t.text, who }))
+      }
+      const since = heard.filter((l) => fromPlayer(l) && l.at > setAt && l.at <= saidAt)
+      if (since.length) out.push(NUDGES.taskSince({ task: t.text, who: since.at(-1).who || who, lines: since.slice(-TASK_SINCE_LINES).map((l) => l.text) }))
+    }
+    clearedTasks = clearedTasks.filter((c) => Date.now() - c.at < CLEARED_TASK_MS)
+    for (const c of clearedTasks) {
+      out.push(NUDGES.taskCleared({ task: c.text, who: c.who || who, line: c.line, secs: Math.max(1, Math.round((Date.now() - c.at) / 1000)) }))
+    }
+    return out.join('\n')
+  }
+  // 261012 (quality pass 5): when the player last told her to stop. Every
+  // stop_gather failure in the eval was the same: the gather stopped at once,
+  // then the next idle tick (5s later at the agentic cadence) read her own
+  // goal in the heartbeat and started gathering again. While this hold is on,
+  // idle ticks are skipped, so her own initiative waits for the player. It
+  // ends when the player gives her something new to do, or after the window.
+  let playerStopAt = 0
+  // 261013 (pass 6b): one orchestrator per summon, so this is the session's
+  // start. A player task stamped before it was given in an earlier session.
+  const sessionStartedAt = Date.now()
+  const PLAYER_STOP_HOLD_MS = config?.memory?.player_stop_hold_ms ?? 120_000
+  const playerStopHeld = () => playerStopAt > 0 && Date.now() - playerStopAt < PLAYER_STOP_HOLD_MS
+  // 261018 (pass 15): set when she herself answered a player's line with stop
+  // or unfollow and started nothing new: { at, who, line }. Later turns see a
+  // short note in the snapshot (NUDGES.stayNote) so a completion or idle turn
+  // remembers why she is standing there. Only a note: nothing is blocked. It
+  // ends when a player line gets new work or a goal from her, or after
+  // STAY_NOTE_MS. A plain chat line ("lol") does not end it, since that is
+  // not the player asking for something else.
+  let stayNote = null
+  const stayNoteText = () => {
+    if (!stayNote) return ''
+    const ms = Date.now() - stayNote.at
+    if (ms >= STAY_NOTE_MS) { stayNote = null; return '' }
+    return NUDGES.stayNote({ who: stayNote.who, line: stayNote.line, secs: Math.max(1, Math.round(ms / 1000)) })
+  }
   // 17-04 (D-08): node ids whose known-good `procedure` has already been written
   // to per-world memory this session — dedupes the procedural write-back so a
   // milestone records its procedure at most once.
@@ -1031,7 +1343,108 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // user turn so the LLM has cross-loop continuity (short replies like "yes" /
   // "do it" need player context; loopHistory keeps the bot from re-asking
   // questions or rediscovering tasks across cold-composed loops).
-  const convoMemory = createConvoMemory()
+  // 261011: every line also feeds the process-level session digest, which
+  // main reads for the player-end "next time" check (sessionDigest.js).
+  const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
+  // 261018 (pass 16): items that arrived without an action of hers, written
+  // into the conversation record from the snapshot (see snapshotText).
+  const recordInventoryGains = createInventoryGainRecorder({
+    record: (text, opts) => convoMemory.recentChat.pushEvent(text, opts),
+    spokeBetween: (from, to) => convoMemory.recentChat.spokeBetween(from, to),
+  })
+  // 261012: the note naming a word her recent lines keep repeating, or null.
+  // 261013: it also quotes her last line or two and names a phrase or opener
+  // her recent lines share (ownRepeats.js), and rides silent check-ins too,
+  // in a lighter form on turns where the player did not just speak.
+  // Never throws: a bad line in the ring must not cost the turn.
+  // The words it must never name: names are how she addresses someone, and
+  // a word from the snapshot or the goals is an item or the job at hand
+  // ("stone", "pickaxe"), which a status line needs. The last snapshot and
+  // goals are cached as they are read, so the sync interrupt path has them.
+  const _repeatsContext = { snapshot: '', goals: '', frontier: '' }
+  // 261013: the game's item, block and mob names (optional adapter member),
+  // read once, so a phrase like "oak trees" or "iron ingots" is the job even
+  // when it is not in the snapshot.
+  let _gameVocab
+  const gameVocab = () => {
+    if (_gameVocab === undefined) {
+      try { _gameVocab = typeof adapter?.gameVocabulary === 'function' ? (adapter.gameVocabulary() ?? null) : null } catch { _gameVocab = null }
+    }
+    return _gameVocab
+  }
+  // `mode` is the kind of turn (ownRepeats.js REUSE_ASK): 'reply' when the
+  // player just spoke, 'idle' for a turn of her own, 'checkin' mid-action.
+  function ownRepeatsText(mode = 'reply') {
+    try {
+      const { selfLines, playerLines } = convoMemory.recentChat._internal
+      const names = [config?.player_display_name, config?.player_username, ...companions]
+      const { snapshot, goals, frontier } = _repeatsContext
+      return ownRepeatsNote(selfLines, playerLines, {
+        mode, names, context: [snapshot, goals, frontier], vocab: gameVocab(), signature: config?.persona?.expanded,
+      })
+    } catch { return null }
+  }
+  const ownRepeatsTail = (mode) => { const t = ownRepeatsText(mode); return t ? `\n\n${t}` : '' }
+  // 261020 (pass 20): the turn after one of her actions finished carried no
+  // line of hers, so a line she had just said went out again: "hey alex"
+  // twice when a dig came back out of range, "you're welcome" on the "thanks"
+  // and again when the give landed. That turn now gets the short check-in
+  // form ('result'), only while her newest line is fresh, and once per line
+  // per loop: a long gather does not re-quote the same line on every result.
+  // Idle seeds keep the light idle form (no quote). Quoting a fresh line on
+  // the seed was tried in this pass and is the pass 6a silence again: in the
+  // persona eval it raised silent items 7 -> 15 and misattributions 10 -> 21
+  // against pass 19, mostly on the idle and failed_action situations.
+  // Only these result notes mark a line as noted. A reply turn's quote does
+  // not: when the reply turn calls an action and no say() (the hello that
+  // crossed theirs), the result turn after it is where the second hello
+  // came from (probe greet_dig, 8 of 8 with the reply's quote marked).
+  const RESULT_REPEATS_FRESH_MS = config?.memory?.result_repeats_fresh_ms ?? 45_000
+  const newestOwnLineAt = () => {
+    try {
+      const at = convoMemory.recentChat._internal.selfLines.at(-1)?.at
+      return Number.isFinite(at) ? at : null
+    } catch { return null }
+  }
+  function resultRepeatsTail(loop) {
+    const at = newestOwnLineAt()
+    if (at == null || Date.now() - at > RESULT_REPEATS_FRESH_MS) return ''
+    if (loop?._ownLinesNotedAt === at) return ''
+    const t = ownRepeatsText('result')
+    if (!t) return ''
+    if (loop) loop._ownLinesNotedAt = at
+    return `\n\n${t}`
+  }
+  // 261012: the first-spawn greeting and the player's own first "hey" cross
+  // in flight. Her greeting is decided on the first idle tick but reaches
+  // chat a few seconds later (paced typing), the player types hello in that
+  // gap, and the reply to it greeted them a second time ("heyyy alex", then
+  // "hey alex. ok so..."; 4 of 6 scripted conversations in the 261011
+  // scorecard). The reply to the first player line after a greeting she
+  // actually said is told so; it is said once, on that line only.
+  let _firstContactAt = 0
+  let _greetNoteDone = false
+  // Only a line typed while her hello was still on its way counts as crossed.
+  // Without a bound, a player who stayed silent and said "hey" minutes later
+  // was told her (long delivered) hello already answered it, with the reply
+  // retry switched off, so they got no answer.
+  const GREET_CROSS_WINDOW_MS = 20_000
+  // True (once) when this player line is their first since her first-contact
+  // hello was decided. The turn then takes NUDGES.greetCrossed framing, and
+  // the loop owes no reply (the unanswered-line retry would otherwise push
+  // the second greeting back in).
+  function greetCrossed(loop) {
+    if (!_firstContactAt || _greetNoteDone) return false
+    const { selfLines, playerLines } = convoMemory.recentChat._internal
+    const greet = selfLines.find((l) => l.at >= _firstContactAt)
+    if (!greet) return false
+    _greetNoteDone = true
+    const since = playerLines.filter((l) => l.at >= greet.at && !l.companion)
+    if (since.length !== 1) return false
+    if (since[0].at - greet.at > GREET_CROSS_WINDOW_MS) return false
+    if (loop) loop._noReplyOwed = true
+    return true
+  }
   // 260921: what she found on the web, kept across loops (see lookups.js).
   const lookupLog = createLookupLog()
   // chains is a no-op shim (kept to preserve any stragglers referencing it).
@@ -1049,6 +1462,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // three staggered messages + quit() in the same batch; the disconnect fired
   // before the +550ms timers, so the player got just "nope" and he left.
   let _lastChatSendDeadline = 0
+  // 261011: the last finished loop said something and started no world action.
+  let _lastLoopTalkOnly = false
 
   // leadMs — "Realistic typing" delay before the FIRST segment hits the socket
   // (0 when the toggle is off, preserving the old instant behavior). The
@@ -1074,12 +1489,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // in that gap was blind to the line: an idle tick re-greeted over a
       // greeting still in the queue, and re-answered a question whose answer
       // was still being "typed" (with a different answer).
-      convoMemory.recentChat.pushSelf(config.persona.name, msg)
+      const at = leadMs + i * 550
+      convoMemory.recentChat.pushSelf(config.persona.name, msg, { sentAt: Date.now() + Math.max(0, at) })
       const send = () => {
         logChatOut(msg)
         try { adapter.chat(msg) } catch {}
       }
-      const at = leadMs + i * 550
       if (at <= 0) send()
       else setTimeout(send, at)
     })
@@ -1109,6 +1524,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // emitted:false — an empty say() does NOT consume the one-per-turn slot.
       return { emitted: false, content: 'say: nothing sent (empty after cleanup)' }
     }
+    // 261011: telemetry — the companion answered (a deduped repeat below still
+    // means the line is in chat). Counts only; the text is never recorded.
+    try { sessionActionStats.noteReply() } catch {}
     const lastSelf = convoMemory.recentChat.lastSelf?.() ?? null
     const suppressed = shouldSuppressLoopEndSay({
       triggerEvent: loop._triggerEvent,
@@ -1169,6 +1587,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     // 260703: track per-loop speech so a player-message loop can refuse to
     // end silently (see the end_loop deferral in the dispatch predicates).
     loop._spokeThisLoop = true
+    if ((loop._currentIterationTrigger ?? loop._triggerEvent) === 'sei:attacked') _lastFightLineAt = Date.now()
     // 260703: any line actually reaching the player counts as this session's
     // greeting — stop injecting the sticky GREETING_HINT from here on.
     greetedPlayer = true
@@ -1301,6 +1720,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // What was in flight when the pause landed (e.g. "gather(oak_log)"), so the
   // unpause tick can offer to continue it. Cleared once consumed.
   let pausedInflightNote = null
+  // 261011: the live post-teardown drain (see drainPendingToolsOnTeardown), or
+  // null. Held here so every "stop what you are doing" path can reach its
+  // controller: abortActive (stop, pause), a new world action, and a new
+  // player chat / attack / death (abortDrain below). It used to run on a fresh
+  // AbortController nobody kept, so none of those could halt it.
+  let drainRun = null
+  // Events teardownLoop itself re-enqueues (the attack re-fire, a preserved or
+  // undelivered player line). They are the SAME event that caused the teardown
+  // (or one that predates the drained batch), not a new preempt, so they must
+  // not cancel the drain that teardown just started. Identity-keyed: the FSM
+  // passes the data object through untouched.
+  const drainSpared = new WeakSet()
   // 260703: sticky greeting. The full FIRST CONTACT block rides only the first
   // idle tick (reason:'just_connected_first_spawn'); when that loop is preempted
   // (attack, chat) before the model replies, the greet instruction is gone and
@@ -1320,7 +1751,16 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (greetedPlayer || voiceCallActive) return text
     const t = String(text ?? '')
     if (t.includes('FIRST CONTACT')) return t
-    return `${t}\n\n${GREETING_HINT}`
+    // 261017 (pass 13): the open plan from the home screen rides here too.
+    // Main marks it used when the session starts, and FIRST CONTACT is
+    // skipped once a reply has greeted, so a player who said hello first
+    // never heard the plan. Only a known open plan (a string); the soft
+    // memory hint stays with FIRST CONTACT.
+    const plan = config?._seiNextStepPlan
+    const cue = typeof plan === 'string' && plan.trim()
+      ? ` ${nextTimeGreeting(plan, { notForGame: config?._seiNextStepPlanNotForGame === true ? caps.gameName : null })}`
+      : ''
+    return `${t}\n\n${GREETING_HINT}${cue}`
   }
   // Pending interrupt blocks supplied via abort signal — picked up by the
   // catch arm to render the PLAYER INTERRUPT user turn.
@@ -1332,6 +1772,70 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // currentLoop === null and opens a fresh loop with the attack seed
   // addendum.
   let pendingAttack = null
+  // 261019 (pass 19): she died and her death turn has not started yet. The
+  // adapter reports the death the moment health hits 0 (noteDeath) and queues
+  // the death turn itself only after the respawn, so the turn sees her real
+  // state. In between, any turn still being written was planned by the body
+  // that died (combat_night eval: "eating bread" and "i'm at 4 hp" after the
+  // death, an eat call for bread that lay on the ground), so it is dropped.
+  // `life` counts deaths, so a hit queued in her previous life is dropped too.
+  let deathPending = false
+  let life = 0
+  const DEATH_PENDING_MAX_MS = 10_000
+  /** Player lines that arrived while deathPending with no loop open. */
+  let deathHeld = []
+  function flushDeathHeld() {
+    const held = deathHeld
+    deathHeld = []
+    for (const h of held) {
+      try { reenqueue(h.event, h.data, 1 /* Priority.P1_CHAT */) } catch (err) {
+        logger.warn?.(`[sei/orch] re-sending a held player line failed: ${err && err.message}`)
+      }
+    }
+  }
+  // 261011: when the bot last spoke during an attack turn, so the next hit in
+  // the same fight is told it already warned the player (NUDGES.fightAlreadyTold).
+  let _lastFightLineAt = 0
+  const FIGHT_TOLD_WINDOW_MS = 30_000
+  // 261018 (pass 17): a line from any other turn counts too. night_social-01
+  // (pass 15 eval): her reply to "are you ok??" said "going after the zombie
+  // now", a defend heads-up landed 0.3s later asking for "one short line so
+  // they know you are coming", and nothing in that turn showed the line she
+  // had just said, so she said it again in new words. Her last line is quoted
+  // and the turn is asked for a line that adds to it. Offering silence when
+  // the line already covered it was tried and cut a control case (her last
+  // line a joke) from 6/6 to 0-3/6 spoken, because she counted "they can see
+  // me fighting" as told (scripts/quality-eval/pass17-probe.mjs).
+  const RECENT_LINE_TOLD_MS = 15_000
+  function fightToldSuffix() {
+    const now = Date.now()
+    const ago = now - _lastFightLineAt
+    if (_lastFightLineAt && ago < FIGHT_TOLD_WINDOW_MS) {
+      return ' ' + NUDGES.fightAlreadyTold(Math.max(1, Math.round(ago / 1000)))
+    }
+    const last = recentOwnTurns(convoMemory?.recentChat?._internal?.selfLines, { now, turns: 1, withinMs: RECENT_LINE_TOLD_MS })[0]
+    if (!last?.text || !Number.isFinite(last.at)) return ''
+    return ' ' + NUDGES.recentLineTold(last.text.slice(0, 200), Math.max(1, Math.round((now - last.at) / 1000)))
+  }
+  // 261011: whether this companion has any history with the player: a memory
+  // entry from a past session, or the in-app chat it was summoned from.
+  async function knowsPlayer() {
+    const cont = config?._seiContinuity
+    if (cont && (cont.summary || (Array.isArray(cont.recent) && cont.recent.length))) return true
+    if (!config?.memory?.memory_md_path) return false
+    try {
+      const m = await readMemoryForSeed(config.memory.memory_md_path, config.memory.seed_memory_budget_bytes ?? 8192)
+      return /^- \[/m.test(String(m ?? ''))
+    } catch { return false }
+  }
+  // 261011: a hit that lands while an action runs is delivered mid-action
+  // (handleActionTick) instead of tearing the loop down. Further hits inside
+  // this window are swallowed; the body's own retaliation keeps swinging.
+  const MID_ACTION_ATTACK_COALESCE_MS = 10_000
+  const MID_ACTION_ATTACK_HP_DROP = 4
+  // A reflex warning / survival narration ('reflex') or the owner being hit
+  // ('defend'): the bot itself was not hit (fsm.attackedPriority, P1).
+  const isAttackHeadsUp = (d) => d?.attackerKind === 'reflex' || d?.attackerKind === 'defend'
   // 260611: single-flight timer for the rate-limit redrive (see
   // maybeScheduleRateLimitRedrive). Holds the setTimeout handle while a
   // delayed re-dispatch of a 429-killed player-visible trigger is pending.
@@ -1476,7 +1980,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       input_schema: {
         type: 'object',
         properties: {
-          text: { type: 'string', minLength: 1, description: 'The whole committed goal or standing order, including its finish condition, in one line.' },
+          text: { type: 'string', minLength: 1, description: 'The whole goal or task in one line: every part of it and when it counts as done.' },
+          for_player: { type: 'boolean', description: 'true when this is a task the player asked you to do; leave it out for a goal of your own.' },
         },
         required: ['text'],
       },
@@ -1498,14 +2003,19 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       input_schema: { type: 'object', properties: {}, additionalProperties: false },
     },
     {
+      name: 'stop',
+      description: PERSONALITY_TOOL_DESCRIPTIONS.stop,
+      input_schema: { type: 'object', properties: {}, additionalProperties: false },
+    },
+    {
       // Task 4 — leave the game entirely. Ends this in-game session (the bot
       // disconnects from the world); the player can still chat with it from Sei.
       // Use only when the player clearly wants you to stop playing / log off —
-      // NOT for pausing an action (that's end_loop). Say a goodbye first.
+      // NOT for pausing an action (that's stop). Say a goodbye first.
       name: 'quit_game',
       description:
         `Leave the ${caps.gameName} game and disconnect from the world, ending this play session. ` +
-        'Use only when the player wants you to stop playing or log off, not to pause a task (use end_loop for that). ' +
+        'Use only when the player wants you to stop playing or log off, not to pause a task (use stop for that). ' +
         'You are playing in the player\'s LAN world, so you cannot stay on if they leave: if the player says they want to leave or stop playing, that means you will need to quit too and continue next time. ' +
         'Put your goodbye in the `farewell` field. It is spoken to chat for you as you leave, so do NOT also call say(). ' +
         'Calling quit_game means you ARE leaving: the farewell must read as a goodbye, never "no" or "I\'m staying". ' +
@@ -1526,6 +2036,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
           // 261008: retention hook. Saved to MEMORY.md for the next greeting;
           // its presence (never its text) is what bot_session_ended counts.
           next_time: { type: 'string', description: NEXT_TIME_FIELD },
+          // 261014: the same step written to the player, for the Home card.
+          next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+          // 261020: the game the step is for (may differ from this one).
+          next_time_game: { type: 'string', description: NEXT_TIME_GAME_FIELD },
         },
         additionalProperties: false,
       },
@@ -1551,6 +2065,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
             description: 'Your goodbye line, spoken into the call as it ends. Short, in your own voice. ' + NEXT_TIME_GOODBYE,
           },
           next_time: { type: 'string', description: NEXT_TIME_FIELD },
+          next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+          next_time_game: { type: 'string', description: NEXT_TIME_GAME_FIELD },
         },
         additionalProperties: false,
       },
@@ -1609,7 +2125,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // (surfaceBaseline(), Minecraft default MINECRAFT_BASELINE). The
         // composition is what BASELINE_INSTRUCTIONS used to be, byte for byte.
         `${UNIVERSAL_BASELINE}\n\n${caps.surfaceBaseline()}`,
-        renderPersona(config.persona),
+        // 261013: fills card {{user}}/{{char}} placeholders (session-stable).
+        renderPersona(config.persona, { userName: config.player_display_name }),
         adapter.capabilityParagraph(),
         adapter.worldPrimer(),
         adapter.actionRules(),
@@ -1872,7 +2389,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const fingerprint = String(identity.fingerprint)
     const label = (identity.label && String(identity.label).trim()) || fingerprint
     try {
-      await worldRegistry.resolveOnSpawn({ fingerprint, label })
+      await worldRegistry.resolveOnSpawn({ fingerprint, label, game: caps.gameName })
     } catch (err) {
       logger.warn?.(`[sei/orch] world resolve failed: ${err.message}`)
     }
@@ -1886,7 +2403,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   // ─── Snapshot helper ────────────────────────────────────────────────
-  function snapshotText() {
+  function snapshotText({ playerRequestOwed = false } = {}) {
     // 260725: the pause contract says NO Minecraft context reaches the model
     // while paused — this is the single choke point every turn's snapshot
     // (fresh seed, tool-result continuation, action tick) flows through, so
@@ -1895,9 +2412,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     if (gamePaused) return pausedNotice()
     try {
       const w = worldRegistry?.current?.() ?? null
-      return snapshotComposer.next({
+      // Read first: it also expires the note.
+      const note = stayNoteText()
+      const text = snapshotComposer.next({
         lastActionResult,
         inFlight: inflight.current(),
+        // 261014: lets the composer tell her own haul from a gift.
+        recentActions: inflight.recent(),
         // Player-priority pin: keep the player in `nearby entities` even when
         // six other entities are closer. Without this, busy-area entity
         // congestion (sheep / foxes / traders / llamas) can evict the player
@@ -1910,7 +2431,22 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // Keyed `worldTag` (not `world`) — composeSnapshot imports a `world`
         // observer fn and a `world` opt would shadow it.
         worldTag: w ? `#${w.num}${w.label ? ` ${w.label}` : ''}` : null,
+        // 261017 (pass 14): something the player asked for comes first, so
+        // her own next milestone is left out of this snapshot. 261018 (pass
+        // 16): so does a stop on the player's word (the stay note). On the
+        // chat turns after "actually stop" she read "next: make a furnace" as
+        // what she was doing ("i'm still making that furnace", 1 cobblestone,
+        // nothing running).
+        hideNext: playerRequestOwed || playerTaskInGoals || !!note,
+        // 261018 (pass 16): items that arrived without an action of hers go
+        // into the conversation record (sessionEvents.describeInventoryGain).
+        // A run of them with nothing said in between is one line.
+        onUnexplainedGains: recordInventoryGains,
       })
+      if (typeof text === 'string') _repeatsContext.snapshot = text
+      if (typeof text !== 'string') return text
+      const tasks = taskNoteText()
+      return [text, note, tasks].filter(Boolean).join('\n')
     } catch (err) {
       logger.warn(`[sei/orch] composeSnapshot failed: ${err.message}`)
       return '(snapshot unavailable)'
@@ -1918,20 +2454,8 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   // ─── Progression frontier + JS completion detection ──────────────────
-  // Link a free-text goal to a spine node by matching its `key` against the
-  // goal text; the longest match wins ("diamond pickaxe" beats bare "diamond").
-  // Scoped to the nodes just offered (the current frontier), so a stray word
-  // can't mis-link to a far-off milestone.
-  function matchFrontierNode(text, frontier) {
-    const t = String(text ?? '').toLowerCase()
-    if (!t) return null
-    let best = null
-    for (const n of frontier ?? []) {
-      const k = String(n?.key ?? '').toLowerCase()
-      if (k && t.includes(k) && (!best || k.length > best.key.length)) best = n
-    }
-    return best
-  }
+  // A goal is linked to the spine by goalLink.linkGoalToSpine when it is set
+  // (the nodes its finish condition names, all of which must be done).
 
   // Called once per fresh-loop seed, BEFORE composeSeedBlocks. Latches the
   // dimension milestones (one-way), computes the reachable frontier from live
@@ -1950,20 +2474,23 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     let prog
     try { prog = adapter.getProgression(progressionFlags) } catch { return { frontierText: '', justCompletedNote: '' } }
     let justCompletedNote = ''
-    if (activeFrontierGoal && prog?.done?.has?.(activeFrontierGoal.id)) {
-      const label = activeFrontierGoal.label
-      try { await heartbeatLog?.remove(activeFrontierGoal.text) } catch { /* best-effort */ }
+    const finished = linkedGoals.filter((g) => linkFinished(g, prog))
+    for (const g of finished) {
+      let removed = 0
+      try { removed = (await heartbeatLog?.remove(g.text)) ?? 0 } catch { /* best-effort */ }
+      // The goal may already be gone (cleared or replaced by the model).
+      if (!removed) continue
       // Neutral note: renderHeartbeat's per-level frontier framing decides
       // whether to PROMPT a new pick (agentic) or just stay aware (passive/reactive).
-      justCompletedNote = `\n\nPROGRESS: you just finished "${label}" — that goal is done and has been cleared from your heartbeat.`
+      justCompletedNote += `\n\nPROGRESS: you just finished "${g.label}", which was the finish condition of your goal "${g.text}". That goal is done and has been cleared from your heartbeat.`
       // D-08 procedural memory write-back: record the completed milestone's
       // known-good procedure once to per-world memory (append + compaction
       // trigger, deduped by node id). Best-effort — never breaks the seed path.
-      await appendProcedureOnce(activeFrontierGoal, {
+      await appendProcedureOnce(g, {
         memoryLog, written: writtenProcedures, memoryCompactor, logger,
       })
-      activeFrontierGoal = null
     }
+    if (finished.length) linkedGoals = linkedGoals.filter((g) => !finished.includes(g))
     const frontierText = (prog?.frontier ?? []).map(n => n.label).join(' · ')
     return { frontierText, justCompletedNote }
   }
@@ -1973,6 +2500,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // short string suitable for inlining as `prior_task: <…>` in a PLAYER
   // INTERRUPT user turn, or null if nothing worth surfacing.
   function extractPriorTask(loop) {
+    // 261014: the running action when there is one. The last tool call in the
+    // history is often a loop-control call made alongside it: her first-contact
+    // turn was say + setGoal + gather + end_loop, and every mid-action turn
+    // during that gather read "You're currently: end_loop" (23 turns in one
+    // 25-session eval run).
+    if (loop.inFlight?.name) return taskLabel(loop.inFlight.name, loop.inFlight.input)
     const msgs = loop._internal.messages
     for (let i = msgs.length - 1; i >= 0; i--) {
       const m = msgs[i]
@@ -1980,30 +2513,37 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       for (let j = m.content.length - 1; j >= 0; j--) {
         const blk = m.content[j]
         if (!blk || blk.type !== 'tool_use') continue
-        if (blk.name === 'remember' || blk.name === 'forget' || blk.name === 'setGoal' || blk.name === 'clearGoal' || blk.name === 'say') continue
-        // Combined-mode movement action.
-        const a = blk.input ?? {}
-        const parts = []
-        if (typeof a.entity === 'string') parts.push(a.entity)
-        else if (typeof a.target === 'string') parts.push(a.target)
-        else if (typeof a.block === 'string') parts.push(a.block)
-        else if (typeof a.player === 'string') parts.push(a.player)
-        if (typeof a.times === 'number') parts.push(`times=${a.times}`)
-        return `${blk.name}${parts.length ? ' ' + parts.join(' ') : ''}`.slice(0, 120)
+        if (INLINE_METADATA.has(blk.name)) continue
+        return taskLabel(blk.name, blk.input)
       }
     }
     return null
   }
 
+  function taskLabel(name, input) {
+    // Combined-mode movement action.
+    const a = input ?? {}
+    const parts = []
+    if (typeof a.entity === 'string') parts.push(a.entity)
+    else if (typeof a.target === 'string') parts.push(a.target)
+    else if (typeof a.block === 'string') parts.push(a.block)
+    else if (typeof a.player === 'string') parts.push(a.player)
+    else if (typeof a.item === 'string') parts.push(a.item)
+    else if (typeof a.name === 'string') parts.push(a.name)
+    if (typeof a.times === 'number') parts.push(`times=${a.times}`)
+    return `${name}${parts.length ? ' ' + parts.join(' ') : ''}`.slice(0, 120)
+  }
+
   // 260608-tik: the tool that aborts the currently-running action. follow is
   // PERSISTENT background state (a 1s pathfinder tick keeps it alive even after
-  // the loop ends), so end_loop does NOT stop it — only `unfollow` does.
-  // Everything else is a foreground task that end_loop aborts. `actionLabel` is
-  // extractPriorTask's "name arg" string; we key off the leading tool name.
+  // the loop ends), so only `unfollow` stops it. Everything else is a
+  // foreground task that `stop` cancels (261011: end_loop no longer does).
+  // `actionLabel` is extractPriorTask's "name arg" string; we key off the
+  // leading tool name.
   function stopToolForAction(actionLabel) {
     const name = actionLabel ? actionLabel.split(' ')[0] : null
     // Contract v2 backgroundActions: { follow: 'unfollow' } for Minecraft.
-    return (name && caps.backgroundActions[name]) || 'end_loop'
+    return (name && caps.backgroundActions[name]) || 'stop'
   }
 
   // 260608-tik: unified mid-action interrupt text (Change 2). Every path that
@@ -2035,10 +2575,22 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const priorTask = extractPriorTask(loop)
     const priorName = priorTask ? priorTask.split(' ')[0] : null
     const action = (loop.inFlight || (priorName && caps.backgroundActions[priorName])) ? priorTask : null
+    // 261012 (pass 5): a player line landing on an action she started on her
+    // own. In the eval the greeting turn's gather ran on while the player's
+    // order waited ("on it, once i get a few more logs"), and craft_tools,
+    // smelt_iron and build_shelter failed on it.
+    const ownAction = !teammate && !!loop.inFlight?.selfStarted && !!(chatText && String(chatText).trim())
+    if (chatText && String(chatText).trim() && !teammate) loop._playerDirected = true
+    // The line stays on her own action's entry, so the silent check-ins
+    // remind her of it (eval craft_tools: she had the logs for the ordered
+    // table at the 30s check-in, was told "do NOT call another action", and
+    // wandered after more logs for two minutes). A new action replaces the
+    // entry and drops it.
+    if (ownAction && !unanswered) loop.inFlight.waitingAsk = { text: String(chatText).trim(), who: speakerForTurn(who, teammate) }
     // 260703: a fresh player line resets the per-loop "have I spoken since
-    // the player's latest message" flag — the silence backstop (scratchpad
-    // salvage at end_loop) keys off it, and a say() from BEFORE this
-    // interrupt doesn't count as answering it.
+    // the player's latest message" flag — the unanswered-line retry keys off
+    // it, and a say() from BEFORE this interrupt doesn't count as answering
+    // it.
     if (chatText && String(chatText).trim()) {
       loop._spokeThisLoop = false
       // 260921: a real line folded into a game-event loop IS owed a reply.
@@ -2046,14 +2598,14 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // 260921: the unanswered-line retry (see runIterations) re-presents the
       // SAME line; only a genuinely new one re-arms it.
       if (!unanswered) {
-        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null }
+        loop._lastPlayerLine = teammate ? null : { text: String(chatText), who: who ?? null, at: Date.now() }
         loop._unansweredRetried = false
         loop._unansweredNudgeText = null
       }
       // 260708 (thought-leak fix): mid-call with a roster (or on a teammate's
       // call line), this line takes yield-allowed framing, so a silent end is
-      // deliberate — flag the loop so the scratchpad salvage never speaks the
-      // yield reasoning.
+      // deliberate — flag the loop so the unanswered-line retry leaves the
+      // yield alone.
       loop._groupVoiceLine = voiceCallActive && (companions.length > 0 || teammate === true)
     }
     // 260921: a mid-loop player line arrives with the conversation it belongs
@@ -2074,6 +2626,12 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const unansweredLead = unanswered
       ? 'Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Their line is still waiting:\n'
       : ''
+    // 261012: the player's first line crossed her first-spawn hello.
+    const humanLine = chatText && String(chatText).trim() && !teammate
+    const crossed = !!(humanLine && !unanswered && !voiceCallActive && greetCrossed(loop))
+    const crossedTail = crossed
+      ? `\n\n${NUDGES.greetCrossed}`
+      : humanLine ? `\n\n${NUDGES.replyNoRestate}` : ''
     return convoLead + unansweredLead + withGreetingHint(NUDGES.actionTurn({
       action,
       stopTool: stopToolForAction(action),
@@ -2089,7 +2647,26 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       voice: voiceCallActive,
       peers: companions,
       fromTeammate: teammate === true,
-    }))
+      ownAction,
+    })) + crossedTail + (humanLine ? heartbeatNowTail() + ownRepeatsTail(crossed ? 'greeted' : 'reply') : '')
+  }
+
+  // 261023 (pass 25): NUDGES.goodbyeNotStarted for a player line that opens a
+  // loop (the mid-loop line has heartbeatNowTail, which marks them itself).
+  function goodbyeNotStartedTail() {
+    const list = heartbeatGoalLines.length === heartbeatGoals.length
+      ? heartbeatGoals.filter((_, i) => goalLineNotStarted(heartbeatGoalLines[i]))
+      : []
+    const t = NUDGES.goodbyeNotStarted(list)
+    return t ? `\n\n${t}` : ''
+  }
+
+  function heartbeatNowTail() {
+    const goals = heartbeatGoalLines.length === heartbeatGoals.length
+      ? heartbeatGoalLines.map((l, i) => ({ text: heartbeatGoals[i], notStarted: goalLineNotStarted(l) }))
+      : heartbeatGoals
+    const t = NUDGES.heartbeatNow(goals)
+    return t ? `\n\n${t}` : ''
   }
 
   // 260514-gam D1 (B/A/A locked): every world-touching tool dispatches
@@ -2107,8 +2684,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   //     loop._pendingToolUses, suspend. handleActionComplete drains the
   //     queue one tool at a time. ONE haiku call fires per logical turn,
   //     not per tool.
-  //   - R3 (end_loop) and R4 (end_loop + new action) abort
-  //     loop.inFlight.abortController; since every non-inline tool now goes
+  //   - R3 (stop, or end_loop with no foreground action running) and R4
+  //     (end_loop + new action) abort loop.inFlight.abortController. 261011:
+  //     end_loop while a foreground action runs keeps it (R1-end). Since
+  //     every non-inline tool now goes
   //     through startLongRunner, those branches transparently apply to sync
   //     tools too.
   // `say` is inline (it emits chat synchronously and never suspends), so it is
@@ -2116,7 +2695,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // the action, and a say()-only batch suspends on nothing. Its result is
   // actually pre-filled up front by emitSayCalls (so speech lands before any
   // action dispatches); the executeInlineMetadata `say` branch is a fallback.
-  const INLINE_METADATA = new Set(['remember', 'forget', 'setGoal', 'clearGoal', 'end_loop', 'say', 'quit_game', 'end_call', 'search', 'visit'])
+  const INLINE_METADATA = new Set(['remember', 'forget', 'setGoal', 'clearGoal', 'end_loop', 'stop', 'say', 'quit_game', 'end_call', 'search', 'visit'])
   function isInlineMetadata(name) {
     return INLINE_METADATA.has(name)
   }
@@ -2174,6 +2753,20 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         startedAt: Date.now(),
       }
     }
+    // 261011: a fresh turn acting in the world supersedes whatever is left of
+    // the previous turn's drained batch. Two bodies of work steering one bot
+    // (two pathfinder goals, a dig and a goTo) is the "runs alongside the new
+    // turn" failure.
+    abortDrain('superseded by a new action')
+    // 261018 (pass 15): any world action that moves her or starts work ends
+    // the stay note, on any trigger (a completion turn, an idle tick, her own
+    // project), not only on the turn a player line started.
+    if (stayNote && !ACTION_VERB_SKIP.has(name) && !STATIONARY_ACTIONS.has(name)) {
+      logger.info?.(`[sei/orch] stay note cleared: she started ${name}`)
+      stayNote = null
+    }
+    releaseTaskHolds(name, args)
+    noteTaskStarted(name, args)
     const handle = inflight.start({ name, args })
     // Party redesign §2/§5: this is the single world-tool dispatch path. Surface
     // the action as a presence verb — but only for real world tools, never for
@@ -2183,10 +2776,18 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     const abortController = new AbortController()
     const opts = _buildExecOpts(name, args, { ...execOpts, signal: abortController.signal }, handle)
     const promise = (async () => {
+      // 261015: the tracker keeps how it ended for the snapshot's idle line.
+      let outcome = null
       try {
-        return await registry.execute(name, args, null /* adapter owns bot */, opts)
+        const r = await registry.execute(name, args, null /* adapter owns bot */, opts)
+        try { outcome = { result: formatToolResult(name, r), aborted: abortController.signal.aborted } } catch { outcome = null }
+        return r
+      } catch (err) {
+        const aborted = abortController.signal.aborted || err?.name === 'AbortError'
+        outcome = { result: aborted ? `aborted: ${name}` : `error: ${errLine(err)}`, aborted }
+        throw err
       } finally {
-        inflight.end(handle)
+        inflight.end(handle, outcome)
       }
     })()
     return { promise, abortController, handle, startedAt: handle.startedAt }
@@ -2276,17 +2877,61 @@ function maybeWarnByteCap(loop, warned) {
     // gate, every chat/idle tick fires a fresh personality call which all 402
     // again — costing nothing but leaking the [haiku?] request log to stdout.
     if (_halted) return
+    // 261018 (pass 15): she died and respawned somewhere else, so where she
+    // was told to stay no longer exists.
+    if (event === 'sei:death' && stayNote) {
+      logger.info?.('[sei/orch] stay note cleared: she died')
+      stayNote = null
+    }
+    // 261019 (pass 19): the death turn is here, so turns may run again, and
+    // player lines that arrived in between follow it. Only once the death
+    // turn really opens: with a loop still open, the branch below tears it
+    // down and re-fires sei:death, and lines released now would be answered
+    // ahead of the death turn (or be torn down by it).
+    if (event === 'sei:death' && currentLoop === null) {
+      deathPending = false
+      flushDeathHeld()
+    }
+    // A hit from before she died: that body and that fight are gone.
+    if (event === 'sei:attacked' && Number.isFinite(data?._life) && data._life !== life) {
+      logger.info?.(`[sei/orch] dropped ${event} from before her death`)
+      return
+    }
     // 260502-h6i: chat events arrive from src/behaviors/chat.js as
     // `sei:chat_received` with an `playerSpoke` flag. The legacy `player_chat`
     // shape is preserved for backwards-compat.
     const { isPlayerChat } = classifyChatEvent(event, data)
     const isIdle     = event === 'idle' || event === 'sei:idle'
+    // 261019 (pass 19): a player line between her death and the death turn
+    // would open a turn that runIterations skips, losing the line. Hold it
+    // and re-send it right after the death turn. Also with a loop open: a
+    // loop suspended on an action would fold it in through handleActionTick,
+    // whose turn runIterations skips too, and the death teardown then drops
+    // the loop with the line in it.
+    if (deathPending && (isPlayerChat || event === 'player_chat' || event === 'sei:chat_received')) {
+      logger.info?.('[sei/orch] player line held until the death turn')
+      deathHeld.push({ event, data })
+      return
+    }
+
+    // 261011: a NEW player line, attack or death preempts whatever is left of
+    // a previous turn's drained batch, exactly as it preempts a live action.
+    // Events teardownLoop re-fired itself (drainSpared) are not new.
+    if ((isPlayerChat || event === 'sei:attacked' || event === 'sei:death') &&
+        !(data && typeof data === 'object' && drainSpared.has(data))) {
+      abortDrain(isPlayerChat ? 'player spoke' : event === 'sei:death' ? 'died' : 'attacked')
+    }
 
     // Defense-in-depth idle gate (D-39): the FSM should already prevent this,
     // but if an idle tick races into the orchestrator while a Loop is active,
     // drop it.
     if (isIdle && currentLoop !== null) {
       logger.debug?.(`[sei/orch] idle gated — currentLoop active (loop=${currentLoop.id}, iterations=${currentLoop.iterationCount})`)
+      return
+    }
+    // 261012 (pass 5): the player told her to stop; her own initiative waits.
+    if (isIdle && playerStopHeld()) {
+      logger.debug?.(`[sei/orch] idle gated — player stop hold (${Math.round((Date.now() - playerStopAt) / 1000)}s ago)`)
       return
     }
 
@@ -2374,6 +3019,9 @@ function maybeWarnByteCap(loop, warned) {
         if (currentLoop.isTerminal || currentLoop._terminated) {
           const zombie = currentLoop
           logger.warn?.(`[sei/orch] player chat arrived on terminal loop ${zombie.id} — tearing down and re-dispatching`)
+          // The player spoke after this batch was committed: that is a new
+          // preempt, so the stranded tools are dropped, not drained.
+          zombie._dropPendingOnTeardown = 'player spoke'
           terminateLoop(zombie, 'chat-on-terminal-loop')
           await teardownLoop(zombie)
           return handleDispatch(event, data, signal)
@@ -2398,8 +3046,21 @@ function maybeWarnByteCap(loop, warned) {
         // the action). The abort-and-fold fallback below only fires in the rare
         // race where a call started between enqueue and here, or there is no
         // in_flight to monitor (transient between-action window).
+        // 261018 (pass 15): a "follow me" / "come here" line rides this path
+        // too. Pass 14 cut the running action on an English regex instead;
+        // the mid-action frame now asks keep-or-switch evenly, so the model
+        // reads the line in whatever language it came in.
         if (currentLoop.inFlight && !currentLoop._llmCallInFlight && !currentLoop.isTerminal) {
-          await handleActionTick(currentLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          // 261020 (pass 19): if she dies while the reply to this line is
+          // being written, noteDeath holds the line for after the death turn.
+          const tickLoop = currentLoop
+          const delivering = { event, data }
+          tickLoop._deliveringLine = delivering
+          try {
+            await handleActionTick(tickLoop, { playerMessage: String(chatText), who, teammate: isTeammateVoiceChat, seiChat: data?.seiChat === true })
+          } finally {
+            if (tickLoop._deliveringLine === delivering) tickLoop._deliveringLine = null
+          }
           return
         }
         // 260611: ACCUMULATE, don't overwrite — mirrors handlePreempt's
@@ -2429,6 +3090,44 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
       if (event === 'sei:attacked') {
+        // 261011: an action is running and no LLM call is parked: deliver the
+        // hit mid-action, like a player line (handleActionTick), and let the
+        // model keep going, switch to fighting or fleeing (R2), or stop. The
+        // body already swings back on its own (combat.js). Quality eval
+        // 2026-10-11: tearing the loop down on every throttled hit aborted
+        // attackEntity 10 times mid-fight, cut the goTo back to a 3 hp
+        // player, and killed builds on each drowning heads-up.
+        // A loop whose LLM call handlePreempt just aborted for this attack
+        // still takes the teardown path below (its turn was cut mid-call), and
+        // so does one with a queued batch behind its action: the teardown
+        // drain runs those tools directly, where an action tick would mark
+        // them "deferred: not started".
+        const cl = currentLoop
+        const hasQueuedBatch = Array.isArray(cl._pendingToolUses) && cl._pendingToolUses.length > 0
+        if (cl.inFlight && !cl._llmCallInFlight && !cl.isTerminal && !cl._terminated && !cl._attackAbortedCall && !pendingInterrupt && !hasQueuedBatch) {
+          const now = Date.now()
+          const hp = Number.isFinite(data?.health) ? data.health : null
+          // Real hits and heads-ups (reflex warning / survival narration /
+          // owner defend, which carry no health) keep separate windows: a
+          // heads-up must not open a window that swallows the real hits
+          // behind it (with no baseline hp the drop bypass could never fire).
+          // 261012: the pre-hit owner-threat warning has its own window too,
+          // so the real hit on the player that may follow it still gets in.
+          const cls = data?.threat === true ? 'ownerThreat' : isAttackHeadsUp(data) ? 'headsUp' : 'hit'
+          const last = (cl._lastAttackTick ??= {})[cls] ?? { at: 0, hp: null }
+          // Inside the window a hit is dropped unless health fell by
+          // MID_ACTION_ATTACK_HP_DROP or more since the last delivered one:
+          // the model must hear about a fight that is going badly.
+          const hpFell = hp != null && Number.isFinite(last.hp) && last.hp - hp >= MID_ACTION_ATTACK_HP_DROP
+          if (now - last.at < MID_ACTION_ATTACK_COALESCE_MS && !hpFell) {
+            logger.debug?.(`[sei/orch] mid-action attack coalesced (loop=${cl.id}, in_flight=${cl.inFlight.name}, ${cls})`)
+            return
+          }
+          cl._lastAttackTick[cls] = { at: now, hp }
+          await handleActionTick(cl, { attack: data ?? {} })
+          return
+        }
+        cl._attackAbortedCall = false
         // P0 safety: drop the in-flight loop and re-fire the attack as a
         // fresh dispatch via teardownLoop.
         //
@@ -2501,6 +3200,9 @@ function maybeWarnByteCap(loop, warned) {
           try { dyingLoop.inFlight.abortController.abort() } catch {}
         }
         try { dyingLoop.abortController.abort() } catch {}
+        // 261011: the bot respawned elsewhere and dropped its items, so the
+        // dying turn's queued actions are stale. Drop them instead of draining.
+        dyingLoop._dropPendingOnTeardown = 'died'
         terminateLoop(dyingLoop, 'death-preempt')
         await teardownLoop(dyingLoop)
         try { reenqueue('sei:death', data, 1 /* Priority.P1_CHAT */) } catch (err) {
@@ -2529,6 +3231,9 @@ function maybeWarnByteCap(loop, warned) {
     // player-chat context entirely.
     loop._triggerData = data ?? null
     loop._playerSpoke = !!data?.playerSpoke || event === 'player_chat'
+    // 261012 (pass 5): did the player ask for what this loop is doing? Set
+    // again when a player line is folded in (interruptTurnText).
+    loop._playerDirected = loop._playerSpoke
     // 260514-ngj: per-iteration trigger flag. At loop creation it equals
     // _triggerEvent; handleActionComplete updates it to reflect the SOURCE
     // of each subsequent iteration (PLAYER INTERRUPT mid-loop preempt resets
@@ -2574,8 +3279,11 @@ function maybeWarnByteCap(loop, warned) {
     const isSafetyEvent = event === 'sei:attacked'
     let eventText
     let playerMessageText = null
+    // 261017 (pass 13): the player's line crossed her first-contact hello
+    // (greetCrossed), for the own_repeats note's 'greeted' form.
+    let greetedTurn = false
     if (isSafetyEvent && typeof adapter.eventAddendum === 'function') {
-      eventText = adapter.eventAddendum(event, data).trim()
+      eventText = adapter.eventAddendum(event, data).trim() + fightToldSuffix()
     } else {
       let eventAddendum = (typeof adapter.eventAddendum === 'function')
         ? adapter.eventAddendum(event === 'idle' ? 'sei:idle' : event, data)
@@ -2584,8 +3292,8 @@ function maybeWarnByteCap(loop, warned) {
       if (isP1Event && data?.gameEvent === true) {
         // 260921: an adapter-raised notice (Stardew: a new day, 10 PM) that
         // rides the chat channel for its priority. It is not a message: no
-        // speaker framing, no reply owed, and the end_loop scratchpad salvage
-        // must never speak the private reasoning of a turn that chose silence.
+        // speaker framing and no reply owed (the unanswered-line retry skips
+        // it).
         loop._noReplyOwed = true
         eventText = `Event: game_event\n${String(data?.text ?? '').trim()}\nNobody said this to you; it is the game telling you something happened. Act on it if it changes what you should be doing. say() is optional here: speak only if you have something to say about it that you have not already said.`
       } else if (isP1Event) {
@@ -2613,25 +3321,59 @@ function maybeWarnByteCap(loop, warned) {
         const teammateVoice = fromTeammate && isVoiceLine
         // 260708 (thought-leak fix): on a group call, silence is a sanctioned
         // outcome, so the seed hint must not demand a reply — and the loop is
-        // flagged so the end_loop scratchpad salvage never speaks a deliberate
-        // yield's private reasoning. Teammate voice wakes count too: their
-        // scratchpad must never reach the call either.
+        // flagged so the unanswered-line retry never pushes a reply onto a
+        // deliberate yield. Teammate voice wakes count too.
         loop._groupVoiceLine = isVoiceLine && (companions.length > 0 || fromTeammate)
-        eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice : NUDGES.playerInterruptHint
+        const crossed = !groupVoice && !teammateVoice && !fromTeammate && greetCrossed(loop)
+        greetedTurn = crossed
+        eventAddendum += (groupVoice || teammateVoice) ? NUDGES.playerInterruptHintGroupVoice
+          : crossed ? NUDGES.playerInterruptHintGreetCrossed
+          : NUDGES.playerInterruptHint
+        // 261014: say whether anything is running, rather than tell every reply
+        // that its say() keeps "the current action" going.
+        eventAddendum += ' ' + (inflight.current() ? NUDGES.replyWhileRunning : NUDGES.replyWhileIdle)
         const opener = (fromTeammate && speakerName)
           ? (isVoiceLine
             ? `your teammate ${speakerName} just said this on the voice call`
             : `your teammate ${speakerName} just spoke to you`)
           : isVoiceLine ? 'the player just said this on the voice call' : 'the player just spoke to you'
         // 260921: kept for the unanswered-line retry (runIterations).
-        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null }
-        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to THIS, not to the scene around you:'}\n"${String(data?.text ?? '').trim()}"\n` +
+        loop._lastPlayerLine = fromTeammate ? null : { text: String(data?.text ?? '').trim(), who: speakerName || null, at: Date.now() }
+        // 261017 (quality pass 11): their line comes after the instructions,
+        // labelled the way the transcript labels it ("Their line, player
+        // (Alex): cool"), instead of as a bare quoted string right under the
+        // header. Right under the header it was the first thing her reply
+        // picked up, and she opened by saying it back ("cool. now torches",
+        // "lol ur kinda slow?? i just..."), which chat shows as its own
+        // message right under theirs. claims-probe echo_* (5 characters, 75
+        // replies an arm): replies opening with their whole line 27 -> 15,
+        // first sentence equal to it 22 -> 8. Pointing at the transcript
+        // instead of repeating the line cut echoes further but she answered
+        // the line before it ("ok, stopping" to a tease after "actually stop").
+        const lineSpeaker = fromTeammate ? (speakerName || 'your teammate') : playerLabel(speakerName)
+        const lineText = String(data?.text ?? '').trim()
+        playerMessageText = `${opener}${teammateVoice ? ':' : '. respond to their line, not to the scene around you.'}\n` +
           (groupVoice
             ? voiceGroupGuidance(companions).trim() + ' Your text output is a private scratchpad the player can NEVER see; a reply that exists only in your text is silence to them; only say() reaches them.'
             : teammateVoice
             ? teammateVoiceGuidance(speakerName || 'your teammate').trim()
+            : crossed
+            ? NUDGES.greetCrossed
             : 'Reply with the say() tool — a direct message never gets silence, even if your answer is a refusal or a single word. ' +
-              'Your text output is a private scratchpad the player can NEVER see — a reply that exists only in your text is silence to them; only say() reaches them.')
+              'Your text output is a private scratchpad the player can NEVER see — a reply that exists only in your text is silence to them; only say() reaches them. ' +
+              NUDGES.replyNoRestate +
+              // 261013 (pass 6b): the mid-action variants already end on this
+              // check; a line that starts a fresh loop did not, and errands
+              // given while she was idle ("grab coal then come back") were
+              // never recorded (0/18 in the goals harness).
+              (fromTeammate ? '' : MEMORY_GOAL_TAIL)) +
+          (fromTeammate ? '' : goodbyeNotStartedTail()) +
+          `\n\nTheir line, ${lineSpeaker}: ${lineText}` +
+          // Said again right under the line. Ending the block on the line
+          // alone read as a transcript to continue: she wrote say("...") in
+          // her text instead of calling the tool (persona eval 261017, 20 of
+          // 150 player-line samples silent that way, 0 with this sentence).
+          (!groupVoice && !teammateVoice && !crossed ? '\nAnswer it with say().' : '')
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`
@@ -2660,8 +3402,20 @@ function maybeWarnByteCap(loop, warned) {
         : ''
       eventText = `player just unpaused your game.${inflightLine}\n\n${eventText}`
     }
-    if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive) {
-      eventText += `\n\nFIRST CONTACT: you just spawned into your friend's world — this is the very first thing they will see from you this session. Before anything else, open with exactly ONE short in-character greeting via the say() tool (a hello, a tease, a boast — whatever fits your voice). Do NOT stay silent on this first tick and do NOT narrate the scene or your inventory; just greet them like you're glad (or smug) to be back, then you may start doing your own thing. If your memories above hold something relevant, work it into that greeting instead of a generic hello — anything the player said last time about themselves, about you, or about what they wanted to do in ${caps.gameName} (say("yo how'd the interview go?") beats say("back in business")). ${NEXT_TIME_GREETING} This is only a hint: if you have no memories or nothing fits, a plain greeting is completely fine — don't force it.`
+    // 261017 (pass 13): not when a line of hers already reached the player.
+    // The first-spawn tick is a P3 idle that waits behind any running loop,
+    // so a player who said hello the moment she spawned got a reply (which
+    // carries GREETING_HINT and greets) and then this tick greeted them a
+    // second time.
+    if (data?.reason === 'just_connected_first_spawn' && !voiceCallActive && !greetedPlayer) {
+      _firstContactAt = Date.now()
+      // 261011: a first-ever session has no memories, and the old single
+      // wording ("glad to be back", say("back in business")) made the very
+      // first line claim a shared past: "yo alex, back in the world" to a
+      // player she had never met (quality eval 2026-10-11, 3 of 7 sessions).
+      // 261014: the plan still open for this greeting, from main's init
+      // (null = none open, undefined = not told, e.g. a CLI run).
+      eventText += `\n\n${FIRST_CONTACT({ gameName: caps.gameName, known: await knowsPlayer(), plan: config?._seiNextStepPlan, planNotForGame: config?._seiNextStepPlanNotForGame === true })}`
     }
     // 260618: refresh the progression view before composing the seed — latch
     // dimension milestones, detect whether the committed goal's milestone just
@@ -2670,6 +3424,9 @@ function maybeWarnByteCap(loop, warned) {
     const { frontierText: progFrontierText, justCompletedNote: progCompletedNote } =
       await refreshProgressionForSeed()
     if (progCompletedNote) eventText += progCompletedNote
+    // The goal file can change outside setGoal/clearGoal (a UI edit, a new
+    // session); re-read whether a player task is still in it.
+    await refreshPlayerTaskInGoals()
     // 260703: sticky greeting — until a say() line has actually reached chat
     // this session, every fresh-loop seed carries the short greet hint (no-op
     // once greeted, and skipped when the full FIRST CONTACT block is present).
@@ -2691,16 +3448,32 @@ function maybeWarnByteCap(loop, warned) {
       ])
     } else if (sessionState && playerStore) {
       let seedBlocks
+      // 261012: the goals and frontier, for the own_repeats note's word filter.
+      _repeatsContext.frontier = progFrontierText || ''
+      if (config?.memory?.heartbeat_md_path) {
+        try {
+          _repeatsContext.goals = await readHeartbeatForSeed(
+            config.memory.heartbeat_md_path, config.memory.seed_heartbeat_budget_bytes ?? 2048)
+        } catch { /* keep the last read */ }
+      }
       try {
         seedBlocks = await composeSeedBlocks({
           sessionState, playerStore, config, adapter,
           eventText, snapshotText: snapshotText(),
           recentConversationText: convoMemory.recentChat.formatConversationBlock(),
           lookupsText: lookupLog.formatBlock(),
+          ownRepeatsText: ownRepeatsText(playerMessageText ? (greetedTurn ? 'greeted' : 'reply') : 'idle'),
           playerMessageText,
           companions,
           frontierText: progFrontierText,
+          sessionStartMs: sessionStartedAt,
+          // 261018 (pass 16): she stopped on the player's word (stay note).
+          goalsOnHold: !!stayNote,
+          // 261022 (pass 22): tasks she stopped on the player's word.
+          heldTask: heldTaskOfLine,
+          lineNotStarted: goalLineNotStarted,
           voiceCall: voiceCallActive,
+          gameName: caps.gameName,
           logger,
         })
       } catch (err) {
@@ -2771,7 +3544,7 @@ function maybeWarnByteCap(loop, warned) {
     // tear it down now.
     if (loop._terminated) {
       await teardownLoop(loop)
-    } else if (loop.inFlight) {
+    } else if (loop.inFlight || loopAwaitsSettle(loop)) {
       // Loop is suspended waiting for sei:action_complete. handleDispatch
       // returns; the FSM is free to dispatch other events (P1/P0).
       return
@@ -2804,14 +3577,25 @@ function maybeWarnByteCap(loop, warned) {
    * suspend (260708 — a queued remember() used to die here), and
    * end_loop/quit/end_call are loop-control for a loop that no longer exists.
    *
-   * Reason-agnostic on purpose: the same drain is correct whether the teardown
-   * came from an error/timeout/terminal death (the incident's now-also-prevented
-   * root cause) or a P0-attack preempt — arming the armor the model just called
-   * for is, if anything, MORE desirable the instant you take a hit. The fresh
-   * loop the attack reseeds is a separate concern; equips don't move the bot and
-   * are effectively idempotent, so a rare overlap is a harmless no-op. Execution
-   * is sequential + detached so a slow action can't hold up teardown and two
-   * equips can't race; each action's own wall-clock timeout still bounds it.
+   * The drain survives the teardown that started it, including a P0-attack
+   * preempt: arming the armor the model just called for is, if anything, MORE
+   * desirable the instant you take a hit (the re-fired attack is in
+   * drainSpared). Execution is sequential + detached so a slow action can't
+   * hold up teardown and two equips can't race; each action's own wall-clock
+   * timeout still bounds it.
+   *
+   * 261011: it is NOT unstoppable. The run lives in `drainRun` with its own
+   * controller, and abortDrain() cancels the running tool and drops the rest
+   * on: stop / pause (abortActive), a new world action (startLongRunner), and
+   * a NEW player chat, attack or death. Each tool also passes the pause gate
+   * and is registered with the inflight tracker, so the snapshot's in_flight
+   * line and the pause note see it. Before this, the drain ran on a throwaway
+   * AbortController: stop, pause and preempts could not halt a drained goTo or
+   * gather, and it kept running alongside the new turn.
+   *
+   * `loop._dropPendingOnTeardown` (a reason string) skips the drain entirely:
+   * set by teardowns whose cause makes the batch stale before it starts (a
+   * death; a player line that arrived on a zombie loop).
    */
   function drainPendingToolsOnTeardown(loop) {
     const queue = loop?._pendingToolUses
@@ -2822,22 +3606,84 @@ function maybeWarnByteCap(loop, warned) {
     const worldTools = queue.filter(e => e && e.use && !isInlineMetadata(e.use.name))
     if (worldTools.length === 0) return
     const names = worldTools.map(e => e.use.name).join(', ')
+    if (loop._dropPendingOnTeardown) {
+      logger.info?.(`[sei/orch] loop ${loop.id} tore down mid-batch (${loop._dropPendingOnTeardown}) — dropping ${worldTools.length} undispatched tool(s) [${names}]`)
+      return
+    }
+    if (gamePaused) {
+      logger.info?.(`[sei/orch] loop ${loop.id} tore down mid-batch while paused — dropping ${worldTools.length} undispatched tool(s) [${names}]`)
+      return
+    }
     logger.warn?.(`[sei/orch] loop ${loop.id} tore down mid-batch with ${worldTools.length} undispatched tool(s) [${names}] — draining directly (no LLM) so the player's ordered actions still happen`)
+    // A drain still running from an earlier teardown is older work than this
+    // batch; this turn supersedes it.
+    abortDrain('superseded by a newer drained batch')
     // Surface the drain in the snapshot line too, so the next loop's model sees
     // that these actions were finished after the turn ended rather than dropped.
-    lastActionResult = `finishing queued actions after the turn ended: ${names}`
+    const banner = `finishing queued actions after the turn ended: ${names}`
+    lastActionResult = banner
+    const controller = new AbortController()
+    const run = { controller, loopId: loop.id, reason: null }
+    drainRun = run
     void (async () => {
-      for (const entry of worldTools) {
-        try {
-          const r = await registry.execute(entry.use.name, entry.use.input, null, {
-            ...config, signal: new AbortController().signal,
-          })
-          try { logActionResult(entry.use.name, r) } catch {}
-        } catch (err) {
-          logger.warn?.(`[sei/orch] post-teardown drain ${entry.use.name} failed: ${err?.message ?? err}`)
+      // Index of the first tool that did not run to completion (or length).
+      let cutFrom = worldTools.length
+      try {
+        for (let i = 0; i < worldTools.length; i++) {
+          // Pause gate: the same refusal startLongRunner applies. setGamePaused
+          // also aborts the run, this covers a pause that landed between tools.
+          if (controller.signal.aborted || gamePaused) { cutFrom = i; break }
+          const entry = worldTools[i]
+          // A drained action is started for the player's task as much as one
+          // from startLongRunner (pass 25b taskStartedAt): without this a
+          // drained gather for their logs left the task "not started".
+          noteTaskStarted(entry.use.name, entry.use.input)
+          const handle = inflight.start({ name: entry.use.name, args: entry.use.input })
+          let outcome = null
+          try {
+            const r = await registry.execute(entry.use.name, entry.use.input, null, {
+              ...config, signal: controller.signal,
+            })
+            try { logActionResult(entry.use.name, r) } catch {}
+            noteActionEvent(entry.use.name, r)
+            try { outcome = { result: formatToolResult(entry.use.name, r), aborted: controller.signal.aborted } } catch { outcome = null }
+          } catch (err) {
+            logger.warn?.(`[sei/orch] post-teardown drain ${entry.use.name} failed: ${err?.message ?? err}`)
+            const aborted = controller.signal.aborted || err?.name === 'AbortError'
+            outcome = { result: aborted ? `aborted: ${entry.use.name}` : `error: ${errLine(err)}`, aborted }
+          } finally {
+            inflight.end(handle, outcome)
+          }
+          // Aborted mid-tool: this one was cut short, drop it and the rest.
+          if (controller.signal.aborted) { cutFrom = i; break }
+        }
+      } finally {
+        if (drainRun === run) drainRun = null
+      }
+      if (cutFrom < worldTools.length) {
+        const cut = worldTools.slice(cutFrom).map(e => e.use.name)
+        logger.info?.(`[sei/orch] post-teardown drain (loop=${run.loopId}) stopped (${run.reason ?? (gamePaused ? 'paused' : 'aborted')}) — not finished: [${cut.join(', ')}]`)
+        // Only correct OUR banner; a newer turn's result line wins.
+        if (lastActionResult === banner) {
+          lastActionResult = `stopped the queued actions left from the last turn (${run.reason ?? 'interrupted'}): ${cut.join(', ')}`
         }
       }
     })()
+  }
+
+  /**
+   * 261011: cancel the live post-teardown drain, if any: aborts the running
+   * tool's signal (the registry/behaviors see it exactly like an in_flight
+   * abort, so actionStats records aborted_by_preempt) and the loop above
+   * drops the remaining tools. Idempotent. Returns true if it aborted a run.
+   */
+  function abortDrain(reason) {
+    const run = drainRun
+    if (!run || run.controller.signal.aborted) return false
+    run.reason = reason
+    logger.info?.(`[sei/orch] aborting post-teardown drain (loop=${run.loopId}): ${reason}`)
+    try { run.controller.abort() } catch {}
+    return true
   }
 
   /**
@@ -2853,6 +3699,20 @@ function maybeWarnByteCap(loop, warned) {
     loop._tornDown = true
     const event = loop._originatingEvent ?? 'unknown'
     logger.info?.(`[sei/orch] loop terminal (id=${loop.id}, iterations=${loop.iterationCount})`)
+    // 261011: a loop that only TALKED holds the floor for the reply window in
+    // every game (see replyWindowRemainingMs below). A loop that did world
+    // work keeps the fast agentic cadence for resuming the goal.
+    // 261018 (pass 17): unless its LAST turn only talked. Then the work is
+    // done and she ended the loop on a line to the player, so it is their
+    // turn. In the pass 15 compare the idle tick 5s later said the same line
+    // again: "got your six logs. want them, or should i keep chopping" then
+    // "six logs in the bag. want them now or should i turn em into a crafting
+    // table first" (work_session-04), "logs are at your feet alex, dock time"
+    // then "logs are at your feet. next up is a furnace" (errands-01). A last
+    // turn with stop in it keeps the fast cadence: stop with only a line
+    // ("ok coming") is how a move order went unstarted, and the idle tick
+    // is what starts it.
+    _lastLoopTalkOnly = loop._saidThisLoop === true && (loop._worldActed !== true || loop._lastTurnTalkOnly === true)
     // 260703-fix (b): finish any model-ordered batch tools stranded by an
     // abnormal teardown (see drainPendingToolsOnTeardown). No-op in the common
     // case (pending queue already drained → null), so it never double-executes.
@@ -2913,12 +3773,14 @@ function maybeWarnByteCap(loop, warned) {
       const pi = pendingInterrupt
       pendingInterrupt = null
       try {
-        reenqueue('sei:chat_received', {
+        const redo = {
           username: pi.who,
           text: pi.chatText,
           message: pi.chatText,
           playerSpoke: true,
-        }, 1 /* Priority.P1_CHAT */)
+        }
+        drainSpared.add(redo)
+        reenqueue('sei:chat_received', redo, 1 /* Priority.P1_CHAT */)
         logger.info?.(`[sei/orch] undelivered player chat re-enqueued at teardown: ${pi.chatText.slice(0, 64)}`)
       } catch (err) {
         logger.warn?.(`[sei/orch] undelivered-chat re-enqueue failed: ${err.message}`)
@@ -2939,12 +3801,13 @@ function maybeWarnByteCap(loop, warned) {
       // attackedPriority(); kept as a literal because reenqueue takes a raw
       // priority and orchestrator.js does not import from fsm.js.
       const refirePriority = pa.data?.attackerKind === 'reflex' ? 1 /* P1_CHAT */ : 0 /* P0_SAFETY */
+      if (pa.data && typeof pa.data === 'object') drainSpared.add(pa.data)
       try { reenqueue('sei:attacked', pa.data, refirePriority) } catch (err) {
         logger.warn?.(`[sei/orch] sei:attacked re-enqueue failed: ${err.message}`)
       }
       if (pa.preservedInterrupt) {
         try {
-          reenqueue('sei:chat_received', {
+          const preserved = {
             username: pa.preservedInterrupt.who,
             text: pa.preservedInterrupt.chatText,
             message: pa.preservedInterrupt.chatText,
@@ -2953,7 +3816,10 @@ function maybeWarnByteCap(loop, warned) {
             // so its late reply still goes to the call / chat surface.
             ...(pa.preservedInterrupt.seiChat === true ? { seiChat: true } : {}),
             ...(pa.preservedInterrupt.voice === true ? { voice: true } : {}),
-          }, 1 /* Priority.P1_CHAT */)
+          }
+          // Spoken before the drained batch was cut loose: not a new preempt.
+          drainSpared.add(preserved)
+          reenqueue('sei:chat_received', preserved, 1 /* Priority.P1_CHAT */)
           logger.info?.(`[sei/orch] preserved interrupt re-enqueued: ${pa.preservedInterrupt.chatText.slice(0, 64)}`)
         } catch (err) {
           logger.warn?.(`[sei/orch] preserved interrupt re-enqueue failed: ${err.message}`)
@@ -2983,20 +3849,34 @@ function maybeWarnByteCap(loop, warned) {
   // surface, reads it back like any memory. Returns whether the model gave
   // one, which is all the host reports (bot_session_ended / voice_call_ended
   // next_step_hook). The farewell itself is the model's own line, untouched.
-  async function saveNextStep(raw) {
+  // 261014: plus the step written to the player (next_time_for_player), which
+  // is NOT saved here: it rides the quit / call-end message to main, which
+  // keeps it next to the plan's tag for the Home card.
+  // 261020 (review): + the game it is for (next_time_game). The model names
+  // it from the step: a Minecraft plan said while leaving Stardew is labeled
+  // and tagged Minecraft. 'none' = not about a game, saved with no label.
+  // Left out, a quit plan is taken to be for this game, as before, and a
+  // call plan (end_call, opts.call) has no game: main tags it as a call
+  // (sessionGoodbye goodbyePlanPlace), so the line must not name this game.
+  async function saveNextStep(raw, rawLine, rawGame, opts = {}) {
     const step = normalizeNextStep(raw)
-    if (!step) return false
+    if (!step) return { hook: false, line: null, game: null }
+    const line = normalizePlayerLine(rawLine)
+    const game = parsePlanGameField(rawGame)
+    const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : opts.call ? undefined : caps.gameName
     try {
-      const written = await memoryLog.append(nextStepMemoryLine(step), new Date())
+      // 261020: labeled with its game, so another game's session reads it
+      // as a plan for there and not as its own task.
+      const written = await memoryLog.append(nextStepMemoryLine(step, label), new Date(), worldAppendOpts())
       if (written) {
         memoryCompactor.maybeCompact().catch(err =>
           logger.warn?.(`[sei/orch] memoryCompactor.maybeCompact failed: ${err?.message ?? err}`))
       }
-      logger.info?.(`[sei/orch] next-time hook saved (${step.length} chars)`)
+      logger.info?.(`[sei/orch] next-time hook saved (${step.length} chars, game=${game ?? 'unset'})`)
     } catch (err) {
       logger.warn?.(`[sei/orch] next-time hook save failed: ${err?.message ?? err}`)
     }
-    return true
+    return { hook: true, line, game }
   }
 
   /**
@@ -3049,12 +3929,22 @@ function maybeWarnByteCap(loop, warned) {
       }
     }
     if (use.name === 'end_loop') {
-      // 260514-ngj: end_loop replaces stop. Same inline-metadata shape —
-      // fill the result slot synchronously and flag terminate=true so the
-      // caller flips loop.isTerminal. The actual R3/R4 dispatch logic
-      // (in_flight abort + optional reseed) lives in runIterations.
+      // 260514-ngj: inline-metadata shape — fill the result slot
+      // synchronously and flag terminate=true so the caller flips
+      // loop.isTerminal. The R1/R3/R4 dispatch logic (keep a running action,
+      // optional reseed) lives in runIterations; 261011: when a foreground
+      // action is still running, runIterations keeps it and never gets here.
       lastActionResult = 'loop ended'
       return { result: { type: 'tool_result', tool_use_id: use.id, content: 'loop ended', is_error: false }, terminate: true }
+    }
+    if (use.name === 'stop') {
+      // 261011: cancel the running action. The abort itself (and the loop
+      // teardown for a stop with no new action) happens in runIterations'
+      // dispatch gate, before this slot is filled; this only reports it.
+      const what = loop._stoppedAction ? `stopped ${loop._stoppedAction}` : 'nothing was running'
+      loop._stoppedAction = null
+      lastActionResult = what
+      return { result: { type: 'tool_result', tool_use_id: use.id, content: what, is_error: false }, terminate: false }
     }
     if (use.name === 'quit_game') {
       // Task 4 — leave the game. Terminate this loop like end_loop, and ask the
@@ -3092,9 +3982,9 @@ function maybeWarnByteCap(loop, warned) {
       }
       // Awaited before the (deferred) teardown below, so the entry is on disk
       // before the process exits.
-      const nextStepHook = await saveNextStep(use.input?.next_time)
+      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player, use.input?.next_time_game)
       const fireQuit = () => {
-        try { onQuitRequested?.({ nextStepHook }) } catch (err) { logger.warn?.(`[sei/orch] onQuitRequested failed: ${err?.message ?? err}`) }
+        try { onQuitRequested?.({ nextStepHook: next.hook, nextStepLine: next.line, nextStepGame: next.game }) } catch (err) { logger.warn?.(`[sei/orch] onQuitRequested failed: ${err?.message ?? err}`) }
       }
       const waitMs = Math.min(10_000, Math.max(0, _lastChatSendDeadline - Date.now()) + 250)
       if (waitMs > 250) logger.info?.(`[sei/orch] quit deferred ${waitMs}ms so the goodbye finishes sending`)
@@ -3119,8 +4009,8 @@ function maybeWarnByteCap(loop, warned) {
         try { _emitSayLine(loop, farewell) } catch {}
       }
       lastActionResult = 'ended call'
-      const nextStepHook = await saveNextStep(use.input?.next_time)
-      try { onCallEndRequested?.({ nextStepHook }) } catch (err) { logger.warn?.(`[sei/orch] onCallEndRequested failed: ${err?.message ?? err}`) }
+      const next = await saveNextStep(use.input?.next_time, use.input?.next_time_for_player, use.input?.next_time_game, { call: true })
+      try { onCallEndRequested?.({ nextStepHook: next.hook, nextStepLine: next.line, nextStepGame: next.game }) } catch (err) { logger.warn?.(`[sei/orch] onCallEndRequested failed: ${err?.message ?? err}`) }
       return { result: { type: 'tool_result', tool_use_id: use.id, content: 'call ended — you are still in the game', is_error: false }, terminate: false }
     }
     if (use.name === 'say') {
@@ -3138,7 +4028,7 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'remember: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'remember: empty', is_error: true }, terminate: false }
         }
-        const written = await memoryLog.append(text, new Date())
+        const written = await memoryLog.append(text, new Date(), worldAppendOpts())
         if (written === 0) {
           // 260725: appendMemory skips a same-breath duplicate (its bounded
           // guard). Saying "remembered" for a write that never happened taught
@@ -3185,27 +4075,56 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'setGoal: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'setGoal: empty', is_error: true }, terminate: false }
         }
-        const added = await heartbeatLog.append(text, new Date())
+        // 261013 (pass 6b): a player's task is tagged so the seed lists it ahead
+        // of the bot's own goals (promptLibrary PLAYER_TASK_TAG).
+        // Some providers (small local / OpenAI-compatible models) send the
+        // boolean as the string "true".
+        const fp = use.input?.for_player
+        const forPlayer = fp === true || String(fp).toLowerCase() === 'true' || isPlayerTask(text)
+        const added = await heartbeatLog.append(text, new Date(Date.now()), { forPlayer })
         lastActionResult = 'goal set'
-        // 260618: link this goal to the progression spine if it came from the
-        // frontier, so JS can detect its completion later. Setting a NEW
-        // progression goal clears the prior one (one progression goal at a time).
-        if (added === 1 && typeof adapter.getProgression === 'function') {
+        // 261022 (pass 22): when this task was set, and setting it again
+        // picks a held task back up.
+        if (forPlayer) {
+          const key = goalKey(text.replace(/\s*\n+\s*/g, ' '))
+          // 261022 (pass 22c): stamped when the line that asked for it came
+          // in, so a quick "nvm" sent while she was still answering counts as
+          // said after the ask.
+          const askedAt = loop?._lastPlayerLine?.at
+          const setAt = Number.isFinite(askedAt) && askedAt <= Date.now() ? askedAt : Date.now()
+          if (added === 1 || !taskSetAt.has(key) || taskHolds.has(key)) taskSetAt.set(key, setAt)
+          taskHolds.delete(key)
+          clearedTasks = clearedTasks.filter((c) => c.key !== key)
+        }
+        await refreshPlayerTaskInGoals()
+        // Link this goal to the spine nodes its finish condition names, so JS
+        // can clear it once they are ALL done (goalLink.js). 261012: no longer
+        // limited to the frontier and no longer one-node: the old link named
+        // the goal's first rung and deleted the whole goal when that rung was
+        // done. Setting a new linked goal no longer deletes the previous one
+        // either; replacing a goal is the model's call (clearGoal).
+        // A player's task is never linked: its finish is usually theirs (the
+        // coal handed over, the bot back at the house), which the spine cannot
+        // see, and a node it names ("logs") would clear it before the hand-over.
+        if (added === 1 && !forPlayer && typeof adapter.getProgression === 'function') {
           try {
             const prog = adapter.getProgression(progressionFlags)
-            const node = matchFrontierNode(text, prog?.frontier)
-            if (node) {
-              if (activeFrontierGoal && activeFrontierGoal.id !== node.id) {
-                try { await heartbeatLog.remove(activeFrontierGoal.text) } catch { /* best-effort */ }
-              }
+            const link = linkGoalToSpine(text, prog)
+            if (link) {
               // Capture the node's `procedure` here (we hold the spine node) so
               // the procedural write-back (D-08) has it when the milestone later
               // completes without re-importing the spine into the brain.
-              activeFrontierGoal = { id: node.id, text, label: node.label, procedure: node.procedure }
+              const n = link.primary
+              // Store the text as the heartbeat line holds it (appendGoal folds
+              // newlines), so the later remove() substring still matches.
+              const lineText = text.replace(/\s*\n+\s*/g, ' ').trim()
+              linkedGoals.push({ text: lineText, ids: link.ids, id: n.id, label: n.label, procedure: n.procedure })
             }
           } catch { /* linking is best-effort; a free-text goal just stays unlinked */ }
         }
-        return { result: { type: 'tool_result', tool_use_id: use.id, content: 'goal set', is_error: false }, terminate: false }
+        // appendGoal dedups exact text; say so instead of claiming a new line.
+        const content = added === 1 ? 'goal set' : 'goal already in your heartbeat, not added again'
+        return { result: { type: 'tool_result', tool_use_id: use.id, content, is_error: false }, terminate: false }
       } catch (err) {
         lastActionResult = 'setGoal error'
         logger.warn(`[sei/orch] setGoal failed: ${err.message}`)
@@ -3223,11 +4142,24 @@ function maybeWarnByteCap(loop, warned) {
           lastActionResult = 'clearGoal: empty'
           return { result: { type: 'tool_result', tool_use_id: use.id, content: 'clearGoal: empty', is_error: true }, terminate: false }
         }
+        const before = playerTasks
         const removed = await heartbeatLog.remove(text)
-        // Drop the progression link if the model cleared the goal it was tracking.
-        if (removed > 0 && activeFrontierGoal &&
-            activeFrontierGoal.text.toLowerCase().includes(text.toLowerCase())) {
-          activeFrontierGoal = null
+        await refreshPlayerTaskInGoals()
+        // 261022 (pass 22): a player's task cleared on their line is noted
+        // for a few minutes (clearedTasks).
+        const onLine = loop?._clearOnLine
+        if (removed > 0 && onLine) {
+          const left = new Set(playerTasks.map((t) => t.key))
+          for (const t of before) {
+            if (left.has(t.key)) continue
+            clearedTasks = [...clearedTasks.filter((c) => c.key !== t.key), { key: t.key, text: t.text, at: Date.now(), who: onLine.who, line: onLine.line }].slice(-3)
+          }
+        }
+        // Drop the progression links of the goals the model cleared (the same
+        // substring rule removeGoal uses).
+        if (removed > 0) {
+          const q = text.toLowerCase()
+          linkedGoals = linkedGoals.filter((g) => !g.text.toLowerCase().includes(q))
         }
         const content = removed > 0 ? `goal cleared (${removed})` : 'goal cleared 0 (no match)'
         lastActionResult = content
@@ -3242,6 +4174,21 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 261014 (pass 7b): a finished world action goes into the session's event
+   * record (sessionEvents.js), which the conversation transcript shows as a
+   * "game:" line. A loop's own history holds its results only until the loop
+   * ends, and every player line opens a new loop.
+   */
+  function noteActionEvent(name, r) {
+    try {
+      const line = describeActionEvent(name, r)
+      if (line) convoMemory.recentChat.pushEvent(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
+      if (countsAsGoalWork(name, r)) lastWorkAt = Date.now()
+      if (!ACTION_VERB_SKIP.has(name)) lastActionEndAt = Date.now()
+    } catch {}
+  }
+
+  /**
    * 260514-gam: attach the `.then`/`.catch` settle handler to a startLongRunner
    * promise. Fires sei:action_complete at P2.1 carrying { name, input, result,
    * aborted, tool_use_id }. Single source of truth — both the for-loop FIRST
@@ -3251,15 +4198,39 @@ function maybeWarnByteCap(loop, warned) {
    * here on settle iff it's still the live entry (guards against a stale
    * settle racing with a fresh in_flight from queue-drain).
    */
+  // 261015 (quality pass 9): a tick-claimed action that finishes on its own
+  // owes the loop one more turn: its sei:action_complete is queued and
+  // handleActionCompleteTickClaimed tells the model what it produced. When it
+  // finished DURING a model call (a mid-action reply, a check-in), that
+  // call's say-only or end_loop answer used to end the loop, so the queued
+  // completion found no loop and was dropped. In the 2026-10-15 scorecard
+  // this happened on 23 of 133 mid-action turns; in errands-02/-03 the coal
+  // was mined during "how's it going", the completion was dropped, and the
+  // next idle turn walked off to her own furnace instead of bringing it back.
+  // The loop now stays up until that completion has run (see the tails that
+  // check loopAwaitsSettle). A stopped or replaced action owes nothing.
+  function noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed }) {
+    if (aborted || !tickClaimed || !loop || loop._terminated || loop.isTerminal) return
+    if (loop.inFlight !== inflightEntry) return
+    if (caps.backgroundActions[inflightEntry.name]) return
+    loop._settleOwed = inflightEntry.name ?? true
+  }
+
+  function loopAwaitsSettle(loop) {
+    return !!loop && !loop.inFlight && !!loop._settleOwed && !loop._terminated && !loop.isTerminal
+  }
+
   function attachSettleHandler(loop, runner, use, inflightEntry) {
     runner.promise
       .then(r => {
         const aborted = runner.abortController.signal.aborted
         const result = formatToolResult(use.name, r)
         try { logActionResult(use.name, r) } catch {}
+        noteActionEvent(use.name, r)
         // 260517-fix: capture _tickClaimed BEFORE clearing/nulling, so the
         // dispatcher knows the tool_use was already paired via tick.
         const tickClaimed = !!inflightEntry._tickClaimed
+        noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed })
         // 260516-0yw: clear the 10s action-tick BEFORE detaching the
         // in-flight reference. `loop` is in scope here (closure over the
         // dispatch call), so clearActionTick(loop.inFlight) is the right form.
@@ -3286,6 +4257,7 @@ function maybeWarnByteCap(loop, warned) {
         const result = aborted ? `aborted: ${use.name}` : `error: ${errLine(err)}`
         try { logActionResult(use.name, `error: ${errLine(err)}`) } catch {}
         const tickClaimed = !!inflightEntry._tickClaimed
+        noteOwedSettle(loop, inflightEntry, { aborted, tickClaimed })
         // 260516-0yw: clear the 10s action-tick BEFORE detaching the in-flight.
         clearActionTick(loop.inFlight)
         if (loop.inFlight === inflightEntry) loop.inFlight = null
@@ -3325,6 +4297,37 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   /**
+   * 261019 (pass 18): the world tools in a batch that only continue the
+   * running action, as Map<tool_use_id, result text>. Asks the adapter
+   * (continueRunningAction) per tool, and keeps the answers only when every
+   * world tool in the batch continues: a batch with new work replaces the
+   * running action anyway. Empty with stop, or when nothing is running.
+   */
+  function continuedToolUses(loop, actingTools, hasStop) {
+    const out = new Map()
+    const running = loop.inFlight
+    if (!running || hasStop || actingTools.length === 0) return out
+    if (caps.backgroundActions[running.name]) return out
+    for (const u of actingTools) {
+      let text = null
+      try {
+        text = caps.continueRunningAction({ name: running.name, input: running.input }, u)
+      } catch (err) {
+        logger.warn?.(`[sei/orch] continueRunningAction threw: ${err?.message ?? err}`)
+        text = null
+      }
+      if (typeof text !== 'string' || !text.trim()) return new Map()
+      out.set(u.id, text)
+    }
+    logger.info?.(`[sei/orch] ${[...out.keys()].length} call(s) continue the running ${running.name} instead of restarting it (loop=${loop.id})`)
+    return out
+  }
+
+  function continuedResult(use, continued) {
+    return { type: 'tool_result', tool_use_id: use.id, content: continued.get(use.id), is_error: false }
+  }
+
+  /**
    * 260514-gam: dispatch a single non-inline tool_use via startLongRunner,
    * register it on the loop as in_flight, stash _pendingActionUse /
    * _pendingResults / _pendingByteWarn / _pendingToolUses (the remaining
@@ -3354,9 +4357,12 @@ function maybeWarnByteCap(loop, warned) {
       handle: runner.handle,
       startedAt: runner.startedAt,
       tool_use_id: use.id,
+      // 261012 (pass 5): her own idea (greeting, idle, goal), not the player's.
+      selfStarted: !loop._playerDirected,
       _tickHandle: null,  // 260516-0yw: filled below
     }
     loop.inFlight = inflightEntry
+    loop._settleOwed = null
     loop._pendingActionUse = { id: use.id, name: use.name, input: use.input }
     loop._pendingResults = results
     loop._pendingByteWarn = byteWarn
@@ -3378,6 +4384,57 @@ function maybeWarnByteCap(loop, warned) {
     }, _TICK_INTERVAL_MS)
     logger.debug?.(`[sei/orch] dispatch suspend tool=${use.name} batch_remaining=${remainingQueue ? remainingQueue.length : 0}`)
     attachSettleHandler(loop, runner, use, inflightEntry)
+  }
+
+  // 261015 (pass 8): a clearGoal sent in the same turn as a hand-over (give)
+  // waits for the hand-over. The memory pre-pass used to run it first, so
+  // "give coal + clearGoal" cleared the goal even when give found no player or
+  // no coal, and the job was forgotten with nothing handed over. The clear
+  // now runs once every hand-over in that turn reports success
+  // (caps.handOverResult); any other outcome keeps the goal. A hand-over that
+  // never settles on this loop (dropped, reseeded, drained after teardown)
+  // also keeps it.
+  const CLEAR_WAITS_ON_HANDOVER = 'goal not cleared yet: it is cleared once the items are handed over'
+  const CLEAR_KEPT_NO_HANDOVER = 'goal kept: the items were not handed over, so it was not cleared'
+  function isHandOver(name) {
+    try { return caps.handOverResult(name, '') !== null } catch { return false }
+  }
+  // Queued hand-overs that will never run: settle them as not handed over.
+  async function abandonHandOvers(loop, entries, slots) {
+    for (const e of entries ?? []) {
+      if (e?.use && isHandOver(e.use.name)) {
+        await settleClearAfterHandOver(loop, { tool_use_id: e.use.id, name: e.use.name, aborted: true }, slots)
+      }
+    }
+  }
+  function goalKeptResult(use, content) {
+    return { type: 'tool_result', tool_use_id: use.id, content, is_error: false }
+  }
+  async function settleClearAfterHandOver(loop, data, slots) {
+    const d = loop._clearAfterHandOver
+    if (!d || !d.ids.has(data?.tool_use_id)) return
+    d.ids.delete(data.tool_use_id)
+    let ok = false
+    if (!data.aborted) {
+      try { ok = caps.handOverResult(data.name, typeof data.result === 'string' ? data.result : '') === true } catch { ok = false }
+    }
+    if (!ok) d.ok = false
+    if (d.ids.size > 0) return
+    loop._clearAfterHandOver = null
+    for (const { index, use } of d.clears) {
+      let r = goalKeptResult(use, CLEAR_KEPT_NO_HANDOVER)
+      if (d.ok) {
+        try {
+          r = (await executeInlineMetadata(loop, use)).result
+        } catch (err) {
+          r = { type: 'tool_result', tool_use_id: use.id, content: `error: ${err.message}`, is_error: true }
+        }
+      }
+      // Overwrite the waiting placeholder only while the turn's results are
+      // still open; once a tick appended them, the snapshot shows the outcome.
+      if (slots && slots === d.results) slots[index] = r
+    }
+    logger.info?.(`[sei/orch] clearGoal after hand-over: ${d.ok ? 'cleared' : 'kept'} (loop=${loop.id})`)
   }
 
   /**
@@ -3440,6 +4497,7 @@ function maybeWarnByteCap(loop, warned) {
       is_error: false,
     }
     lastActionResult = resultForLast
+    await settleClearAfterHandOver(loop, data, pendingResults)
     loop._pendingResults = null
     loop._pendingActionUse = null
 
@@ -3497,6 +4555,7 @@ function maybeWarnByteCap(loop, warned) {
             is_error: false,
           }
         }
+        await abandonHandOvers(loop, queue, pendingResults)
         // Fall through to appendToolResults below.
       } else {
         // Drain inline entries; on first non-inline, dispatch + return.
@@ -3531,6 +4590,7 @@ function maybeWarnByteCap(loop, warned) {
               content: `aborted: ${entry.use.name} (loop terminal)`,
               is_error: false,
             }
+            await abandonHandOvers(loop, [entry], pendingResults)
             continue
           }
           // Dispatch the next non-inline tool. The remaining queue (still
@@ -3552,10 +4612,13 @@ function maybeWarnByteCap(loop, warned) {
     // action_complete path is a continuation of the same iteration that
     // dispatched the long-runner, so nudges fire on the NEXT iteration's
     // own cadence check).
+    // 261020 (pass 20): her fresh line, when this is the result of her own
+    // action (a player line folded in already carries the reply form).
+    const resultEventText = extraEventText ?? (resultRepeatsTail(loop).trim() || null)
     try {
       loop.appendToolResults(pendingResults, {
         snapshot: snapshotText(),
-        ...(extraEventText ? { eventText: extraEventText } : {}),
+        ...(resultEventText ? { eventText: resultEventText } : {}),
       })
     } catch (err) {
       logger.warn?.(`[sei/orch] appendToolResults failed in action_complete: ${err.message}`)
@@ -3581,7 +4644,7 @@ function maybeWarnByteCap(loop, warned) {
       // Same post-condition handling as the initial fresh-loop call site.
       if (loop._terminated) {
         // Already terminal (case 2 stop, case 3 reseed) — tear down now.
-      } else if (loop.inFlight) {
+      } else if (loop.inFlight || loopAwaitsSettle(loop)) {
         // Loop is suspended waiting for the next action_complete.
         return
       } else {
@@ -3627,6 +4690,9 @@ function maybeWarnByteCap(loop, warned) {
     // instead of dropping. (Timing-gated bug: a chat arriving <10s into the
     // action — before any tick — routes through handleActionComplete, which
     // already folds correctly. Only the tick-claimed window broke.)
+    // The tool_use was already paired by the tick, so a clearGoal waiting on
+    // this hand-over runs (or is kept) without touching that turn's results.
+    await settleClearAfterHandOver(loop, data, null)
     const interrupting = !!(data?.aborted && pendingInterrupt)
     if (data?.aborted && !interrupting) {
       // Genuine stale/terminal abort. P0 attack (terminateLoop) and R3/R4
@@ -3661,6 +4727,12 @@ function maybeWarnByteCap(loop, warned) {
       logger.debug?.(`[sei/orch] action_complete tick-claimed but loop is mid-batch on a new action (pending=${loop._pendingActionUse?.name ?? 'results'}) — drop stale settle (loop=${loop.id}, stale=${data?.name})`)
       return
     }
+    // Reset only once this settle is the one the loop is waiting on: a stale
+    // settle dropped above must not wipe the current action's state.
+    loop._settleOwed = null
+    // Consumed below (non-aborted settle) or moot (interrupting).
+    const replyDeferred = loop._replyDeferred
+    loop._replyDeferred = null
 
     // VIS-02/VIS-07: a render result (look / explore auto-look) that somehow
     // settled via the tick-claimed path (would require the render to outlive a
@@ -3699,11 +4771,26 @@ function maybeWarnByteCap(loop, warned) {
       const resultStr = visualizeText ?? String(data?.result ?? 'done')
       eventText = `previous action completed: ${data?.name ?? 'action'} -> ${resultStr}`
       loop._currentIterationTrigger = 'sei:action_complete'
+      // 261016 (pass 9c): she answered a player line while this ran without
+      // starting anything ("on it, after this stone batch"); bring that line
+      // back now, so a new order is not lost behind her own next step.
+      if (replyDeferred?.length) eventText = `${eventText}\n\n${NUDGES.deferredReplies(replyDeferred)}`
+      // 261020 (pass 20): her fresh line, so the result turn does not say it again.
+      else if (!pendingInterrupt) eventText += resultRepeatsTail(loop)
+      // 261015: a player line that landed while the loop waited for this
+      // completion (no action running, so it could not ride an action tick)
+      // is answered in the same turn as the result.
+      if (pendingInterrupt && !pendingAttack) {
+        eventText = `${eventText}\n\n${interruptTurnText(loop, pendingInterrupt.chatText, pendingInterrupt.who, pendingInterrupt.teammate === true)}`
+        if (pendingInterrupt.seiChat === true) loop._seiChatFolded = true
+        pendingInterrupt = null
+        loop._currentIterationTrigger = 'sei:chat_received'
+      }
     }
     try {
       loop.appendUserTurn([
         { type: 'text', name: 'event',    text: eventText },
-        { type: 'text', name: 'snapshot', text: snapshotText() },
+        { type: 'text', name: 'snapshot', text: snapshotText({ playerRequestOwed: !!replyDeferred?.length }) },
       ])
     } catch (err) {
       logger.warn?.(`[sei/orch] action_complete (tick-claimed) appendUserTurn failed: ${err.message}`)
@@ -3719,7 +4806,7 @@ function maybeWarnByteCap(loop, warned) {
       await runIterations(loop, byteWarn)
       if (loop._terminated) {
         // R3/R4 — teardown below.
-      } else if (loop.inFlight) {
+      } else if (loop.inFlight || loopAwaitsSettle(loop)) {
         // R2 dispatched a new long-runner; loop healthy.
         return
       } else {
@@ -3766,6 +4853,9 @@ function maybeWarnByteCap(loop, warned) {
     // The action is NOT aborted in either case; the model decides to reply,
     // switch (R2), or stop (end_loop/unfollow, R3).
     const playerMessage = (typeof data?.playerMessage === 'string') ? data.playerMessage : null
+    // 261011: a hit delivered mid-action (see the sei:attacked branch of
+    // handleDispatch). The action keeps running unless the model changes it.
+    const attack = (data?.attack && typeof data.attack === 'object') ? data.attack : null
     const who = data?.who ?? null
     // 260910: a line typed in the Sei app that lands mid-action is answered by
     // say() inside THIS loop, whose own trigger was an idle tick, so the reply
@@ -3787,12 +4877,21 @@ function maybeWarnByteCap(loop, warned) {
     const action = extractPriorTask(loop)
     // 260608-tik: the player-message variant renders through interruptTurnText,
     // the one chokepoint for mid-action interrupt turns — it resets
-    // _spokeThisLoop (which the end_loop scratchpad salvage keys off; a say()
+    // _spokeThisLoop (which the unanswered-line retry keys off; a say()
     // from BEFORE the interrupt doesn't count as answering it) and carries the
     // sticky greet hint. The extra args below are dead in that variant —
     // actionTurn shows elapsed and runs the agentic-follow review only when
     // playerLine == null — so only the silent monitor builds its own turn.
-    const tickEventText = playerMessage != null
+    const attackText = attack && typeof adapter.eventAddendum === 'function'
+      ? `${String(adapter.eventAddendum('sei:attacked', attack) ?? '').trim()}${fightToldSuffix()}\n\n${NUDGES.attackMidAction({ action, stopTool: stopToolForAction(action) })}`
+      : null
+    // 261013: the silent check-in that carries a waiting player order invites
+    // an action that replaces hers, so the silent-tick drop must let it through.
+    const tickWaitingAsk = (attackText == null && playerMessage == null && loop.inFlight?.selfStarted && loop.inFlight?.waitingAsk) || null
+    loop._tickCarriesAsk = !!tickWaitingAsk
+    const tickEventText = attackText != null
+      ? attackText
+      : playerMessage != null
       ? interruptTurnText(loop, playerMessage, who, teammate, unanswered)
       : withGreetingHint(NUDGES.actionTurn({
           action,
@@ -3801,13 +4900,14 @@ function maybeWarnByteCap(loop, warned) {
           elapsedSec,
           visionOff: _visionMode() === 'off',
           proactiveness: config?.persona?.proactiveness ?? 1,
-        }))
+          waitingAsk: tickWaitingAsk,
+        })) + ownRepeatsTail('checkin')
 
     // Set the iteration trigger BEFORE the haiku call so the R1-R4 gate keeps
     // the loop alive on a text-only response. A carried player message is
     // chat-triggered; a silent monitor stays action_tick. Both are in
     // iterationKeepsLoopAlive, so R1 keep-alive holds either way.
-    loop._currentIterationTrigger = playerMessage == null ? 'sei:action_tick' : 'sei:chat_received'
+    loop._currentIterationTrigger = attack ? 'sei:attacked' : playerMessage == null ? 'sei:action_tick' : 'sei:chat_received'
 
     // 260517-fix: two modes.
     //
@@ -3866,6 +4966,7 @@ function maybeWarnByteCap(loop, warned) {
             }
           }
         }
+        await abandonHandOvers(loop, pendingQueue, pendingResults)
       }
       inFlight._tickClaimed = true
       loop._pendingResults = null
@@ -3906,8 +5007,12 @@ function maybeWarnByteCap(loop, warned) {
     // whether to keep the loop alive (text-only → keep, via extended
     // classifier) or terminate (end_loop → R3, end_loop+action → R4,
     // new long-runner alone → R2).
+    // 261011: while this tick's calls answer a real hit, a further hit is
+    // swallowed by handlePreempt instead of tearing the loop down.
+    loop._midActionAttackIsHit = !!attack && !isAttackHeadsUp(attack)
     try {
       await runIterations(loop, byteWarn)
+      loop._midActionAttackIsHit = false
       if (loop._terminated) {
         // Already terminal (R3/R4) — tear down below.
       } else if (loop.inFlight) {
@@ -3915,12 +5020,18 @@ function maybeWarnByteCap(loop, warned) {
         // live (R1 text-only kept the loop), or a new long-runner replaced
         // it (R2). Either way, return — no teardown.
         return
+      } else if (loopAwaitsSettle(loop)) {
+        // 261015: the action finished during this call; its queued
+        // completion drives the next turn (noteOwedSettle).
+        logger.info?.(`[sei/orch] action finished during the mid-action turn — loop waits for its completion (loop=${loop.id}, action=${loop._settleOwed})`)
+        return
       } else {
         // No in_flight AND not terminated — should be rare on a tick, but
         // treat as natural terminal.
         terminateLoop(loop, 'natural-after-action-tick')
       }
     } catch (err) {
+      loop._midActionAttackIsHit = false
       logger.error?.(`[sei/orch] action_tick continuation failed: ${err && err.message}`)
       // A tick that was carrying a player message must not drop it on a rate
       // limit — redrive the MESSAGE (not the loop's stale originating
@@ -3956,6 +5067,45 @@ function maybeWarnByteCap(loop, warned) {
    * is made with tools=[] forcing a text-only response that we emit as a
    * chat line. The Loop terminates gracefully; no exception is thrown.
    */
+  // The one-retry rule for a player line that got no say() (260921 actions
+  // only, 261011 text only). Returns the nudge text when this iteration
+  // answers the player's own line, nothing was said this loop, the line has
+  // not been retried yet, and a reply is owed (not a teammate's call line,
+  // not a game event). Otherwise null.
+  function unansweredRetryFor(loop) {
+    const e = loop._currentIterationTrigger ?? loop._triggerEvent
+    if (e !== 'player_chat' && e !== 'sei:chat_received') return null
+    if (loop._groupVoiceLine || loop._noReplyOwed || loop._spokeThisLoop || loop._unansweredRetried) return null
+    const line = loop._lastPlayerLine
+    if (!line?.text) return null
+    return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+  }
+
+  // 261015 (quality pass 8): the one-shot "your goal starts nothing" nudge
+  // for a turn whose only work was writing a NEW goal (see the call site in
+  // runIterations). Returns the nudge text or null.
+  //
+  // Only when the player asked for the work (loop._playerDirected: the loop
+  // answers a player line, or one was folded in). Her own goal on a greeting
+  // or idle turn is left to the idle tick as before: nudged there, she walked
+  // off before the player's first line in 15 of 18 eval sessions (2 of 18
+  // without), and in night_social she was away gathering when the zombie
+  // reached the player.
+  //
+  // When the same turn also left the player's line unanswered, the
+  // unanswered-line nudge rides this call and asks for a say(), so the goal
+  // nudge drops its own "say() only if new" sentence instead of contradicting it.
+  function goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop }) {
+    if (continueLoop || hasEndLoop || hasStop || loop.isTerminal || loop._goalStartNudged) return null
+    if (!loop._playerDirected) return null
+    if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return null
+    if (loopAwaitsSettle(loop)) return null
+    const newGoal = toolUses.some((u, i) => u.name === 'setGoal' && results[i]?.content === 'goal set')
+    if (!newGoal) return null
+    const replyOwed = !!loop._unansweredNudgeText && !loop._spokeThisLoop
+    return replyOwed ? NUDGES.goalNotStartedReplyOwed : NUDGES.goalNotStarted
+  }
+
   async function runIterations(loop, byteWarn) {
     const cap = config.memory.iteration_cap
     // 260909: the web budget is per LOOP, not per iteration: a fresh
@@ -3973,6 +5123,13 @@ function maybeWarnByteCap(loop, warned) {
 
       const signal = loop.abortController.signal
 
+      // 261019 (pass 19): she died and the death turn is coming; nothing this
+      // loop would plan now fits the body that respawned.
+      if (deathPending) {
+        logger.info?.(`[sei/orch] turn skipped: she died, waiting for the death turn (loop=${loop.id})`)
+        return
+      }
+
       // Passive-look cadence: every x-th personality call gets the bot's POV
       // attached (runIterations is the single funnel for all turn types, so
       // this one hook covers new loops, in-flight ticks, and continuations).
@@ -3987,6 +5144,10 @@ function maybeWarnByteCap(loop, warned) {
         resp = await callPersonality(loop, signal)
       } catch (err) {
         if (err && (err.name === 'AbortError' || signal.aborted)) {
+          // 261019 (pass 19): aborted because she died (noteDeath). The death
+          // turn tears this loop down; a player line folded meanwhile stays in
+          // pendingInterrupt and is re-sent by that teardown.
+          if (deathPending) return
           // 260505-twx: if the abort was caused by an incoming attack,
           // drop the entire loop. The handleDispatch finally block will
           // re-fire the attack as a fresh dispatch, which opens a new
@@ -4059,6 +5220,23 @@ function maybeWarnByteCap(loop, warned) {
         // tool support, or not pulled). Every turn would fail identically and
         // the companion just stood there mute; stop with a plain reason the
         // launch panel shows (ERROR_COPY) instead.
+        // 261017 (issue #46): a ChatGPT-plan answer no retry can change
+        // (usage limit reached, account not eligible, signed out, plan use
+        // disabled). Stop once, quietly; main raises the matching dialog off
+        // the lifecycle error. Redriving would only spend the next turn on
+        // the same refusal.
+        if (err && TERMINAL_CHATGPT_CODES.includes(err.code)) {
+          _halted = true
+          logger.warn?.(`[sei/orch] ChatGPT plan: ${err.code} — stopping the session`)
+          if (typeof onTerminalError === 'function') {
+            try {
+              onTerminalError({ error: err.code, message: err.message })
+            } catch (cbErr) {
+              logger.warn?.(`[sei/orch] onTerminalError callback threw: ${cbErr && cbErr.message}`)
+            }
+          }
+          return
+        }
         if (err && (err.code === 'OLLAMA_MODEL_NO_TOOLS' || err.code === 'OLLAMA_MODEL_MISSING')) {
           _halted = true
           logger.warn?.(`[sei/orch] ${err.message} — stopping the session`)
@@ -4077,12 +5255,20 @@ function maybeWarnByteCap(loop, warned) {
         // Rate-limited; bail.
         return
       }
+      // 261019 (pass 19): she died while this turn was being written. Its
+      // lines and actions were planned by the body that died, so none of it
+      // runs; the death turn speaks for her.
+      if (deathPending) {
+        logger.info?.(`[sei/orch] turn discarded: she died while it was being written (loop=${loop.id})`)
+        return
+      }
 
       // Append assistant turn raw (preserves tool_use blocks 1:1)
       loop.appendAssistant(buildAssistantContent(resp))
       // 260708: the trigger has now been seen and answered by at least one
       // model response — an attack teardown no longer needs to preserve it.
       loop._respondedOnce = true
+      loop._deliveringLine = null
       // 260909: a server-side web search that ran long stops with
       // `pause_turn`; the assistant content (kept intact above, server blocks
       // included) goes back as-is and the model is called again to finish.
@@ -4105,6 +5291,10 @@ function maybeWarnByteCap(loop, warned) {
       loop._responsesReceived = (loop._responsesReceived ?? 0) + 1
 
       const toolUses = resp.toolUses ?? []
+      // 261018 (pass 17): reset per turn, so a turn that returns before the
+      // tool predicates below (no tool calls at all) does not keep the value
+      // of the turn before it. Set for real at newSuspendingTools.
+      loop._lastTurnTalkOnly = false
 
       // Speech via the say() tool. The assistant's `text` output is a PRIVATE
       // scratchpad and never reaches chat (chat_mode 'full' surfaces it as
@@ -4118,6 +5308,8 @@ function maybeWarnByteCap(loop, warned) {
       if (respText) emitThinkIfFull(respText)
       const sayResults = emitSayCalls(loop, toolUses)
       const saySpokenThisTurn = sayResults.size > 0 || loop._searchLineSpoken === true
+      if (sayResults.size > 0) loop._saidThisLoop = true
+      try { sessionActionStats.noteLlmTurn({ said: saySpokenThisTurn }) } catch {}
       // Double-goodbye guard (260706): a quit()/end_call() farewell must not
       // fire when the same response already called say() — otherwise the two
       // goodbyes land back-to-back ("aight catch you later" + "later ouen,
@@ -4185,6 +5377,41 @@ function maybeWarnByteCap(loop, warned) {
           replaceAbortController(loop)
           continue
         }
+        // 261011 (quality pass 2): a player line answered with TEXT ONLY.
+        // The text output is private, so the player heard nothing, and
+        // nothing re-delivered the line: with an action running the loop
+        // just waited, and with none it ended. end_loop is the tool for
+        // choosing silence, so a turn that called it is left alone; a turn
+        // that called nothing at all gets one retry with the nudge.
+        const unansweredText = unansweredRetryFor(loop)
+        if (unansweredText) {
+          loop._unansweredRetried = true
+          logger.info?.(`[sei/orch] player line answered with text only, no say() — retrying once (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? 'none'})`)
+          if (iterationKeepsLoopAlive && loop.inFlight) {
+            loop._unansweredNudgeText = unansweredText
+            try {
+              reenqueue('sei:action_tick', { playerMessage: loop._lastPlayerLine.text, who: loop._lastPlayerLine.who, unanswered: true })
+            } catch (err) {
+              logger.warn?.(`[sei/orch] unanswered-line tick reenqueue failed: ${err.message}`)
+            }
+            return
+          }
+          // No action running: answer in this loop. The last message is the
+          // assistant's text turn, so a user turn carries the nudge (the
+          // model rejects a request that ends on an assistant turn). An
+          // EMPTY response (no text at all) left an assistant turn with no
+          // content, which Anthropic rejects with a 400 when it is not the
+          // final message, so it gets a placeholder first.
+          const msgs = loop._internal?.messages
+          const lastMsg = msgs?.[msgs.length - 1]
+          if (lastMsg?.role === 'assistant' && Array.isArray(lastMsg.content) &&
+              !lastMsg.content.some(b => b && (b.type !== 'text' || String(b.text ?? '').trim()))) {
+            lastMsg.content = [{ type: 'text', text: '(no reply)' }]
+          }
+          loop.appendUserTurn([{ type: 'text', name: 'unanswered', text: unansweredText }])
+          loop._currentIterationTrigger = 'sei:chat_received'
+          continue
+        }
         if (iterationKeepsLoopAlive && loop.inFlight) {
           // R1 — text-only on a keep-alive iteration WITH an in_flight
           // long-runner still running: keep the loop alive. The body keeps
@@ -4210,43 +5437,98 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
 
-      // 260703: a player message must not be answered with silence — the
-      // observed failure: the model writes its reply into the invisible text
-      // scratchpad and calls only end_loop, leaving the player on read
-      // ("I read that. you've made that clear. I'll stay put." → nothing in
-      // chat, twice in one session). When that exact shape occurs (P1-origin
-      // loop, an end_loop in this batch, nothing say()'d since the player's
-      // message, non-empty scratchpad), salvage the scratchpad through the
-      // normal say pipeline — postProcessSay cleans it exactly like a real
-      // say(), and the sei-chat routing applies as usual. Termination
-      // proceeds unchanged; this only makes the already-written reply
-      // audible. The prompt-side fixes (playerInterruptHint /
-      // player_message) push the model to call say() itself; this is the
-      // mechanical backstop.
+      // 261011: the 260703 scratchpad salvage (speak the text output when a
+      // player line ended in end_loop with no say()) is gone. On Haiku 5.5
+      // the quality eval (2026-10-11) caught it 8 times and every one was
+      // private reasoning read out to the player ("alex has been repeating the
+      // same line, and i already answered it twice", "i'll hold off on talking
+      // this tick"); none was a real reply. A silent end_loop is now silent.
       const _p1Trigger = (() => {
         const e = loop._currentIterationTrigger ?? loop._triggerEvent
         return e === 'player_chat' || e === 'sei:chat_received'
       })()
-      // 260708 (thought-leak fix): NOT on a group-voice line. There the prompt
-      // sanctions ending silently when the line belongs to a teammate, and the
-      // scratchpad holds the yield reasoning ("that's for Marv, I stay
-      // silent") — salvaging it reads the bot's private thoughts over TTS to
-      // the whole call (live failure, session 2026-07-08T17-58). Solo calls
-      // and typed chat keep the backstop: there a reply is mandatory.
-      if (_p1Trigger && !loop._groupVoiceLine && !loop._noReplyOwed && !loop._spokeThisLoop && respText && toolUses.some(u => u.name === 'end_loop')) {
-        logger.info?.(`[sei/orch] salvaging scratchpad as reply — player message was about to end unspoken (loop=${loop.id})`)
-        try { _emitSayLine(loop, respText) } catch {}
-      }
 
       // 260514-ngj: tool composition predicates for R2/R3/R4.
       const hasEndLoop = toolUses.some(u => u.name === 'end_loop')
+      // 261011: stop cancels the running action; end_loop only ends the turn.
+      const hasStop = toolUses.some(u => u.name === 'stop')
+      const inFlightIsForeground = !!loop.inFlight && !caps.backgroundActions[loop.inFlight.name]
       // newSuspendingTools = every non-inline-metadata tool. INLINE_METADATA
       // is {remember, forget, end_loop}; everything else suspends the
       // loop via startLongRunner (260514-gam universal-inflight).
-      const newSuspendingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+      const actingTools = toolUses.filter(u => !isInlineMetadata(u.name))
+      // 261019 (pass 18): a world tool that only continues the running action
+      // (contract v2 continueRunningAction; Minecraft: attackEntity on the
+      // mob the running attack is fighting). Measured in the combat_night
+      // eval: 27 of her attacks in 10 runs were aborted by her own repeat
+      // call from a mid-action turn, on the same mob. Such a call takes no
+      // part in the R-gate below (nothing is aborted or started); its slot
+      // gets the adapter's line. Only when EVERY world tool in the batch
+      // continues: anything new replaces the running action as before (a
+      // top-up the adapter already made goes with it). Not with stop, which
+      // ends the running action.
+      const continued = continuedToolUses(loop, actingTools, hasStop)
+      const newSuspendingTools = actingTools.filter(u => !continued.has(u.id))
+      if (actingTools.length > 0) loop._worldActed = true
+      // 261018 (pass 17): whether this turn only talked. The last turn's
+      // value decides the idle hold at teardown (see _lastLoopTalkOnly).
+      loop._lastTurnTalkOnly = saySpokenThisTurn && actingTools.length === 0 && !hasStop
+      // 261012 (pass 5): a stop from the player starts the idle hold (see
+      // playerStopAt); a player line answered with new work ends it. A bare
+      // "stop" line counts even when the model answered it with end_loop,
+      // since the chat fast path and the end_loop backstop cancel the action.
+      // "stop, come here" (stop + goTo) is new work, not a hold. Her stop()
+      // counts only when the player's line asked for one (asksToStop): a
+      // stop she calls to drop her own action for a new order is not a hold.
+      // 261022 (pass 22): a clearGoal in answer to this line (and not with a
+      // hand-over, which is the task finishing) is noted (clearedTasks).
+      loop._clearOnLine = (_p1Trigger && loop._lastPlayerLine && !loop._groupVoiceLine &&
+        toolUses.some(u => u.name === 'clearGoal') && !toolUses.some(u => isHandOver(u.name)))
+        ? { who: loop._lastPlayerLine.who ?? null, line: loop._lastPlayerLine.text }
+        : null
+      if (_p1Trigger && loop._lastPlayerLine) {
+        // 261013: a goal set from the player's line is new work too. The
+        // idle tick is what starts it, so a hold left on would sit on it.
+        const setsGoal = toolUses.some(u => u.name === 'setGoal')
+        const line = loop._lastPlayerLine.text
+        // The idle hold keeps its pre-pass-14 trigger: any action but unfollow
+        // ends it. The stay note below lets stationary actions through.
+        if (actingTools.some(u => u.name !== 'unfollow') || setsGoal) playerStopAt = 0
+        else if ((hasStop && asksToStop(line)) || isBareStopLine(line)) playerStopAt = Date.now()
+        // 261018 (pass 15): her own choice to stop or unfollow in answer to
+        // this line leaves the stay note for later turns (see stayNote). Not
+        // for a group-call line, which may have been for someone else, and
+        // not for a teammate's line (_lastPlayerLine is null for those). A
+        // goal set from the line ends it here; a world action ends it in
+        // startLongRunner, on any turn.
+        const calledUnfollow = actingTools.some(u => u.name === 'unfollow')
+        const newWork = actingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
+        if (newWork) {
+          if (stayNote) logger.info?.(`[sei/orch] stay note cleared: new work from the player's line (loop=${loop.id})`)
+          stayNote = null
+        } else if ((hasStop || calledUnfollow) && !loop._groupVoiceLine) {
+          stayNote = { at: Date.now(), who: loop._lastPlayerLine.who ?? null, line }
+          logger.info?.(`[sei/orch] stay note set: she ${hasStop ? 'stopped' : 'unfollowed'} on the player's line (loop=${loop.id})`)
+        }
+        // 261022 (pass 22): she stopped, or replaced with another action, the
+        // action she was running for a task of the player's, and neither
+        // cleared nor set a goal: that task is held (taskHolds) with this
+        // line. The same action called again (a new count) carries on with
+        // the task, and a turn that touches the goals has already said what
+        // became of it.
+        const running = loop.inFlight
+        const touchesGoals = toolUses.some(u => u.name === 'clearGoal' || u.name === 'setGoal')
+        const sameAgain = !!running && newSuspendingTools.some(u => u.name === running.name)
+        if (running && !touchesGoals && !sameAgain && !loop._groupVoiceLine && (hasStop || newSuspendingTools.length > 0)) {
+          const kind = newSuspendingTools.length > 0 ? 'switched' : 'held'
+          for (const t of taskOfRunning(running)) {
+            taskHolds.set(t.key, { kind, at: Date.now(), who: loop._lastPlayerLine.who ?? null, line })
+            logger.info?.(`[sei/orch] task ${kind}: she ${kind === 'held' ? 'stopped' : 'replaced'} ${running.name} on the player's line (loop=${loop.id})`)
+          }
+        }
+      }
 
-      // 260921: a player line answered with ACTIONS ONLY. The 260703 salvage
-      // above covers text + end_loop; this is its sibling: text + a world
+      // 260921: a player line answered with ACTIONS ONLY: text + a world
       // action, no say(). Measured: asked a question mid-chore, the model wrote
       // "i'm not sure, but i think each world is its own farm" in its private
       // text, called gather, and the loop carried on; the player waited 30s
@@ -4255,13 +5537,13 @@ function maybeWarnByteCap(loop, warned) {
       // it would leak it). Instead the line is delivered ONCE more, flagged as
       // unanswered: right away through the action-tick channel while the new
       // action runs, or on the loop's next call if that comes first.
-      if (_p1Trigger && !loop._groupVoiceLine && !loop._noReplyOwed && !loop._spokeThisLoop &&
-          !hasEndLoop && !loop._unansweredRetried && loop._lastPlayerLine?.text) {
+      const actionsOnlyNudge = hasEndLoop ? null : unansweredRetryFor(loop)
+      if (actionsOnlyNudge) {
         loop._unansweredRetried = true
         const line = loop._lastPlayerLine
-        loop._unansweredNudgeText = `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
+        loop._unansweredNudgeText = actionsOnlyNudge
         logger.info?.(`[sei/orch] player line left unspoken (actions only) — re-delivering once (loop=${loop.id})`)
-        if (newSuspendingTools.length > 0) {
+        if (actingTools.length > 0) {
           try {
             reenqueue('sei:action_tick', { playerMessage: line.text, who: line.who, unanswered: true })
           } catch (err) {
@@ -4272,16 +5554,16 @@ function maybeWarnByteCap(loop, warned) {
 
       // 260616: a SILENT action_tick is a check-in, not an action channel. The
       // running long-runner stays in flight; the model may speak, stay silent,
-      // or cancel (end_loop) — but it must NOT re-issue or swap actions here.
+      // or cancel (stop) — but it must NOT re-issue or swap actions here.
       // Re-issuing gather/dig on a nearby block aborts the in_flight at e.g.
       // 2/19 and restarts it, so nothing ever finishes (the scavenging-stall
       // bug). Drop the new movement tool(s), keep the running one alive, and
       // let the model re-decide after it COMPLETES (handleActionComplete) — or
-      // it cancels via end_loop (handled below as R3/R4). Inline-metadata tools
-      // (remember/forget) in the same batch still execute.
+      // it cancels via stop (stop + a new action switches, R2 below).
+      // Inline-metadata tools (remember/forget) in the same batch still execute.
       const isSilentActionTick =
         (loop._currentIterationTrigger ?? loop._triggerEvent) === 'sei:action_tick'
-      if (isSilentActionTick && !hasEndLoop && newSuspendingTools.length > 0 && loop.inFlight) {
+      if (isSilentActionTick && !hasStop && !loop._tickCarriesAsk && newSuspendingTools.length > 0 && loop.inFlight) {
         logger.debug?.(`[sei/orch] silent action_tick: dropping new action(s)=${newSuspendingTools.map(u => u.name).join(',')} — in_flight=${loop.inFlight.name} keeps running (loop=${loop.id})`)
         const results = new Array(toolUses.length)
         for (let i = 0; i < toolUses.length; i++) {
@@ -4289,6 +5571,11 @@ function maybeWarnByteCap(loop, warned) {
           // say() was already emitted up front — use its pre-filled result so
           // it speaks during the tick without re-emitting or being "ignored".
           if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
+          // The hand-over in this batch is ignored, so its clearGoal is too.
+          if (u.name === 'clearGoal' && toolUses.some(t => isHandOver(t.name))) {
+            results[i] = goalKeptResult(u, CLEAR_KEPT_NO_HANDOVER)
+            continue
+          }
           if (isInlineMetadata(u.name)) {
             try {
               const r = await executeInlineMetadata(loop, u)
@@ -4300,7 +5587,7 @@ function maybeWarnByteCap(loop, warned) {
             results[i] = {
               type: 'tool_result',
               tool_use_id: u.id,
-              content: `ignored: ${loop.inFlight.name} is still running — let it finish then act, or call end_loop to cancel it`,
+              content: `ignored: ${loop.inFlight.name} is still running — let it finish then act, or call stop to cancel it`,
               is_error: false,
             }
           }
@@ -4313,7 +5600,92 @@ function maybeWarnByteCap(loop, warned) {
         return
       }
 
-      if (hasEndLoop && newSuspendingTools.length > 0) {
+      // 261016 (pass 9c): a bare stop line from the player ("actually stop",
+      // "ok stop") answered with only words ("ok ok stopping") is a stop
+      // too, like the end_loop backstop below. Measured: the furnace craft
+      // finished while she answered "actually stop" with say() alone, and
+      // the completion turn that followed walked her back to the table
+      // ("the stop was about the wood"). The player's stop wins: the running
+      // action is cancelled and no completion turn is owed after it.
+      // Not on a group call's line to someone else ("lyra stop"): that turn
+      // is often silent on purpose (_groupVoiceLine, as the unanswered retry).
+      const unheededPlayerStop = !hasStop && !hasEndLoop && actingTools.length === 0 &&
+        _p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text, { wordsOnly: true })
+      if (unheededPlayerStop) logger.info?.(`[sei/orch] player said stop and the reply started nothing: treating it as stop (loop=${loop.id}, in_flight=${loop.inFlight?.name ?? loop._settleOwed ?? 'none'})`)
+      // 261016: a reply that started nothing while an action runs (or just
+      // finished during the call) leaves the player's line for the
+      // completion turn to come back to (see NUDGES.deferredReply).
+      // Only a player-triggered turn settles it: an attackEntity in a fight
+      // does not answer the player's pending order. Nothing said = the
+      // unanswered-line nudge covers it, so no "you answered" claim here.
+      // 261017 (pass 14): a list, oldest first. A later question answered in
+      // words ("whats ur favorite block") used to replace the order before it.
+      if (_p1Trigger && (actingTools.length > 0 || hasStop || unheededPlayerStop)) loop._replyDeferred = null
+      else if (_p1Trigger && !loop._groupVoiceLine && loop._spokeThisLoop && loop._lastPlayerLine?.text &&
+               (loop.inFlight || loopAwaitsSettle(loop))) {
+        const text = loop._lastPlayerLine.text
+        const prev = Array.isArray(loop._replyDeferred) ? loop._replyDeferred : []
+        if (!prev.includes(text)) loop._replyDeferred = [...prev, text].slice(-DEFERRED_REPLY_MAX)
+      }
+
+      if ((hasStop || unheededPlayerStop) && newSuspendingTools.length === 0) {
+        // 261011 R3-stop — stop with no new action: cancel the running action
+        // and end the loop (what end_loop alone used to do). A background
+        // action (follow) is not ended by aborting its in_flight entry, so
+        // its own stop action (unfollow) runs too.
+        logger.debug?.(`[sei/orch] R3 stop: cancelling in_flight=${loop.inFlight?.name ?? '(none)'} loop=${loop.id}`)
+        if (loop.inFlight) {
+          loop._stoppedAction = loop.inFlight.name
+          const bgStop = caps.backgroundActions[loop.inFlight.name]
+          clearActionTick(loop.inFlight)
+          try { loop.inFlight.abortController.abort() } catch {}
+          if (bgStop) {
+            void Promise.resolve()
+              .then(() => registry.execute(bgStop, {}, null, { ...config }))
+              .catch(err => logger.warn?.(`[sei/orch] stop -> ${bgStop} failed: ${err?.message ?? err}`))
+          }
+        }
+        terminateLoop(loop, 'R3-stop')
+      } else if (hasEndLoop && newSuspendingTools.length === 0 && (inFlightIsForeground || loopAwaitsSettle(loop)) &&
+                 !(_p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text))) {
+        // (A bare "stop" from the player answered with end_loop instead of
+        // stop falls through to R3 below and cancels the action as end_loop
+        // did before the split, so a model that misses the stop tool cannot
+        // keep working against the player. Not on a group call, where
+        // end_loop is how she yields "lyra stop" to Lyra.)
+        // 261011 R1-end — end_loop while a foreground action runs ends the
+        // TURN, not the action: the model is done talking and the gather /
+        // build / dig carries on, exactly like a text-only keep-alive turn.
+        // Fill every slot (say is pre-filled, memory writes run), record the
+        // turn, and leave the loop suspended on its in_flight.
+        // 261015: also when that action finished during this call (its
+        // completion is queued, see noteOwedSettle): the model ended the turn
+        // believing it was still running, and its result comes next.
+        const runningName = loop.inFlight?.name ?? null
+        logger.debug?.(`[sei/orch] R1 end_loop with foreground in_flight=${runningName ?? `(finished: ${loop._settleOwed})`}: action keeps running (loop=${loop.id})`)
+        const results = new Array(toolUses.length)
+        for (let i = 0; i < toolUses.length; i++) {
+          const u = toolUses[i]
+          if (sayResults.has(u.id)) { results[i] = sayResults.get(u.id); continue }
+          if (continued.has(u.id)) { results[i] = continuedResult(u, continued); continue }
+          if (u.name === 'end_loop') {
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: runningName ? `turn ended; ${runningName} keeps running` : 'turn ended', is_error: false }
+            continue
+          }
+          try {
+            const r = await executeInlineMetadata(loop, u)
+            results[i] = r.result
+          } catch (err) {
+            results[i] = { type: 'tool_result', tool_use_id: u.id, content: `error: ${err.message}`, is_error: true }
+          }
+        }
+        try {
+          loop.appendToolResults(results, { snapshot: snapshotText() })
+        } catch (err) {
+          logger.warn?.(`[sei/orch] R1 end_loop appendToolResults failed: ${err.message}`)
+        }
+        return
+      } else if (hasEndLoop && !hasStop && newSuspendingTools.length > 0) {
         // R4 — text + end_loop + new action: terminate current loop AND
         // open a fresh one seeded with the ORIGINAL trigger event + data
         // (preserves player chat text / attacker label so the new loop's
@@ -4345,10 +5717,12 @@ function maybeWarnByteCap(loop, warned) {
         } catch (err) {
           logger.warn?.(`[sei/orch] R4 reseed re-enqueue failed: ${err.message}`)
         }
-      } else if (hasEndLoop) {
-        // R3 — text + end_loop (no new action): terminate the loop. Abort
-        // any in_flight; end_loop's slot is filled by executeInlineMetadata.
-        // No reseed.
+      } else if (hasEndLoop && newSuspendingTools.length === 0) {
+        // R3 — text + end_loop (no new action, and no foreground action
+        // running; that case is R1-end above): terminate the loop. An
+        // in_flight here is a background action (follow), whose entry is
+        // aborted while the follow itself keeps trailing; end_loop's slot is
+        // filled by executeInlineMetadata. No reseed.
         logger.debug?.(`[sei/orch] R3 end_loop alone: terminating loop=${loop.id}`)
         if (loop.inFlight) {
           // 260516-0yw: clear the 10s action-tick BEFORE aborting on R3.
@@ -4365,6 +5739,7 @@ function maybeWarnByteCap(loop, warned) {
         // in_flight in the SAME loop. Both paths converge — the dispatch
         // happens in the per-tool for-loop below. Loop stays alive.
         if (loop.inFlight) {
+          if (hasStop) loop._stoppedAction = loop.inFlight.name
           logger.debug?.(`[sei/orch] R2/suppress new action — aborting old in_flight=${loop.inFlight.name} new=${newSuspendingTools.map(u => u.name).join(',')} trigger=${loop._currentIterationTrigger ?? loop._triggerEvent}`)
           // 260516-0yw: clear the 10s action-tick BEFORE aborting on R2.
           clearActionTick(loop.inFlight)
@@ -4380,7 +5755,7 @@ function maybeWarnByteCap(loop, warned) {
 
       // Process tool_uses. Single-layer: every movement tool fires from the
       // same combined response — no separate movement layer.
-      const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name))
+      const movementCalls = toolUses.filter(u => !PERSONALITY_NAMES.has(u.name) && !continued.has(u.id))
 
       // Contract v2 prefilterToolBatch: the adapter names the tool_uses in
       // this batch that must NOT execute and the result they get instead
@@ -4413,6 +5788,8 @@ function maybeWarnByteCap(loop, warned) {
           // result so the dispatch loop skips it and the batched-queue drain
           // never enqueues it — speech is resolved before any action runs.
           results[k] = sayResults.get(uk.id)
+        } else if (continued.has(uk.id)) {
+          results[k] = continuedResult(uk, continued)
         } else if (_prefilled.has(uk.id)) {
           const p = _prefilled.get(uk.id)
           results[k] = {
@@ -4431,6 +5808,22 @@ function maybeWarnByteCap(loop, warned) {
         // loop below finds their slots filled, so they never enter the
         // _pendingToolUses queue and can never be dropped by an action_tick
         // reclaim, a preempt, or the teardown drain (see MEMORY_METADATA).
+        // 261015: a clearGoal waits for a hand-over in the same batch (see
+        // settleClearAfterHandOver). Its slot gets a placeholder now, so it
+        // is skipped below and never queued.
+        const handOverIds = toolUses.filter((u, i) => !results[i] && isHandOver(u.name)).map(u => u.id)
+        if (handOverIds.length > 0) {
+          const clears = []
+          for (let i = 0; i < toolUses.length; i++) {
+            const u = toolUses[i]
+            if (u.name !== 'clearGoal' || results[i]) continue
+            results[i] = goalKeptResult(u, loop.isTerminal ? CLEAR_KEPT_NO_HANDOVER : CLEAR_WAITS_ON_HANDOVER)
+            clears.push({ index: i, use: u })
+          }
+          if (clears.length > 0 && !loop.isTerminal) {
+            loop._clearAfterHandOver = { ids: new Set(handOverIds), clears, results, ok: true }
+          }
+        }
         for (let i = 0; i < toolUses.length; i++) {
           const u = toolUses[i]
           if (signal.aborted) throw makeAbortError()
@@ -4580,7 +5973,19 @@ function maybeWarnByteCap(loop, warned) {
       // cant_reach nudge wins over silence nudge — both
       // happen at "things are not progressing" but cant_reach is the proximate
       // cause and the LLM needs the specific instruction.
-      const finalNudgeText = cantReachNudge ?? silenceNudgeText
+      // 261015 (quality pass 8): a turn that only WROTE a goal down started
+      // nothing. setGoal is a memory write, so the turn has no world action
+      // and the loop would end here; the design left the start to the next
+      // idle tick, which in the eval came 8-17 s later or never (a player
+      // line arrived first), while her say() had already told the player she
+      // was on it ("nice, now we just need stone. i'll go find some", then
+      // nothing ran). So a turn whose only work was a NEW goal gets one more
+      // call in the same loop, told the goal starts nothing: she starts its
+      // first step now or ends the turn with end_loop. Once per loop, never
+      // when a foreground action is running (the goal is then the next job),
+      // and never on a duplicate setGoal (not newly added).
+      const goalOnlyNudge = goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop })
+      const finalNudgeText = goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
 
       loop.appendToolResults(results, {
         snapshot: snapshotText(),
@@ -4594,6 +5999,11 @@ function maybeWarnByteCap(loop, warned) {
       // long-runner tool_use) as "keep iterating" — so we honor isTerminal
       // first.
       if (loop.isTerminal) return
+      if (goalOnlyNudge) {
+        loop._goalStartNudged = true
+        logger.info?.(`[sei/orch] goal set with no action started — one more call to start it or end the turn (loop=${loop.id})`)
+        continue
+      }
       if (!continueLoop) return
     }
   }
@@ -4856,7 +6266,7 @@ function maybeWarnByteCap(loop, warned) {
     if (!loop._replaySay) loop._earlySay = null
     const onSay = voiceCallActive && typeof onSeiChatReply === 'function'
       ? (text, toolUseId) => {
-          if (loop._earlySay) return
+          if (loop._earlySay || deathPending) return
           loop._earlySay = { id: toolUseId, text, result: _emitSayLine(loop, text) }
         }
       : undefined
@@ -4888,6 +6298,15 @@ function maybeWarnByteCap(loop, warned) {
       // 260611: a successful call resets the rate-limit redrive budget.
       _redriveStreak = 0
       return resp
+    } catch (err) {
+      // 261011: LLM error telemetry by class (brain/actionStats.js). A preempt
+      // abort is not an error; a wall-clock budget timeout is.
+      try {
+        if (err?.isTimeout === true || !(err?.name === 'AbortError' || signal?.aborted)) {
+          sessionActionStats.noteLlmError(err)
+        }
+      } catch {}
+      throw err
     } finally {
       loop._llmCallInFlight = false
       // One-shot: consumed by this call, never by the next one.
@@ -4950,6 +6369,9 @@ function maybeWarnByteCap(loop, warned) {
         teammate: (prevText ? pendingInterrupt?.teammate === true : true) && data?.playerSpoke === false,
       }
       try { loop.abortController.abort() } catch {}
+      // Claimed events never reach handleDispatch, so its drain preempt check
+      // would miss this line.
+      if (!(data && typeof data === 'object' && drainSpared.has(data))) abortDrain('player spoke')
       return true
     }
     if (event === 'sei:attacked') {
@@ -4964,13 +6386,78 @@ function maybeWarnByteCap(loop, warned) {
       // mineflayer's auto-attack interval keeps swinging meanwhile, and the next
       // throttled hit re-wakes a fresh reaction once this one settles.
       if (loop._triggerEvent === 'sei:attacked') return true
+      // 261019 (pass 19): same for her death turn. It already sees the mob in
+      // the snapshot, and tearing it down for the hit would lose the death
+      // framing (what she lost, where it lies).
+      if (loop._triggerEvent === 'sei:death' && !loop._respondedOnce) return true
+      // 261011: same for a real hit delivered mid-action (handleActionTick)
+      // whose reaction call is still parked: tearing it down would discard
+      // the reaction AND abort the action the delivery path exists to keep.
+      if (loop._midActionAttackIsHit) return true
+      // 261019 (pass 18): and while the running action IS the fight (the
+      // adapter's fightActions; Minecraft: attackEntity), a hit that lands
+      // during a mid-action call (a player line, a check-in) is part of
+      // that fight. Tearing the loop down here aborted the running attack
+      // and started a fresh reaction turn, which usually called the same
+      // attack again (combat_night eval: "aborted after 2/8 hits" with the
+      // mob still on her). Swallow it; the attack keeps swinging, and the
+      // next throttled hit reaches the loop through the mid-action delivery
+      // once this call settles.
+      if (loop.inFlight && caps.fightActions.has(loop.inFlight.name)) return true
       // Otherwise (attacked mid-task — gathering/digging/following): unblock now
       // so the queued P0 attack drives the existing teardown/reseed and the new
-      // threat preempts the task.
+      // threat preempts the task. 261011: flagged so handleDispatch tears this
+      // loop down instead of taking the mid-action delivery path.
+      loop._attackAbortedCall = true
       try { loop.abortController.abort() } catch {}
       return false
     }
     return false
+  }
+
+  /**
+   * 261019 (pass 19): the adapter saw her die (health 0). Called the moment it
+   * happens, before the respawn; the death turn itself is queued after the
+   * respawn so it sees her real state. Until that turn starts, deathPending
+   * drops whatever turn is being written (see runIterations), and `life`
+   * moves on so a hit queued before the death is dropped at dispatch.
+   * A parked LLM call is aborted now instead of being left to finish.
+   */
+  function noteDeath() {
+    deathPending = true
+    life++
+    // Backstop: the death turn normally clears this within a couple of
+    // seconds. If it never comes (a disconnect mid-respawn), turns resume.
+    const lifeAtDeath = life
+    const t = setTimeout(() => {
+      if (life !== lifeAtDeath || !deathPending) return
+      deathPending = false
+      flushDeathHeld()
+    }, DEATH_PENDING_MAX_MS)
+    t.unref?.()
+    const loop = currentLoop
+    // A player line whose reply was still being written is not lost with the
+    // turn: hold it for after the death turn, like a line that arrives now.
+    // (_respondedOnce: a reply already went out, or the line is now held, so
+    // no other teardown path re-sends it.)
+    if (loop && !loop._respondedOnce) {
+      const trig = loop._triggerData
+      const trigText = String(trig?.text ?? trig?.message ?? '').trim()
+      if (trigText && trig?.playerSpoke === true && classifyChatEvent(loop._triggerEvent, trig).isPlayerChat) {
+        loop._respondedOnce = true
+        deathHeld.push({ event: loop._triggerEvent, data: trig })
+        logger.info?.(`[sei/orch] unanswered player line held until the death turn (loop=${loop.id})`)
+      }
+    }
+    // Same for a line delivered mid-action whose reply was being written.
+    if (loop && loop._deliveringLine) {
+      deathHeld.push(loop._deliveringLine)
+      loop._deliveringLine = null
+      logger.info?.(`[sei/orch] mid-action player line held until the death turn (loop=${loop.id})`)
+    }
+    if (loop && loop._llmCallInFlight) {
+      try { loop.abortController.abort() } catch {}
+    }
   }
 
   /**
@@ -4991,7 +6478,10 @@ function maybeWarnByteCap(loop, warned) {
    * The resulting sei:action_complete re-enqueue is dropped by the FSM (stop
    * calls queue.dispose() first, flipping `disposed`). Idempotent + defensive.
    */
-  function abortActive() {
+  function abortActive(reason = 'stopped') {
+    // 261011: the post-teardown drain runs outside any loop (often with
+    // currentLoop null), so it is cancelled before the loop check.
+    abortDrain(reason)
     const loop = currentLoop
     if (!loop) return
     try {
@@ -5009,6 +6499,9 @@ function maybeWarnByteCap(loop, warned) {
     handleDispatch,
     handlePreempt,
     abortActive,
+    noteDeath,
+    /** How many times she has died this session (stamps queued hits). */
+    get life() { return life },
     get currentLoop()    { return currentLoop },
     debouncer: ingressDebouncer,
     throttle: ingressThrottle,
@@ -5017,11 +6510,41 @@ function maybeWarnByteCap(loop, warned) {
     // opts.companion: a sibling AI's line; anything else is the human player's
     // and is labelled by role in the transcript (convoMemory.playerLabel).
     recordIncomingChat: (who, text, opts) => convoMemory.recentChat.pushPlayer(who, text, opts),
+    /**
+     * 261014 (pass 7b): record something that happened in the game, for the
+     * "game:" lines of the conversation transcript (sessionEvents.js). Called
+     * by brain/index.js once per real event, before it is queued, so a
+     * re-fired dispatch is never counted twice.
+     *   kind 'attacked': the onAttacked payload (reflex/survival kinds skip)
+     *   kind 'death':    the sei:death payload
+     *   kind 'game':     { text, fact? } a game's own notice (Stardew: a new
+     *                    day); only the fact is recorded (gameEventFact)
+     */
+    recordGameEvent: (kind, data) => {
+      try {
+        if (kind === 'attacked') {
+          const ev = describeAttackEvent(data)
+          if (ev) convoMemory.recentChat.pushEvent(ev.text, { key: ev.key, windowMs: HIT_COALESCE_MS, again: ev.again })
+        } else if (kind === 'death') {
+          convoMemory.recentChat.pushEvent(describeDeathEvent(data))
+        } else if (kind === 'game') {
+          const t = gameEventFact(data)
+          if (t) convoMemory.recentChat.pushEvent(t)
+        }
+      } catch {}
+    },
     // 260921: the idle timer's floor-hold (see REPLY_WINDOW_MS). brain/index.js
     // folds it into idleFallbackMs so the FSM needs no knowledge of speech.
-    // Stardew only (REPLY_WINDOW_GAMES): 0 elsewhere, so Minecraft's agentic
-    // cadence is unchanged.
-    replyWindowRemainingMs: () => !replyWindowApplies(adapter) ? 0 : replyWindowRemainingMs({
+    // Always in Stardew (REPLY_WINDOW_GAMES). 261011 (quality pass 2): in
+    // every game when the last loop only talked, so Minecraft's agentic
+    // cadence still resumes work 5s after a loop that did some. In the
+    // pass-1b eval 49 of the 77 repetitive lines came from loops an idle tick
+    // started, typically 5-7s after a line of hers that took no action ("holding still alex" then "ok holding still, what next" then
+    // "ok holding still alex"): the 5s cadence is for resuming work, and with
+    // no work to resume an idle turn has nothing new to say.
+    // 261018 (pass 17): also after a loop that did work but ended on a
+    // talk-only turn (see teardownLoop).
+    replyWindowRemainingMs: () => !(replyWindowApplies(adapter) || _lastLoopTalkOnly) ? 0 : replyWindowRemainingMs({
       lastSelf: convoMemory.recentChat.lastSelf?.() ?? null,
       lastPlayer: convoMemory.recentChat.lastPlayer?.() ?? null,
       sendDeadline: _lastChatSendDeadline,
@@ -5058,11 +6581,15 @@ function maybeWarnByteCap(loop, warned) {
           const cur = inflight.current()
           pausedInflightNote = cur ? `${cur.name}(${describeArgs(cur.name, cur.args)})` : null
         } catch { pausedInflightNote = null }
-        try { abortActive() } catch {}
+        try { abortActive('paused') } catch {}
         emitActionVerb(null)
       } else {
         const note = pausedInflightNote
         pausedInflightNote = null
+        // 261013: pressing play is the player saying go, so a stop hold from
+        // before the pause must not swallow the resume tick.
+        playerStopAt = 0
+        stayNote = null
         try { reenqueue('sei:idle', { reason: 'game_unpaused', ...(note ? { pausedInflight: note } : {}) }) } catch {}
       }
     },

@@ -26,7 +26,9 @@ import type {
   UserPreferencesPatch,
 } from './characterSchema';
 import type { ErrorClass } from './errorClasses';
+import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from './chatgptPlan';
 import type { RegionStatus } from './regionGate';
+import type { BackseatEndReasonArg, BackseatStartTrigger, CallEndReason } from './callEndReasons';
 export type { ErrorClass } from './errorClasses';
 import type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
 export type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
@@ -48,6 +50,7 @@ import type {
   BackseatSource,
   BackseatState,
   BackseatTick,
+  BackseatTickOutcome,
 } from './backseatIpc';
 export type {
   BackseatLine,
@@ -70,6 +73,7 @@ import type { OsPermissionKind, OsPermissionStatus, PermissionResume } from './p
 export type { OsPermissionKind, OsPermissionStatus, PermissionResume } from './permissionsIpc';
 import type { McDashboardSnapshot, McDashboardSnapshotPush } from './mcDashboardIpc';
 import type { GameId, WorldState, WorldStates, GameDashboardSnapshot } from './gameIpc';
+import type { HomeNextStep } from './homeNextStep';
 import { StardewIpcChannel, type StardewInstallState, type StardewInstallProgressEvent, type StardewLaunchResult } from './stardewIpc';
 import { GameIpcChannel } from './gameIpc';
 export type { GameId, WorldState, WorldStates, GameDashboardSnapshot } from './gameIpc';
@@ -242,13 +246,20 @@ export interface LlmCapability {
    * Anthropic BYOK (both always vision-capable, so no gate ever needs it).
    */
   model: string | null;
+  /**
+   * 261017 (issue #46): the active LOCAL provider kind, null on the cloud
+   * backend. Lets surfaces show "Using ChatGPT plan" without reading config.
+   * Optional so an older main still type-checks against a newer renderer.
+   */
+  provider?: string | null;
 }
 
 /** llm:list-models — live model listing with the user's own key. `error` is a
  * typed token ('no_api_key' | 'unauthorized' | 'timeout' | 'network' |
  * 'http_<status>' | 'unknown'), never a raw message. */
 export interface LlmListModelsResult {
-  models: Array<{ id: string; vision: 'yes' | 'no' | 'unknown' }>;
+  /** `label` is the provider's display name when it has one (ChatGPT plan). */
+  models: Array<{ id: string; vision: 'yes' | 'no' | 'unknown'; label?: string }>;
   error?: string;
 }
 
@@ -606,6 +617,42 @@ export interface VoiceInfo {
   vibe: string;
 }
 
+/**
+ * One voice from the user's OWN ElevenLabs account (261019), listed by main
+ * with the stored BYOK key (GET /v2/voices). Renderer-safe: no key, no
+ * preview URL (main fetches preview bytes itself, see voiceOwnPreview).
+ */
+export interface OwnVoiceInfo {
+  /** ElevenLabs voice id, persisted as metadata.voiceId when picked. */
+  id: string;
+  /** The name the user gave it in ElevenLabs. */
+  name: string;
+  /** ElevenLabs category: 'cloned' | 'generated' | 'professional' | ... */
+  category: string;
+  /** From the voice's ElevenLabs labels, when present. */
+  gender?: string;
+  age?: string;
+  accent?: string;
+  description?: string;
+  /** ElevenLabs has a ready-made sample for this voice (no synthesis needed). */
+  hasPreview: boolean;
+}
+
+/**
+ * Result of voice:own-list (261019).
+ *   - ok:          the list (may be empty).
+ *   - unavailable: no ElevenLabs key stored. Since 261020 a CLOUD user's
+ *                  optional key lists their own voices too (they speak
+ *                  direct with it; Sei's pool stays on the proxy).
+ *   - bad_key:     ElevenLabs refused the key (401: wrong key, or a scoped key
+ *                  without the Voices read permission).
+ *   - error:       network or upstream failure; the built-in list still works.
+ */
+export interface OwnVoiceList {
+  status: 'ok' | 'unavailable' | 'bad_key' | 'error';
+  voices: OwnVoiceInfo[];
+}
+
 /** One voice:tts-chunk push (streaming TTS, 260705). Exactly one terminal
  * field is eventually sent per stream: done:true after the last chunk, or
  * error (sentinel-prefixed message) on a mid-stream failure. */
@@ -623,13 +670,24 @@ export interface VoiceTtsChunkPush {
  * Chinese) is not installed. The line still plays; the call UI shows a system
  * notice naming the better-fitting download. Pack ids from
  * src/main/speech/packs.ts ('tts-en' | 'tts-zh'). */
-export interface VoiceTtsNoticePush {
-  characterId: string;
-  /** Pack that would fit the conversation language but is not installed. */
-  missingPackId: string;
-  /** Pack the line was actually spoken with. */
-  spokenPackId: string;
-}
+export type VoiceTtsNoticePush =
+  | {
+      kind: 'substitute-pack';
+      characterId: string;
+      /** Pack that would fit the conversation language but is not installed. */
+      missingPackId: string;
+      /** Pack the line was actually spoken with. */
+      spokenPackId: string;
+    }
+  | {
+      /** 261020 (T158): a cloud line for the user's OWN ElevenLabs voice was
+       * spoken with the character's stand-in Sei voice, because their key is
+       * missing ('no-key') or ElevenLabs refused it for that voice. The line
+       * still plays; the call UI shows a system notice. */
+      kind: 'own-voice-stand-in';
+      characterId: string;
+      reason: 'no-key' | 'key-invalid' | 'voice-missing' | 'quota' | 'plan';
+    };
 
 /**
  * One speech pack's state in speech:pack-status / speech:pack-state pushes
@@ -840,11 +898,11 @@ export interface SpokenLineContext {
 }
 
 /**
- * The first game the guided first moment offers (260926). Chess needs no
- * install, so it is the default; Minecraft leads only when a LAN world is
- * already open.
+ * What the guided first moment offers first (260926, 261023). Backseat (a
+ * screen share) is the default; Minecraft leads when a LAN world is already
+ * open, and chess when the model cannot see images.
  */
-export type FirstMomentGame = 'chess' | 'minecraft';
+export type FirstMomentGame = 'chess' | 'minecraft' | 'backseat';
 
 /** Options for `chatOpened` (see RendererApi.chatOpened). */
 export interface ChatOpenedOptions {
@@ -930,7 +988,9 @@ export type BotLifecycle =
   | { type: 'summon-ready' }
   // 260929: `reason` 'quit' = the companion called quit() and left on its own.
   // 261008: `nextStepHook` = that quit's goodbye carried a next_time hook.
-  | { type: 'summon-stopped'; reason?: 'quit' | 'stop' | 'error'; nextStepHook?: boolean }
+  // 261014: `nextStepLine` = that hook written to the player (Home card).
+  // 261020: `nextStepGame` = the game that plan is for (a bot game id or 'none').
+  | { type: 'summon-stopped'; reason?: 'quit' | 'stop' | 'error'; nextStepHook?: boolean; nextStepLine?: string; nextStepGame?: string }
   | { type: 'exit'; code: number | null };
 
 /** A main → renderer current-action push (bot:action). */
@@ -1313,6 +1373,57 @@ export type OAuthResult =
   // 260816 W7 region gate — `region_blocked` is returned BEFORE the browser
   // opens when the detected IP region is unsupported (fail open on unknown).
   | { ok: false; reason: 'user_cancelled' | 'timeout' | 'browser_closed' | 'google_rejected' | 'exchange_failed' | 'port_collision' | 'network' | 'region_blocked'; message: string };
+
+/**
+ * 261023 "Continue with ChatGPT" as a Sei account login
+ * (src/main/auth/chatgptAccountLogin.ts). Only these shapes cross IPC: no
+ * tokens, no ticket, no code.
+ */
+export type ChatgptLoginCodeReason = 'existing_account' | 'new_device' | 'unverified_email';
+
+export type ChatgptLoginFailure =
+  | 'region_blocked'
+  | 'cancelled'
+  | 'denied'
+  | 'timeout'
+  | 'browser_failed'
+  | 'network'
+  | 'unavailable'
+  | 'no_email'
+  | 'account_conflict'
+  | 'linked_elsewhere'
+  | 'rate_limited'
+  | 'token_rejected'
+  | 'sign_in_failed'
+  | 'invalid_code'
+  | 'code_expired'
+  | 'not_signed_in';
+
+export type ChatgptLoginResult =
+  | { ok: true; kind: 'signed_in'; created: boolean; planEnabled: boolean }
+  /** A one-time code went to the account email; redeem it with chatgptLoginVerifyCode. */
+  | { ok: true; kind: 'email_code'; emailHint: string; reason: ChatgptLoginCodeReason }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+export type ChatgptLinkResult =
+  | { ok: true; planEnabled: boolean; email: string | null }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+/**
+ * Settings "Unlink" (261023). `removed` is false when the server had no link
+ * (still a success). An older proxy without the route reports 'unavailable'.
+ */
+export type ChatgptUnlinkResult =
+  | { ok: true; removed: boolean }
+  | { ok: false; reason: ChatgptLoginFailure; message: string };
+
+export interface ChatgptLoginStatus {
+  /** This device knows the signed-in account is linked to a ChatGPT identity. */
+  linked: boolean;
+  email: string | null;
+  /** A login is waiting on its email code. */
+  awaitingCode: boolean;
+}
 
 export type DeleteAccountResult =
   | { ok: true }
@@ -2031,6 +2142,14 @@ export interface RendererApi {
    * lines. The renderer appends them to the transcript (deduped by id).
    */
   onChatMessage(cb: (push: ChatMessagePush) => void): Unsubscribe;
+  /**
+   * 261013 (T119): the Home "up next" card. For each given character id, its
+   * latest unexpired, unconsumed "Plan for next time" (or else its newest
+   * active goal). Ids with nothing to show are missing from the map.
+   */
+  homeNextSteps(characterIds: string[]): Promise<Record<string, HomeNextStep>>;
+  /** Push: a character's card may have changed (plan saved, tagged or used up). */
+  onHomeNextStepChanged(cb: (push: { characterId: string }) => void): Unsubscribe;
 
   // --- Chess minigame (260710) --- see src/shared/chessIpc.ts for the state
   // model + reveal/interrupt protocol. All methods are character-scoped (one
@@ -2124,6 +2243,8 @@ export interface RendererApi {
     sourceName: string,
     mode: BackseatMode,
     game?: BackseatGameSelection,
+    /** 261023 (analytics): what started the share. */
+    trigger?: BackseatStartTrigger,
   ): Promise<BackseatState>;
   /** 260929: a pasted game link (one game) or a search (a list). Never rejects
    *  for a lookup failure; that is a typed result. */
@@ -2134,7 +2255,9 @@ export interface RendererApi {
   backseatGameDetails(gameId: string, universeId: number): Promise<BackseatGameInfo | null>;
   backseatGetState(characterId: string): Promise<BackseatState | null>;
   /** Raise a tick. Main decides whether it becomes a spoken line. */
-  backseatTick(tick: BackseatTick): Promise<void>;
+  /** Resolves at once for every tick but the opening look ('start'), which
+   *  resolves with its outcome when its turn is over (261023). */
+  backseatTick(tick: BackseatTick): Promise<BackseatTickOutcome | undefined>;
   /** macOS only: start the bundled system-audio tap; PCM arrives on
    *  onBackseatPcm. Null when the tap cannot run on this machine. */
   backseatAudioStart(): Promise<{ sampleRate: number; channels: number } | null>;
@@ -2152,7 +2275,9 @@ export interface RendererApi {
   backseatSaveClip(characterId: string, requestId: string, webmBase64: string | null): Promise<void>;
   /** Open a saved clip in the OS player (the chat clip card's click action). */
   backseatRevealClip(clipPath: string): Promise<void>;
-  backseatEnd(characterId: string): Promise<void>;
+  /** `reason` (261023): why the share ended, for backseat_ended. Main
+   *  validates it (callEndReasons.ts); a missing one is 'unspecified'. */
+  backseatEnd(characterId: string, reason?: BackseatEndReasonArg): Promise<void>;
   onBackseatState(cb: (state: BackseatState) => void): Unsubscribe;
   onBackseatLine(cb: (l: BackseatLine & { characterId: string }) => void): Unsubscribe;
   onBackseatClipRequest(cb: (r: { characterId: string; requestId: string }) => void): Unsubscribe;
@@ -2323,6 +2448,8 @@ export interface RendererApi {
     active: boolean;
     connectedMs?: number;
     live?: boolean;
+    /** Hang-up only (261023): why the call ended, for voice_call_ended. */
+    reason?: CallEndReason;
   }): Promise<void>;
   /**
    * The call pipeline just went LIVE — ask the companion to speak first (like
@@ -2381,6 +2508,27 @@ export interface RendererApi {
   onVoiceCallEnded(cb: (push: { characterId: string }) => void): Unsubscribe;
   /** The curated voice pool (labels + vibe blurbs) for the creation picker. */
   voiceListVoices(): Promise<VoiceInfo[]>;
+  /**
+   * Voices in the user's own ElevenLabs account (261019), fetched in main with
+   * the stored key (briefly cached; `refresh` bypasses the cache). Never
+   * throws for upstream reasons: failures come back as a status.
+   */
+  voiceListOwnVoices(args?: { refresh?: boolean }): Promise<OwnVoiceList>;
+  /**
+   * Sample bytes for one of the user's own ElevenLabs voices: ElevenLabs'
+   * ready-made preview when the voice has one (fetched in main), else the
+   * picker's sample line synthesized through the user's key.
+   */
+  voiceOwnPreview(args: { voiceId: string }): Promise<ArrayBuffer>;
+  /**
+   * The close Sei pool voice that others hear for this character when its
+   * voice is the author's own ElevenLabs voice and no voice for others was
+   * chosen (261019, voiceAssign closeSharedVoiceId). Deterministic from the
+   * character, so it matches what every adopter's app rolls. `ownGender`
+   * stands in for the stored marker's gender (an own voice picked in the
+   * editor but not saved yet).
+   */
+  voiceSharedDefault(args: { characterId: string; ownGender?: string }): Promise<{ voiceId: string }>;
   /**
    * Speak the canned preview line in an arbitrary pool voice (picker).
    * `calmness` is ElevenLabs stability (clamped 0..1); omitting it keeps the
@@ -2522,6 +2670,22 @@ export interface RendererApi {
   signInGoogle(): Promise<OAuthResult>;
   cancelGoogle(): Promise<void>;
   /**
+   * 261023 "Continue with ChatGPT": sign in (or sign up) to Sei with a
+   * ChatGPT account. Opens the browser; may answer `email_code`, in which
+   * case the code from the account email goes to chatgptLoginVerifyCode.
+   */
+  signInChatgpt(): Promise<ChatgptLoginResult>;
+  chatgptLoginVerifyCode(code: string): Promise<ChatgptLoginResult>;
+  chatgptLoginResendCode(): Promise<{ ok: true } | { ok: false; reason: ChatgptLoginFailure; message: string }>;
+  cancelChatgptLogin(): Promise<void>;
+  /** Settings: link a ChatGPT account to the signed-in Sei account. */
+  linkChatgptAccount(): Promise<ChatgptLinkResult>;
+  /** Settings: unlink the signed-in Sei account's ChatGPT identity (and forget this device's registration). */
+  unlinkChatgptAccount(): Promise<ChatgptUnlinkResult>;
+  chatgptLoginStatus(): Promise<ChatgptLoginStatus>;
+  /** True once after a ChatGPT login/link that enabled plan usage. */
+  takeChatgptPlanOffer(): Promise<boolean>;
+  /**
    * 260816 W7 region gate — cached region verdict for the renderer's
    * pre-check, so the AuthPanel / SignInModal blocking popup can appear
    * immediately instead of after a failed submit. Purely advisory: the
@@ -2596,14 +2760,21 @@ export interface RendererApi {
   migrationShown(action: 'get' | 'set'): Promise<{ shown: boolean }>;
   /**
    * 260603: inspect the anonymous `local` profile for data importable into the
-   * just-signed-in account (user-created characters + onboarding answers).
+   * just-signed-in account (companions, their memories, onboarding answers).
    */
   profilePeekLocal(): Promise<PeekLocalProfileResult>;
   /**
-   * Move the `local` profile's user-created characters (+ memory/skins/portraits)
-   * and onboarding answers into the active account profile. Optional id subset.
+   * Move the `local` profile's companions (+ memory/skins/portraits) and
+   * onboarding answers into the active account profile, merging into what the
+   * account already has without replacing it. Idempotent. Optional id subset.
    */
   profileImportFromLocal(characterIds?: string[]): Promise<ImportLocalProfileResult>;
+  /**
+   * 261023: whether the own-key import was already offered to the signed-in
+   * account on this device ('get'), or record that it was ('set'). Device
+   * global, keyed by account, so "Not now" is not asked again every launch.
+   */
+  profileImportOffered(action: 'get' | 'set'): Promise<{ offered: boolean }>;
   /**
    * Open a URL in the user's default browser. Any https site is allowed (the
    * host allowlist was removed 260725); main still gates the PROTOCOL to
@@ -2766,6 +2937,22 @@ export interface RendererApi {
    */
   llmListModels(provider: string): Promise<LlmListModelsResult>;
   llmTest(provider: string, model: string): Promise<LlmTestResult>;
+  /**
+   * 261017 (issue #46): "Continue with ChatGPT" (the ChatGPT plan provider).
+   * Tokens never reach the renderer: these calls see account summaries only.
+   * `chatgptSignIn` opens the system browser and resolves when the loopback
+   * callback lands (or fails/cancels). `enablePlan` re-asks consent for plan
+   * usage on an account that signed in without it.
+   */
+  chatgptStatus(): Promise<ChatgptStatus>;
+  chatgptSignIn(opts?: { accountId?: string | null; enablePlan?: boolean }): Promise<ChatgptSignInResult>;
+  chatgptCancelSignIn(): Promise<void>;
+  chatgptSignOut(accountId?: string): Promise<ChatgptSignOutResult>;
+  chatgptSwitchAccount(accountId: string): Promise<ChatgptStatus>;
+  chatgptDismissWelcome(): Promise<ChatgptStatus>;
+  /** "Try again" after a usage limit: lifts the pause (the next call probes). */
+  chatgptClearLimit(): Promise<ChatgptStatus>;
+  onChatgptStatus(cb: (s: ChatgptStatus) => void): Unsubscribe;
   /** Pull the current config-derived LLM vision capability (seed; the
    * llm:capability push keeps it current afterwards). */
   getLlmCapability(): Promise<LlmCapability>;
@@ -2975,12 +3162,30 @@ export interface ScopeChangedEvent {
 
 /** Result of inspecting the `local` profile for importable data (260603). */
 export interface PeekLocalProfileResult {
-  /** Non-default, user-created character ids present in the local profile. */
+  /**
+   * Companions in the local profile's roster that the import brings across:
+   * the player's own (made without an account) plus World companions and the
+   * former defaults (Sui, Lyra, Marv) they had added (261023).
+   */
   migratableCharacterIds: string[];
+  /**
+   * Companions that are not in the local roster but still have memories
+   * there (removed from the library, memories kept). Their memories are
+   * merged too; they are not added back to the roster (261023).
+   */
+  memoryOnlyCharacterIds: string[];
   mcUsername: string | null;
   preferredName: string | null;
   /** True when there is anything worth offering to import. */
   hasData: boolean;
+  /** True when there are companions or memories to bring (not only the onboarding answers). */
+  hasCompanionData: boolean;
+  /**
+   * Of the ids above: the Sui the first-run scene seeded that the player never
+   * chatted or played with (no memory entry, no transcript row of theirs).
+   * She alone does not earn the boot offer or the Settings row (261023).
+   */
+  untouchedSeedIds: string[];
 }
 
 /** Result of importing the `local` profile into the signed-in account (260603). */
@@ -3034,12 +3239,20 @@ export interface UpdateDownloadedEvent {
    * `forced`; absent/false on the optional consented flow.
    */
   onRestart?: boolean;
+  /** The downloaded version (from electron-updater's UpdateInfo), when known. */
+  version?: string;
 }
 
 /** Post-update "what's new" changelog shown on the next launch (Flow D). */
 export interface WhatsNewEvent {
   version: string;
   changelog: string;
+  /**
+   * True when the user already read this changelog before accepting the
+   * update (optional flow). The renderer shows a small "Updated to vX" toast
+   * with the top changelog line instead of the full what's-new modal.
+   */
+  brief?: boolean;
 }
 
 /**
@@ -3138,6 +3351,18 @@ export const IpcChannel = {
    * the config-derived vision capability of the active chat backend
    * (push on change + pull to seed, the lan.state/lan.get pattern).
    */
+  /** 261017 (issue #46): ChatGPT plan sign-in + status. */
+  chatgpt: {
+    status: 'chatgpt:status',
+    signIn: 'chatgpt:sign-in',
+    cancelSignIn: 'chatgpt:cancel-sign-in',
+    signOut: 'chatgpt:sign-out',
+    switchAccount: 'chatgpt:switch-account',
+    dismissWelcome: 'chatgpt:dismiss-welcome',
+    clearLimit: 'chatgpt:clear-limit',
+    /** main -> renderer push (CHATGPT_STATUS_CHANNEL in main/chatgptPlan). */
+    statusChanged: 'chatgpt:status-changed',
+  },
   llm: {
     listModels: 'llm:list-models',
     test: 'llm:test',
@@ -3270,6 +3495,13 @@ export const IpcChannel = {
     message: 'chat:message',
     /** Pull: last chat line per character for roster previews (ChatPreview). */
     previews: 'chat:previews',
+  },
+  // 261013 (T119): the Home "up next" card (src/main/homeNextStep.ts).
+  home: {
+    /** Invoke: characterIds string[] -> Record<id, HomeNextStep>. */
+    nextSteps: 'home:next-steps',
+    /** Push (main -> renderer): {characterId}, the card may have changed. */
+    nextStepChanged: 'home:next-step-changed',
   },
   // Chess minigame (260710) — request/response pairs are character-scoped;
   // `state` and `download` are pushes (main → renderer). Protocol details in
@@ -3421,6 +3653,12 @@ export const IpcChannel = {
     callEnded: 'voice:call-ended',
     /** Invoke: curated voice pool for the creation picker → VoiceInfo[]. */
     list: 'voice:list',
+    /** Invoke: the user's own ElevenLabs voices → OwnVoiceList (261019). */
+    ownList: 'voice:own-list',
+    /** Invoke: sample bytes for one own voice ({voiceId}) → ArrayBuffer (261019). */
+    ownPreview: 'voice:own-preview',
+    /** Invoke: default voice for others on an own-voice character ({characterId, ownGender?}) → {voiceId} (261019). */
+    sharedDefault: 'voice:shared-default',
     /** Invoke: preview an arbitrary pool voice ({voiceId}) → ArrayBuffer. */
     preview: 'voice:preview',
     /** Invoke: can voice samples synthesize right now? → boolean (260720). */
@@ -3604,6 +3842,15 @@ export const IpcChannel = {
     signupPassword: 'auth:signup-password',
     signinGoogle: 'auth:signin-google',
     cancelGoogle: 'auth:cancel-google',
+    // 261023 "Continue with ChatGPT" account login.
+    signinChatgpt: 'auth:signin-chatgpt',
+    chatgptVerifyCode: 'auth:chatgpt-verify-code',
+    chatgptResendCode: 'auth:chatgpt-resend-code',
+    cancelChatgpt: 'auth:cancel-chatgpt',
+    linkChatgpt: 'auth:link-chatgpt',
+    unlinkChatgpt: 'auth:unlink-chatgpt',
+    chatgptLoginStatus: 'auth:chatgpt-login-status',
+    chatgptTakePlanOffer: 'auth:chatgpt-take-plan-offer',
     signout: 'auth:signout',
     deleteAccount: 'auth:delete-account',
     exportData: 'auth:export-data',
@@ -3663,6 +3910,7 @@ export const IpcChannel = {
   profile: {
     peekLocal: 'profile:peek-local',
     importFromLocal: 'profile:import-from-local',
+    importOffered: 'profile:import-offered',
   },
   // Phase 12 — Browse + moderation + reports.
   //   list                  — paged listing of public moderation-clean

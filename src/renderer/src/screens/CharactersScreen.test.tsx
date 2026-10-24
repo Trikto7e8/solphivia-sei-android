@@ -200,6 +200,31 @@ describe('CharactersScreen (B4 Home / World refactor)', () => {
     expect(homeCss.includes('.dormant {')).toBe(true);
   });
 
+  it('Test 13c: panel text sits on a dark --art-ink bed in every theme (261023)', () => {
+    // "Sui" vanished on her pale portrait: the old bottom wash was a mix of
+    // --bg, which is LIGHT on the light themes and too thin on midnight, under
+    // a name that is light (--art-fg) in every theme.
+    const homeCss = readFileSync(HOME_CSS, 'utf-8');
+    const tokens = readFileSync(
+      resolve(REPO_ROOT, 'src', 'renderer', 'src', 'styles', 'tokens.css'),
+      'utf-8',
+    );
+    // Every block that sets --art-fg also sets the ink that goes under it.
+    const fg = tokens.match(/--art-fg:/g)?.length ?? 0;
+    const ink = tokens.match(/--art-ink:/g)?.length ?? 0;
+    expect(fg).toBeGreaterThan(0);
+    expect(ink).toBe(fg);
+    // The bed lives on the info block (so it grows with the hover reveal) and
+    // is built from --art-ink, not --bg.
+    const bed = homeCss.slice(homeCss.indexOf('.info::before {'));
+    expect(homeCss.includes('.info::before {')).toBe(true);
+    expect(bed.slice(0, bed.indexOf('}\n')).includes('var(--art-ink)')).toBe(true);
+    // The panel scrim keeps only its top wash: no --bg bottom stop under the name.
+    const scrim = homeCss.slice(homeCss.indexOf('.panelScrim {'));
+    expect(scrim.slice(0, scrim.indexOf('}\n')).includes('calc(100% - 140px)')).toBe(false);
+    expect(homeCss.includes(":root[data-scheme='dark'] .panelScrim")).toBe(false);
+  });
+
   it('Test 14: Home filter uses added_default_ids (defaults hidden unless invited)', () => {
     // The rule lives in the shared countsAsHomeSlot predicate now; homeLibrary
     // and CharactersScreen must carry no trace of the old removed_default_ids.

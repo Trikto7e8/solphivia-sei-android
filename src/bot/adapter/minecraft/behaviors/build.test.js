@@ -151,10 +151,12 @@ describe('buildAction — walks to out-of-reach cells (260709)', () => {
   it('builds all four walls when the walk step can move the bot', async () => {
     const { bot, blocks } = makeWorld()
     wirePlaceMock(bot, blocks)
-    // Walk mock: teleport the bot next to the requested column (1.5 blocks
-    // south so it never stands inside the wall cell).
+    // Walk mock: teleport the bot next to the requested column, one block
+    // inside the ring so it never stands inside a wall cell (261019: a body
+    // in a cell is now reported instead of attempted).
+    const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v))
     const walkMock = vi.fn(async (b, x, y, z) => {
-      b.entity.position = new Vec3(x + 0.5, 68, z + 2)
+      b.entity.position = new Vec3(clamp(x, -37, -33) + 0.5, 68, clamp(z, -31, -27) + 0.5)
       return 'reached'
     })
     const r = await buildAction(
@@ -251,12 +253,14 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
       inventory: { items: () => (stock > 0 ? [{ name: 'dirt', count: stock }] : []) },
       blockAt(p) {
         const name = blocks.get(`${p.x},${p.y},${p.z}`)
-        return name ? { name, position: p } : { name: 'air', position: p }
+        if (!name) return { name: 'air', position: p, boundingBox: 'empty' }
+        return { name, position: p, boundingBox: name === 'water' ? 'empty' : 'block' }
       },
       equip: async () => {},
       look: async () => {},
       setControlState(control, on) {
         if (control !== 'jump' || !on) return
+        if (bot._inWater) return // standing on the bottom of a pool, a jump does not lift the feet clear
         bot.entity.onGround = false
         bot.entity.position = new Vec3(0.5, Math.floor(bot.entity.position.y) + 1.2, 0.5)
       },
@@ -301,6 +305,125 @@ describe('buildAction — direction:"below" pillars up under the bot', () => {
     }
     const r = await buildAction({ direction: 'below', count: 4, block: 'dirt' }, bot, { signal: ac.signal })
     expect(r).toBe('aborted after pillaring up 1 of 4')
+  })
+
+  // 261011: quality eval 2026-10-11 (gather_craft). Standing on the bottom of
+  // water, the feet cell (water) counted as already placed and the bot never
+  // left the ground, so the loop spun on resolved promises, starved the event
+  // loop, and the server timed the bot out. It must come back with a result.
+  it('standing in water: does not count the water as a placed block, and returns', async () => {
+    const { bot, blocks } = pillarBot()
+    bot._inWater = true
+    blocks.set('0,64,0', 'water')
+    bot.placeBlock = async () => { throw new Error('no block update') }
+    const ticks = { n: 0 }
+    const iv = setInterval(() => { ticks.n++ }, 10)
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    clearInterval(iv)
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold place failed: you are in water, where a jump does not clear the cell under you. Get onto dry ground first')
+    expect(ticks.n).toBeGreaterThan(0) // timers kept running while it tried
+  })
+
+  it('a block that lands but leaves the feet where they were ends the climb instead of looping', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,64,0', 'water')
+    bot.setControlState = (control, on) => {
+      if (control !== 'jump' || !on) return
+      bot.entity.onGround = false
+      bot.entity.position = new Vec3(0.5, 64.8, 0.5)
+    }
+    // The block lands, but the server puts the bot back where it was.
+    bot.placeBlock = async () => {
+      blocks.set('0,64,0', 'dirt')
+      bot.entity.position = new Vec3(0.5, 64, 0.5)
+      bot.entity.onGround = true
+    }
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold place failed: the block went down but you did not rise onto it')
+  })
+
+  // 261017 (pass 12), errands eval: she stood on the EDGE of a block with
+  // her feet column over her own shaft, and the pillar came back "no solid
+  // floor below". It now steps onto the block holding her up and pillars.
+  it('standing off-centre over a gap: steps onto the supporting block and pillars from there', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.delete('0,63,0') // the shaft under her feet column
+    bot.entity.position = new Vec3(0.75, 64, 0.5) // hitbox reaches into x=1
+    bot.lookAt = async () => {}
+    const moves = []
+    bot.setControlState = (control, on) => {
+      if (control === 'forward' && on) { moves.push('forward'); bot.entity.position = new Vec3(1.5, 64, 0.5); return }
+      if (control !== 'jump' || !on) return
+      bot.entity.onGround = false
+      const p = bot.entity.position
+      bot.entity.position = new Vec3(p.x, Math.floor(p.y) + 1.2, p.z)
+    }
+    bot.placeBlock = async (ref) => {
+      const cellY = ref.position.y + 1
+      blocks.set(`${ref.position.x},${cellY},${ref.position.z}`, 'dirt')
+      bot.entity.position = new Vec3(ref.position.x + 0.5, cellY + 1, ref.position.z + 0.5)
+      bot.entity.onGround = true
+    }
+    const r = await buildAction({ direction: 'below', count: 2, block: 'dirt' }, bot, {})
+    expect(moves.length).toBeGreaterThan(0)
+    expect(r).toBe('pillared up 2 blocks (standing at y=66)')
+    expect(blocks.get('1,64,1')).toBeUndefined()
+    expect(blocks.get('1,64,0')).toBe('dirt')
+  })
+
+  it('off-centre with nothing solid under any part of her: still says no floor', async () => {
+    const { bot, blocks } = pillarBot()
+    for (const k of [...blocks.keys()]) blocks.delete(k)
+    bot.entity.position = new Vec3(0.75, 64, 0.5)
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold failed: no solid floor below')
+  })
+
+  // 261017: a block right above her head. The jump cannot lift her, and the
+  // old result was a bare "could not place block under feet".
+  it('no head room: says which block is over her head, without jumping', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,66,0', 'dirt')
+    let jumps = 0
+    const set = bot.setControlState
+    bot.setControlState = (c, on) => { if (c === 'jump' && on) jumps++; return set(c, on) }
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toBe('could not pillar up, you did not rise and are still at 0,64,0: scaffold failed: no head room. There is dirt at 0,66,0 right above your head, ' +
+      'so you cannot jump to put a block under you. Dig that block out first, or move to a spot with open space above')
+    expect(jumps).toBe(0)
+  })
+
+  it('no head room under a built ceiling: does not tell her to dig it', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.set('0,66,0', 'oak_planks')
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, {})
+    expect(r).toMatch(/There is oak_planks at 0,66,0 right above your head/)
+    expect(r).toMatch(/you do not dig through builds/)
+    expect(r).not.toMatch(/Dig that block out/)
+  })
+
+  // Review: the step onto the supporting block stops on abort, and leaves
+  // the controls alone when a reflex has taken the body.
+  it('the off-centre step stops on abort and does not clear a reflex flee', async () => {
+    const { bot, blocks } = pillarBot()
+    blocks.delete('0,63,0')
+    bot.entity.position = new Vec3(0.75, 64, 0.5)
+    bot.lookAt = async () => {}
+    const ac = new AbortController()
+    const calls = []
+    bot.setControlState = (control, on) => {
+      calls.push([control, on])
+      if (control === 'forward' && on) {
+        // The step is under way when a creeper reflex takes over.
+        bot._seiReflexActive = true
+        ac.abort()
+      }
+    }
+    const t0 = Date.now()
+    const r = await buildAction({ direction: 'below', count: 1, block: 'dirt' }, bot, { signal: ac.signal })
+    expect(Date.now() - t0).toBeLessThan(600)
+    expect(r).toMatch(/^aborted/)
+    expect(calls).not.toContainEqual(['forward', false])
   })
 })
 
@@ -427,5 +550,138 @@ describe('buildAction — the builder FOLLOWS its own work (260803)', () => {
 
     expect(walk).not.toHaveBeenCalled()
     expect(r).toContain('4 placed')
+  })
+})
+
+// 261012 — quality eval build_shelter. Walls one layer above the ground
+// float: no cell has a block under or beside it. The old result said "could
+// not reach or place them, walk near and call build again", which sent the
+// model back to the same floating span. A solid roof built from the middle
+// out also failed its inner cells, which have no neighbor until the edge
+// cells are down.
+describe('buildAction — cells with nothing to place against (261012)', () => {
+  it('says the span is floating and names the layer to start on, without walking or placing', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    const walkMock = vi.fn(async () => 'reached')
+    // Ground is y=67 and the bot stands at 68; this wall starts at 69.
+    const r = await buildAction(
+      { from: { x: -40, y: 69, z: -34 }, to: { x: -36, y: 71, z: -30 }, block: 'oak_planks', hollow: true },
+      bot, {}, { goTo: walkMock },
+    )
+    expect(r).toMatch(/^built 0 placed, 48 cells FAILED/)
+    expect(r).toContain('48 of them had nothing to place against')
+    expect(r).toContain('the ground under them is at y=67, so start the span at y=68')
+    expect(placeBlockAction).not.toHaveBeenCalled()
+    expect(walkMock).not.toHaveBeenCalled()
+  })
+
+  it('a flat floating span gets no ground hint (it may be a walkway over a gap)', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    const r = await buildAction(
+      { from: { x: -40, y: 75, z: -34 }, to: { x: -38, y: 75, z: -34 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toContain('3 of them had nothing to place against')
+    expect(r).not.toContain('ground under them')
+    expect(r).toContain('a walkway starts at the block under your own feet')
+  })
+
+  it('fills a solid roof from its edges inward instead of failing the middle', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    // 5x5 walls, 3 high, already standing; the bot is inside at the center.
+    for (const c of enumerateBuildCells({ x: -38, y: 68, z: -32 }, { x: -34, y: 70, z: -28 }, true)) {
+      blocks.set(`${c.x},${c.y},${c.z}`, 'oak_planks')
+    }
+    bot.entity.position = new Vec3(-35.5, 68, -29.5)
+    const r = await buildAction(
+      { from: { x: -38, y: 71, z: -32 }, to: { x: -34, y: 71, z: -28 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toBe('built 25 placed, 0 skipped (already solid), of 25 cells')
+    for (let x = -38; x <= -34; x++) for (let z = -32; z <= -28; z++) expect(blocks.get(`${x},71,${z}`)).toBe('oak_planks')
+  })
+})
+
+describe('buildAction — grass and snow are built over, not counted as solid (261012)', () => {
+  it('places into grass tufts and never uses one as the face to place against', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    blocks.set('-38,68,-32', 'short_grass')
+    blocks.set('-37,68,-32', 'tall_grass')
+    blocks.set('-36,68,-32', 'snow')
+    const r = await buildAction(
+      { from: { x: -38, y: 68, z: -32 }, to: { x: -36, y: 68, z: -32 }, block: 'oak_planks' },
+      bot, {}, { goTo: vi.fn(async () => 'reached') },
+    )
+    expect(r).toBe('built 3 placed, 0 skipped (already solid), of 3 cells')
+    for (const x of [-38, -37, -36]) expect(blocks.get(`${x},68,-32`)).toBe('oak_planks')
+    // Every place went against the sand below, not a plant beside it.
+    for (const call of placeBlockAction.mock.calls) expect(call[0].against.y).toBe(67)
+  })
+})
+
+// 261019 (quality pass 19): she retried the same 1-cell build three times
+// with "0 placed, could not reach or place" while a body stood in the cell.
+describe('buildAction: a body in the cell (261019)', () => {
+  it('names who stands in the cell instead of "could not reach or place"', async () => {
+    const { bot, blocks } = makeWorld()
+    wirePlaceMock(bot, blocks)
+    bot.entities = { 7: { id: 7, type: 'player', username: 'Alex', position: new Vec3(-37.5, 68, -31.5), width: 0.6, height: 1.8 } }
+    const walkMock = vi.fn(async () => 'reached')
+    bot.entity.position = new Vec3(-36.5, 68, -30.5)
+    const r = await buildAction(
+      { from: { x: -38, y: 68, z: -32 }, to: { x: -38, y: 68, z: -32 }, block: 'oak_planks' },
+      bot, {}, { goTo: walkMock },
+    )
+    expect(r).toContain('1 cells FAILED')
+    expect(r).toContain('had Alex standing in them')
+    expect(r).not.toContain('could not reach or place them')
+  })
+
+  it('bodyInCell: herself, a player, and not a dropped item', async () => {
+    const { bodyInCell } = await import('./build.js')
+    const bot = { entity: { position: new Vec3(0.5, 64, 0.5) }, entities: {} }
+    expect(bodyInCell(bot, { x: 0, y: 65, z: 0 })).toBe('you')
+    expect(bodyInCell(bot, { x: 0, y: 66, z: 0 })).toBe(null)
+    bot.entities = { 2: { type: 'object', name: 'item', position: new Vec3(3.5, 64, 0.5) }, 3: { type: 'player', username: 'Alex', position: new Vec3(5.5, 64, 0.5) } }
+    expect(bodyInCell(bot, { x: 3, y: 64, z: 0 })).toBe(null)
+    expect(bodyInCell(bot, { x: 5, y: 64, z: 0 })).toBe('Alex')
+  })
+})
+
+// 261019 (pass 19): shelter builds one part from several block kinds, so a
+// short kind places what it has and says it ran out instead of refusing.
+describe('buildAction: partial mode (261019)', () => {
+  function countedBot(n) {
+    const { bot, blocks } = makeWorld()
+    let left = n
+    bot.inventory = { items: () => (left > 0 ? [{ name: 'oak_planks', count: left }] : []) }
+    wirePlaceMock(bot, blocks)
+    const inner = placeBlockAction.getMockImplementation()
+    placeBlockAction.mockImplementation(async (args) => {
+      const r = await inner(args)
+      if (r.startsWith('placed')) left--
+      return r
+    })
+    bot.entity.position = new Vec3(-37.5, 68, -31.5)
+    return bot
+  }
+  const span = { from: { x: -40, y: 68, z: -32 }, to: { x: -36, y: 68, z: -32 }, block: 'oak_planks' }
+
+  it('without partial, refuses up front when short', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached') })
+    expect(placeBlockAction).not.toHaveBeenCalled()
+    expect(r).toMatch(/oak_planks/)
+  })
+
+  it('with partial, places what she has and reports running out', async () => {
+    const bot = countedBot(3)
+    const r = await buildAction(span, bot, {}, { goTo: vi.fn(async () => 'reached'), partial: true })
+    expect(placeBlockAction).toHaveBeenCalledTimes(3)
+    expect(r).toMatch(/^built 3 of ~5 needed, then ran out of oak_planks/)
   })
 })

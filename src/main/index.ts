@@ -19,7 +19,7 @@
 // MUST stay the first import: refuses --remote-debugging-* / --inspect* /
 // --js-flags in packaged stable builds before anything else evaluates.
 import './remoteDebugGuard';
-import { app, BrowserWindow, session, systemPreferences } from 'electron';
+import { app, BrowserWindow, net, session, systemPreferences } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { closeSplashWindow, createMainWindow, createSplashWindow } from './windowChrome';
@@ -33,11 +33,32 @@ import { createMinecraftGameModule } from './games/minecraft';
 import { createDontStarveGameModule } from './games/dontstarve';
 import { createStardewGameModule } from './games/stardew';
 import type { GameId, WorldState, WorldStates } from '../shared/gameIpc';
-import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls } from './voice/callState';
+import { isCallActive, wasCallRecentlyActive, activeCallIds, clearAllCalls, liveCallsNow } from './voice/callState';
 import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
-import { consumeGoodbye, gameEndHookProps, callEndHookProps } from './sessionGoodbye';
+import { consumeGoodbye, gameEndHookProps, callEndHookProps, goodbyePlanPlace } from './sessionGoodbye';
+import { endCallsForAccountSwitch } from './voice/accountSwitchCalls';
+import {
+  bindPlayerEndRuntime,
+  clearSessionDigest,
+  isPlayerEndedGame,
+  noteSessionDigest,
+  startPlayerEndNextStep,
+  takeSessionDigest,
+  yieldToNewSession,
+} from './playerEndNextStep';
+import { bindHomeNextStepNotifier, consumeNextStep, noteHomeNextStepChanged, readPendingPlan, tagLatestPlan } from './homeNextStep';
+import { readPlayerLineNames } from './playerLineNames';
+import {
+  LAUNCH_DELAY_MS,
+  bindQuitNextStepRuntime,
+  callDigestFromRows,
+  noteNewSessionForQuit,
+  persistQuitSession,
+  refreshQuitDigest,
+  runPendingQuitNextSteps,
+} from './quitNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
 import { initNotices } from './notices';
@@ -54,7 +75,8 @@ import {
   publishGameDashboardSnapshot,
   clearGameDashboard,
 } from './games/gameDashboardService';
-import { IpcChannel, forgeHostBlock, FORGE_HOST_BLOCKED, type LanState, type BotStatus, type LogBatch, type WizardProgressEvent, type ExpansionProgressEvent, type GenProgressEvent, type VisionCapability, type ChatMessage, type SpokenLineContext } from '../shared/ipc';
+import { createMcSessionReporter } from './mcActionTelemetry';
+import { IpcChannel, lanHostWarning, forgeHostBlock, FORGE_HOST_BLOCKED, type LanState, type BotStatus, type LogBatch, type WizardProgressEvent, type ExpansionProgressEvent, type GenProgressEvent, type VisionCapability, type ChatMessage, type SpokenLineContext } from '../shared/ipc';
 
 // Lock the app name early so app.getPath('userData') resolves to
 // "Sei" (packaged) or "Sei Dev" (electron-vite dev) — keeping dev state
@@ -84,9 +106,17 @@ registerPortraitScheme();
 // documented path, and the day Chromium fixes it macOS gains audio with no code
 // change. Until then macOS falls back to a virtual audio device if the player
 // has one (see captureController.findLoopbackDevice), else video-only.
+// 261024: every enable-features flag goes in this ONE switch. Chromium keeps
+// only the last value of a repeated switch, so the SharedArrayBuffer switch
+// that used to be appended separately below silently dropped these two.
+// SharedArrayBuffer (voice calls, 260705): lets the local Whisper dictation
+// (onnxruntime WASM in a worker) run multi-threaded. Chromium normally gates
+// SAB behind cross-origin isolation (COOP/COEP headers), which our
+// file://-served renderer can't opt into; the flag re-exposes it. Safe here:
+// the renderer only loads our own bundled content. Must be set before ready.
 app.commandLine.appendSwitch(
   'enable-features',
-  'MacSckSystemAudioLoopbackOverride,MacLoopbackAudioForScreenShare',
+  'MacSckSystemAudioLoopbackOverride,MacLoopbackAudioForScreenShare,SharedArrayBuffer',
 );
 
 const logger = {
@@ -143,9 +173,12 @@ function rendererTarget(): string {
   return path.join(__dirname, '../renderer/index.html');
 }
 
-/** Account switch (260926): close every open call from main (see accountSwitchCalls.ts). */
-async function endVoiceCallsForAccountSwitch(reason: string): Promise<void> {
-  const { endCallsForAccountSwitch } = await import('./voice/accountSwitchCalls');
+/** Account switch (260926): close every open call from main (see accountSwitchCalls.ts).
+ *  261023: also the quit and renderer-gone paths, with their own reason. */
+async function endVoiceCallsFromMain(reason: string): Promise<void> {
+  // Static import: endCallsForAccountSwitch closes the calls synchronously
+  // before its first await, which the renderer sweep below relies on (it
+  // clears the call flags right after).
   await endCallsForAccountSwitch(reason, {
     setVoiceCall: (id, onCall) => supervisor?.setVoiceCall(id, onCall),
     closeOverlay: closeCallOverlay,
@@ -161,7 +194,13 @@ async function endVoiceCallsForAccountSwitch(reason: string): Promise<void> {
  * to resume normal in-game chat; without this a mid-call reload leaves the
  * bot muted in minecraft chat forever.
  */
-function sweepVoiceCalls(): void {
+function sweepVoiceCalls(reason: 'window_closed' | 'renderer_gone' | 'renderer_reload'): void {
+  // 261023: the calls this renderer was driving end here, and its hang-up
+  // report never comes, so voice_call_ended (and the call row) used to be
+  // lost for every call that ended this way. Main closes them first with the
+  // reason, the same path as an account switch, then clears the flags.
+  // Runs synchronously up to its first await (see endVoiceCallsFromMain).
+  if (activeCallIds().length > 0) void endVoiceCallsFromMain(reason).catch(() => {});
   for (const id of activeCallIds()) supervisor?.setVoiceCall(id, false);
   clearAllCalls();
   // The overlay belongs to the call the (now-gone) renderer was driving.
@@ -171,7 +210,7 @@ function sweepVoiceCalls(): void {
   // taken the session's eyes with it. Leaving the session open would keep
   // main waiting on ticks that can never arrive.
   void import('./backseat/backseatService')
-    .then((m) => m.clearAllBackseat())
+    .then((m) => m.clearAllBackseat(reason))
     .catch(() => {});
 }
 
@@ -181,6 +220,9 @@ function sweepVoiceCalls(): void {
 function wireMainWindowEvents(win: BrowserWindow): void {
   win.on('closed', () => {
     if (mainWindow === win) mainWindow = null;
+    // macOS keeps the app running when the last window closes; the call and
+    // the share died with the window, so close them with that reason.
+    sweepVoiceCalls('window_closed');
   });
   // Replay latest LAN state on did-finish-load so freshly-loaded renderer is in sync.
   win.webContents.on('did-finish-load', () => {
@@ -191,8 +233,8 @@ function wireMainWindowEvents(win: BrowserWindow): void {
       }
     }
   });
-  win.webContents.on('did-navigate', sweepVoiceCalls);
-  win.webContents.on('render-process-gone', sweepVoiceCalls);
+  win.webContents.on('did-navigate', () => sweepVoiceCalls('renderer_reload'));
+  win.webContents.on('render-process-gone', () => sweepVoiceCalls('renderer_gone'));
 }
 
 function broadcastLan(state: LanState): void {
@@ -290,6 +332,8 @@ async function appendChatMessage(characterId: string, message: ChatMessage): Pro
 // <game> for Y" system row into that character's chat transcript. First-online
 // wins so a mid-session backend-switch re-emit doesn't reset the clock.
 const playStartedAt = new Map<string, { at: number; game: GameId }>();
+/** 261011: Minecraft per-action outcome telemetry (mcActionTelemetry.ts). */
+const mcSessionReporter = createMcSessionReporter(capture);
 /** 260926: boot-phase props of the last summon-ready, consumed by the first-online capture. */
 const pendingBootProps = new Map<string, Record<string, number | string | null>>();
 
@@ -411,6 +455,25 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
   // Tracked (260926): an account switch stops the bots and then drains
   // this, so the row lands in the outgoing account's transcript.
   void trackScopedWrite(emitPlaySession(id, durationMs, started.game)).catch(() => {});
+  // 261011: Minecraft per-action outcome telemetry. This function runs once
+  // per live session for every end path (stop, quit(), kick/error, crash exit,
+  // app quit, account switch), so mc_session_actions goes out exactly once;
+  // its compact summary also rides on bot_session_ended.
+  const actionSummary = started.game === 'minecraft' ? mcSessionReporter.close(id, end.reason) : {};
+  const digest = takeSessionDigest(id);
+  const goodbye = consumeGoodbye(id, 'game');
+  // 261013 (T119): the companion's goodbye left a plan, so record that it came
+  // from this game for the Home "up next" card (homeNextStep.ts).
+  if (goodbye.nextStepHook) {
+    // 261020: or from the game its goodbye named (goodbyePlanPlace).
+    updateHomeNextStep(id, async (dir) =>
+      tagLatestPlan(dir, {
+        ...goodbyePlanPlace({ surface: 'game', game: started.game }, goodbye.nextStepGame),
+        line: goodbye.nextStepLine ?? null,
+        names: await readPlayerLineNames(id),
+      }),
+    );
+  }
   // One event name across games (the analytics dashboard sums playtime by
   // event name, keyed on `duration_ms`); `game` is the split.
   capture('bot_session_ended', {
@@ -418,14 +481,82 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
     duration_ms: durationMs,
     duration_s: durationS,
     game: started.game,
+    ...actionSummary,
     ...end,
     // 261008: did the companion's goodbye set up a next session (retention).
-    ...gameEndHookProps(consumeGoodbye(id, 'game')),
+    ...gameEndHookProps(goodbye),
   });
   // Deliberately no duration_ms: not a playtime event (not in SESSION_EVENTS),
   // and the ended event above already counts this time.
   if (failed) {
     capture('bot_session_failed', { character_id: id, duration_s: durationS, game: started.game, ...end });
+  }
+  // 261013 (T120): the app is quitting, so there is no time for the
+  // player-end check below. Keep what it needs (synchronous, a few KB, never
+  // throws) and run it on the next launch (quitNextStep.ts). Skipped when a
+  // goodbye already ended the session or set up a plan.
+  if (end.reason === 'app_quit' && !goodbye.companionEnded && !goodbye.nextStepHook) {
+    persistQuitSession({
+      characterId: id,
+      surface: 'game',
+      game: started.game,
+      durationMs,
+      endedAt: Date.now(),
+      ...(digest ? { digest } : {}),
+    });
+  }
+  // 261011: the player ended it (Stop, closed the world), so no goodbye turn
+  // set up a next session. One small background check after teardown decides
+  // if there is a plan worth saving (playerEndNextStep.ts). Fire and forget:
+  // it never delays this close, the bot's exit or the next summon.
+  if (isPlayerEndedGame(end.reason)) {
+    const gameName = getGameModule(started.game)?.displayName ?? started.game;
+    void startPlayerEndNextStep({
+      characterId: id,
+      surface: 'game',
+      game: started.game,
+      activity: `playing ${gameName} with the player`,
+      durationMs,
+      lines: digest?.lines ?? [],
+      playerLines: digest?.playerLines ?? 0,
+      goalsGame: started.game,
+    }).catch(() => {});
+  }
+}
+
+/**
+ * 261013 (T119): Home "up next" card bookkeeping (homeNextStep.ts) on the
+ * character's memory dir, fire and forget. Tracked like the closing rows so
+ * an account switch waits for it before the scope moves; a write that
+ * changed something tells the renderer to re-read the card.
+ */
+function updateHomeNextStep(id: string, run: (memoryDir: string) => Promise<boolean>): void {
+  void trackScopedWrite(import('./paths').then(({ paths }) => run(paths.memoryDir(id))))
+    .then((changed) => {
+      if (changed) noteHomeNextStepChanged(id);
+    })
+    .catch(() => {});
+}
+
+/**
+ * 261011: a voice call the player hung up, outside a game session (an in-game
+ * call is covered by that session's own end). The call's lines are the voice
+ * rows of the chat transcript inside the call window.
+ */
+async function startCallNextStep(id: string, connectedMs: number): Promise<void> {
+  try {
+    const { readRecent } = await import('./chat/chatStore');
+    const call = callDigestFromRows(await readRecent(id, 80), Date.now() - connectedMs - 30_000);
+    await startPlayerEndNextStep({
+      characterId: id,
+      surface: 'call',
+      activity: 'a voice call',
+      durationMs: connectedMs,
+      lines: call.lines,
+      playerLines: call.playerLines,
+    });
+  } catch {
+    /* best-effort, never surfaces */
   }
 }
 
@@ -437,6 +568,20 @@ function closePlaySession(id: string, end: SessionEndProps, failed: boolean): vo
  */
 function endAllPlaySessionsForQuit(): void {
   for (const id of [...playStartedAt.keys()]) closePlaySession(id, { reason: 'app_quit' }, false);
+}
+
+/**
+ * 261013 (T120): an out-of-game voice call still live at quit gets the same
+ * deferred "next time" check as a game session (quitNextStep.ts). Its lines
+ * are already in the chat transcript, so only the call window is kept.
+ * Synchronous and never throws; an in-game call rides that game's session.
+ */
+function persistCallsForQuit(): void {
+  const now = Date.now();
+  for (const c of liveCallsNow(now)) {
+    if (onlineIds.has(c.characterId) || playStartedAt.has(c.characterId)) continue;
+    persistQuitSession({ characterId: c.characterId, surface: 'call', durationMs: c.connectedMs, endedAt: now });
+  }
 }
 
 function broadcastStatus(status: BotStatus): void {
@@ -465,6 +610,9 @@ function broadcastStatus(status: BotStatus): void {
   // Track online-ness for chat routing (only route to a spawned bot).
   if (status.kind === 'online') onlineIds.add(id);
   else onlineIds.delete(id);
+  // 261011: a new session starting yields the machine to it: a player-end
+  // check still running on a local model for this character is aborted.
+  if (status.kind === 'connecting' || status.kind === 'online') yieldToNewSession(id);
   // Play-session bookkeeping: stamp first-online, and on the terminal
   // idle/error post a "played for X" row (only if the bot was actually live).
   if (status.kind === 'online') {
@@ -474,6 +622,21 @@ function broadcastStatus(status: BotStatus): void {
     if (!playStartedAt.has(id)) {
       const game: GameId = status.game ?? 'minecraft';
       playStartedAt.set(id, { at: Date.now(), game });
+      clearSessionDigest(id); // 261011: nothing from an earlier session
+      // 261013 (T120): this greeting moved on from an app-quit session.
+      noteNewSessionForQuit(id);
+      // 261013 (T119): this session's first-spawn greeting is told about the
+      // saved plan, so the Home card stops offering it. 261020: unless the
+      // plan is for a different game (that greeting was not told about it).
+      updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
+      if (game === 'minecraft') {
+        const lanHost = latestLanState.kind === 'open' ? latestLanState.host : undefined;
+        const hostWarning = lanHostWarning(lanHost);
+        mcSessionReporter.online(id, {
+          hostClient: lanHost?.client ?? null,
+          modded: hostWarning === 'modded' || hostWarning === 'forge',
+        });
+      }
       // Analytics (260707): first-online is the "bot reached the world" signal.
       // 260926: the attempt's boot-phase breakdown (supervisor onSummonReady,
       // which fires just before this 'online' status), so dashboards can see
@@ -490,6 +653,12 @@ function broadcastStatus(status: BotStatus): void {
     }
   } else if (status.kind === 'error' || status.kind === 'idle') {
     closePlaySession(id, sessionEndProps(status, { accountTeardown: isAccountTeardownActive() }), isSessionFailure(status));
+    // 261011: a summon that never went live leaves no session to report; drop
+    // any snapshot it posted so it cannot leak into the next session.
+    mcSessionReporter.settled(id);
+    // ...and the same for its conversation digest (closePlaySession already
+    // took it when the session was live).
+    takeSessionDigest(id);
     // 260720: the thin summon_failed capture that used to live here (terminal
     // error with no live session → character_id + reason) moved to the
     // supervisor's onSummonFailure wiring (see createBotSupervisor below),
@@ -881,6 +1050,26 @@ async function bootstrap(): Promise<void> {
   for (const mod of listGameModules()) mod.watcher.start({ onUpdate: broadcastWorld });
   watchersRunning = true;
 
+  // 261011: the player-end "next time" check's main-only bindings.
+  try {
+    const [{ paths }, { providerTimeoutMs }] = await Promise.all([import('./paths'), import('./llm')]);
+    bindPlayerEndRuntime({ memoryDir: paths.memoryDir, providerTimeoutMs, isOnline: () => net.isOnline() });
+    // 261013 (T120): sessions an app quit ended are checked on the next launch.
+    bindQuitNextStepRuntime({
+      memoryDir: paths.memoryDir,
+      memoryRoot: () => path.join(paths.profileRoot(), 'memory'),
+      activityFor: (game) => `playing ${getGameModule(game as GameId)?.displayName ?? game} with the player`,
+    });
+  } catch (err) {
+    logger.warn(`player-end next step bind failed: ${(err as Error).message}`);
+  }
+  // 261013 (T119): a plan saved, tagged or used up re-reads the Home card.
+  bindHomeNextStepNotifier((characterId) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IpcChannel.home.nextStepChanged, { characterId });
+    }
+  });
+
   // 4. Bot supervisor
   supervisor = createBotSupervisor({
     getLanPort,
@@ -914,6 +1103,14 @@ async function bootstrap(): Promise<void> {
     // on snapshot.game (Minecraft → mcDashboardService → mcdash:snapshot;
     // other games → gamedash:snapshot). Validated before the renderer sees it.
     onDashboard: publishGameDashboardSnapshot,
+    onActionStats: (characterId, stats) => mcSessionReporter.stats(characterId, stats),
+    // 261011: the session's recent conversation, kept in memory for the
+    // player-end next-step check (never sent to analytics).
+    onSessionDigest: (id, raw) => {
+      noteSessionDigest(id, raw);
+      // 261013 (T120): the final digest a bot posts while quit drains it.
+      refreshQuitDigest(id, raw);
+    },
     sendLog: broadcastLog,
     // Hand the skin server's baseUrl into each bot init payload.
     // Closure-via-getter so a later restart of the skin server (port-drift
@@ -994,7 +1191,9 @@ async function bootstrap(): Promise<void> {
     initProfileScope({
       supervisor,
       getMainWindow: () => mainWindow,
-      endVoiceCalls: endVoiceCallsForAccountSwitch,
+      endVoiceCalls: endVoiceCallsFromMain,
+      // 261013 (T120): the new account's sessions an app quit ended.
+      onScopeSwitched: () => void runPendingQuitNextSteps(),
     });
   }
 
@@ -1137,6 +1336,9 @@ async function bootstrap(): Promise<void> {
     getBotStatuses: () => [...currentStatuses.values()],
     // Task 4 — only route chat into a bot that's fully spawned in-world.
     isSessionOnline: (id) => onlineIds.has(id),
+    // 261020: the live session's game, so a chat quit_game plan with no
+    // next_time_game is labeled with the game main tags it with at game end.
+    sessionGame: (id) => playStartedAt.get(id)?.game ?? null,
     // A non-blocking chat-launched join failed — tell the COMPANION (task 2,
     // 260702): its last message said "hopping in", so without a correcting turn
     // its own history claims it joined and it later insists "i'm already in".
@@ -1158,7 +1360,7 @@ async function bootstrap(): Promise<void> {
     },
     // Voice calls (260705): a live call ended — post the "You and X called for
     // Y" system row (renderer supplies how long audio actually flowed).
-    notifyCallEnded: (id, connectedMs) => {
+    notifyCallEnded: (id, connectedMs, reason) => {
       void trackScopedWrite(emitCallSession(id, connectedMs)).catch(() => {});
       // Analytics (260728): calls are playtime too. `connectedMs` is the time
       // audio actually flowed (the renderer only reports it for calls that
@@ -1166,11 +1368,26 @@ async function bootstrap(): Promise<void> {
       // key as bot_session_ended / chess_game_ended so the dashboard can sum
       // all three. See the games rule in CLAUDE.md.
       // 261008: + whether the companion hung up and left a next-time hook.
+      const goodbye = consumeGoodbye(id, 'call');
       capture('voice_call_ended', {
         character_id: id,
         duration_ms: connectedMs,
-        ...callEndHookProps(consumeGoodbye(id, 'call')),
+        // 261023: why it ended (callEndReasons.ts), from the renderer's report.
+        reason,
+        ...callEndHookProps(goodbye),
       });
+      // 261013 (T119): the companion's hang-up left a plan; it came from a call.
+      if (goodbye.nextStepHook) {
+        updateHomeNextStep(id, async (dir) =>
+          tagLatestPlan(dir, {
+            ...goodbyePlanPlace({ surface: 'call' }, goodbye.nextStepGame),
+            line: goodbye.nextStepLine ?? null,
+            names: await readPlayerLineNames(id),
+          }),
+        );
+      }
+      // 261011: the player hung up (no companion goodbye), outside a game.
+      if (!goodbye.companionEnded && !onlineIds.has(id)) void startCallNextStep(id, connectedMs);
     },
     // Voice calls (260705): the call went live — companion greets first. An
     // in-game session takes it over the port (say() routes into the call); an
@@ -1178,14 +1395,38 @@ async function bootstrap(): Promise<void> {
     // (and spoken by the renderer's TTS hook).
     greetVoiceCall: (id, peers = []) => {
       noteSurface('voice'); // 261005: app_quit.last_surface
+      yieldToNewSession(id);
+      noteNewSessionForQuit(id); // 261013 (T120)
       // A solo in-game session greets over the port (say() routes to the call).
       // On a group call we always run the standalone greeting turn so the joiner
       // can name the room — the in-game greet path has no group framing.
-      if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) return;
+      if (peers.length === 0 && onlineIds.has(id) && supervisor?.greetVoiceCall(id)) {
+        // 261013 (T119): a new session, so the Home card stops offering the
+        // plan (the game's own first greeting was already told about it).
+        // 261020: a plan for a different game was not, so it stays open.
+        const game = playStartedAt.get(id)?.game ?? null;
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir, Date.now(), { game }));
+        return;
+      }
       void (async () => {
+        // 261014: the plan this greeting should raise, read BEFORE it is
+        // marked used (consumeNextStep), so the two cannot race. A group
+        // joiner only announces itself, so it gets none.
+        let plan: string | null = null;
+        if (peers.length === 0) {
+          try {
+            const { paths } = await import('./paths');
+            plan = await readPendingPlan(paths.memoryDir(id));
+          } catch {
+            plan = null;
+          }
+        }
+        // 261013 (T119): the call greeting is told about the saved plan, so the
+        // Home card stops offering it.
+        updateHomeNextStep(id, (dir) => consumeNextStep(dir));
         try {
           const { sendVoiceGreetingTurn } = await import('./chat/chatService');
-          const replies = await sendVoiceGreetingTurn(id, peers);
+          const replies = await sendVoiceGreetingTurn(id, peers, { plan });
           // The greeting is spoken, so each line carries its place in the reply
           // for TTS conditioning (260729): first line no `prev`, last no `more`.
           replies.forEach((r, i) =>
@@ -1289,6 +1530,11 @@ async function bootstrap(): Promise<void> {
   initNotices({ getMainWindow: () => mainWindow });
   initUpdater({ getMainWindow: () => mainWindow });
 
+  // 5d. 261013 (T120): run the "next time" check for sessions the last quit
+  //     ended, once auth and the token refresh have settled. Fire and forget;
+  //     each check waits for a ready backend and never surfaces an error.
+  setTimeout(() => void runPendingQuitNextSteps(), LAUNCH_DELAY_MS).unref?.();
+
   // 6. Linux fallback warning (RESEARCH Pitfall 3)
   if (process.platform === 'linux' && safeStorageBackendKind() === 'basic_text') {
     logger.warn(
@@ -1298,14 +1544,8 @@ async function bootstrap(): Promise<void> {
   }
 }
 
-// Voice calls (260705): expose SharedArrayBuffer in the renderer so the local
-// Whisper dictation (onnxruntime WASM in a worker) can run MULTI-threaded —
-// single-threaded transcription is the longest fixed cost in the voice-reply
-// loop. Chromium normally gates SAB behind cross-origin isolation (COOP/COEP
-// headers), which our file://-served renderer can't opt into; the feature
-// flag re-exposes it. Safe here: the renderer only loads our own bundled
-// content, never arbitrary web pages. Must be set before app ready.
-app.commandLine.appendSwitch('enable-features', 'SharedArrayBuffer');
+// SharedArrayBuffer for voice dictation is enabled in the single enable-features
+// switch near the top of this file.
 
 // Single-instance lock — second launch focuses existing window
 const gotLock = app.requestSingleInstanceLock();
@@ -1393,6 +1633,18 @@ if (!gotLock) {
     // mid-conversation is the normal way a chat ends, and an event captured
     // after shutdownAnalytics() would never be sent.
     try { await (await import('./chat/chatSession')).endAllChatSessions(); } catch { /* best-effort */ }
+    // 261013 (T120): an out-of-game call keeps its window for the next
+    // launch's "next time" check. Synchronous, local disk, no LLM call.
+    try { persistCallsForQuit(); } catch { /* best-effort */ }
+    // 261023: a call open at quit never got its voice_call_ended (the renderer
+    // dies before it reports), so quitting mid-call was invisible. Close them
+    // from main with reason 'app_quit', bounded like the game surfaces below.
+    try {
+      await Promise.race([
+        endVoiceCallsFromMain('app_quit'),
+        new Promise((resolve) => setTimeout(resolve, QUIT_SURFACE_END_TIMEOUT_MS)),
+      ]);
+    } catch { /* best-effort */ }
     try { endAllPlaySessionsForQuit(); } catch { /* best-effort */ }
     // 261005: end chess, Draw! and backseat BEFORE the flush too. They used to
     // be shut down after it (and backseat not at all), so their *_ended events

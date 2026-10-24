@@ -115,6 +115,10 @@ export const paths = {
   // 260603: one-shot marker that the global→profile partition has run for
   // this install. Device-global (the partition is a one-time layout upgrade).
   partitionMarkerPath: () => path.join(userDataRoot(), 'profiles-partitioned.json'),
+  // 261023: which accounts were already offered the own-key (local profile)
+  // import on this device. Device-global like the local profile it is about:
+  // the offer is for whoever signs in here, and must not repeat every launch.
+  localImportOfferedPath: () => path.join(userDataRoot(), 'local-import-offered.json'),
 
   // ── Anti-abuse / DDOS-guard (260603) — DEVICE-GLOBAL by design ────────────
   // These describe the MACHINE, not any signed-in account, so they MUST stay
@@ -130,6 +134,17 @@ export const paths = {
   // backs the escalating per-device account-creation cooldown.
   signupAttemptsPath: () => path.join(userDataRoot(), 'signup-attempts.json'),
 
+  // 261017 (issue #46): the ChatGPT-plan `ext_agent_host_id` (urn:uuid:v4).
+  // DEVICE-GLOBAL: the SIWC docs define it per HOST (the machine the app runs
+  // on), stable across sign-ins and accounts. Opaque, not a credential.
+  chatgptHostIdPath: () => path.join(userDataRoot(), 'chatgpt-host-id.json'),
+  // 261023: "Continue with ChatGPT" Sei-login registration (issued client id,
+  // subject, email, last ID token as the reauth hint), so the next login on
+  // this machine reuses the client the proxy already trusts (one step, no
+  // email code). DEVICE-GLOBAL because it is read while signed out.
+  // safeStorage-encrypted; holds no access or refresh token.
+  chatgptLoginRegistrationPath: () => path.join(userDataRoot(), 'chatgpt-login-registration.bin'),
+
   // ── Profile-scoped (one per account; re-points on account switch) ─────────
   /** Active profile's data root. */
   profileRoot: profileRootDir,
@@ -139,6 +154,9 @@ export const paths = {
   characterPortraitPath: (id: string) => path.join(profileRootDir(), 'characters', `${id}.png`),
   indexPath: () => path.join(profileRootDir(), 'characters', 'index.json'),
   apiKeyPath: () => path.join(profileRootDir(), 'api_key.bin'),
+  // 261017 (issue #46): ChatGPT-plan registrations + token sets, encrypted
+  // with safeStorage (like api_key.bin). Profile-scoped like the BYOK key.
+  chatgptAccountsPath: () => path.join(profileRootDir(), 'chatgpt_accounts.bin'),
   // BYOK ElevenLabs voice key (260725) — same safeStorage-encrypted blob
   // pattern as api_key.bin, profile-scoped for the same reason.
   elevenLabsKeyPath: () => path.join(profileRootDir(), 'elevenlabs_key.bin'),

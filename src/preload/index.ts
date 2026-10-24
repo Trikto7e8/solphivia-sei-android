@@ -36,6 +36,7 @@ import {
   type WorldState,
   type GameDashboardSnapshot,
 } from '../shared/ipc';
+import type { ChatgptStatus } from '../shared/chatgptPlan';
 
 const api: RendererApi = {
   // Game adapters (M0): {characterId, game} (main also still accepts a bare id).
@@ -137,6 +138,12 @@ const api: RendererApi = {
   chatSend: (args) => ipcRenderer.invoke(IpcChannel.chat.send, args),
   chatOpened: (characterId, opts) => ipcRenderer.invoke(IpcChannel.chat.opened, characterId, opts),
   chatPreviews: () => ipcRenderer.invoke(IpcChannel.chat.previews),
+  homeNextSteps: (characterIds) => ipcRenderer.invoke(IpcChannel.home.nextSteps, characterIds),
+  onHomeNextStepChanged(cb: (push: { characterId: string }) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, push: { characterId: string }) => cb(push);
+    ipcRenderer.on(IpcChannel.home.nextStepChanged, handler);
+    return () => ipcRenderer.off(IpcChannel.home.nextStepChanged, handler);
+  },
   onChatMessage(cb: (push: ChatMessagePush) => void) {
     const handler = (_e: Electron.IpcRendererEvent, push: ChatMessagePush) => cb(push);
     ipcRenderer.on(IpcChannel.chat.message, handler);
@@ -192,13 +199,14 @@ const api: RendererApi = {
   // Backseat (260728) — see src/shared/backseatIpc.ts.
   backseatSources: (opts?: { thumbnails?: boolean }) =>
     ipcRenderer.invoke(IpcChannel.backseat.sources, opts),
-  backseatStart: (characterId, sourceId, sourceName, mode, game) =>
+  backseatStart: (characterId, sourceId, sourceName, mode, game, trigger) =>
     ipcRenderer.invoke(IpcChannel.backseat.start, {
       characterId,
       sourceId,
       sourceName,
       mode,
       ...(game ? { game } : {}),
+      ...(trigger ? { trigger } : {}),
     }),
   backseatGameResolve: (gameId, input) =>
     ipcRenderer.invoke(IpcChannel.backseat.gameResolve, { gameId, input }),
@@ -221,7 +229,7 @@ const api: RendererApi = {
     ipcRenderer.invoke(IpcChannel.backseat.saveClip, { characterId, requestId, webmBase64 }),
   backseatRevealClip: (clipPath) =>
     ipcRenderer.invoke(IpcChannel.backseat.revealClip, clipPath),
-  backseatEnd: (characterId) => ipcRenderer.invoke(IpcChannel.backseat.end, characterId),
+  backseatEnd: (characterId, reason) => ipcRenderer.invoke(IpcChannel.backseat.end, characterId, reason),
   onBackseatState(cb) {
     const handler = (_e: Electron.IpcRendererEvent, s: Parameters<typeof cb>[0]) => cb(s);
     ipcRenderer.on(IpcChannel.backseat.state, handler);
@@ -401,6 +409,9 @@ const api: RendererApi = {
   },
   avatarCaptionGet: () => ipcRenderer.invoke(IpcChannel.avatar.captionGet),
   voiceListVoices: () => ipcRenderer.invoke(IpcChannel.voice.list),
+  voiceListOwnVoices: (args) => ipcRenderer.invoke(IpcChannel.voice.ownList, args ?? {}),
+  voiceOwnPreview: (args) => ipcRenderer.invoke(IpcChannel.voice.ownPreview, args),
+  voiceSharedDefault: (args) => ipcRenderer.invoke(IpcChannel.voice.sharedDefault, args),
   voicePreview: (args) => ipcRenderer.invoke(IpcChannel.voice.preview, args),
   voicePreviewAvailable: () => ipcRenderer.invoke(IpcChannel.voice.previewAvailable),
   voiceElevenKeySet: (args) => ipcRenderer.invoke(IpcChannel.voice.elevenKeySet, args),
@@ -441,6 +452,14 @@ const api: RendererApi = {
   signUpPassword: (args) => ipcRenderer.invoke(IpcChannel.auth.signupPassword, args),
   signInGoogle: () => ipcRenderer.invoke(IpcChannel.auth.signinGoogle),
   cancelGoogle: () => ipcRenderer.invoke(IpcChannel.auth.cancelGoogle),
+  signInChatgpt: () => ipcRenderer.invoke(IpcChannel.auth.signinChatgpt),
+  chatgptLoginVerifyCode: (code: string) => ipcRenderer.invoke(IpcChannel.auth.chatgptVerifyCode, code),
+  chatgptLoginResendCode: () => ipcRenderer.invoke(IpcChannel.auth.chatgptResendCode),
+  cancelChatgptLogin: () => ipcRenderer.invoke(IpcChannel.auth.cancelChatgpt),
+  linkChatgptAccount: () => ipcRenderer.invoke(IpcChannel.auth.linkChatgpt),
+  unlinkChatgptAccount: () => ipcRenderer.invoke(IpcChannel.auth.unlinkChatgpt),
+  chatgptLoginStatus: () => ipcRenderer.invoke(IpcChannel.auth.chatgptLoginStatus),
+  takeChatgptPlanOffer: () => ipcRenderer.invoke(IpcChannel.auth.chatgptTakePlanOffer),
   regionStatus: () => ipcRenderer.invoke(IpcChannel.region.status),
   signOut: () => ipcRenderer.invoke(IpcChannel.auth.signout),
   deleteAccount: () => ipcRenderer.invoke(IpcChannel.auth.deleteAccount),
@@ -476,6 +495,7 @@ const api: RendererApi = {
   profilePeekLocal: () => ipcRenderer.invoke(IpcChannel.profile.peekLocal),
   profileImportFromLocal: (characterIds?: string[]) =>
     ipcRenderer.invoke(IpcChannel.profile.importFromLocal, characterIds),
+  profileImportOffered: (action: 'get' | 'set') => ipcRenderer.invoke(IpcChannel.profile.importOffered, action),
 
   // --- Browse + moderation (Phase 12) ---
   browseList: (args) => ipcRenderer.invoke(IpcChannel.browse.list, args),
@@ -528,6 +548,19 @@ const api: RendererApi = {
     const handler = (_e: Electron.IpcRendererEvent, cap: VisionCapability) => cb(cap);
     ipcRenderer.on(IpcChannel.vision.capability, handler);
     return () => ipcRenderer.off(IpcChannel.vision.capability, handler);
+  },
+  chatgptStatus: () => ipcRenderer.invoke(IpcChannel.chatgpt.status),
+  chatgptSignIn: (opts?: { accountId?: string | null; enablePlan?: boolean }) =>
+    ipcRenderer.invoke(IpcChannel.chatgpt.signIn, opts ?? {}),
+  chatgptCancelSignIn: () => ipcRenderer.invoke(IpcChannel.chatgpt.cancelSignIn),
+  chatgptSignOut: (accountId?: string) => ipcRenderer.invoke(IpcChannel.chatgpt.signOut, { accountId }),
+  chatgptSwitchAccount: (accountId: string) => ipcRenderer.invoke(IpcChannel.chatgpt.switchAccount, { accountId }),
+  chatgptDismissWelcome: () => ipcRenderer.invoke(IpcChannel.chatgpt.dismissWelcome),
+  chatgptClearLimit: () => ipcRenderer.invoke(IpcChannel.chatgpt.clearLimit),
+  onChatgptStatus(cb: (s: ChatgptStatus) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, st: ChatgptStatus) => cb(st);
+    ipcRenderer.on(IpcChannel.chatgpt.statusChanged, handler);
+    return () => ipcRenderer.off(IpcChannel.chatgpt.statusChanged, handler);
   },
   llmListModels: (provider: string) => ipcRenderer.invoke(IpcChannel.llm.listModels, { provider }),
   llmTest: (provider: string, model: string) =>

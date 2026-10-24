@@ -68,11 +68,17 @@
  * @property {(evt: { attacker: Player|null, attackerLabel: string,
  *                    attackerKind: AttackerKind, pvp?: boolean,
  *                    [k: string]: any }) => void}                                  onAttacked
- * @property {(evt: { pos: {x:number,y:number,z:number}|null }) => void}             onDeath
+ * @property {(evt: { pos: {x:number,y:number,z:number}|null, diedAt?: number,
+ *                    lost?: Array<{item:string,n:number}>, keptAll?: boolean,
+ *                    deathText?: string }) => void}                                 onDeath
  *   The bot died and respawned. Enqueued at P1_CHAT as 'sei:death' with the
  *   last real hit attached (`lastAttack`) when one landed within 30s; the
  *   adapter's eventAddendum('sei:death', data) supplies the framing. Optional
- *   for adapters whose game has no death.
+ *   for adapters whose game has no death. 261019: Minecraft reports it after
+ *   the respawn, with what she lost and the game's death message.
+ * @property {() => void}                                                            [onDying]
+ *   261019: the instant of death, before the respawn and the onDeath report.
+ *   The brain drops the turn the dying body was still writing. Optional.
  * @property {() => void}                                                            onSpawn
  *   The body is in the world. Fires the world-identity resolve
  *   (getWorldIdentity), the settle-delayed first idle tick (greeting), and
@@ -157,6 +163,11 @@
  * @property {(args: {x:number,y:number,z:number,range:number}) => string} [cantReachNudge]
  *   Mid-loop nudge when pathfinder cant_reach trips twice on the same dest.
  *   (Consumed by the Minecraft postProcessToolBatch, not by the brain.)
+ * @property {() => string[]|null}                                         [gameVocabulary]
+ *   261013: the game's item, block and mob words ("oak_log", "zombie", ...).
+ *   The repeat note (ownRepeats.js) treats a phrase made mostly of them as
+ *   the job she is on, never a habit to drop. Return the same array each
+ *   call (the brain caches per array). Absent: names from the snapshot only.
  *
  * Session lifecycle:
  * @property {(handlers: AdapterHandlers) => void}                         attach
@@ -225,6 +236,24 @@
  *   toolUses[i]). May return a one-shot `nudge` appended to the next user
  *   turn (it outranks the brain's silence nudge). Minecraft: the per-loop
  *   goTo cant_reach dedup → cantReachNudge. Default: no nudge.
+ * @property {(running: {name: string, input?: any}, use: {id: string, name: string, input?: any}) => string | null} [continueRunningAction]
+ *   Asked for each world tool in a batch while an action is running (not
+ *   when the batch calls stop). A string means the call is the SAME work as
+ *   the running action: the adapter has folded it in, the call does not
+ *   execute or abort the running one, and the string is its result. null =
+ *   a new action that replaces the running one as usual. Only honored when
+ *   every world tool in the batch continues. Minecraft (261019): attackEntity
+ *   on the mob the running attackEntity is fighting. Default: always null.
+ * @property {string[]}                                                    [fightActions]
+ *   Actions whose run is the body's answer to being hit. A hit that lands
+ *   while one runs and a mid-action call is parked is swallowed instead of
+ *   tearing the action down. Default `['attackEntity']`.
+ * @property {(name: string, resultText: string) => boolean | null}       [handOverResult]
+ *   For an action that hands items to the player: true when its result says
+ *   the items were handed over, false when not. null for every other action.
+ *   A clearGoal in the same turn as a hand-over runs only after every
+ *   hand-over in that turn returned true (261015). Minecraft: give.
+ *   Default: no hand-over action.
  * @property {() => string}                                                [surfaceBaseline]
  *   The game-surface half of the cached system block [0]. The brain composes
  *   `${UNIVERSAL_BASELINE}\n\n${surfaceBaseline()}`. Default MINECRAFT_BASELINE.

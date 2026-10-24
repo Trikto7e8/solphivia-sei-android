@@ -413,6 +413,9 @@ export function startReflex(bot, config) {
     try {
       bot.emit('sei:reflex', {
         threat: creeper.name,
+        // 261019: the live entity, so a turn written after it blew up or
+        // left can say so (observers/staleAttacker.js).
+        entity: creeper,
         threatLabel: creeper.name,
         // noticed: did a positive telegraph fire (fuse/ignite) vs a distance-only flee
         noticed: creeperPanic(creeper),
@@ -479,7 +482,28 @@ export function startReflex(bot, config) {
 
     if (threat.kind === 'creeper') return enterFlee(threat.entity)
     if (threat.kind === 'arrow') return doArrowDodge(threat)
-    if (threat.kind === 'melee') return doMeleeStrafe(threat)
+    if (threat.kind === 'melee') {
+      // 261012 (pass 4a): while an attack is committed to a target
+      // (attackEntity or the owner defense), do not strafe around a
+      // different melee mob. In the protect_player eval the second zombie
+      // walked next to the first, and the strafe (look at it, step sideways
+      // and back) can fight the chase toward the player's attacker.
+      if (bot._seiOffensiveTarget != null && threat.entity?.id !== bot._seiOffensiveTarget) {
+        releaseStrafe()
+        return
+      }
+      // 261019 (pass 19): nor while an action's walk is moving her (a goTo,
+      // a pickup walk). The strafe looks at the mob every tick and runs
+      // after the pathfinder, so its yaw wins, and its "forward" once the
+      // mob fell 4 blocks behind walked her back to it: the walk circled the
+      // zombie until it gave up as "stuck" (pathing-repro hit_walk_goto, 3
+      // of 8). Walking on is the better dodge; she outpaces a zombie.
+      if (bot._seiActionActive > 0 && bot.pathfinder?.isMoving?.()) {
+        releaseStrafe()
+        return
+      }
+      return doMeleeStrafe(threat)
+    }
   }
 
   function dispose() {

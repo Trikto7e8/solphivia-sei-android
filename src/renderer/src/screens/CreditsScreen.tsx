@@ -12,7 +12,10 @@
  *     bucket spent only after the week's allowance is gone.
  *   - Three PLAN cards (Free / Quest / Party). The current plan is highlighted
  *     and its button reads "Current plan"; the others offer Upgrade or
- *     Downgrade. A first subscription goes straight to the hosted Polar
+ *     Downgrade. 261023: the buttons are PlanButton (full width, 48px, one
+ *     loud primary per card: "Get Party" / "Upgrade to Party"), and the
+ *     RECOMMENDED_TIER card carries an accent edge and a tag while it is an
+ *     upgrade. A first subscription goes straight to the hosted Polar
  *     checkout; a tier change on an existing subscription is applied in place
  *     by the proxy. 260725 operator decision: the in-app auto-renewal consent
  *     modal was REMOVED — the recurring terms are disclosed on the Polar
@@ -46,6 +49,7 @@ import type { PlanTier } from '@shared/ipc';
 import { useCreditsStore, type CheckoutKind } from '../lib/stores/useCreditsStore';
 import { useUiStore } from '../lib/stores/useUiStore';
 import { Button } from '../components/Button';
+import { PlanButton, PlanCheckIcon } from '../components/PlanButton';
 import { ModalShell, ModalFooter } from '../components/ModalShell';
 import { BackIcon, RefreshIcon } from '../components/icons';
 import { sei } from '../lib/ipcClient';
@@ -55,9 +59,14 @@ import { FeedbackModal } from '../components/FeedbackModal';
 import { useNoticesStore } from '../lib/stores/useNoticesStore';
 import { formatRenewal } from '../lib/formatRenewal';
 import { useResetLine } from '../lib/useResetLine';
-import { TIER_ORDER, planCard, planName } from '../lib/planCatalog';
+import { RECOMMENDED_TIER, TIER_ORDER, planCard, planName } from '../lib/planCatalog';
 import { t, useT } from '../lib/i18n';
 import styles from './CreditsScreen.module.css';
+import { ChatgptLogo } from '../components/ChatgptLogo';
+import { ChatgptPlanSettings, chatgptPlanDisclosure } from '../components/ChatgptPlanSettings';
+import { InfoTip } from '../components/InfoTip';
+import { CHATGPT_HELP_URL, CHATGPT_USAGE_URL } from '@shared/chatgptPlan';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 
 /** Note under the extra-credits bar: what carries over and what does not (SPEC §2). */
 const CARRY_OVER_NOTE =
@@ -187,6 +196,29 @@ export function CreditsScreen(): React.ReactElement {
   // session, and the reward is a server-side usage reset. BYOK/local users never
   // see the banner or the standing button.
   const cloudMode = useCreditsStore((s) => s.ai_backend_kind) === 'cloud-proxy';
+  // 261023: already on the ChatGPT plan (local backend, provider chatgpt, a
+  // signed-in account) -> the row says so and offers Manage usage instead of
+  // the sign-in button.
+  const chatgptStatus = useChatgptStore((s) => s.status);
+  const [providerIsChatgpt, setProviderIsChatgpt] = useState(false);
+  useEffect(() => {
+    if (cloudMode) {
+      setProviderIsChatgpt(false);
+      return;
+    }
+    let live = true;
+    void sei
+      .getConfig()
+      .then((c) => {
+        if (live) setProviderIsChatgpt(c?.provider === 'chatgpt');
+      })
+      .catch(() => {});
+    void useChatgptStore.getState().load();
+    return () => {
+      live = false;
+    };
+  }, [cloudMode]);
+  const usingChatgptPlan = !cloudMode && providerIsChatgpt && chatgptReady(chatgptStatus);
   // Notices inbox (260725) — the standing re-entry point under Submit feedback.
   const openInbox = useNoticesStore((s) => s.openInbox);
   const unreadNotices = useNoticesStore((s) => s.unreadCount());
@@ -404,7 +436,7 @@ export function CreditsScreen(): React.ReactElement {
             </div>
             <Button
               kind="ghost"
-              size="sm"
+              size="md"
               disabled={checkoutActive}
               onClick={() => setShowTopUp(true)}
             >
@@ -431,11 +463,21 @@ export function CreditsScreen(): React.ReactElement {
             {planCards.map((card) => {
               const isCurrent = card.tier === plan;
               const isUpgrade = TIER_ORDER[card.tier] > TIER_ORDER[plan];
+              // 261023: the recommended plan is emphasised only while it is
+              // still something to move up to.
+              const isRecommended = card.tier === RECOMMENDED_TIER && isUpgrade;
+              const cardClass = [
+                styles.planCard,
+                isCurrent ? styles.planCardActive : '',
+                isRecommended ? styles.planCardRecommended : '',
+              ]
+                .filter(Boolean)
+                .join(' ');
               return (
-                <div
-                  key={card.tier}
-                  className={`${styles.planCard} ${isCurrent ? styles.planCardActive : ''}`}
-                >
+                <div key={card.tier} className={cardClass}>
+                  {isRecommended ? (
+                    <span className={styles.planTag}>{t('Recommended')}</span>
+                  ) : null}
                   <span className={styles.planName}>{card.name}</span>
                   <span className={styles.planPrice}>
                     {card.price}
@@ -444,44 +486,50 @@ export function CreditsScreen(): React.ReactElement {
                     ) : null}
                   </span>
                   <span className={styles.planBlurb}>{card.blurb}</span>
+                  {/* 261023: one big button per card. The primary (accent,
+                      48px) is the upgrade; everything else is the quiet
+                      secondary at the same height so the cards line up. */}
                   <div className={styles.planCardActions}>
                     {isCurrent && cancelScheduled ? (
                       // Resume the existing to-be-cancelled sub (Polar portal
                       // uncancel) rather than starting a new one that bills now.
-                      <Button
-                        kind="primary"
-                        size="sm"
-                        fullWidth
-                        disabled={checkoutActive}
-                        onClick={handleResume}
-                      >
-                        {t('Resume')}
-                      </Button>
+                      <PlanButton kind="primary" arrow disabled={checkoutActive} onClick={handleResume}>
+                        {t('Resume {name}', { name: card.name })}
+                      </PlanButton>
                     ) : isCurrent ? (
-                      <Button kind="primary" size="sm" fullWidth disabled aria-disabled>
+                      <PlanButton kind="secondary" icon={<PlanCheckIcon />} disabled>
                         {t('Current plan')}
-                      </Button>
+                      </PlanButton>
                     ) : card.tier === 'free' ? (
                       // Moving to Free is a cancellation: Polar owns that flow.
-                      <Button
-                        kind="ghost"
-                        size="sm"
-                        fullWidth
+                      <PlanButton
+                        kind="secondary"
                         disabled={managing}
                         onClick={() => void handleManage()}
                       >
                         {managing ? t('Opening…') : t('Downgrade')}
-                      </Button>
-                    ) : (
-                      <Button
-                        kind={isUpgrade ? 'accent' : 'ghost'}
-                        size="sm"
-                        fullWidth
+                      </PlanButton>
+                    ) : isUpgrade ? (
+                      // First subscription: "Get Party". An existing
+                      // subscriber moving up: "Upgrade to Party".
+                      <PlanButton
+                        kind="primary"
+                        arrow
                         disabled={checkoutActive}
                         onClick={() => handlePlanSelect(card.tier as Exclude<PlanTier, 'free'>)}
                       >
-                        {isUpgrade ? t('Upgrade') : t('Downgrade')}
-                      </Button>
+                        {isSubscribed
+                          ? t('Upgrade to {name}', { name: card.name })
+                          : t('Get {name}', { name: card.name })}
+                      </PlanButton>
+                    ) : (
+                      <PlanButton
+                        kind="secondary"
+                        disabled={checkoutActive}
+                        onClick={() => handlePlanSelect(card.tier as Exclude<PlanTier, 'free'>)}
+                      >
+                        {t('Downgrade')}
+                      </PlanButton>
                     )}
                   </div>
                 </div>
@@ -519,6 +567,47 @@ export function CreditsScreen(): React.ReactElement {
           {/* A rejected in-place tier change (260725). Without this the failure
               was silent and the watcher's timeout was the only signal. */}
           {changeError ? <p className={styles.manageError}>{changeError}</p> : null}
+        </div>
+
+        {/* 261017 (issue #46): "Use your ChatGPT plan". OpenAI's guidelines
+            ask the pricing page to say which plans support it (every Sei plan,
+            Free included) and to keep it apart from the app's own
+            subscription, so it is its own row under the plan cards, never a
+            feature inside a paid card. 261023 (Shawn: too much text): one
+            line plus the sign-in button; the "not a Sei charge" disclosure
+            sits in the info tip. The button signs in right here, then Settings
+            opens on the switch confirmation (view.useChatgptPlan). */}
+        <div className={styles.chatgptPlan}>
+          <div className={styles.chatgptPlanRow}>
+            <ChatgptLogo size={18} />
+            <div className={styles.chatgptPlanText}>
+              <span className={styles.chatgptPlanName}>
+                {usingChatgptPlan ? t('Using ChatGPT plan') : t('Use your ChatGPT plan')}
+                <InfoTip label={t('About the ChatGPT plan')} text={chatgptPlanDisclosure(t)} />
+              </span>
+              <span className={styles.planBlurb}>
+                {t('Works on every Sei plan, including Free.')}{' '}
+                <button
+                  type="button"
+                  className={styles.planFeatureLink}
+                  onClick={() => void sei.openExternal(CHATGPT_HELP_URL)}
+                >
+                  {t('Learn more')}
+                </button>
+              </span>
+            </div>
+            {usingChatgptPlan ? (
+              <Button kind="ghost" size="sm" onClick={() => void sei.openExternal(CHATGPT_USAGE_URL)}>
+                {t('Manage usage')}
+              </Button>
+            ) : (
+              <ChatgptPlanSettings
+                active={false}
+                compact
+                onUsePlan={() => navigate({ kind: 'settings', useChatgptPlan: true })}
+              />
+            )}
+          </div>
         </div>
 
         {/*

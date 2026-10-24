@@ -10,6 +10,7 @@ import {
   chatSurfaceTools,
   CHAT_MEMORY_CHECK,
   CHAT_REMEMBER_TOOL,
+  CHAT_SEARCH_CHECK,
   REMEMBER_TOOL,
   END_CALL_TOOL,
   LAUNCH_TOOL,
@@ -78,7 +79,16 @@ describe('memory check in the status block', () => {
     expect(b.some((x) => x.text.includes(CHAT_MEMORY_CHECK))).toBe(false);
   });
 
+  it('carries the search check before it when searchGuide is set (261020)', () => {
+    const b = blocks({ memoryGuide: true, searchGuide: true });
+    const last = b[b.length - 1].text;
+    expect(last.endsWith(`\n${CHAT_SEARCH_CHECK}\n${CHAT_MEMORY_CHECK}`)).toBe(true);
+    expect(blocks().some((x) => x.text.includes(CHAT_SEARCH_CHECK))).toBe(false);
+    expect(blocks({ surface: 'game', searchGuide: true }).some((x) => x.text.includes(CHAT_SEARCH_CHECK))).toBe(false);
+  });
+
   it('is plain text with no em-dashes', () => {
+    expect(CHAT_SEARCH_CHECK).not.toMatch(/—/);
     expect(CHAT_MEMORY_CHECK).not.toMatch(/—/);
     expect(CHAT_REMEMBER_TOOL.description).not.toMatch(/—/);
   });
@@ -142,5 +152,21 @@ describe('voiceSpeech', () => {
     expect(t).toContain(VOICE_CALL_PRIMER_BASE);
     expect(t).toContain(VOICE_CALL_TEXT_LINE);
     expect(t).not.toContain(VOICE_CALL_SAY_FIRST);
+  });
+});
+
+describe('buildSystemBlocks persona placeholders (T111)', () => {
+  it('fills {{user}} with the preferred name and {{char}} with the character name', () => {
+    const persona = { source: '', expanded: '{{char}} met {{user}} in Reovano. {{USER}} is family.' };
+    const text = blocks({ persona })[1].text;
+    expect(text).toContain('You are Sui.\nSui met Ouen in Reovano. Ouen is family.');
+    expect(text).not.toMatch(/\{\{/);
+    // Stable across turns: same inputs, byte-identical cached persona block.
+    expect(blocks({ persona })[1].text).toBe(text);
+  });
+
+  it('says "the player" when no preferred name is set', () => {
+    const text = blocks({ persona: { source: '', expanded: 'You trust {{user}}.' }, preferredName: '' })[1].text;
+    expect(text).toContain('You trust the player.');
   });
 });

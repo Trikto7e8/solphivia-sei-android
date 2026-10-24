@@ -53,6 +53,13 @@ import type { AvatarMode, UserConfig } from '@shared/characterSchema';
 import type { LlmListModelsResult, SpeechPackStatePush } from '@shared/ipc';
 import styles from './SettingsScreen.module.css';
 import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
+import { SearchSettingsSection } from '../components/settings/SearchSettingsSection';
+import { LocalImportRow } from '../components/settings/LocalImportRow';
+import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
+import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
+import { elevenKeySettingMode } from '../lib/voicePicker';
 
 const API_KEY_BULLET_LEN = 24;
 
@@ -142,6 +149,8 @@ export function SettingsScreen(): React.ReactElement {
   // CONTEXT D-57. Subscription cancel/manage lives on the Playtime screen →
   // "Manage billing" (Polar portal), not here.
   const aiBackendKind = useCreditsStore((s) => s.ai_backend_kind);
+  // 261017 (issue #46): the ChatGPT-plan sign-in (main owns the tokens).
+  const chatgptStatus = useChatgptStore((s) => s.status);
   // WR-05 follow-up: flipping the backend mid-bot applies LIVE — main's
   // proxy.configure handler rebuilds the running utilityProcess's Anthropic SDK
   // in place. This notice is a positive confirmation that the swap reached the
@@ -154,12 +163,22 @@ export function SettingsScreen(): React.ReactElement {
   // modal instead of toggling directly. Non-null = modal is open for that
   // target backend; cancelling leaves ai_backend_kind (and the Seg) untouched.
   const [pendingSwitch, setPendingSwitch] = useState<null | 'cloud-proxy' | 'local'>(null);
+  // 261017 (issue #46): a cloud -> local switch started from "Use your
+  // ChatGPT plan" also picks the ChatGPT plan as the provider, on confirm.
+  const [switchVia, setSwitchVia] = useState<null | 'chatgpt'>(null);
   useEffect(() => {
     if (!botRunning) setSwitchNotice(null);
   }, [botRunning]);
   const confirmSwitch = async (): Promise<void> => {
     const target = pendingSwitch;
     if (!target) return;
+    if (target === 'local' && switchVia === 'chatgpt') {
+      // Provider first, so the running bot's live switch (and the next
+      // summon) resolve the ChatGPT plan, never the old BYOK provider.
+      const base = cfg ?? (await sei.getConfig());
+      await sei.saveConfig({ ...base, provider: 'chatgpt', provider_config: base.provider_config ?? {} });
+      setEditingKey(false);
+    }
     await window.sei.proxyConfigure(target);
     // 260725: re-seed the local whole-config copy so later wholesale saves
     // from this screen carry the new backend kind, not the mount-time value.
@@ -172,6 +191,7 @@ export function SettingsScreen(): React.ReactElement {
       setSwitchNotice(target === 'cloud-proxy' ? 'switched-to-cloud' : 'switched-to-local');
     }
     setPendingSwitch(null);
+    setSwitchVia(null);
   };
   const [cfg, setCfg] = useState<UserConfig | null>(null);
   const [hasKey, setHasKey] = useState<boolean>(false);
@@ -199,11 +219,6 @@ export function SettingsScreen(): React.ReactElement {
   const [preferredDraft, setPreferredDraft] = useState<string>('');
   const [editingKey, setEditingKey] = useState<boolean>(false);
   const [keyDraft, setKeyDraft] = useState<string>('');
-  // 260909 Search: optional web search provider key. Same masked-editor
-  // pattern as the AI key row; lives in config.json (web_search_*), never in
-  // the keychain, because these keys are low-value and provider-scoped.
-  const [editingSearchKey, setEditingSearchKey] = useState<boolean>(false);
-  const [searchKeyDraft, setSearchKeyDraft] = useState<string>('');
   const [keyError, setKeyError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   // 260725 BYOK voice: ElevenLabs API key (TTS + Scribe recognition). Same
@@ -380,38 +395,6 @@ export function SettingsScreen(): React.ReactElement {
     setKeyError(null);
   };
 
-  // 260909 Search group. 'auto' is the free keyless chain; the three keyed
-  // providers need a key from the user's own account. Switching provider
-  // keeps any stored key (a user toggling back to Auto to compare and then
-  // returning should not have to paste it again).
-  type SearchProvider = 'auto' | 'brave' | 'tavily' | 'serper';
-  const searchProvider: SearchProvider = ((): SearchProvider => {
-    const v = cfg?.web_search_provider;
-    return v === 'brave' || v === 'tavily' || v === 'serper' ? v : 'auto';
-  })();
-  const hasSearchKey = Boolean(cfg?.web_search_api_key);
-  const onChangeSearchProvider = async (next: SearchProvider): Promise<void> => {
-    if (!cfg || next === searchProvider) return;
-    await persistConfig({ ...cfg, web_search_provider: next });
-  };
-  const onSaveSearchKey = async (): Promise<void> => {
-    const key = searchKeyDraft.trim();
-    if (!cfg || !key) return;
-    await persistConfig({ ...cfg, web_search_api_key: key });
-    setEditingSearchKey(false);
-    setSearchKeyDraft('');
-  };
-  const onClearSearchKey = async (): Promise<void> => {
-    if (!cfg) return;
-    await persistConfig({ ...cfg, web_search_api_key: '' });
-    setEditingSearchKey(false);
-    setSearchKeyDraft('');
-  };
-  const onCancelSearchKey = (): void => {
-    setEditingSearchKey(false);
-    setSearchKeyDraft('');
-  };
-
   // 260725 BYOK voice: ElevenLabs key save/remove. Mirrors onSaveKey; the key
   // is write-only (never displayed back), presence drives the bullet readout.
   const onSaveElevenKey = async (): Promise<void> => {
@@ -439,6 +422,70 @@ export function SettingsScreen(): React.ReactElement {
     setEditingElevenKey(false);
     setElevenKeyError(null);
   };
+
+  // The ElevenLabs key row, shared by the BYOK Voice group and the Cloud
+  // "your own voices" group (261020, T158). Write-only: the raw key never
+  // comes back to the renderer, only its presence. On Cloud the key is
+  // optional, so "Not set" is a plain state there, not a warning.
+  const renderElevenKeyRow = (mode: 'byok' | 'cloud-optional'): React.ReactElement => (
+    <>
+      <div className={styles.row}>
+        <span className={styles.label}>
+          {t('ElevenLabs key')}
+          <InfoTip
+            label={t('About the ElevenLabs key')}
+            text={
+              mode === 'byok'
+                ? t('ElevenLabs voices need your own ElevenLabs API key. No key? Switch to the local voices.')
+                : t(
+                    "Only for voices in your own ElevenLabs account. Sei's voices and voice recognition keep running on Sei Cloud and never use this key.",
+                  )
+            }
+          />
+        </span>
+        {editingElevenKey ? (
+          <span className={styles.editor}>
+            <TextField
+              value={elevenKeyDraft}
+              onChange={setElevenKeyDraft}
+              type="password"
+              placeholder={t('Your ElevenLabs key')}
+              autoFocus
+              onEnter={() => void onSaveElevenKey()}
+              aria-label={t('ElevenLabs key')}
+            />
+            <Button kind="primary" size="sm" onClick={() => void onSaveElevenKey()}>
+              {t('Save')}
+            </Button>
+            <Button kind="quiet" size="sm" onClick={onCancelElevenKey}>
+              {t('Cancel')}
+            </Button>
+          </span>
+        ) : (
+          <>
+            <span
+              className={
+                hasElevenKey || mode === 'cloud-optional'
+                  ? styles.monoValue
+                  : `${styles.monoValue} ${styles.statusWarn}`
+              }
+            >
+              {hasElevenKey ? '•'.repeat(API_KEY_BULLET_LEN) : t('Not set')}
+            </span>
+            <Button kind="ghost" size="sm" onClick={() => setEditingElevenKey(true)}>
+              {hasElevenKey ? t('Update') : t('Set')}
+            </Button>
+            {hasElevenKey ? (
+              <Button kind="quiet" size="sm" onClick={() => void onRemoveElevenKey()}>
+                {t('Remove')}
+              </Button>
+            ) : null}
+          </>
+        )}
+      </div>
+      {elevenKeyError ? <div className={styles.errorRow}>{elevenKeyError}</div> : null}
+    </>
+  );
 
   const onRemoveElevenKey = async (): Promise<void> => {
     try {
@@ -539,6 +586,11 @@ export function SettingsScreen(): React.ReactElement {
       return t('The provider rejected your key. Check that it is correct and active.');
     if (token === 'timeout') return t('Timed out. Check your connection and try again.');
     if (token === 'network') return t('Could not reach the provider. Check your connection.');
+    if (token === 'chatgpt_signed_out') return t('Sign in with ChatGPT first.');
+    if (token === 'chatgpt_plan_disabled') return t('Turn on ChatGPT plan use first.');
+    if (token === 'chatgpt_usage_limit') return t("You've reached your ChatGPT plan's usage limit.");
+    if (token === 'chatgpt_not_eligible' || token === 'chatgpt_forbidden')
+      return t("This ChatGPT account can't use its plan in Sei.");
     if (token.startsWith('http_'))
       return t('The provider returned an error (HTTP {status}).', { status: token.slice(5) });
     return t('Something went wrong. Try again.');
@@ -653,6 +705,12 @@ export function SettingsScreen(): React.ReactElement {
   };
 
   const currentProvider: Provider = (cfg?.provider ?? 'anthropic') as Provider;
+  /** The default a provider rides when no model is stored. The ChatGPT plan's
+   *  comes from the signed-in account's catalog (what main resolves too). */
+  const defaultModelFor = (provider: Provider): string =>
+    provider === 'chatgpt' && chatgptStatus?.models.length
+      ? pickDefaultChatgptModel(chatgptStatus.models)
+      : DEFAULT_MODELS[provider];
 
   // ui-A1: provider tile click changes config.provider AND clears any existing
   // api key (the prior key is for a different vendor; reusing it would silently
@@ -664,13 +722,18 @@ export function SettingsScreen(): React.ReactElement {
     try {
       await sei.saveConfig({ ...cfg, provider: next, provider_config: cfg.provider_config ?? {} });
       setCfg({ ...cfg, provider: next });
-      try {
-        await sei.saveApiKey('');
-        setHasKey(false);
-      } catch {
-        // best-effort
+      // 261017: the ChatGPT plan uses no API key, so switching TO it leaves
+      // the saved key alone and opens no key editor. Switching away from it
+      // still clears, as before (the slot may hold another vendor's key).
+      if (next !== 'chatgpt') {
+        try {
+          await sei.saveApiKey('');
+          setHasKey(false);
+        } catch {
+          // best-effort
+        }
       }
-      setEditingKey(true);
+      setEditingKey(next !== 'chatgpt');
       setKeyDraft('');
       setKeyError(null);
       // W5: a different vendor lists different models — drop the open picker
@@ -684,6 +747,26 @@ export function SettingsScreen(): React.ReactElement {
       setSaveError(t('Failed to save provider. Try again.'));
     }
   };
+
+  // 261023: Credits' "Use your ChatGPT plan" row signs in there, then lands
+  // here with view.useChatgptPlan so the switch runs through the same path as
+  // this screen's own button: the cloud -> local confirm (billing changes), or
+  // just the provider pick when already on the local backend. Handled once;
+  // the flag is cleared so a re-render or a later visit does not re-open it.
+  const chatgptPlanIntent = useUiStore((s) => s.view.kind === 'settings' && s.view.useChatgptPlan === true);
+  useEffect(() => {
+    if (!chatgptPlanIntent || !cfg || !chatgptReady(chatgptStatus)) return;
+    if (aiBackendKind !== 'cloud-proxy' && aiBackendKind !== 'local') return;
+    useUiStore.setState({ view: { kind: 'settings' } });
+    if (aiBackendKind === 'cloud-proxy') {
+      setSwitchVia('chatgpt');
+      setPendingSwitch('local');
+    } else {
+      void onChangeProvider('chatgpt');
+    }
+    // onChangeProvider closes over cfg, which is a dependency already.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatgptPlanIntent, cfg, chatgptStatus, aiBackendKind]);
 
   // ui-A7: persist developer-console toggle. Update zustand FIRST so the UI
   // reacts immediately, then write through (roll back on failure).
@@ -940,6 +1023,15 @@ export function SettingsScreen(): React.ReactElement {
               </div>
             ) : null}
 
+            {/* 261023: link a ChatGPT identity to this account, so "Continue
+                with ChatGPT" signs into it. */}
+            <ChatgptLinkRow
+              rowClassName={styles.row}
+              labelClassName={styles.label}
+              valueClassName={styles.monoValue}
+              errorClassName={styles.errorRow}
+            />
+
             {/* 260724: the Playtime row is gone. Weekly usage lives on the plan
                 screen (the rail's Plan icon), and there is no time estimate to
                 show. */}
@@ -986,6 +1078,10 @@ export function SettingsScreen(): React.ReactElement {
                 {t('Update my preferences')}
               </Button>
             </div>
+
+            {/* 261023: the own-key (local profile) import, for a player who
+                said "Not now" to the offer. Hidden when there is nothing. */}
+            <LocalImportRow accountId={authState.user.id} />
 
             <div className={styles.row}>
               <span className={styles.label}>{t('Migrate local companions')}</span>
@@ -1063,6 +1159,20 @@ export function SettingsScreen(): React.ReactElement {
             </p>
           ) : null}
 
+          {/* 261017 (issue #46): the ChatGPT plan is offered on every Sei plan,
+              Free included, so a cloud account sees the card too. Choosing it
+              switches the backend to local (with its own confirm) and picks
+              the ChatGPT plan as the provider. */}
+          {aiBackendKind === 'cloud-proxy' && authState.kind === 'signed_in' ? (
+            <ChatgptPlanSettings
+              active={false}
+              onUsePlan={() => {
+                setSwitchVia('chatgpt');
+                setPendingSwitch('local');
+              }}
+            />
+          ) : null}
+
           {/* Provider + API key — local (BYOK) mode only. */}
           {aiBackendKind === 'local' ? (
             <>
@@ -1077,7 +1187,9 @@ export function SettingsScreen(): React.ReactElement {
               {/* Ollama is keyless (260915): no key row, no "Not set" warning —
                   a local server authenticates nothing, so asking for a key
                   read as a blocker to people setting up local models. */}
-              {currentProvider === 'ollama' ? (
+              {currentProvider === 'chatgpt' ? (
+                <ChatgptPlanSettings active onUsePlan={() => undefined} />
+              ) : currentProvider === 'ollama' ? (
                 <p className={styles.helper}>{t('Ollama runs on your computer and needs no API key.')}</p>
               ) : (
               <div className={styles.row}>
@@ -1114,19 +1226,21 @@ export function SettingsScreen(): React.ReactElement {
                 )}
               </div>
               )}
-              {keyError && currentProvider !== 'ollama' ? <div className={styles.errorRow}>{keyError}</div> : null}
+              {keyError && currentProvider !== 'ollama' && currentProvider !== 'chatgpt' ? (
+                <div className={styles.errorRow}>{keyError}</div>
+              ) : null}
 
               {/* W5 (260817): model picker. Shown once the provider can list
                   models (a saved key, or Ollama which needs none). Persists to
                   provider_config[provider].model — what resolveLocalModel and
                   the bot init payload read. */}
-              {hasKey || currentProvider === 'ollama' ? (
+              {(currentProvider === 'chatgpt' ? chatgptReady(chatgptStatus) : hasKey || currentProvider === 'ollama') ? (
                 <>
                   <div className={styles.row}>
                     <span className={styles.label}>{t('Model')}</span>
                     <span className={styles.monoValue}>
                       {storedModelFor(currentProvider) ??
-                        `${DEFAULT_MODELS[currentProvider]} · ${t('default')}`}
+                        `${defaultModelFor(currentProvider)} · ${t('default')}`}
                     </span>
                     <Button kind="ghost" size="sm" onClick={() => void onOpenModelPicker()}>
                       {t('Choose model')}
@@ -1165,7 +1279,7 @@ export function SettingsScreen(): React.ReactElement {
                                   .join(' ')}
                                 onClick={() => void onPickModel(m.id)}
                               >
-                                <span className={styles.monoValue}>{m.id}</span>
+                                <span className={styles.monoValue}>{m.label ?? m.id}</span>
                                 {m.vision === 'no' ? (
                                   <span className={styles.modelMark}>{t('no vision')}</span>
                                 ) : null}
@@ -1224,6 +1338,12 @@ export function SettingsScreen(): React.ReactElement {
                   ) : null}
                 </>
               ) : null}
+
+              {/* 261017 (issue #46): the "Use your ChatGPT plan" card, offered
+                  beside every other local provider. */}
+              {currentProvider !== 'chatgpt' ? (
+                <ChatgptPlanSettings active={false} onUsePlan={() => onChangeProvider('chatgpt')} />
+              ) : null}
             </>
           ) : null}
         </div>
@@ -1264,56 +1384,13 @@ export function SettingsScreen(): React.ReactElement {
               <>
                 {/* ElevenLabs key (260725, relocated here by W5): powers TTS
                     and Scribe recognition. Write-only, same UX as the API key
-                    row. */}
-                <div className={styles.row}>
-                  <span className={styles.label}>
-                    {t('ElevenLabs key')}
-                    <InfoTip
-                      label={t('About the ElevenLabs key')}
-                      text={t(
-                        'ElevenLabs voices need your own ElevenLabs API key. No key? Switch to the local voices.',
-                      )}
-                    />
-                  </span>
-                  {editingElevenKey ? (
-                    <span className={styles.editor}>
-                      <TextField
-                        value={elevenKeyDraft}
-                        onChange={setElevenKeyDraft}
-                        type="password"
-                        placeholder={t('Your ElevenLabs key')}
-                        autoFocus
-                        onEnter={() => void onSaveElevenKey()}
-                        aria-label={t('ElevenLabs key')}
-                      />
-                      <Button kind="primary" size="sm" onClick={() => void onSaveElevenKey()}>
-                        {t('Save')}
-                      </Button>
-                      <Button kind="quiet" size="sm" onClick={onCancelElevenKey}>
-                        {t('Cancel')}
-                      </Button>
-                    </span>
-                  ) : (
-                    <>
-                      <span
-                        className={
-                          hasElevenKey ? styles.monoValue : `${styles.monoValue} ${styles.statusWarn}`
-                        }
-                      >
-                        {hasElevenKey ? '•'.repeat(API_KEY_BULLET_LEN) : t('Not set')}
-                      </span>
-                      <Button kind="ghost" size="sm" onClick={() => setEditingElevenKey(true)}>
-                        {hasElevenKey ? t('Update') : t('Set')}
-                      </Button>
-                      {hasElevenKey ? (
-                        <Button kind="quiet" size="sm" onClick={() => void onRemoveElevenKey()}>
-                          {t('Remove')}
-                        </Button>
-                      ) : null}
-                    </>
-                  )}
-                </div>
-                {elevenKeyError ? <div className={styles.errorRow}>{elevenKeyError}</div> : null}
+                    row. 261020: the row is shared with the Cloud group. */}
+                {renderElevenKeyRow('byok')}
+                {/* 261019: the voice picker lists the account's own voices
+                    (cloned, designed, saved) through this key. */}
+                <p className={styles.helper}>
+                  {t('Your own ElevenLabs voices show up in the voice picker once your key is saved.')}
+                </p>
                 {/* Local backend + no ElevenLabs key: the cloud voice pool (and
                     the "Let Sei pick" auto-assign) has nothing to play through.
                     Say so here instead of letting companions go silent. */}
@@ -1412,13 +1489,45 @@ export function SettingsScreen(): React.ReactElement {
           </div>
         ) : null}
 
-        {/* ── Games (game adapters, 260908): ONE group for every registered
-            game. The left column picks the game, the right column shows its
-            rows (GamesSettingsGroup); Minecraft's rows are unchanged. Shown
+        {/* ── Voice on Sei Cloud (261020, T158): one OPTIONAL key, only for
+            voices from the user's own ElevenLabs account. Those speak direct
+            with the key and use the user's ElevenLabs credits; Sei's pool
+            voices and speech recognition stay on the proxy (never billed to
+            the key). The BYOK group above keeps its own key row. ───────── */}
+        {elevenKeySettingMode(aiBackendKind, ttsEngine) === 'cloud-optional' ? (
+          <div className={styles.group} data-testid="cloud-own-voices">
+            <h3 className={styles.groupTitle}>{t('Voice')}</h3>
+            <p className={styles.helper}>
+              <strong>{t('Use your own ElevenLabs voices')}</strong>
+            </p>
+            {renderElevenKeyRow('cloud-optional')}
+            <p className={styles.helper}>
+              {t(
+                "Optional. Only needed for voices from your own ElevenLabs account, like a clone of your voice. Those voices use your ElevenLabs credits. Sei's voices are included in your plan.",
+              )}
+            </p>
+          </div>
+        ) : null}
+
+        {/* ── Games & search (game adapters, 260908): ONE group for every
+            registered game. The left column picks the game, the right column
+            shows its rows (GamesSettingsGroup); Minecraft's rows are
+            unchanged. 261023: web search (provider + optional key) moved in
+            as the last tab; it was its own "Search" group above About. Shown
             in both cloud and local mode: none of it depends on the backend. ── */}
         <div className={styles.group}>
-          <h3 className={styles.groupTitle}>{t('Games') /* >Games< */}</h3>
-          <GamesSettingsGroup config={cfg} writeConfig={writeVisionConfig} />
+          <h3 className={styles.groupTitle}>{t('Games & search') /* >Games & search< */}</h3>
+          <GamesSettingsGroup
+            config={cfg}
+            writeConfig={writeVisionConfig}
+            extraTabs={[
+              {
+                id: 'search',
+                title: 'Web search',
+                render: () => <SearchSettingsSection config={cfg} saveConfig={persistConfig} />,
+              },
+            ]}
+          />
         </div>
 
         {/* ── Language (260730) — app UI language, its own section ── */}
@@ -1664,88 +1773,6 @@ export function SettingsScreen(): React.ReactElement {
           </div>
         </div>
 
-        {/* ── Search (260909) ─────────────────────────────────
-            Optional. Companions can look things up on the web through the
-            search / visit tools on every surface. The default is a free
-            keyless chain that needs no setup, so a normal user never opens
-            this group; it exists for the user whose network gets challenged
-            by the scrapers and who wants to plug in their own key. */}
-        <div className={styles.group}>
-          <h3 className={styles.groupTitle}>{t('Search')}</h3>
-          <p className={styles.helper}>
-            {t(
-              'Companions can look things up on the web while you chat or play. This works out of the box for free. Add your own search API key only if lookups keep failing.',
-            )}
-          </p>
-          <div className={styles.row}>
-            <span className={styles.label}>
-              {t('Search provider')}
-              <InfoTip
-                label={t('About search providers')}
-                text={t(
-                  'Auto uses free public search with no account. Brave, Tavily and Serper need an API key from their website; each has a free tier.',
-                )}
-              />
-            </span>
-            <Seg<SearchProvider>
-              aria-label={t('Search provider')}
-              value={searchProvider}
-              onChange={(v) => void onChangeSearchProvider(v)}
-              options={[
-                { value: 'auto', label: t('Auto (free)') },
-                { value: 'brave', label: 'Brave' },
-                { value: 'tavily', label: 'Tavily' },
-                { value: 'serper', label: 'Serper' },
-              ]}
-            />
-          </div>
-          {searchProvider !== 'auto' ? (
-            <div className={styles.row}>
-              <span className={styles.label}>{t('Search API key')}</span>
-              {editingSearchKey ? (
-                <span className={styles.editor}>
-                  <TextField
-                    value={searchKeyDraft}
-                    onChange={setSearchKeyDraft}
-                    type="password"
-                    placeholder={t('Paste your key')}
-                    autoFocus
-                    onEnter={() => void onSaveSearchKey()}
-                    aria-label={t('Search API key')}
-                  />
-                  <Button kind="primary" size="sm" onClick={() => void onSaveSearchKey()}>
-                    {t('Save')}
-                  </Button>
-                  <Button kind="quiet" size="sm" onClick={onCancelSearchKey}>
-                    {t('Cancel')}
-                  </Button>
-                </span>
-              ) : (
-                <>
-                  <span
-                    className={hasSearchKey ? styles.monoValue : `${styles.monoValue} ${styles.statusWarn}`}
-                  >
-                    {hasSearchKey ? '•'.repeat(API_KEY_BULLET_LEN) : t('Not set')}
-                  </span>
-                  <Button kind="ghost" size="sm" onClick={() => setEditingSearchKey(true)}>
-                    {hasSearchKey ? t('Update') : t('Set')}
-                  </Button>
-                  {hasSearchKey ? (
-                    <Button kind="quiet" size="sm" onClick={() => void onClearSearchKey()}>
-                      {t('Clear')}
-                    </Button>
-                  ) : null}
-                </>
-              )}
-            </div>
-          ) : null}
-          {searchProvider !== 'auto' && !hasSearchKey ? (
-            <p className={styles.helper}>
-              {t('Without a key, search falls back to the free providers.')}
-            </p>
-          ) : null}
-        </div>
-
         {/* ── About ───────────────────────────────────────────── */}
         <div className={styles.group}>
           <h3 className={styles.groupTitle}>{t('About') /* >About< */}</h3>
@@ -1964,7 +1991,11 @@ export function SettingsScreen(): React.ReactElement {
       {pendingSwitch ? (
         <SwitchBackendConfirmModal
           direction={pendingSwitch}
-          onCancel={() => setPendingSwitch(null)}
+          via={switchVia ?? undefined}
+          onCancel={() => {
+            setPendingSwitch(null);
+            setSwitchVia(null);
+          }}
           onConfirm={confirmSwitch}
         />
       ) : null}

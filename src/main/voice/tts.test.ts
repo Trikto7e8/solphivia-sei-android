@@ -11,7 +11,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { VOICES } from 'soulcaster';
 
-const { mockGetSession, mockGetCharacter, mockResolveVoiceId, mockResolveRoute, mockResolveKey } = vi.hoisted(() => ({
+const { mockGetSession, mockGetCharacter, mockResolveVoiceId, mockResolveRoute, mockResolveKey, mockIsOwn, mockResolveTtsRoute } = vi.hoisted(() => ({
+  mockIsOwn: vi.fn(),
+  mockResolveTtsRoute: vi.fn(),
   mockGetSession: vi.fn(),
   mockGetCharacter: vi.fn(),
   mockResolveVoiceId: vi.fn(),
@@ -22,14 +24,35 @@ vi.mock('../auth/supabaseClient', () => ({
   getClient: () => ({ auth: { getSession: mockGetSession } }),
 }));
 vi.mock('../characterStore', () => ({ getCharacter: mockGetCharacter }));
-vi.mock('./voiceAssign', () => ({ resolveVoiceId: mockResolveVoiceId }));
+vi.mock('./voiceAssign', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./voiceAssign')>()),
+  resolveVoiceId: mockResolveVoiceId,
+}));
+vi.mock('./ownVoices', () => ({ isOwnVoiceId: mockIsOwn }));
+vi.mock('../auth/authState', () => ({
+  getCurrentAuthState: () => ({ kind: 'signed_in', user: { id: '11111111-1111-4111-8111-111111111111' } }),
+}));
 vi.mock('./elevenLabsKeyStore', () => ({
   resolveElevenLabsRoute: mockResolveRoute,
   resolveElevenLabsKey: mockResolveKey,
+  resolveTtsRoute: mockResolveTtsRoute,
 }));
 
-import { voiceTts, voiceTtsStream, voicePreviewAvailable, ttsLanguageForText } from './tts';
-import type { TtsStreamEvent } from './tts';
+import {
+  voiceTts,
+  voiceTtsStream,
+  voicePreviewAvailable,
+  voicePreviewTts,
+  ttsLanguageForText,
+  directElevenLabsError,
+  onTtsNotice,
+  ownKeyFailureReason,
+  _resetOwnKeyFailuresForTests,
+  _ownKeyFailureCountForTests,
+  clearOwnKeyFailures,
+} from './tts';
+import type { TtsStreamEvent, TtsNotice } from './tts';
+import { ownVoiceStandInId } from './voiceAssign';
 
 const VOICE = VOICES[0].id;
 const CHAR = { id: 'c1', name: 'Testy' };
@@ -45,6 +68,14 @@ beforeEach(() => {
   mockGetSession.mockResolvedValue({ data: { session: { access_token: 'jwt-123' } } });
   mockResolveRoute.mockResolvedValue({ kind: 'proxy' });
   mockResolveKey.mockResolvedValue(null);
+  mockIsOwn.mockReset();
+  mockIsOwn.mockResolvedValue(false);
+  // Default: the base route for every voice (what resolveTtsRoute returns
+  // for a pool voice, and for any voice off cloud). Own-voice-on-cloud tests
+  // override it.
+  mockResolveTtsRoute.mockReset();
+  mockResolveTtsRoute.mockImplementation(async () => ({ route: await mockResolveRoute(), ownKeyOnCloud: false }));
+  _resetOwnKeyFailuresForTests();
 });
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -416,5 +447,273 @@ describe('voicePreviewAvailable', () => {
   it('false for a signed-in BYOK user with no stored key (synthesize would throw)', async () => {
     mockResolveRoute.mockResolvedValue({ kind: 'unconfigured' });
     expect(await voicePreviewAvailable()).toBe(false);
+  });
+});
+
+// 261019: voices from the user's own ElevenLabs account.
+describe('own ElevenLabs voices', () => {
+  const OWN_ID = 'aBcDeFgHiJkLmNoPqRsT';
+  const OWN_CHAR = { id: 'c1', name: 'Testy', metadata: { voiceId: OWN_ID, voiceOwn: { name: 'My Clone', gender: 'male' } } };
+
+  beforeEach(() => {
+    mockGetCharacter.mockResolvedValue(OWN_CHAR);
+    mockResolveVoiceId.mockResolvedValue(OWN_ID);
+  });
+
+  it('direct key route: the own id goes to ElevenLabs unchanged', async () => {
+    mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'byok-key' });
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}/stream`);
+    expect((init.headers as Record<string, string>)['xi-api-key']).toBe('byok-key');
+  });
+
+  // 261020 (T158): own voices on CLOUD.
+  const cloudOwnKey = (): void => {
+    mockResolveTtsRoute.mockImplementation(async ({ own }: { own: boolean }) =>
+      own
+        ? { route: { kind: 'direct', key: 'own-key' }, ownKeyOnCloud: true }
+        : { route: { kind: 'proxy' }, ownKeyOnCloud: false },
+    );
+  };
+  const collectNotices = (): { notices: TtsNotice[]; off: () => void } => {
+    const notices: TtsNotice[] = [];
+    const off = onTtsNotice((n) => notices.push(n));
+    return { notices, off };
+  };
+  const reject401 = (): Response =>
+    new Response('{"detail":{"status":"invalid_api_key"}}', { status: 401 });
+  const streamOk = (): Response =>
+    new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array([7])); c.close(); } }), { status: 200 });
+
+  it('cloud + own voice + no key: the stand-in pool voice speaks via the proxy, with a notice, both paths', async () => {
+    const { notices, off } = collectNotices();
+    const standIn = ownVoiceStandInId(OWN_CHAR as never);
+    expect(VOICES.some((v) => v.id === standIn)).toBe(true);
+    fetchSpy.mockImplementation(async () => okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    let [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.sei.gg/tts/speech');
+    expect(JSON.parse(init.body as string).voice_id).toBe(standIn);
+    fetchSpy.mockImplementation(async () => streamOk());
+    await voiceTtsStream({ characterId: 'c1', text: 'hi' }, () => {});
+    [url, init] = fetchSpy.mock.calls[1] as [string, RequestInit];
+    expect(url).toBe('https://api.sei.gg/tts/speech');
+    expect(JSON.parse(init.body as string).voice_id).toBe(standIn);
+    expect(mockResolveTtsRoute).toHaveBeenCalledWith({ own: true });
+    expect(notices).toEqual([
+      { kind: 'own-voice-stand-in', characterId: 'c1', reason: 'no-key' },
+      { kind: 'own-voice-stand-in', characterId: 'c1', reason: 'no-key' },
+    ]);
+    // the pick itself is never touched (no save path is reachable from here)
+    expect(OWN_CHAR.metadata.voiceId).toBe(OWN_ID);
+    off();
+  });
+
+  it('cloud + own voice + key: speaks DIRECT with the key, no proxy, no notice', async () => {
+    cloudOwnKey();
+    const { notices, off } = collectNotices();
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toContain(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}/stream`);
+    expect((init.headers as Record<string, string>)['xi-api-key']).toBe('own-key');
+    expect((init.headers as Record<string, string>).Authorization).toBeUndefined();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(notices).toEqual([]);
+    off();
+  });
+
+  it('cloud + POOL voice with a key stored: still the proxy (the plan pays, never the key)', async () => {
+    cloudOwnKey();
+    mockGetCharacter.mockResolvedValue({ ...CHAR, metadata: { voiceId: VOICE } });
+    mockResolveVoiceId.mockResolvedValue(VOICE);
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(mockResolveTtsRoute).toHaveBeenCalledWith({ own: false });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.sei.gg/tts/speech');
+    expect((init.headers as Record<string, string>)['xi-api-key']).toBeUndefined();
+  });
+
+  it('cloud + own voice + a key ElevenLabs rejects: falls back to the stand-in on the proxy, then skips the key', async () => {
+    cloudOwnKey();
+    const { notices, off } = collectNotices();
+    const standIn = ownVoiceStandInId(OWN_CHAR as never);
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : okAudio()));
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(fetchSpy.mock.calls.map(([u]) => u)).toEqual([
+      expect.stringContaining(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}`),
+      'https://api.sei.gg/tts/speech',
+    ]);
+    expect(JSON.parse((fetchSpy.mock.calls[1][1] as RequestInit).body as string).voice_id).toBe(standIn);
+    // The refusal is remembered: the next line goes straight to the stand-in.
+    await voiceTts({ characterId: 'c1', text: 'again' });
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+    expect(fetchSpy.mock.calls[2][0]).toBe('https://api.sei.gg/tts/speech');
+    expect(notices.map((n) => n.kind === 'own-voice-stand-in' && n.reason)).toEqual(['key-invalid', 'key-invalid']);
+    off();
+  });
+
+  it('clearOwnKeyFailures (key re-saved): the same key is tried direct again at once', async () => {
+    cloudOwnKey();
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : okAudio()));
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(_ownKeyFailureCountForTests()).toBe(1);
+    clearOwnKeyFailures();
+    fetchSpy.mockClear();
+    fetchSpy.mockImplementation(async () => okAudio());
+    await voiceTts({ characterId: 'c1', text: 'again' });
+    expect(fetchSpy.mock.calls[0][0]).toContain(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}`);
+  });
+
+  it('remembered refusals are bounded (expired pruned, oldest dropped past the cap)', async () => {
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : okAudio()));
+    for (let i = 0; i < 80; i++) {
+      // A different key per line: each refusal is its own (key, voice) entry.
+      mockResolveTtsRoute.mockImplementation(async ({ own }: { own: boolean }) =>
+        own
+          ? { route: { kind: 'direct', key: `own-key-${i}` }, ownKeyOnCloud: true }
+          : { route: { kind: 'proxy' }, ownKeyOnCloud: false },
+      );
+      await voiceTts({ characterId: 'c1', text: `line ${i}` });
+    }
+    expect(_ownKeyFailureCountForTests()).toBeLessThanOrEqual(64);
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      vi.setSystemTime(Date.now() + 6 * 60_000);
+      await voiceTts({ characterId: 'c1', text: 'later' });
+      // Everything older than the TTL was pruned; only the newest refusal is left.
+      expect(_ownKeyFailureCountForTests()).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('streaming: a rejected own key falls back before any chunk reaches the sink', async () => {
+    cloudOwnKey();
+    const events: TtsStreamEvent[] = [];
+    fetchSpy.mockImplementation(async (url: string) => (url.includes('elevenlabs.io') ? reject401() : streamOk()));
+    await voiceTtsStream({ characterId: 'c1', text: 'hi' }, (e) => events.push(e));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+    expect(fetchSpy.mock.calls[1][0]).toBe('https://api.sei.gg/tts/speech');
+    expect(events.some((e) => 'done' in e)).toBe(true);
+    expect(events.some((e) => 'error' in e)).toBe(false);
+  });
+
+  it('cloud + own key + a network failure: the normal error, no fallback (not the key\'s fault)', async () => {
+    cloudOwnKey();
+    fetchSpy.mockRejectedValue(new Error('ECONNRESET'));
+    await expect(voiceTts({ characterId: 'c1', text: 'hi' })).rejects.toThrow(/^VOICE_TTS_FAILED/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('local (BYOK) + own voice + a rejected key: unchanged, the error surfaces, never the proxy', async () => {
+    mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'byok-key' });
+    fetchSpy.mockImplementation(async () => reject401());
+    await expect(voiceTts({ characterId: 'c1', text: 'hi' })).rejects.toThrow(/^VOICE_ELEVEN_KEY_INVALID/);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('ownKeyFailureReason maps only the key-side sentinels', () => {
+    expect(ownKeyFailureReason(new Error('VOICE_ELEVEN_KEY_INVALID: x'))).toBe('key-invalid');
+    expect(ownKeyFailureReason(new Error('VOICE_NOT_IN_LIBRARY: x'))).toBe('voice-missing');
+    expect(ownKeyFailureReason(new Error('VOICE_ELEVEN_QUOTA: x'))).toBe('quota');
+    expect(ownKeyFailureReason(new Error('VOICE_NEEDS_PAID_PLAN: x'))).toBe('plan');
+    expect(ownKeyFailureReason(new Error('VOICE_TTS_FAILED: status 500'))).toBeNull();
+    expect(ownKeyFailureReason(new Error('VOICE_NO_SESSION: x'))).toBeNull();
+  });
+
+  it("an adopted character with its author's own voice plays a pool voice on the proxy", async () => {
+    const pool = VOICES[1].id;
+    mockGetCharacter.mockResolvedValue({ ...OWN_CHAR, owner: '22222222-2222-4222-8222-222222222222' });
+    mockResolveVoiceId.mockResolvedValue(pool); // what the real resolver borrows
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    const [url, init] = fetchSpy.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('https://api.sei.gg/tts/speech');
+    expect(JSON.parse(init.body as string).voice_id).toBe(pool);
+  });
+
+  it('key removed (unconfigured): the normal setup hint, not a swap', async () => {
+    mockResolveRoute.mockResolvedValue({ kind: 'unconfigured' });
+    await expect(voiceTts({ characterId: 'c1', text: 'hi' })).rejects.toThrow(/VOICE_NOT_CONFIGURED/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('a pool voice on the proxy route is unaffected by the own-voice gate', async () => {
+    mockGetCharacter.mockResolvedValue({ ...CHAR, metadata: { voiceId: VOICE } });
+    mockResolveVoiceId.mockResolvedValue(VOICE);
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.sei.gg/tts/speech');
+  });
+
+  it('a stale voiceOwn beside a POOL id does not trip the own-voice gate', async () => {
+    mockGetCharacter.mockResolvedValue({ ...CHAR, metadata: { voiceId: VOICE, voiceOwn: { name: 'Old Clone' } } });
+    mockResolveVoiceId.mockResolvedValue(VOICE);
+    fetchSpy.mockResolvedValue(okAudio());
+    await voiceTts({ characterId: 'c1', text: 'hi' });
+    expect(fetchSpy.mock.calls[0][0]).toBe('https://api.sei.gg/tts/speech');
+  });
+
+  it('preview allowlist: pool or a voice in the current account, nothing else', async () => {
+    mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'byok-key' });
+    fetchSpy.mockResolvedValue(okAudio());
+    await expect(voicePreviewTts({ voiceId: 'SomeoneElse123456789' })).rejects.toThrow(/unknown voice/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    mockIsOwn.mockResolvedValue(true);
+    await voicePreviewTts({ voiceId: OWN_ID });
+    expect(mockIsOwn).toHaveBeenCalledWith(OWN_ID);
+    expect(fetchSpy.mock.calls[0][0]).toContain(`/v1/text-to-speech/${OWN_ID}`);
+  });
+
+  it('cloud preview: an own voice samples through the own key, a pool voice through the proxy', async () => {
+    cloudOwnKey();
+    fetchSpy.mockImplementation(async () => okAudio());
+    mockIsOwn.mockImplementation(async (id: string) => id === OWN_ID);
+    await voicePreviewTts({ voiceId: OWN_ID, calmness: 0.35 });
+    expect(fetchSpy.mock.calls[0][0]).toContain(`api.elevenlabs.io/v1/text-to-speech/${OWN_ID}`);
+    expect(((fetchSpy.mock.calls[0][1] as RequestInit).headers as Record<string, string>)['xi-api-key']).toBe('own-key');
+    await voicePreviewTts({ voiceId: VOICE, calmness: 0.35 });
+    expect(fetchSpy.mock.calls[1][0]).toBe('https://api.sei.gg/tts/speech');
+  });
+});
+
+describe('directElevenLabsError (BYOK account answers)', () => {
+  it('voice missing → VOICE_NOT_IN_LIBRARY', () => {
+    expect(directElevenLabsError(404, '{"detail":{"status":"voice_not_found"}}')).toMatch(/^VOICE_NOT_IN_LIBRARY/);
+  });
+
+  it('free plan refusing a library voice → VOICE_NEEDS_PAID_PLAN', () => {
+    const body = JSON.stringify({
+      detail: { status: 'free_users_not_allowed', message: 'Free users cannot use library voices via the API.' },
+    });
+    expect(directElevenLabsError(402, body)).toMatch(/^VOICE_NEEDS_PAID_PLAN/);
+    expect(directElevenLabsError(403, body)).toMatch(/^VOICE_NEEDS_PAID_PLAN/);
+    expect(directElevenLabsError(401, body)).toMatch(/^VOICE_NEEDS_PAID_PLAN/);
+  });
+
+  it('out of their own credits → VOICE_ELEVEN_QUOTA, never Sei credit copy', () => {
+    expect(directElevenLabsError(401, '{"detail":{"status":"quota_exceeded"}}')).toMatch(/^VOICE_ELEVEN_QUOTA/);
+    expect(directElevenLabsError(402, '{"detail":{"code":"insufficient_credits"}}')).toMatch(/^VOICE_ELEVEN_QUOTA/);
+    expect(directElevenLabsError(402, '')).toMatch(/^VOICE_ELEVEN_QUOTA/);
+  });
+
+  it('a rejected key → VOICE_ELEVEN_KEY_INVALID; other statuses fall through', () => {
+    expect(directElevenLabsError(401, '{"detail":{"status":"invalid_api_key"}}')).toMatch(/^VOICE_ELEVEN_KEY_INVALID/);
+    expect(directElevenLabsError(429, '{}')).toBeNull();
+    expect(directElevenLabsError(500, 'oops')).toBeNull();
+  });
+
+  it('wired into the direct route only', async () => {
+    mockResolveRoute.mockResolvedValue({ kind: 'direct', key: 'byok-key' });
+    fetchSpy.mockImplementation(async () => new Response('{"detail":{"status":"insufficient_credits"}}', { status: 402 }));
+    await expect(voiceTts({ characterId: 'c1', text: 'hi' })).rejects.toThrow(/^VOICE_ELEVEN_QUOTA/);
+    await expect(voiceTtsStream({ characterId: 'c1', text: 'hi' }, () => {})).rejects.toThrow(/VOICE_ELEVEN_QUOTA/);
+    mockResolveRoute.mockResolvedValue({ kind: 'proxy' });
+    await expect(voiceTts({ characterId: 'c1', text: 'hi' })).rejects.not.toThrow(/VOICE_ELEVEN_QUOTA/);
   });
 });

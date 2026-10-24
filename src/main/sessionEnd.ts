@@ -52,6 +52,7 @@ function errorEndReason(status: Extract<BotStatus, { kind: 'error' }>): SessionE
     case 'CLOUD_CREDITS_DEPLETED':
       return 'credits_depleted';
     case 'DAILY_LIMIT_REACHED':
+    case 'CHATGPT_USAGE_LIMIT':
       return 'rate_limited';
     case 'MODDED_HOST_REJECTED':
     case 'ONLINE_MODE_REJECTED':

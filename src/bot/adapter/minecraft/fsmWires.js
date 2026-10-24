@@ -66,6 +66,9 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
         // Forward the live PvP flag (combat.js stamps it) so the prompt addendum
         // can pick "hit back" vs "can't hit back" framing on a player hit.
         pvp: !!payload.pvp,
+        // 261011: the brain's mid-action coalescing lets a falling health
+        // value through inside its window.
+        health: Number.isFinite(bot.health) ? bot.health : undefined,
       })
     } catch (err) {
       console.error?.(`[sei/wires] onAttacked handler threw: ${err && err.message}`)
@@ -90,6 +93,14 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
         ownerLabel: payload.ownerLabel ?? 'the player',
         distance: typeof payload.distance === 'number' ? payload.distance : null,
         engaged: !!payload.engaged,
+        // 261012: the pre-hit owner-threat watch (combat.js) and the counts the
+        // defend turn needs to pick its move.
+        threat: payload.threat === true,
+        ownerDistance: typeof payload.ownerDistance === 'number' ? payload.ownerDistance : null,
+        ownerHp: typeof payload.ownerHp === 'number' ? payload.ownerHp : null,
+        count: typeof payload.count === 'number' ? payload.count : null,
+        othersOnOwner: typeof payload.othersOnOwner === 'number' ? payload.othersOnOwner : 0,
+        actionOnIt: payload.actionOnIt === true,
       })
     } catch (err) {
       console.error?.(`[sei/wires] onOwnerAttacked handler threw: ${err && err.message}`)
@@ -113,7 +124,7 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
     if (!payload) return
     try {
       handlers.onAttacked?.({
-        attacker: payload.threat ?? null,
+        attacker: payload.entity ?? payload.threat ?? null,
         attackerLabel: payload.threatLabel
           ?? payload.threat?.name
           ?? 'a threat',
@@ -156,11 +167,20 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
   // items dropped). Thin translation to handlers.onDeath; the brain enqueues it
   // at P1_CHAT (see src/bot/brain/index.js) so it earns a prompt turn + a say()
   // but never outranks a real P0 safety event.
+  // 261019 (pass 19): the payload also carries what she lost, when she died
+  // and the game's death message (behaviors/deathTracker.js); sei:dying is
+  // the instant of death, before the respawn.
   const onSeiDeath = (payload) => {
-    try { handlers.onDeath?.({ pos: payload?.pos ?? null }) }
+    const { pos = null, ...rest } = payload ?? {}
+    try { handlers.onDeath?.({ pos, ...rest }) }
     catch (err) { console.error?.(`[sei/wires] onDeath handler threw: ${err && err.message}`) }
   }
   bot.on('sei:death', onSeiDeath)
+  const onSeiDying = () => {
+    try { handlers.onDying?.() }
+    catch (err) { console.error?.(`[sei/wires] onDying handler threw: ${err && err.message}`) }
+  }
+  bot.on('sei:dying', onSeiDying)
 
   // ── Player join / leave ─────────────────────────────────────────────
   const onPlayerJoined = (player) => {
@@ -201,6 +221,7 @@ export function wireBotEvents(bot, handlers, _opts = {}) {
     try { bot.off?.('sei:reflex', onSeiReflex) } catch {}
     try { bot.off?.('sei:survival', onSeiSurvival) } catch {}
     try { bot.off?.('sei:death', onSeiDeath) } catch {}
+    try { bot.off?.('sei:dying', onSeiDying) } catch {}
     try { bot.off?.('playerJoined', onPlayerJoined) } catch {}
     try { bot.off?.('playerLeft', onPlayerLeft) } catch {}
     try { bot.off?.('spawn', onSpawn) } catch {}

@@ -6,16 +6,20 @@ import { facingLine } from '../facing.js'
 import { inventory, heldItem } from './inventory.js'
 import { aroundFeet } from './blocks.js'
 import { surveyBlocks } from './veins.js'
-import { nearbyEntities, droppedItemName } from './entities.js'
+import { nearbyEntities, droppedItemName, isDeadEntity, trackEntityDeaths } from './entities.js'
+import { givenDropFor } from './givenDrops.js'
+import { HOSTILE_MOBS } from '../behaviors/hostiles.js'
+import { CRITICAL_HP } from '../behaviors/attack.js'
 import { setHandles, HANDLE_TTL_MS } from './targeting.js'
 import { getCraftableEntries } from './craftable.js'
 import { getFollowTargetLabel, getFollowStuckInfo } from '../behaviors/follow.js'
-import { nextMilestone, readProgressionState } from './progression.js'
+import { nextMilestone, readProgressionState, recipeNote, pickaxeLine, furnaceLine } from './progression.js'
 // 260513-wkd: centralised in_flight line rendering. Helper preserves the
 // em-dash + y=<currentY> channels byte-stable; only the elapsed
 // trailer changes from `(Xs)` to `started=Xs ago` (locked in CONTEXT.md).
-import { getInFlightLineForSnapshot } from '../../../brain/inflight.js'
+import { getInFlightLineForSnapshot, idleLineForSnapshot } from '../../../brain/inflight.js'
 import { tallyAggro, aggroLine, AGGRO_PAIR_RANGE } from './aggro.js'
+import { liveInventoryItems } from './liveInventory.js'
 
 const MAX_ENTITIES = 6
 
@@ -63,6 +67,50 @@ export function ownerDistanceBlocks(ownerPos, selfPos) {
   const d = Math.sqrt((ax - bx) ** 2 + (ay - by) ** 2 + (az - bz) ** 2)
   return Number.isFinite(d) ? Math.round(d) : null
 }
+
+// 261011: the owner's health, read from their entity metadata (vanilla syncs a
+// living entity's health to every client tracking it). Quality eval
+// 2026-10-11 (combat_night): the player typed "im at 3 hp, come back" and the
+// companion, whose snapshot never showed the player's health, told them to
+// stay put and kept fighting 17 blocks away. Returns null when the registry or
+// the metadata slot is missing, so the clause is simply left out.
+export const OWNER_LOW_HP = 8
+export function ownerHealth(registry, entity) {
+  const keys = registry?.entitiesByName?.player?.metadataKeys
+  const idx = Array.isArray(keys) ? keys.indexOf('health') : -1
+  if (idx < 0) return null
+  const raw = entity?.metadata?.[idx]
+  const hp = typeof raw === 'number' ? raw : Number.NaN
+  if (!Number.isFinite(hp) || hp < 0 || hp > 1024) return null
+  return Math.round(hp)
+}
+export function ownerHealthClause(hp) {
+  if (hp == null) return ''
+  return `, hp ${hp}/20${hp <= OWNER_LOW_HP ? ' (low)' : ''}`
+}
+
+// 261012: how far a hostile is from you and from the player, on its
+// `nearby entities` line. Quality eval protect_player: at the order the two
+// zombies were listed with coords only, 21 blocks from a 10 hp player, and
+// the model judged them "nearby" and walked over to stand beside the player
+// instead of meeting them. Hostiles only; other entities keep the bare form.
+export function hostileDistances(e, me, ownerEnt, ownerLabel) {
+  if (!e || e.username || !HOSTILE_MOBS.has(e.name)) return ''
+  const d = (a, b) => {
+    if (!a?.position || !b?.position) return null
+    try {
+      const v = a.position.distanceTo(b.position)
+      return Number.isFinite(v) ? Math.round(v) : null
+    } catch { return null }
+  }
+  const fromMe = d(e, me)
+  const fromOwner = ownerLabel ? d(e, ownerEnt) : null
+  const parts = []
+  if (fromMe != null) parts.push(`${fromMe} from you`)
+  if (fromOwner != null) parts.push(`${fromOwner} from ${ownerLabel}`)
+  return parts.length ? ` (${parts.join(', ')})` : ''
+}
+
 // Entity visibility radius (blocks). 64 = 4 chunks, the rough distance at
 // which a real Minecraft player can see and identify another player. Bumped
 // from 24 so the player stays visible (with coords) as they walk a few chunks
@@ -145,6 +193,13 @@ export function composeSnapshot(bot, opts = {}) {
 
   // Vitals
   lines.push(`hp: ${v.hp}/20  food: ${v.food}/20  xp: lvl ${v.xp.level}`)
+  // 261019 (pass 18): the attackEntity refusal line before she tries it. In
+  // the combat_night eval she called attackEntity again right after it refused
+  // at low health (on another mob, or after eating and expecting the bread to
+  // heal her at once).
+  if (Number.isFinite(v.hp) && v.hp > 0 && v.hp <= CRITICAL_HP) {
+    lines.push(`low health: attackEntity will not start a mob fight at ${CRITICAL_HP} hp or less. Health comes back on its own over time while your food bar is nearly full; eating does not heal you at once.`)
+  }
   if (v.sleeping) lines.push('status: sleeping')
 
   // Holding
@@ -160,8 +215,21 @@ export function composeSnapshot(bot, opts = {}) {
   // brain + adapter share a single source-of-truth formatter. The helper
   // preserves the em-dash + y=<currentY> channels byte-stable;
   // only the elapsed trailer changes from `(Xs)` to `started=Xs ago`.
-  const inFlightLine = getInFlightLineForSnapshot(inFlight)
+  // 261014: the gather line reads the same item counts as the inventory line.
+  const inFlightLine = getInFlightLineForSnapshot(inFlight, Date.now(), { inventory: inv })
   if (inFlightLine) lines.push(inFlightLine)
+  // 261012: say so when nothing runs. The absence of an in_flight line was the
+  // only signal, and in the scripted-convo eval she told the player "still
+  // getting you that cobble" four times with no action running at all.
+  // A follow is a background action with no in_flight line, so say that it
+  // is still on rather than call her idle while she trails the player.
+  // 261015: and name the last action and how it ended (finished or stopped),
+  // so a stopped gather is not still "in progress" in her head.
+  else {
+    let following = null
+    try { following = getFollowTargetLabel() } catch { following = null }
+    lines.push(idleLineForSnapshot({ recentActions: opts.recentActions, following }))
+  }
 
   // Inventory — append `(K/36 slots)` so the LLM can't confabulate "inventory
   // full" when downstream actions return "no X in inventory" (the real cause
@@ -172,8 +240,12 @@ export function composeSnapshot(bot, opts = {}) {
   const invStr = invEntries.length
     ? invEntries.map(([k, n]) => `${k}×${n}`).join(' ')
     : 'empty'
-  const slotsUsed = (typeof bot.inventory?.items === 'function') ? bot.inventory.items().length : 0
-  lines.push(`inventory (${slotsUsed}/36 slots): ${invStr}`)
+  const slotsUsed = liveInventoryItems(bot).length
+  // 261012 (pass 4a): "N of 36 slots used", not "N/36": a fraction next to
+  // item counts read as a count of items.
+  lines.push(`inventory (${slotsUsed} of 36 slots used): ${invStr}`)
+  try { lines.push(pickaxeLine(inv)) } catch { /* best-effort */ }
+  try { const f = furnaceLine(bot._seiFurnaceCooking); if (f) lines.push(f) } catch { /* best-effort */ }
 
   // Craftable — what the bot can make RIGHT NOW from its materials. Gated by a
   // crafting table in reach: without one only 2×2 (inventory-grid) recipes show;
@@ -239,7 +311,13 @@ export function composeSnapshot(bot, opts = {}) {
       // dirt drop) and walk to the right one — walking onto it picks it up.
       if (label === 'item' || label === 'item_stack') {
         const it = droppedItemName(e)
-        if (it) label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
+        if (it) {
+          label = `item(${it.name}${it.count > 1 ? ` x${it.count}` : ''})`
+          // 261017 (pass 14): her own toss to the player is theirs, not loot.
+          // Only a stack that decodes is labelled.
+          const given = givenDropFor(bot, e)
+          if (given) label = `${label.slice(0, -1)}, you gave this to ${given.to ?? 'the player'})`
+        }
       }
       // 260618: mark fellow AI companions so the model treats them as teammates
       // (coordinate / direct) and never mistakes one for the human player.
@@ -247,7 +325,7 @@ export function composeSnapshot(bot, opts = {}) {
       const x = Math.round(e.position.x)
       const y = Math.round(e.position.y)
       const z = Math.round(e.position.z)
-      lines.push(`  ${tag} ${label} @${x},${y},${z}`)
+      lines.push(`  ${tag} ${label} @${x},${y},${z}${hostileDistances(e, bot.entity, owner?.player?.entity, pinUsername)}`)
       handles.push([tag, { kind: 'entity', entityId: e.id, expiresAt }])
     }
     if (ents.more > 0) lines.push(`  +${ents.more} more`)
@@ -275,9 +353,16 @@ export function composeSnapshot(bot, opts = {}) {
   // (or a malformed spine) just skips the line — a snapshot tick never throws.
   // This is ADDITIVE; the heartbeat frontier path (orchestrator renderHeartbeat)
   // is complementary and untouched.
-  try {
-    const nm = nextMilestone(readProgressionState(bot))
-    if (nm?.node) lines.push(`next: ${nm.node.label} — ${nm.action}`)
+  // 261017 (pass 14): left out while the player is owed something
+  // (opts.hideNext): the eval's completion turns read "next: make a furnace"
+  // and went back to her own stone over the logs the player asked for.
+  if (!opts.hideNext) try {
+    const pstate = readProgressionState(bot)
+    const nm = nextMilestone(pstate)
+    if (nm?.node) {
+      const recipe = recipeNote(nm.node, pstate.items)
+      lines.push(`next: ${nm.node.label} — ${nm.action}${recipe ? `. ${recipe}` : ''}`)
+    }
   } catch { /* progression advisory is best-effort; never break a snapshot tick */ }
 
   // Owner whereabouts (260607). The pinned owner can be BEYOND the entity
@@ -305,7 +390,9 @@ export function composeSnapshot(bot, opts = {}) {
       // so the model connects `owner Ouen` with `SSk1tz` in `nearby entities`
       // (otherwise it can read them as two different people).
       const liveName = owner?.username && owner.username !== pinUsername ? ` (in-game ${owner.username})` : ''
-      lines.push(`owner ${pinUsername}${liveName}: @${ox},${oy},${oz}${dist != null ? ` (${dist} blocks away)` : ''}`)
+      let hpClause = ''
+      try { hpClause = ownerHealthClause(ownerHealth(bot.registry, ownerEnt)) } catch { /* leave it out */ }
+      lines.push(`owner ${pinUsername}${liveName}: @${ox},${oy},${oz}${dist != null ? ` (${dist} blocks away)` : ''}${hpClause}`)
       // Who the hostiles are on (260731). Only worth printing when the two of
       // us are close enough for it to be ONE fight — see AGGRO_PAIR_RANGE. Not
       // line-of-sight filtered like `nearby entities`: a zombie hitting the
@@ -314,7 +401,7 @@ export function composeSnapshot(bot, opts = {}) {
       if (dist != null && dist <= AGGRO_PAIR_RANGE) {
         try {
           const tally = tallyAggro({
-            mobs: Object.values(bot.entities ?? {}),
+            mobs: Object.values(bot.entities ?? {}).filter((m) => !isDeadEntity(bot, m)),
             selfPos: me.position,
             ownerPos: ownerEnt.position,
           })
@@ -343,6 +430,103 @@ export function composeSnapshot(bot, opts = {}) {
 // nearby set despawns at once → "killed wolf; killed arrow"), and on picked-up
 // or despawned dropped items ("killed item"). That fed the model fabricated
 // history. Inventory + hp deltas remain diff-based.
+// 261014: which of her own actions can account for an inventory change.
+// Gains: a gather's drop items, a craft's output (plus the planks, sticks and
+// table craft makes on the way), a pickup / withdraw of the item it names, and
+// whatever a dig, pickup, withdraw, furnace take or shelter brings in, except
+// gear and food (below). Losses: anything used up by an action that places,
+// crafts, eats, drops, stores, smelts, or wears out a tool. Moving and
+// following explain nothing: items the player tosses get picked up while she
+// walks. A fight explains no gain either (261014 follow-up): the player
+// tossing her a sword and bread mid-fight has to raise the banner, and a mob
+// drop is not hers in the sense the quiet line means.
+const OWN_GAIN_ACTIONS = new Set(['dig', 'craft', 'pickup', 'withdrawItem', 'takeSmelted', 'shelter'])
+const OWN_LOSS_ACTIONS = new Set(['gather', 'dig', 'placeBlock', 'build', 'shelter', 'craft', 'consumeItem', 'dropItem', 'give', 'depositItem', 'smeltInput', 'addFuel', 'activateItem', 'activateBlock', 'attackEntity'])
+// An action that ended just before the last tick can still have drops landing.
+const OWN_ACTION_SLACK_MS = 2000
+// Parts craft() makes from the bag before the asked-for item (craft.js).
+const CRAFT_PART = /(^|_)planks$|^stick$|^crafting_table$/
+// Tools, weapons and armor: a new one is something to equip, so it reaches
+// the banner unless the action asked for that very item.
+const GEAR = /_(pickaxe|axe|shovel|hoe|sword|helmet|chestplate|leggings|boots)$|^(bow|crossbow|trident|mace|shield|elytra|fishing_rod|shears|flint_and_steel)$/
+// Used only when no registry food list is passed in.
+const FALLBACK_FOODS = new Set([
+  'apple', 'golden_apple', 'enchanted_golden_apple', 'bread', 'cookie', 'cake', 'pumpkin_pie', 'melon_slice',
+  'carrot', 'golden_carrot', 'potato', 'baked_potato', 'poisonous_potato', 'beetroot', 'beetroot_soup',
+  'mushroom_stew', 'rabbit_stew', 'suspicious_stew', 'sweet_berries', 'glow_berries', 'dried_kelp', 'honey_bottle', 'chorus_fruit',
+  'beef', 'cooked_beef', 'porkchop', 'cooked_porkchop', 'mutton', 'cooked_mutton', 'chicken', 'cooked_chicken',
+  'rabbit', 'cooked_rabbit', 'cod', 'cooked_cod', 'salmon', 'cooked_salmon', 'tropical_fish', 'pufferfish',
+  'rotten_flesh', 'spider_eye',
+])
+
+/** Is this item something to equip or eat (a gift worth reacting to)? */
+export function isGearOrFood(item, isFood) {
+  if (typeof item !== 'string') return false
+  if (GEAR.test(item)) return true
+  return typeof isFood === 'function' ? !!isFood(item) : FALLBACK_FOODS.has(item)
+}
+
+/**
+ * Split inventory deltas into the ones her own actions in the window explain
+ * and the rest.
+ * @param {Array<{item:string, n:number}>} deltas  signed counts
+ * @param {Array<{name:string, args?:any, startedAt:number, endedAt:number|null, progress?:any}>|null|undefined} actions
+ * @param {number|null} sinceMs  previous snapshot time
+ * @param {number} nowMs
+ * @param {{ died?: boolean, isFood?: (item:string) => boolean }} [opts]
+ *   died: she died in the window, so losses are the death's, not an action's.
+ * @returns {{ own: Array<{item:string,n:number}>, ownNames: string[], other: Array<{item:string,n:number}> }}
+ */
+export function splitOwnInventoryChanges(deltas, actions, sinceMs, nowMs, opts = {}) {
+  const own = []
+  const other = []
+  const names = []
+  const inWindow = (Array.isArray(actions) ? actions : []).filter(a =>
+    a && typeof a.name === 'string' &&
+    typeof a.startedAt === 'number' && a.startedAt <= nowMs &&
+    (a.endedAt == null || sinceMs == null || a.endedAt >= sinceMs - OWN_ACTION_SLACK_MS))
+  const named = (a) => (typeof a.args?.item === 'string' ? a.args.item : null)
+  const ownsGain = (a, item) => {
+    if (a.name === 'gather') {
+      const items = a.progress?.items
+      if (Array.isArray(items) && items.length > 0) return items.includes(item)
+      return !isGearOrFood(item, opts.isFood)
+    }
+    if (a.name === 'craft') return item === named(a) || CRAFT_PART.test(item)
+    if (!OWN_GAIN_ACTIONS.has(a.name)) return false
+    if ((a.name === 'pickup' || a.name === 'withdrawItem') && named(a) === item) return true
+    return !isGearOrFood(item, opts.isFood)
+  }
+  for (const d of deltas) {
+    const who = inWindow.find(a => {
+      if (d.n > 0) return ownsGain(a, d.item)
+      if (opts.died) return false
+      return OWN_LOSS_ACTIONS.has(a.name)
+    })
+    if (who) {
+      own.push(d)
+      if (!names.includes(who.name)) names.push(who.name)
+    } else {
+      other.push(d)
+    }
+  }
+  return { own, ownNames: names, other }
+}
+
+/**
+ * Does this change look like the whole inventory going at once (a death the
+ * composer did not see, e.g. it was created after it)? Two or more kinds lost
+ * and nothing left.
+ * @param {Record<string, number>|null} prevInv
+ * @param {Record<string, number>} currInv
+ */
+export function looksLikeWholeInventoryLost(prevInv, currInv) {
+  if (!prevInv) return false
+  const kinds = Object.entries(prevInv).filter(([, v]) => v > 0).length
+  const left = Object.values(currInv ?? {}).reduce((sum, v) => sum + (v > 0 ? v : 0), 0)
+  return kinds >= 2 && left === 0
+}
+
 /**
  * Create a stateful snapshot composer that tracks per-instance previous
  * inventory / hp state and injects a `recent_events:` line into each composed
@@ -355,8 +539,19 @@ export function composeSnapshot(bot, opts = {}) {
  * @param {{ bot: import('mineflayer').Bot }} deps
  */
 export function createSnapshotComposer({ bot }) {
+  trackEntityDeaths(bot)
   let prevInventory = null
   let prevHp = null
+  let prevTickAt = null
+  // 261014 follow-up: a death since the last snapshot. The respawn snapshot
+  // must not blame the dropped inventory on the action that was running.
+  let diedSinceTick = false
+  const onDeath = () => { diedSinceTick = true }
+  try { bot.on('death', onDeath) } catch { /* fake bots in tests */ }
+  const isFood = (item) => {
+    const foods = bot.registry?.foodsByName
+    return foods ? !!foods[item] : FALLBACK_FOODS.has(item)
+  }
   // Session clock anchor: the composer is created once per bot session (right
   // around join), so "now minus this" is minutes-in-world for the `real time`
   // snapshot line.
@@ -397,25 +592,33 @@ export function createSnapshotComposer({ bot }) {
   // — the bot kept overlooking handoffs like "i'll turn your logs to planks"
   // because the gain/loss was buried in a trailing recent_events line). Deaths +
   // hp stay in `other` → the existing recent_events line.
-  function computeEvents(currInv, currHp) {
+  function computeEvents(currInv, currHp, recentActions, now) {
     // 1. Inventory deltas — gains then losses, capped to 6 entries total.
-    const inv = []
+    const deltas = []
     if (prevInventory) {
       // Gains / increases
       for (const [k, v] of Object.entries(currInv)) {
         const prev = prevInventory[k] ?? 0
-        if (v > prev) inv.push(`+${v - prev} ${k}`)
+        if (v > prev) deltas.push({ item: k, n: v - prev })
       }
       // Losses / removed keys
       for (const [k, v] of Object.entries(prevInventory)) {
         const curr = currInv[k] ?? 0
-        if (curr < v) inv.push(`-${v - curr} ${k}`)
+        if (curr < v) deltas.push({ item: k, n: curr - v })
       }
     }
+    // 261014: changes her own actions explain (a gather's logs, a craft's
+    // planks) are split from the rest, so they are not read as a gift.
+    const died = diedSinceTick || looksLikeWholeInventoryLost(prevInventory, currInv)
+    const { own, ownNames, other: unexplained } = splitOwnInventoryChanges(deltas, recentActions, prevTickAt, now, { died, isFood })
     const cap = 6
-    const invCapped = inv.length > cap
-      ? [...inv.slice(0, cap), `(+${inv.length - cap} more)`]
-      : inv
+    const fmt = (d) => `${d.n > 0 ? '+' : '-'}${Math.abs(d.n)} ${d.item}`
+    const capList = (list) => {
+      const out = list.map(fmt)
+      return out.length > cap ? [...out.slice(0, cap), `(+${out.length - cap} more)`] : out
+    }
+    const invCapped = capList(unexplained)
+    const ownCapped = capList(own)
 
     const other = []
     // 2. Real creature deaths near the bot (from entityDead — see above). No
@@ -430,7 +633,7 @@ export function createSnapshotComposer({ bot }) {
       other.push(`hp -${prevHp - currHp}`)
     }
 
-    return { inv: invCapped, other }
+    return { inv: invCapped, own: ownCapped, ownNames, other, unexplained }
   }
 
   return {
@@ -438,23 +641,50 @@ export function createSnapshotComposer({ bot }) {
       const base = composeSnapshot(bot, { ...opts, sessionStartedAtMs })
       const currInv = inventory(bot)
       const currHp = Math.round(bot.health ?? 0)
-      const { inv, other } = computeEvents(currInv, currHp)
+      const now = Date.now()
+      const { inv, own, ownNames, other, unexplained } = computeEvents(currInv, currHp, opts.recentActions, now)
+      // 261018 (pass 16): items that came in without an action of hers (a
+      // gift, a pickup) go to the caller too, so the brain can write them into
+      // the conversation record. The banner below is shown on this one
+      // snapshot only; a later turn saw her own "i have zero items" line in
+      // the transcript and nothing after it saying that had changed.
+      // Only gear and food go to the record: blocks her own walking or a dig
+      // knocks loose (dirt, cobblestone) also count as unexplained and filled
+      // the 12 event lines that recall answers rely on (pass 16 review).
+      if (typeof opts.onUnexplainedGains === 'function') {
+        const gains = unexplained.filter((d) => d.n > 0 && isGearOrFood(d.item, isFood))
+        if (gains.length > 0) { try { opts.onUnexplainedGains(gains) } catch { /* never break a snapshot */ } }
+      }
 
       // Update inv/hp state AFTER computing — first call has no deltas.
       prevInventory = currInv
       prevHp = currHp
+      prevTickAt = now
+      diedSinceTick = false
       deaths = new Map()   // drain the death buffer for the next window
 
-      if (inv.length === 0 && other.length === 0) return base
+      if (inv.length === 0 && own.length === 0 && other.length === 0) return base
       const lines = base.split('\n')
+      const invIdx = () => lines.findIndex(l => l.startsWith('inventory ('))
+
+      // 261014: her own haul, stated as hers and as already counted. Under the
+      // loud banner below she read her gather's logs as the player's gift
+      // ("got 6 now, you're welcome") or added them on top of the inventory
+      // count ("3 so far, plus the two i just got").
+      if (own.length > 0) {
+        const ownLine = `since last tick your own ${ownNames.join(' and ')} changed your inventory: ${own.join(', ')} (already counted on the inventory line above)`
+        const i = invIdx()
+        if (i >= 0) lines.splice(i + 1, 0, ownLine)
+        else lines.unshift(ownLine)
+      }
 
       // Inventory changes get a LOUD, dedicated section right under the
       // inventory line — the bot reads inventory there, so a handoff / pickup /
       // drop is impossible to miss, and it knows to act on what just arrived.
       if (inv.length > 0) {
         const invLine = `*** INVENTORY JUST CHANGED ***: ${inv.join(', ')}  <- items entered or left your inventory since last tick (the player handed you something, you picked it up, or you used/dropped it). React to it: equip a new tool, eat new food, build with new blocks. If you were waiting on something you asked for, this is it arriving.`
-        const i = lines.findIndex(l => l.startsWith('inventory ('))
-        if (i >= 0) lines.splice(i + 1, 0, invLine)
+        const i = invIdx()
+        if (i >= 0) lines.splice(i + 1 + (own.length > 0 ? 1 : 0), 0, invLine)
         else lines.unshift(invLine)
       }
 
@@ -470,10 +700,13 @@ export function createSnapshotComposer({ bot }) {
     reset() {
       prevInventory = null
       prevHp = null
+      prevTickAt = null
+      diedSinceTick = false
       deaths = new Map()
     },
     dispose() {
       try { bot.removeListener('entityDead', onEntityDead) } catch { /* ignore */ }
+      try { bot.removeListener('death', onDeath) } catch { /* ignore */ }
     },
   }
 }

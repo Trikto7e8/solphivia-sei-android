@@ -12,12 +12,17 @@
  *     (text deltas awaited in order; contentBlock events delivered exactly
  *     once with the emitted-count dedupe drawService used), and
  *     client.messages.create() otherwise.
+ * 261013 exception: applyPromptBudget (bot/brain/llm/promptBudget.js) logs a
+ * prompt over Haiku 5.5's 100k long-prompt price tier without touching it,
+ * and only past 90% of the model's hard context limit (900k of 1M) drops the
+ * oldest whole turns, where the API would otherwise reject the call.
  */
 import type Anthropic from '@anthropic-ai/sdk';
 import { buildChatSdk } from '../chat/sdk';
 import type { LlmBackend, LlmCallParams, LlmProvider, LlmResult, LlmToolUse } from './types';
 import { textOfContent } from './messageMappers';
 import { applyAnthropicModelDefaults } from '../../bot/brain/llm/anthropicModelDefaults.js';
+import { applyPromptBudget, describeBudgetReport } from '../../bot/brain/llm/promptBudget.js';
 
 type ClientLike = {
   messages: {
@@ -86,8 +91,11 @@ export async function createAnthropicProvider(backend: LlmBackend): Promise<LlmP
     if (p.stopSequences !== undefined) params.stop_sequences = p.stopSequences;
     if (p.anthropicExtra) Object.assign(params, p.anthropicExtra);
     applyModelDefaults(params);
+    const budget = applyPromptBudget(params);
+    if (budget) console.warn(describeBudgetReport(budget, 'main'));
     const opts: Record<string, unknown> = {};
     if (p.timeoutMs !== undefined) opts.timeout = p.timeoutMs;
+    if (p.maxRetries !== undefined) opts.maxRetries = p.maxRetries;
     if (p.signal !== undefined) opts.signal = p.signal;
 
     if (p.onTextDelta || p.onContentBlock) {

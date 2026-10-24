@@ -16,8 +16,12 @@
  * player who quits on that line and relaunches is not asked twice.
  */
 import {
+  ATTRIBUTION_DETAIL_EVENT,
+  ATTRIBUTION_DETAIL_PROP,
   ATTRIBUTION_EVENT,
   ATTRIBUTION_SKIPPED,
+  type AttributionDetail,
+  type AttributionDetailSource,
   type AttributionSource,
 } from '@shared/attribution';
 
@@ -57,6 +61,41 @@ export function attributionEvent(
   answer: AttributionSource | null,
 ): { event: string; props: { source: string } } {
   return { event: ATTRIBUTION_EVENT, props: { source: answer ?? ATTRIBUTION_SKIPPED } };
+}
+
+/**
+ * The optional follow-up (261012) for the answers that need one, in display
+ * order. Labels are i18n keys. The question line Sui says is in OnboardApp's
+ * SCRIPT (heardAi / heardGoogle).
+ */
+export const ATTRIBUTION_DETAIL_OPTIONS: Record<
+  AttributionDetailSource,
+  Array<{ value: AttributionDetail; label: string }>
+> = {
+  ai_assistant: [
+    { value: 'chatgpt', label: 'ChatGPT' },
+    { value: 'google_ai', label: 'Google (AI Overview or Gemini)' },
+    { value: 'copilot', label: 'Copilot' },
+    { value: 'perplexity', label: 'Perplexity' },
+    { value: 'claude', label: 'Claude' },
+    { value: 'other_ai', label: 'Other' },
+  ],
+  google_search: [
+    { value: 'searched_name', label: 'I searched for Sei by name' },
+    { value: 'searched_topic', label: 'I searched for something like AI gaming companion' },
+    { value: 'not_sure', label: 'Not sure' },
+  ],
+};
+
+/** The analytics payload for a follow-up answer or a skip. */
+export function attributionDetailEvent(
+  source: AttributionDetailSource,
+  detail: AttributionDetail | null,
+): { event: string; props: { source: string; [ATTRIBUTION_DETAIL_PROP]: string } } {
+  return {
+    event: ATTRIBUTION_DETAIL_EVENT,
+    props: { source, [ATTRIBUTION_DETAIL_PROP]: detail ?? ATTRIBUTION_SKIPPED },
+  };
 }
 
 function safeStorage(): Storage | null {

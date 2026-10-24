@@ -170,6 +170,29 @@ describe('OnboardApp: attribution question (261001)', () => {
   });
 });
 
+describe('OnboardApp: attribution follow-up (261012)', () => {
+  it('AI and Google search go to their follow-up line; everything else straight to job', () => {
+    const ctl = src.slice(src.indexOf("case 'heardQ': {"), src.indexOf("case 'heardAi':"));
+    expect(ctl).toContain("goLine(hasAttributionDetail(source) ? DETAIL_LINE[source] : 'job')");
+    expect(src).toContain("ai_assistant: 'heardAi',");
+    expect(src).toContain("google_search: 'heardGoogle',");
+    expect(src).toContain("heardAi: 'Ooh, another AI! Which one?'");
+    expect(src).toContain("heardGoogle: 'Nice! What did you search for?'");
+  });
+  it('is one tap or Skip, both on to job, and a background click does not skip it', () => {
+    const ctl = src.slice(src.indexOf("case 'heardAi':\n    case 'heardGoogle': {"), src.indexOf("case 'job':\n      return ("));
+    expect(ctl).toContain('ATTRIBUTION_DETAIL_OPTIONS[source].map');
+    expect(ctl).toContain('attributionDetailEvent(source, detail)');
+    expect(ctl).toContain('sei.track(ev.event, ev.props)');
+    expect(ctl).toContain("goLine('job')");
+    expect(ctl).toContain('onClick={() => answerDetail(null)}');
+    expect(ctl).toContain("tt('Skip')");
+    // The main question was answered, so the shared step is not marked skipped.
+    expect(ctl).not.toContain('markStep(');
+    expect(src).toMatch(/!\['newQ', 'nameQ', 'heardQ', 'heardAi', 'heardGoogle',/);
+  });
+});
+
 describe('OnboardApp 261005: onboarding_completed fires on every completion', () => {
   it('is sent from one helper, once, and never for the boot sign-in variant', () => {
     const helper = src.slice(src.indexOf('const trackCompleted = useCallback'), src.indexOf('/** Fade + hand off to App.'));
@@ -218,5 +241,36 @@ describe('OnboardApp 261007: returning-panel local mode on an unset-up computer'
   it('the new line advances on click and gets the continue hint', () => {
     const hints = src.slice(src.indexOf('const HINT_LINES'), src.indexOf('/* ── Machine'));
     expect(hints).toContain("'noProfile'");
+  });
+});
+
+describe('OnboardApp: the scene never waits on transitionend alone (261012)', () => {
+  const scene = readFileSync(resolve(__dirname, 'OnboardScene.tsx'), 'utf-8');
+
+  it('transitionend handlers only feed the stage gates', () => {
+    const handlers = scene.slice(scene.indexOf('const onGroundEnd'), scene.indexOf('const suiClass'));
+    expect(handlers).toContain('groundGate.current?.transitionEnded()');
+    expect(handlers).toContain('suiGate.current?.transitionEnded()');
+    expect(handlers).not.toMatch(/cbs\.current\.on(GroundIn|GroundOut|SuiEntered|SuiLeft)/);
+  });
+
+  it('every stage callback is fired from a gate (transition, watchdog, skip or reduced motion)', () => {
+    for (const cb of ['onGroundIn', 'onGroundOut', 'onSuiEntered', 'onSuiLeft']) {
+      const uses = scene.split(`cbs.current.${cb}?.(by)`).length - 1;
+      expect(uses, cb).toBe(1);
+    }
+    expect(scene.match(/armTransitionGate\(/g)).toHaveLength(2);
+  });
+
+  it('the intro starts when the window can show it, can be skipped, and honours reduced motion', () => {
+    expect(src).toContain('const cancel = whenVisible(() => {');
+    expect(src).toContain("phase.k === 'intro'\n            ? skipIntro");
+    expect(src).toContain('instant={sceneInstant}');
+    expect(src).toContain('(prefers-reduced-motion: reduce)');
+  });
+
+  it('how the intro advanced rides the intro step event, not a new event', () => {
+    expect(src).toContain('intro_advanced_by: summarizeAdvance(');
+    expect(src).not.toMatch(/sei\.track\('onboarding_intro/);
   });
 });

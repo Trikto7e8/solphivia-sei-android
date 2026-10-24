@@ -21,6 +21,7 @@ import {
 import { hasApiKey, loadApiKey } from '../apiKeyStore';
 import { loadConfig } from '../configStore';
 import { buildLocalProviderFor, resolveLocalModel } from './index';
+import type { LlmCallParams } from './types';
 import { ollamaModelVision } from './ollamaCapabilities';
 import { applyAnthropicModelDefaults } from '../../bot/brain/llm/anthropicModelDefaults.js';
 
@@ -29,6 +30,8 @@ const LIST_TIMEOUT_MS = 10_000;
 export interface ListedModel {
   id: string;
   vision: VisionVerdict;
+  /** Display name, when the provider gives one (ChatGPT plan). */
+  label?: string;
 }
 export interface ListModelsResult {
   models: ListedModel[];
@@ -37,8 +40,11 @@ export interface ListModelsResult {
 export type TestResult = { ok: true; latencyMs: number } | { ok: false; error: string };
 
 function typedError(err: unknown): string {
-  const e = err as { name?: string; message?: string };
+  const e = err as { name?: string; message?: string; code?: unknown };
   const msg = String(e?.message ?? err ?? '');
+  // 261017 (issue #46): ChatGPT-plan codes ride through as their own tokens
+  // ('chatgpt_usage_limit', 'chatgpt_signed_out', ...).
+  if (typeof e?.code === 'string' && e.code.startsWith('CHATGPT_')) return e.code.toLowerCase();
   if (e?.name === 'AbortError' || /abort/i.test(msg)) return 'timeout';
   const status = /\b(\d{3})\b/.exec(msg)?.[1];
   if (status === '401' || status === '403') return 'unauthorized';
@@ -76,6 +82,15 @@ async function providerBaseUrl(provider: ProviderKind): Promise<string | undefin
 export async function listProviderModels(provider: ProviderKind): Promise<ListModelsResult> {
   try {
     let ids: string[] = [];
+    if (provider === 'chatgpt') {
+      // 261017 (issue #46): the signed-in account's own catalog
+      // (GET /v1/models with the plan token), server order, labelled.
+      const { chatgptSession } = await import('../chatgptPlan');
+      const catalog = await chatgptSession().listModels({ force: true });
+      return {
+        models: catalog.map((m) => ({ id: m.slug, label: m.display_name, vision: m.accepts_images === null ? 'unknown' : m.accepts_images ? 'yes' : 'no' })),
+      };
+    }
     if (provider === 'ollama') {
       const base = (await providerBaseUrl(provider)) ?? 'http://localhost:11434';
       const data = (await fetchJson(`${base}/api/tags`, {})) as { models?: Array<{ name?: string }> };
@@ -120,6 +135,24 @@ export async function listProviderModels(provider: ProviderKind): Promise<ListMo
   }
 }
 
+/**
+ * The Settings "Test" request. The ChatGPT plan route has no
+ * max_output_tokens, so its probe asks for one word and is capped on our
+ * side (chatgptResponses.ts cuts the stream at about maxTokens * 4 chars):
+ * a test never spends real plan usage on a long greeting.
+ */
+export function testCallParams(provider: ProviderKind): LlmCallParams {
+  if (provider === 'chatgpt') {
+    return {
+      system: 'Reply with the single word OK.',
+      maxTokens: 4,
+      messages: [{ role: 'user', content: 'ping' }],
+      timeoutMs: LIST_TIMEOUT_MS,
+    };
+  }
+  return { maxTokens: 1, messages: [{ role: 'user', content: 'hi' }], timeoutMs: LIST_TIMEOUT_MS };
+}
+
 export async function testProvider(provider: ProviderKind, model: string): Promise<TestResult> {
   try {
     if (provider === 'anthropic') {
@@ -141,11 +174,7 @@ export async function testProvider(provider: ProviderKind, model: string): Promi
     const cfg = await loadConfig();
     const p = await buildLocalProviderFor(provider, model || resolveLocalModel(cfg, provider));
     const t0 = Date.now();
-    await p.call({
-      maxTokens: 1,
-      messages: [{ role: 'user', content: 'hi' }],
-      timeoutMs: LIST_TIMEOUT_MS,
-    });
+    await p.call(testCallParams(provider));
     return { ok: true, latencyMs: Date.now() - t0 };
   } catch (err) {
     const msg = String((err as Error)?.message ?? err ?? '');

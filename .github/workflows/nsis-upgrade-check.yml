@@ -4,25 +4,42 @@ name: NSIS Upgrade Check
 # branch's one-click NSIS installer UNSIGNED, then on clean windows-latest
 # runners installs the current STABLE release the way real users did, writes a
 # marker into userData, and runs the new installer over the top with the exact
-# arguments electron-updater passes (--updated /S --force-run). It asserts one
-# Apps & features entry, the same install folder, an intact userData marker,
-# and that the upgraded Sei.exe starts. It also prints the Authenticode
-# signature of the stable installer and app (SmartScreen evidence).
+# arguments electron-updater passes. It asserts one Apps & features entry, the
+# same install folder, an intact userData marker, and that the upgraded Sei.exe
+# starts. It also prints the Authenticode signature of the stable installer and
+# app (SmartScreen evidence).
+#
+# The two update paths and their arguments (261023, src/main/updateInstall.ts):
+#   in-app "Update Sei"  quitAndInstall(true, true) = --updated /S --force-run
+#                        no installer window, Sei must REOPEN by itself
+#   update on quit       autoInstallOnAppQuit       = --updated /S
+#                        no installer window, Sei must NOT reopen
+# Every upgrade run watches for visible windows from anything but Sei itself
+# (the old one-click banner, a wizard page, an error box) and fails on one,
+# and times how long the user waits from the installer starting to Sei
+# being back ("relaunched after Ns"), which is the blank gap a real user sits
+# through after clicking Update Sei.
 #
 # Scenarios (the old ASSISTED installer's reachable choices):
-#   peruser-default  per-user, default folder (%LOCALAPPDATA%\Programs\Sei)
-#   peruser-custom   per-user, a folder the user picked (with a space in it)
+#   peruser-default  per-user, default folder (%LOCALAPPDATA%\Programs\Sei),
+#                    in-app restart
+#   peruser-custom   per-user, a folder the user picked (with a space in it),
+#                    in-app restart
+#   peruser-running  per-user, in-app restart while the old Sei is STILL
+#                    RUNNING (the real handoff: Sei spawns the installer, then
+#                    quits; the installer's CHECK_APP_RUNNING closes it if it
+#                    has not exited yet)
+#   peruser-quit     per-user, update on quit: must not reopen Sei
 #   permachine       "Anyone who uses this computer": HKLM + Program Files,
-#                    removed by build/installer.nsh customInstall. The new
-#                    installer runs NON-silent here (--updated --force-run, the
-#                    in-app "restart to update" path), because customInstall
-#                    skips the cleanup in silent mode. Asserts the HKCU
-#                    try-once marker is set afterwards.
-#   permachine-silent  same install, new installer with /S (update on quit):
-#                    the per-machine copy must be LEFT alone and the marker
-#                    left unset, so the attempt waits for an interactive run
+#                    removed by build/installer.nsh customInstall on the in-app
+#                    restart (silent, but --force-run marks it as user-started).
+#                    Asserts the HKCU try-once marker is set afterwards.
+#   permachine-silent  same install, update on quit (--updated /S, no
+#                    --force-run): the per-machine copy must be LEFT alone and
+#                    the marker left unset, so the attempt waits for an
+#                    in-app restart or a manual install
 #   permachine-tried   same install, marker pre-set (cleanup already tried
-#                    once, say a declined UAC prompt): the non-silent run must
+#                    once, say a declined UAC prompt): the in-app restart must
 #                    not try again
 #   fresh            no prior install: checks the default one-click location and
 #                    that the install marker reads 'fresh' (installer_first_launch)
@@ -91,10 +108,11 @@ jobs:
   upgrade:
     needs: build
     runs-on: windows-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        scenario: [peruser-default, peruser-custom, permachine, permachine-silent, permachine-tried, fresh]
+        scenario: [peruser-default, peruser-custom, peruser-running, peruser-quit, permachine, permachine-silent, permachine-tried, fresh]
     steps:
       - name: Download new installer
         uses: actions/download-artifact@v4
@@ -181,12 +199,16 @@ jobs:
           if ($env:SCENARIO -ne 'fresh') {
             $old = (Resolve-Path old\Sei-win-x64.exe).Path
             switch ($env:SCENARIO) {
-              'peruser-default' { $instArgs = @('/S') }
               'peruser-custom'  { $instArgs = @('/S', '/D=C:\Games\My Sei') }
               { $_ -like 'permachine*' } { $instArgs = @('/S', '/allusers') }
+              default { $instArgs = @('/S') }
             }
             "Installing $env:STABLE_TAG with: $($instArgs -join ' ')"
-            $p = Start-Process -FilePath $old -ArgumentList $instArgs -Wait -PassThru
+            # Bounded: without /S the old ASSISTED installer waits on its wizard
+            # page forever (a scenario missing from the switch above once hung
+            # the job that way).
+            $p = Start-Process -FilePath $old -ArgumentList $instArgs -PassThru
+            if (-not $p.WaitForExit(300000)) { $p | Stop-Process -Force; throw 'the stable installer did not finish in 5 minutes' }
             "old installer exit: $($p.ExitCode)"
             Show-State "after $env:STABLE_TAG install"
             $before = @(Get-SeiEntries)
@@ -220,18 +242,65 @@ jobs:
           $keepsLegacy = $env:SCENARIO -in @('permachine-silent', 'permachine-tried')
 
           $new = (Resolve-Path new\Sei-win-x64.exe).Path
+          # in-app "Update Sei" = --updated /S --force-run; update on quit = --updated /S
           $newArgs = switch -Wildcard ($env:SCENARIO) {
             'fresh'             { @('/S') }
-            'permachine'        { @('--updated', '--force-run') }
-            'permachine-tried'  { @('--updated', '--force-run') }
+            'peruser-quit'      { @('--updated', '/S') }
+            'permachine-silent' { @('--updated', '/S') }
             default             { @('--updated', '/S', '--force-run') }
           }
+          $expectRelaunch = $newArgs -contains '--force-run'
+
+          if ($env:SCENARIO -eq 'peruser-running') {
+            # Leave the old Sei running into the install, as the in-app restart
+            # does for the moment between spawning the installer and quitting.
+            Stop-Sei
+            $running = Start-Process -FilePath $oldExe -PassThru
+            Start-Sleep -Seconds 20
+            "old Sei running before the install: $(-not $running.HasExited)"
+          } else {
+            Stop-Sei
+          }
+
           "Running the one-click installer with: $($newArgs -join ' ')"
+          $installStart = Get-Date
           $sw = [Diagnostics.Stopwatch]::StartNew()
-          $p = Start-Process -FilePath $new -ArgumentList $newArgs -Wait -PassThru
-          "new installer exit: $($p.ExitCode) after $([int]$sw.Elapsed.TotalSeconds)s"
+          $p = Start-Process -FilePath $new -ArgumentList $newArgs -PassThru
+          $null = $p.Handle  # cache the handle, or ExitCode reads empty without -Wait
+          # Watch for (1) any visible window that is not Sei itself, and (2) Sei
+          # coming back, until the installer is done and the relaunch window
+          # (60s after it exits) has passed.
+          $windows = @{}
+          $relaunchAt = $null
+          $exitedAt = $null
+          while ($true) {
+            Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -ne 'Sei' } | ForEach-Object {
+              $title = $_.MainWindowTitle
+              if ($title -match 'Sei|Setup|Install|Uninstall' -and -not $windows.ContainsKey("$($_.ProcessName): $title")) {
+                $windows["$($_.ProcessName): $title"] = [math]::Round($sw.Elapsed.TotalSeconds, 1)
+              }
+            }
+            if ($null -eq $relaunchAt) {
+              $back = Get-Process -Name 'Sei' -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -gt $installStart } catch { $false } }
+              if ($back) { $relaunchAt = $sw.Elapsed.TotalSeconds }
+            }
+            if ($null -eq $exitedAt -and $p.HasExited) { $exitedAt = $sw.Elapsed.TotalSeconds }
+            if ($null -ne $exitedAt -and ($null -ne $relaunchAt -or $sw.Elapsed.TotalSeconds -gt $exitedAt + 60)) { break }
+            if ($sw.Elapsed.TotalSeconds -gt 600) { $failures += 'installer did not finish in 10 minutes'; break }
+            Start-Sleep -Milliseconds 500
+          }
+          "new installer exit: $($p.ExitCode) after $([int]$exitedAt)s"
           if ($p.ExitCode -ne 0) { $failures += "new installer exit code $($p.ExitCode)" }
-          Start-Sleep -Seconds 5
+          if ($null -ne $relaunchAt) { "Sei relaunched after $([int]$relaunchAt)s (installer start to new Sei process)" } else { 'Sei did not relaunch' }
+          if ($expectRelaunch -and $null -eq $relaunchAt) { $failures += 'Sei did not reopen after an in-app restart (--force-run)' }
+          if (-not $expectRelaunch -and $env:SCENARIO -ne 'fresh' -and $null -ne $relaunchAt) { $failures += 'Sei reopened after an update-on-quit install' }
+          if ($windows.Count -gt 0) {
+            'Visible windows during the install:'
+            $windows.GetEnumerator() | ForEach-Object { "  $($_.Key) at $($_.Value)s" }
+            if ($env:SCENARIO -ne 'fresh') { $failures += "a window showed during a silent update: $($windows.Keys -join '; ')" }
+          } else { 'No installer window during the install.' }
+          if ($env:SCENARIO -eq 'peruser-running' -and -not $running.HasExited) { $failures += 'the old Sei was still running after the install' }
+          Start-Sleep -Seconds 3
           Stop-Sei
 
           Show-State 'after one-click install'

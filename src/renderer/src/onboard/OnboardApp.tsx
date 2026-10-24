@@ -37,8 +37,16 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { sei } from '../lib/ipcClient';
 import { t, useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
+import { useChatgptLogin, chatgptCodeReasonCopy } from '../lib/useChatgptLogin';
 import { CodeInput } from '../components/CodeInput';
-import { OnboardScene, type SuiPose } from './OnboardScene';
+import { OnboardScene, type SceneInstant, type SuiPose } from './OnboardScene';
+import {
+  documentVisibility,
+  prefersReducedMotion,
+  summarizeAdvance,
+  whenVisible,
+  type AdvanceSource,
+} from './sceneGate';
 import {
   OnboardStepTracker,
   stepFor,
@@ -95,13 +103,24 @@ import {
   type Dynamic,
 } from './suiQuestions';
 import {
+  ATTRIBUTION_DETAIL_OPTIONS,
   ATTRIBUTION_OPTIONS,
+  attributionDetailEvent,
   attributionEvent,
   markAttributionAsked,
   shouldAskAttribution,
 } from '../lib/attributionPref';
-import type { AttributionSource } from '@shared/attribution';
+import {
+  hasAttributionDetail,
+  type AttributionDetail,
+  type AttributionDetailSource,
+  type AttributionSource,
+} from '@shared/attribution';
 import styles from './onboard.module.css';
+import { ContinueWithChatGPTButton } from '../components/ContinueWithChatGPTButton';
+import { signInFailureText } from '../components/ChatgptPlanSettings';
+import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 
 /* ── Script ──────────────────────────────────────────────────────────────── */
 
@@ -113,6 +132,8 @@ type LineId =
   | 'nameQ'
   | 'iSee'
   | 'heardQ'
+  | 'heardAi'
+  | 'heardGoogle'
   | 'job'
   | 'skipConfirm'
   | 'fiveQs'
@@ -145,6 +166,9 @@ const SCRIPT: Record<LineId, string> = {
   iSee: 'I see I see... {name}!',
   // 261001: one-tap attribution, asked once per machine (lib/attributionPref).
   heardQ: 'Quick one before we start. Where did you hear about Sei?',
+  // 261012: the optional one-tap follow-up for "AI" and "Google search".
+  heardAi: 'Ooh, another AI! Which one?',
+  heardGoogle: 'Nice! What did you search for?',
   job: 'So, {name}, my job here is to help you meet other AI friends from my world.',
   skipConfirm: 'Aww, really? I was going to find a companion just for you. You wanna skip it?',
   fiveQs:
@@ -159,6 +183,16 @@ const SCRIPT: Record<LineId, string> = {
   skippedThird:
     "I SKIPPED THE THIRD QUESTION! You still need to sign in! Ok, I'll go set things up for you while you do that.",
   ready: 'Welcome back! Everything is in place. You ready?',
+};
+
+/** The attribution follow-up line for each answer that has one (261012). */
+const DETAIL_LINE: Record<AttributionDetailSource, 'heardAi' | 'heardGoogle'> = {
+  ai_assistant: 'heardAi',
+  google_search: 'heardGoogle',
+};
+const DETAIL_SOURCE: Record<'heardAi' | 'heardGoogle', AttributionDetailSource> = {
+  heardAi: 'ai_assistant',
+  heardGoogle: 'google_search',
 };
 
 /** Text-only lines (no controls, advance on click/Enter) that get the idle
@@ -231,6 +265,9 @@ export function OnboardApp({
   const [phase, setPhase] = useState<Phase>(
     startAtSignIn ? { k: 'auth', mode: 'returning' } : { k: 'intro' },
   );
+  // For callbacks that must not re-create per phase (the scene latches them).
+  const phaseRef = useRef(phase);
+  phaseRef.current = phase;
 
   // No window chrome while the scene runs: hide the mac traffic lights on
   // mount, restore on unmount (no-op on Windows/Linux).
@@ -280,41 +317,147 @@ export function OnboardApp({
   }, []);
 
   // ── Scene choreography ─────────────────────────────────────────────────
+  // Each stage (ground in, Sui in, Sui out, ground out) is a gate in
+  // OnboardScene that ALWAYS completes: transitionend, a watchdog, or at once
+  // under `sceneInstant` (261012). The intro used to wait on transitionend
+  // alone and 19% of fresh v0.6.8 first launches never left the empty sky.
+  const [reducedMotion, setReducedMotion] = useState(prefersReducedMotion);
+  useEffect(() => {
+    let mq: MediaQueryList | undefined;
+    try {
+      mq = window.matchMedia?.('(prefers-reduced-motion: reduce)');
+    } catch {
+      return undefined;
+    }
+    if (!mq) return undefined;
+    const onChange = (): void => setReducedMotion(mq.matches);
+    mq.addEventListener?.('change', onChange);
+    return () => mq.removeEventListener?.('change', onChange);
+  }, []);
+  /** A click or a key during the intro skips the walk-in (261012). */
+  const [introSkipped, setIntroSkipped] = useState(false);
+  const sceneInstant: SceneInstant =
+    phase.k === 'intro' && introSkipped ? 'skip' : reducedMotion ? 'reduced_motion' : null;
+
   useEffect(() => {
     // startAtSignIn mounts on the empty sky (the state the normal flow is in
     // once Sui has walked off) — no ground, no walk-in.
     if (startAtSignIn) return undefined;
-    // Mount: let the sky paint, then slide the ground in.
-    const t = setTimeout(() => setGroundIn(true), 350);
-    return () => clearTimeout(t);
+    // Mount: let the sky paint, then slide the ground in. A window that is
+    // not shown yet waits until it is (bounded), so the slide is seen.
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const cancel = whenVisible(() => {
+      t = setTimeout(() => setGroundIn(true), 350);
+    });
+    return () => {
+      cancel();
+      if (t !== undefined) clearTimeout(t);
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- constant prop
   }, []);
 
-  const onGroundIn = useCallback(() => {
-    setSui('entering');
+  // ── Scene analytics (261012) ───────────────────────────────────────────
+  // How the intro advanced rides the intro step's closing onboarding_step
+  // (`intro_advanced_by`: transition | watchdog | skip | reduced_motion), so
+  // the watchdog rate is one property filter. A watchdog on any later stage
+  // (the walk-off, the send-off walk-in) is noted on the step it closes as
+  // `scene_watchdog`.
+  const hiddenAtStartRef = useRef(documentVisibility.isHidden());
+  const introRunRef = useRef<Array<{ stage: string; by: AdvanceSource }>>([]);
+  const sceneWatchdogsRef = useRef<{ step: string | null; stages: string[] }>({
+    step: null,
+    stages: [],
+  });
+  const noteSceneAdvance = useCallback(
+    (stage: 'ground_in' | 'sui_entered' | 'sui_left' | 'ground_out', by: AdvanceSource) => {
+      const tracker = stepTrackerRef.current;
+      if (!tracker) return;
+      if (phaseRef.current.k === 'intro' && (stage === 'ground_in' || stage === 'sui_entered')) {
+        const run = introRunRef.current;
+        run.push({ stage, by });
+        if (stage !== 'sui_entered') return;
+        const watchdogged = run.filter((r) => r.by === 'watchdog').map((r) => r.stage);
+        tracker.annotate({
+          intro_advanced_by: summarizeAdvance(run.map((r) => r.by)),
+          intro_watchdog_stage: watchdogged.length > 0 ? watchdogged.join(',') : null,
+          intro_hidden_at_start: hiddenAtStartRef.current,
+        });
+        introRunRef.current = [];
+        return;
+      }
+      if (by !== 'watchdog') return;
+      const w = sceneWatchdogsRef.current;
+      if (w.step !== tracker.currentStep) sceneWatchdogsRef.current = { step: tracker.currentStep, stages: [] };
+      sceneWatchdogsRef.current.stages.push(stage);
+      tracker.annotate({ scene_watchdog: sceneWatchdogsRef.current.stages.join(',') });
+    },
+    [],
+  );
+
+  const onGroundIn = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('ground_in', by);
+      setSui('entering');
+    },
+    [noteSceneAdvance],
+  );
+  const onSuiEntered = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('sui_entered', by);
+      setSui('idle');
+      // A beat of her just standing there before she speaks — walking in and
+      // talking in the same instant read as rushed (260729). A skip asked
+      // for speed, so it gets a shorter one.
+      window.setTimeout(
+        () => {
+          setPhase((p) => {
+            if (p.k === 'intro') return { k: 'line', id: 'hey' };
+            if (p.k === 'return') return { k: 'line', id: 'ready' };
+            if (p.k === 'no-account') return { k: 'line', id: p.line };
+            return p;
+          });
+        },
+        by === 'skip' ? 300 : 1000,
+      );
+    },
+    [noteSceneAdvance],
+  );
+  const onSuiLeft = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('sui_left', by);
+      setSui('hidden');
+      setGroundIn(false);
+    },
+    [noteSceneAdvance],
+  );
+  const onGroundOut = useCallback(
+    (by: AdvanceSource) => {
+      noteSceneAdvance('ground_out', by);
+      setPhase((p) =>
+        p.k === 'walkoff' ? { k: 'auth', mode: p.to === 'auth-returning' ? 'returning' : 'new' } : p,
+      );
+    },
+    [noteSceneAdvance],
+  );
+
+  /** Skip the walk-in: the ground and Sui jump into place (the scene's gates
+   * complete at once under sceneInstant 'skip'). Intro only. */
+  const skipIntro = useCallback(() => {
+    if (phaseRef.current.k !== 'intro') return;
+    setIntroSkipped(true);
+    setGroundIn(true);
   }, []);
-  const onSuiEntered = useCallback(() => {
-    setSui('idle');
-    // A beat of her just standing there before she speaks — walking in and
-    // talking in the same instant read as rushed (260729).
-    window.setTimeout(() => {
-      setPhase((p) => {
-        if (p.k === 'intro') return { k: 'line', id: 'hey' };
-        if (p.k === 'return') return { k: 'line', id: 'ready' };
-        if (p.k === 'no-account') return { k: 'line', id: p.line };
-        return p;
-      });
-    }, 1000);
-  }, []);
-  const onSuiLeft = useCallback(() => {
-    setSui('hidden');
-    setGroundIn(false);
-  }, []);
-  const onGroundOut = useCallback(() => {
-    setPhase((p) =>
-      p.k === 'walkoff' ? { k: 'auth', mode: p.to === 'auth-returning' ? 'returning' : 'new' } : p,
-    );
-  }, []);
+  useEffect(() => {
+    if (phase.k !== 'intro') return undefined;
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.repeat || ['Tab', 'Shift', 'Control', 'Alt', 'Meta', 'CapsLock'].includes(e.key)) return;
+      const target = e.target as HTMLElement | null;
+      if (target?.closest?.('input, select, textarea, button, a, [role="button"]')) return;
+      skipIntro();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [phase.k, skipIntro]);
 
   // ── Line advance logic ─────────────────────────────────────────────────
   const goLine = useCallback((id: LineId) => setPhase({ k: 'line', id }), []);
@@ -329,6 +472,8 @@ export function OnboardApp({
    * App-level onStartFresh remount instead.) */
   const startFresh = useCallback(() => {
     answersRef.current.returning = false;
+    setIntroSkipped(false);
+    introRunRef.current = [];
     setPhase({ k: 'intro' });
     setGroundIn(true);
   }, []);
@@ -948,14 +1093,22 @@ export function OnboardApp({
   const showDialogue = phase.k === 'line';
   const clickAdvances =
     line !== null &&
-    !['newQ', 'nameQ', 'heardQ', 'job', 'skipConfirm', 'qDyn', 'qAge', 'qArt', 'qGender', 'ahh'].includes(line);
+    !['newQ', 'nameQ', 'heardQ', 'heardAi', 'heardGoogle', 'job', 'skipConfirm', 'qDyn', 'qAge', 'qArt', 'qGender', 'ahh'].includes(line);
 
   return (
     <div className={styles.root}>
       <CornerControls prefs={voicePrefs} onPrefs={setVoicePrefs} />
       <div
         className={styles.card}
-        onClick={clickAdvances ? advance : line && !tw.done ? tw.skip : undefined}
+        onClick={
+          phase.k === 'intro'
+            ? skipIntro
+            : clickAdvances
+              ? advance
+              : line && !tw.done
+                ? tw.skip
+                : undefined
+        }
       >
         <div className={styles.dragStrip} />
         <OnboardScene
@@ -963,6 +1116,7 @@ export function OnboardApp({
           sui={sui}
           // Footsteps follow the voice volume/mute, well under her lines.
           sfxVolume={effVolume * 0.35}
+          instant={sceneInstant}
           onGroundIn={onGroundIn}
           onGroundOut={onGroundOut}
           onSuiEntered={onSuiEntered}
@@ -1147,12 +1301,14 @@ function LineControls(props: LineControlsProps): React.ReactElement | null {
         </div>
       );
     case 'heardQ': {
-      // Never blocks: every option and Skip lead straight on to 'job'.
+      // Never blocks: Skip and every option lead straight on to 'job', except
+      // "AI" and "Google search", which get ONE optional follow-up tap first
+      // (261012). The answer is sent now, so a quit on the follow-up keeps it.
       const answer = (source: AttributionSource | null): void => {
         const ev = attributionEvent(source);
         sei.track(ev.event, ev.props);
         if (source === null) markStep('skip');
-        goLine('job');
+        goLine(hasAttributionDetail(source) ? DETAIL_LINE[source] : 'job');
       };
       return (
         <div className={styles.choices}>
@@ -1162,6 +1318,30 @@ function LineControls(props: LineControlsProps): React.ReactElement | null {
             </button>
           ))}
           <button className={styles.quietLink} onClick={() => answer(null)}>
+            {tt('Skip')}
+          </button>
+        </div>
+      );
+    }
+    case 'heardAi':
+    case 'heardGoogle': {
+      // The follow-up (261012): one tap or Skip, then on to 'job'. It shares
+      // the 'attribution' step, so a skip here is not marked: the main
+      // question WAS answered, and the detail event records the skip itself.
+      const source = DETAIL_SOURCE[line];
+      const answerDetail = (detail: AttributionDetail | null): void => {
+        const ev = attributionDetailEvent(source, detail);
+        sei.track(ev.event, ev.props);
+        goLine('job');
+      };
+      return (
+        <div className={styles.choices}>
+          {ATTRIBUTION_DETAIL_OPTIONS[source].map((o) => (
+            <button key={o.value} className={styles.pill} onClick={() => answerDetail(o.value)}>
+              {tt(o.label)}
+            </button>
+          ))}
+          <button className={styles.quietLink} onClick={() => answerDetail(null)}>
             {tt('Skip')}
           </button>
         </div>
@@ -1326,6 +1506,10 @@ function AuthPanel(props: {
   const [codeSentTo, setCodeSentTo] = useState<string | null>(null);
   const codeState = useEmailCode(codeSentTo);
   const [oauth, setOauth] = useState(false);
+  // 261023: "Continue with ChatGPT" account sign-in. The session lands via the
+  // auth push and OnboardApp proceeds from there, exactly as after Google.
+  const gpt = useChatgptLogin();
+  const gptCode = gpt.phase === 'code' || gpt.phase === 'verifying';
   /**
    * W7 region gate (260816). Pre-checked on mount over region:status so the
    * blocking panel appears before a failed submit; the submit paths below
@@ -1336,9 +1520,18 @@ function AuthPanel(props: {
   const { onSubStep } = props;
   useEffect(() => {
     onSubStep?.(
-      regionBlocked ? 'region_blocked' : codeSentTo !== null ? 'code' : oauth ? 'oauth_wait' : 'form',
+      regionBlocked
+        ? 'region_blocked'
+        : codeSentTo !== null || gptCode
+          ? 'code'
+          : oauth || gpt.phase === 'browser'
+            ? 'oauth_wait'
+            : 'form',
     );
-  }, [onSubStep, regionBlocked, codeSentTo, oauth]);
+  }, [onSubStep, regionBlocked, codeSentTo, oauth, gptCode, gpt.phase]);
+  useEffect(() => {
+    if (gpt.failure === 'region_blocked') setRegionBlocked(true);
+  }, [gpt.failure]);
   useEffect(() => {
     let cancelled = false;
     sei.regionStatus().then(
@@ -1529,6 +1722,62 @@ function AuthPanel(props: {
 
   if (oauth) return <GoogleWaitPanel onDone={() => setOauth(false)} onLocal={props.onLocal} />;
 
+  if (gptCode) {
+    return (
+      <div className={styles.panel}>
+        <p className={styles.panelText}>{chatgptCodeReasonCopy(gpt.reason, tt)}</p>
+        <p className={styles.panelText}>
+          {tt('We sent a 6-digit code to {email}. Check spam if it is not there.', { email: gpt.emailHint })}
+        </p>
+        <CodeInput
+          value={gpt.code}
+          onChange={gpt.setCode}
+          onComplete={(v) => void gpt.submit(v)}
+          disabled={gpt.phase === 'verifying'}
+          invalid={!!gpt.error}
+          autoFocus
+          rowClassName={styles.codeRow}
+          cellClassName={styles.codeCell}
+          aria-label={tt('Verification code')}
+        />
+        {gpt.error ? (
+          <p className={styles.panelError} role="alert">
+            {gpt.error}
+          </p>
+        ) : null}
+        <button
+          className={`${styles.pill} ${styles.pillWide}`}
+          disabled={gpt.phase === 'verifying' || gpt.code.length === 0}
+          onClick={() => void gpt.submit()}
+        >
+          {gpt.phase === 'verifying' ? tt('Checking...') : tt('Verify')}
+        </button>
+        <button className={styles.quietLink} disabled={gpt.resending} onClick={() => void gpt.resend()}>
+          {gpt.resending ? tt('Sending...') : tt('Send a new code')}
+        </button>
+        {gpt.note ? <p className={styles.panelNote}>{gpt.note}</p> : null}
+        <button className={styles.quietLink} onClick={gpt.cancel}>
+          {tt('Back')}
+        </button>
+      </div>
+    );
+  }
+
+  if (gpt.phase === 'browser') {
+    return (
+      <div className={styles.panel}>
+        <p className={styles.panelText}>
+          {tt(
+            "We opened a browser tab to finish signing in with ChatGPT. Come back when you're done; this picks up on its own.",
+          )}
+        </p>
+        <button className={styles.quietLink} onClick={gpt.cancel}>
+          {tt('Cancel sign-in')}
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className={styles.panel}>
       <img className={styles.panelLogo} src="./img/sei-text.png" alt="Sei" draggable={false} />
@@ -1667,6 +1916,21 @@ function AuthPanel(props: {
         <GoogleG />
         {tt('Continue with Google')}
       </button>
+      <ContinueWithChatGPTButton
+        format="black"
+        fullWidth
+        disabled={submitting}
+        onClick={() => {
+          setError(null);
+          props.onIntent('oauth');
+          void gpt.start();
+        }}
+      />
+      {gpt.error && gpt.failure !== 'region_blocked' ? (
+        <p className={styles.panelError} role="alert">
+          {gpt.error}
+        </p>
+      ) : null}
       {mode === 'new' ? (
         <button className={styles.quietLink} onClick={() => setSignup((s) => !s)}>
           {signup ? tt('I already have an account') : tt('New here? Create an account')}
@@ -1906,6 +2170,18 @@ function LocalSetupPanel(props: {
     );
   }
 
+  if (step === 'key' && provider === 'chatgpt') {
+    return (
+      <ChatgptKeyStep
+        onProvider={(next) => setProvider(next)}
+        onSignedIn={(defaultModel) => {
+          setModel(defaultModel);
+          setStep('model');
+        }}
+      />
+    );
+  }
+
   if (step === 'key') {
     return (
       <div className={styles.panel}>
@@ -2017,6 +2293,101 @@ function LocalSetupPanel(props: {
  * unlistable provider never blocks the wizard. Non-vision models get a short
  * hint because two whole surfaces (screen sharing, Draw!) need vision.
  */
+/**
+ * 261017 (issue #46): the key step when "ChatGPT plan" is picked. No key:
+ * Continue with ChatGPT signs in through the browser (main owns the tokens),
+ * then the wizard moves on to the model step with the account's default.
+ */
+function ChatgptKeyStep(props: {
+  onProvider: (next: ProviderKind) => void;
+  onSignedIn: (defaultModel: string) => void;
+}): React.ReactElement {
+  const tt = useT();
+  const status = useChatgptStore((s) => s.status);
+  const signInError = useChatgptStore((s) => s.signInError);
+  const [busy, setBusy] = useState(false);
+  const [planOff, setPlanOff] = useState(false);
+  useEffect(() => {
+    void useChatgptStore.getState().load();
+  }, []);
+  const defaultModel = (): string => {
+    const models = useChatgptStore.getState().status?.models ?? [];
+    return models.length ? pickDefaultChatgptModel(models) : DEFAULT_MODELS.chatgpt;
+  };
+  const signIn = async (enablePlan: boolean): Promise<void> => {
+    if (busy) return;
+    setBusy(true);
+    setPlanOff(false);
+    try {
+      const st = useChatgptStore.getState();
+      const r = await st.signIn(
+        enablePlan ? { accountId: st.status?.activeId ?? null, enablePlan: true } : undefined,
+      );
+      if (r?.ok) {
+        if (r.planEnabled) props.onSignedIn(defaultModel());
+        else setPlanOff(true);
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+  const ready = chatgptReady(status);
+  const active = status?.accounts.find((a) => a.id === status.activeId);
+  const errorLine = signInError ? signInFailureText(signInError, tt) : null;
+  return (
+    <div className={styles.panel}>
+      <p className={styles.panelText}>{tt('Pick your model provider.')}</p>
+      <select
+        className={styles.fieldSelect}
+        value="chatgpt"
+        onChange={(e) => props.onProvider(e.target.value as ProviderKind)}
+        aria-label={tt('Model provider')}
+      >
+        {PROVIDERS.map((p) => (
+          <option key={p.value} value={p.value}>
+            {tt(p.label)}
+          </option>
+        ))}
+      </select>
+      <p className={styles.panelNote}>
+        {tt('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')}
+      </p>
+      {ready && active ? (
+        <>
+          <p className={styles.panelNote}>{tt('Signed in as {name}.', { name: active.label })}</p>
+          <button className={`${styles.pill} ${styles.pillWide}`} onClick={() => props.onSignedIn(defaultModel())}>
+            {tt('Continue')}
+          </button>
+        </>
+      ) : planOff ? (
+        <>
+          <p className={styles.panelError} role="alert">
+            {tt('ChatGPT plan use was not turned on when you signed in, so Sei cannot use your plan yet.')}
+          </p>
+          <button className={`${styles.pill} ${styles.pillWide}`} disabled={busy} onClick={() => void signIn(true)}>
+            {tt('Turn on ChatGPT plan')}
+          </button>
+        </>
+      ) : (
+        <ContinueWithChatGPTButton format="black" disabled={busy} busy={busy} onClick={() => void signIn(false)} />
+      )}
+      {busy ? (
+        <>
+          <p className={styles.panelNote}>{tt('Finish signing in with ChatGPT in your browser.')}</p>
+          <button className={styles.quietLink} onClick={() => useChatgptStore.getState().cancelSignIn()}>
+            {tt('Cancel sign-in')}
+          </button>
+        </>
+      ) : null}
+      {errorLine && !busy ? (
+        <p className={styles.panelError} role="alert">
+          {errorLine}
+        </p>
+      ) : null}
+    </div>
+  );
+}
+
 function ModelStep(props: {
   provider: ProviderKind;
   model: string;
@@ -2027,9 +2398,11 @@ function ModelStep(props: {
   const tt = useT();
   const { provider, model, setModel } = props;
   // null = loading. An empty array = listing failed → free-text fallback.
-  const [models, setModels] = useState<Array<{ id: string; vision: 'yes' | 'no' | 'unknown' }> | null>(
-    null,
-  );
+  const [models, setModels] = useState<Array<{
+    id: string;
+    vision: 'yes' | 'no' | 'unknown';
+    label?: string;
+  }> | null>(null);
   useEffect(() => {
     let cancelled = false;
     sei.llmListModels(provider).then(
@@ -2090,7 +2463,7 @@ function ModelStep(props: {
         >
           {options.map((m) => (
             <option key={m.id} value={m.id}>
-              {m.id}
+              {'label' in m && m.label ? m.label : m.id}
             </option>
           ))}
         </select>

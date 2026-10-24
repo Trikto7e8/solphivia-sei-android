@@ -175,4 +175,13 @@ describe('switchScopeForAuth', () => {
     expect(getActiveScope()).toBe(UUID_B);
     expect(sendMock).toHaveBeenCalledWith(IpcChannel.app.scopeChanged, { scope: UUID_B, reason: 'switch' });
   });
+
+  it('runs onScopeSwitched once the new scope is live, never on a no-op (T120)', async () => {
+    const seen: string[] = [];
+    const supervisor = { stop: stopMock } as unknown as Parameters<typeof initProfileScope>[0]['supervisor'];
+    initProfileScope({ supervisor, getMainWindow: () => null, onScopeSwitched: () => seen.push(getActiveScope()) });
+    await switchScopeForAuth(UUID_A);
+    await switchScopeForAuth(UUID_A);
+    expect(seen).toEqual([UUID_A]);
+  });
 });

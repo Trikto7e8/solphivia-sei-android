@@ -33,6 +33,7 @@ import { sei } from '../ipcClient';
 import { planFirstMoment, type FirstMomentAction, type FirstMomentPlan } from '../firstMoment';
 import { useDataStore } from './useDataStore';
 import { useUiStore } from './useUiStore';
+import { visionBlocked } from '../visionGate';
 
 export type FirstMomentStatus = 'armed' | 'greeting' | 'ready' | 'done' | 'failed';
 
@@ -133,7 +134,11 @@ export const useFirstMomentStore = create<FirstMomentState>((set, get) => ({
       mcProbe ? withTimeout(mcProbe, MC_PROBE_WAIT_MS) : Promise.resolve(false),
       lanIsOpen(),
     ]);
-    const plan = planFirstMoment({ lanOpen, mcInstalled });
+    // Backseat is an image surface: a confident 'no' from the vision probe
+    // (a text-only local model) leaves it off the card, the same rule that
+    // greys the top bar's Backseat button. 'unknown' stays offered.
+    const backseatOk = !visionBlocked(useUiStore.getState().llmVision);
+    const plan = planFirstMoment({ lanOpen, mcInstalled, backseatOk });
     // A reset or re-arm while the probe was pending wins.
     if (get().characterId !== characterId || get().status !== 'greeting') return undefined;
     set({ plan });
@@ -158,6 +163,7 @@ export const useFirstMomentStore = create<FirstMomentState>((set, get) => ({
     track('first_moment_shown', {
       primary: s.plan.primary,
       minecraft_offered: s.plan.minecraft,
+      backseat_offered: s.plan.backseat,
       companion: s.characterId === DEFAULT_CHARACTER_UUIDS.sui ? 'sui' : 'generated',
     });
   },

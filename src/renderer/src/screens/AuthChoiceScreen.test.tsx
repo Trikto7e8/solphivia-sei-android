@@ -137,4 +137,18 @@ describe('AuthChoiceScreen (B2 embedded sign-in)', () => {
     expect(source.includes('onForgot')).toBe(true);
     expect(css.includes('.forgotLink')).toBe(true);
   });
+
+  it('Test 11: a failed password sign-in shows the neutral other-sign-in hint (both surfaces)', () => {
+    const hint = 'Signed up with Google or ChatGPT? Use that button, or reset your password.';
+    const modalPath = resolve(__dirname, '../components/SignInModal.tsx');
+    for (const path of [TSX_PATH, modalPath]) {
+      const source = readFileSync(path, 'utf-8');
+      expect(source.includes(`t('${hint}')`)).toBe(true);
+      // Keyed to invalid_credentials only: Supabase returns it for a wrong
+      // password and an unknown address alike, so the hint says nothing about
+      // whether the account exists. Network / rate-limit errors get no hint.
+      expect(source.includes("setHintFor(res.code === 'invalid_credentials' ? res.message : null)")).toBe(true);
+      expect(source.includes("error && mode === 'signin' && error === hintFor")).toBe(true);
+    }
+  });
 });

@@ -17,3 +17,12 @@
   color: var(--text);
   font-weight: 600;
 }
+
+/* 261023: Top up | Upgrade, full width under the copy. Upgrade gets the
+   wider column. */
+.ctas {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: var(--space-sm);
+  margin-top: var(--space-lg);
+}

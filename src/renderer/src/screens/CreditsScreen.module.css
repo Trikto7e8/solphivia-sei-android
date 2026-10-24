@@ -8,6 +8,9 @@
  * light themes, dark in dark — var(--surface) on var(--window) does this per
  * theme). Sharp edges, Oswald display, tokens only (no hex).
  *
+ * 261023: plan buttons are PlanButton (components/PlanButton.module.css);
+ * the recommended card adds .planCardRecommended + .planTag.
+ *
  * Dollar amounts on this screen are limited to the plan cards (the top up
  * packages live in TopUpModal). Plan cards carry positioning copy only —
  * never credit amounts (260725).
@@ -188,19 +191,49 @@
    acorn), so the cards read light in light mode and dark in dark mode. Quiet
    border keeps the edge crisp. */
 .planCard {
+  position: relative;
   background: var(--bg4);
   border: 1px solid var(--border);
-  padding: 20px 18px 16px;
+  padding: 20px 18px 18px;
   display: flex;
   flex-direction: column;
   gap: 6px;
-  min-height: 172px;
+  min-height: 196px;
+  min-width: 0;
 }
 
 /* Active subscription — accent edge on the solid surface. */
 .planCardActive {
   border-color: var(--accent);
   box-shadow: inset 0 2px 0 var(--accent);
+}
+
+/* 261023: the recommended plan (RECOMMENDED_TIER, while it is an upgrade).
+   A thicker accent edge, a wash of the accent from the top, and a lift, so
+   the eye lands on it first. The tag sits on the top edge. */
+.planCardRecommended {
+  border-color: var(--accent);
+  background-image: linear-gradient(180deg, var(--accent-soft), transparent 70%);
+  box-shadow:
+    inset 0 3px 0 var(--accent),
+    var(--shadow-card);
+}
+
+.planTag {
+  position: absolute;
+  top: 0;
+  right: 14px;
+  transform: translateY(-50%);
+  padding: 3px 8px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-family: var(--sans);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  line-height: 1.2;
+  white-space: nowrap;
 }
 
 .planName {
@@ -236,9 +269,58 @@
   margin: 2px 0 0;
 }
 
+/* 261017: "Use your ChatGPT plan", its own block under the plan cards. */
+.chatgptPlan {
+  margin-top: var(--space-lg);
+}
+
+.chatgptPlanRow {
+  display: flex;
+  align-items: center;
+  gap: var(--space-md);
+  padding: var(--space-md);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.chatgptPlanText {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Not .planName: that one uppercases, and "ChatGPT" is a brand name. */
+.chatgptPlanName {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-xs);
+  font-family: var(--sans);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.planFeatureLink {
+  -webkit-appearance: none;
+  appearance: none;
+  border: none;
+  background: transparent;
+  padding: 0;
+  font: inherit;
+  color: var(--muted);
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.planFeatureLink:hover {
+  color: var(--accent);
+}
+
 .planCardActions {
   margin-top: auto;
-  padding-top: 12px;
+  padding-top: 16px;
 }
 
 /* "Your Party plan renews on …" / "… will not renew" note under the cards. */

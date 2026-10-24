@@ -64,6 +64,7 @@ export function resolveSurvivalThresholds(mc) {
     critical_hostile_enter_blocks: num(mc?.critical_hostile_enter_blocks, 8),
     critical_hostile_exit_blocks: num(mc?.critical_hostile_exit_blocks, 16),
     critical_flee_range: num(mc?.critical_flee_range, 14),
+    survival_emit_cooldown_ms: num(mc?.survival_emit_cooldown_ms, 30_000),
   }
 }
 
@@ -82,7 +83,8 @@ function headCell(pos) {
  *   - bot._seiSurvivalActive   (bool)
  *   - bot._seiCriticalRetreat  (bool)
  *   - bot._seiSurvivalSavedGoal (goal)
- *   - bot.emit('sei:survival', { kind, threatLabel, count }) — one per engagement
+ *   - bot.emit('sei:survival', { kind, threatLabel, count }) — one per engagement,
+ *     at most once per kind per survival_emit_cooldown_ms (default 30s)
  */
 export function startSurvival(bot, config) {
   const mc = config?.adapter?.minecraft ?? config ?? {}
@@ -341,7 +343,19 @@ export function startSurvival(bot, config) {
   }
 
   // ── Emit (rising-edge, once per engagement; mirrors reflex's emitReflex) ──
+  // 261011: at most once per kind per cooldown window. The swim-up flaps at
+  // the surface: the head bobs out of the water (disengage), dips back in with
+  // oxygen still low (engage), and every engage emitted. Quality eval
+  // 2026-10-11 (building): sei:survival drowning every ~2s for 13s, each one a
+  // forced narration turn ("ok that was close, almost drowned" x3, "you good
+  // alex?" x4) that also cut into the running build. The swim-up itself still
+  // re-engages every time; only the narration event is rate-limited.
+  const _lastEmitAt = new Map()
   function emitSurvival(kind, threatLabel, count) {
+    const now = Date.now()
+    const last = _lastEmitAt.get(kind)
+    if (last != null && now - last < TH.survival_emit_cooldown_ms) return
+    _lastEmitAt.set(kind, now)
     try {
       bot.emit('sei:survival', { kind, threatLabel, count })
     } catch (_) {}

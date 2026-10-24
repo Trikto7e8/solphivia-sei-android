@@ -16,13 +16,26 @@
  *     http://localhost:5173/?dashshot=mcprofile&part=lan|unsupported|forge|setup|done  the Sei profile / Start Minecraft surfaces (DevMcProfileShot)
  *     http://localhost:5173/?dashshot=chatfirst    the guided first moment (260926) in the real ChatScreen
  *     http://localhost:5173/?dashshot=perms&part=mic|screen|...  the OS permission cards (DevPermsShot, 260929)
+ *     http://localhost:5173/?dashshot=voicekey&part=settings|picker&backend=cloud|local&key=1  the ElevenLabs key
+ *                                              field and the picker's add-your-key line (DevVoiceKeyShot, 261020)
+ *     http://localhost:5173/?dashshot=onboard  the first-run Sui scene from the top (261012); every
+ *                                              sei.track call is kept on window.__seiDevTrack
  *     http://localhost:5173/?dashshot=chatlaunch&game=minecraft|dontstarve|stardew  a launch panel inside the real ChatScreen
  *                                                  (&ready=1 set up, &pack=missing the pack card, &fs=1 in-app fullscreen)
  *     http://localhost:5173/?dashshot=chatchess    a finished chess game (the result card) inside the real ChatScreen
  *     http://localhost:5173/?dashshot=chatcall     a live call with Sui on her scene (VoiceCallScreen, backdrop mode)
+ *     http://localhost:5173/?dashshot=home&step=plan|call|untagged|goal|long|none  the Home wall with the "up next" strip (261013);
+ *                                                  (&art=<url>,<url>: the wall's portraits in order, 261023)
+ *                                                  (&name=Marv&text=...&surface=game|call: a given plan for that companion, 261014)
+ *                                                  sei.track calls land on window.__seiDevTrack
+ *     http://localhost:5173/?dashshot=art&part=browse|page|call&art=<url>  names over character art (DevArtShot, 261023)
  *     http://localhost:5173/?dashshot=chatui&part=chat|picker|settings  the rail + a screen, for theme/accent checks
  *                                                  (&lang=zh on any of these for the Chinese copy)
- *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open)
+ *                                                  (&nomc=1: no Minecraft install; &lan=1: a LAN world open;
+ *                                                  &novision=1: text-only model, chess leads)
+ *                                                  (&update=downloading|ready|restarting|updated: the sidebar
+ *                                                  "Update Sei" button / "Updated to vX" toast, 261023;
+ *                                                  &live=game: a companion online, so a click asks first)
  *
  * It seeds useMcDashboardStore with fixture snapshots and useDataStore with
  * two named characters (window.sei is stubbed by devHarnessStubs.ts, which
@@ -46,14 +59,24 @@ import { DevCreditWallShot } from '../DevCreditWallShot';
 import { DevRobloxShot } from '../backseat/DevRobloxShot';
 import { DevMcProfileShot } from '../mcdash/DevMcProfileShot';
 import { DevPermsShot } from '../permissions/DevPermsShot';
+import { DevVoiceKeyShot } from '../DevVoiceKeyShot';
+import { DevArtShot, devArtList } from '../DevArtShot';
+import { OnboardApp } from '../../onboard/OnboardApp';
 import { useFirstMomentStore } from '../../lib/stores/useFirstMomentStore';
 import { useChessStore } from '../../lib/stores/useChessStore';
 import { useVoiceStore } from '../../lib/stores/useVoiceStore';
+import { useUpdateStore } from '../../lib/stores/useUpdateStore';
+import { topChangelogLine } from '../../lib/changelog';
+import { UpdatedToast } from '../UpdatedToast';
 import { useUiStore } from '../../lib/stores/useUiStore';
 import { useLangStore } from '../../lib/i18n';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
 import { VoiceCallScreen } from '../../screens/VoiceCallScreen';
 import { SettingsScreen } from '../../screens/SettingsScreen';
+import { AuthChoiceScreen } from '../../screens/AuthChoiceScreen';
+import { SignInModal } from '../SignInModal';
+import { CreditsScreen } from '../../screens/CreditsScreen';
+import { CharactersScreen } from '../../screens/CharactersScreen';
 import { IconRail } from '../IconRail';
 import { GamesPickerModal } from '../GamesPickerModal';
 
@@ -204,8 +227,36 @@ function seed(): void {
   if (which === 'chatcall') {
     useVoiceStore.setState({ participants: [SUI_ID], status: 'live', liveAt: Date.now() - (params.has('fresh') ? 0 : 42_000) });
   }
+  // ?dashshot=home (261013): a clean three-companion wall (the other
+  // harnesses seed characters with live games at import), nobody in a session.
+  if (which === 'home') {
+    const now = Date.now();
+    useDataStore.setState({
+      summons: {},
+      // &name=<companion> (261014): that companion first (the one the strip
+      // is for), then the default trio minus a duplicate. Only Sui has a
+      // bundled portrait; the others get their pixel portrait.
+      characters: [params.get('name') || 'Sui', 'Sui', 'Marv', 'Lyra']
+        .filter((n, i, all) => all.findIndex((m) => m.toLowerCase() === n.toLowerCase()) === i)
+        .slice(0, 3)
+        .map((name, i) => ({
+          id: `dashshot-home-${name.toLowerCase()}`,
+          name,
+          // &art= (261023): a portrait per wall slot, for the name contrast checks.
+          ...(params.has('art')
+            ? devArtList()[i]?.art
+              ? { portrait_image: devArtList()[i].art }
+              : {}
+            : name === 'Sui'
+              ? { portrait_image: './img/onboard/sui-stand.png' }
+              : {}),
+          last_chatted: new Date(now - [20, 50, 90][i] * 3_600_000).toISOString(),
+        })) as unknown as ReturnType<typeof useDataStore.getState>['characters'],
+    });
+  }
   if (params.get('dashshot') === 'chatfirst') {
     if (params.has('lan')) useDataStore.setState({ lan: { kind: 'open', port: 25565, motd: 'My World', lastSeenAt: Date.now() } });
+    if (params.has('novision')) useUiStore.getState().setLlmVision('no');
     useFirstMomentStore.getState().arm(FIRST_ID);
   }
 }
@@ -222,6 +273,17 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
   if (which === 'mcprofile') return <DevMcProfileShot />;
   // ?dashshot=perms&part=mic|mic-win|mic-restricted|mic-restart|screen|screen-waiting|screen-restart (260929).
   if (which === 'perms') return <DevPermsShot />;
+  // ?dashshot=voicekey&part=settings|picker&backend=cloud|local&key=1 (261020, T158).
+  if (which === 'voicekey') return <DevVoiceKeyShot />;
+  // ?dashshot=art&part=browse|page|call&art=<url> (261023): names over character art.
+  if (which === 'art') return <DevArtShot />;
+  // ?dashshot=onboard (261012): the first-run scene, for the intro's stage
+  // gates (watchdog, skip, reduced motion). onComplete goes nowhere.
+  if (which === 'onboard') return <OnboardApp onComplete={() => undefined} />;
+  // ?dashshot=authchoice|signinmodal (261023): the sign-in surfaces with
+  // "Continue with ChatGPT" (stubs in devHarnessStubs.ts).
+  if (which === 'authchoice') return <AuthChoiceScreen onChooseLocal={() => undefined} />;
+  if (which === 'signinmodal') return <SignInModal framingLabel={null} onClose={() => undefined} />;
   // ?dashshot=chat (Stardew) | chatdst: the dashboard hosted inside the real
   // ChatScreen (260917), for the game/chat split, the drag handle and the
   // composer. The fixture summon is online, so the dashboard slot opens.
@@ -246,15 +308,38 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
       </div>
     );
   }
+  if (which === 'home') return <DevHomeShot />;
   if (which === 'chatui') {
-    const part = new URLSearchParams(window.location.search).get('part') ?? 'chat';
+    const qs = new URLSearchParams(window.location.search);
+    const part = qs.get('part') ?? 'chat';
+    const update = qs.get('update');
+    if (update === 'downloading') useUpdateStore.setState({ rail: { kind: 'downloading', percent: 42 } });
+    if (update === 'ready') useUpdateStore.setState({ rail: { kind: 'ready', version: '0.7.0' } });
+    if (update === 'restarting') useUpdateStore.setState({ rail: { kind: 'restarting', version: '0.7.0' } });
+    if (update === 'updated') {
+      useUpdateStore.setState({
+        toast: {
+          version: '0.7.0',
+          headline: topChangelogLine(
+            "## What's new in 0.7.0\n- New: use your own ElevenLabs voices. Save your key in Settings and pick them in the voice picker\n- Fixes",
+          ),
+        },
+      });
+    }
+    if (qs.get('live') === 'game') {
+      useDataStore.setState((s) => ({
+        summons: { ...s.summons, [DST_ID]: { kind: 'online', characterId: DST_ID, game: 'dontstarve', uptimeMs: 0, startedAtMs: Date.now() } },
+      }));
+    }
     return (
       <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--window)' }}>
         <IconRail />
         <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
-          {part === 'settings' ? <SettingsScreen /> : <ChatScreen characterId={SDV_ID} />}
+          {/* &part=credits (261017): the pricing page's ChatGPT plan block. */}
+          {part === 'settings' ? <SettingsScreen /> : part === 'credits' ? <CreditsScreen /> : <ChatScreen characterId={SDV_ID} />}
         </div>
         {part === 'picker' ? <GamesPickerModal characterId={SDV_ID} /> : null}
+        {update === 'updated' ? <UpdatedToast /> : null}
       </div>
     );
   }
@@ -297,6 +382,20 @@ export function DevDashShot({ which }: { which: string }): React.ReactElement {
           <StardewDashboardPanel characterId={SDV_ID} />
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** ?dashshot=home (261013): the Home wall, plus the games picker when the card opens it. */
+function DevHomeShot(): React.ReactElement {
+  const modal = useUiStore((s) => s.modal);
+  return (
+    <div style={{ position: 'fixed', inset: 0, display: 'flex', background: 'var(--window)' }}>
+      <IconRail />
+      <div style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+        <CharactersScreen />
+      </div>
+      {modal?.kind === 'games-picker' ? <GamesPickerModal characterId={modal.characterId} /> : null}
     </div>
   );
 }

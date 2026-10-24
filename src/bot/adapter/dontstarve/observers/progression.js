@@ -10,7 +10,7 @@
 // winter prep. Each label leaves a part for the player.
 //
 // Node shape matches the other spines: { id, label, key, needs[], goal,
-// unlock?, procedure? }. `key` is the phrase matchFrontierNode looks for in
+// unlock?, procedure? }. `key` is the phrase brain/goalLink.js looks for in
 // a setGoal text. Goal predicates:
 //   { have, count? }      the body holds >= count (inventory + equipped)
 //   { anyOf: [prefabs] }  holds at least one of them
@@ -127,7 +127,7 @@ export function computeProgression(st = {}) {
   const frontier = SPINE.filter((n) => !done.has(n.id) && n.needs.every((p) => done.has(p)) && unlocked(n, st))
   let furthest = null
   for (const n of SPINE) if (done.has(n.id)) furthest = n
-  return { done, raw, frontier, currentMilestone: frontier[0] ?? null, furthest, complete: done.has('winter') }
+  return { done, raw, frontier, currentMilestone: frontier[0] ?? null, furthest, complete: done.has('winter'), spine: SPINE }
 }
 
 /**

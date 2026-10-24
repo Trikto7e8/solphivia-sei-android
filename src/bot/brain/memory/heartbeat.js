@@ -23,6 +23,7 @@
 import { readFile } from 'node:fs/promises'
 import { atomicWrite } from '../storage/atomicWrite.js'
 import { withFileLock } from '../storage/fileLock.js'
+import { PLAYER_TASK_TAG } from '../promptLibrary.js'
 
 const HEADER =
   '# Heartbeat\n' +
@@ -42,26 +43,108 @@ function entryLine(timestamp, text) {
 // heartbeat already holds (the tool description forbids duplicates; this
 // enforces it so a re-stated goal can't pile up across loops).
 function normalizeForDedup(text) {
-  return String(text ?? '')
+  return stripPlayerTaskTag(text)
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, ' ')
     .replace(/\s+/g, ' ')
     .trim()
 }
 
+// 261013 (pass 6b): a task the player gave the bot is stored with
+// PLAYER_TASK_TAG in front of its text, so the seed can list it apart from (and
+// ahead of) the bot's own goals, and so JS never auto-clears it from the
+// progression spine (only the model can tell when it was handed over).
+export function isPlayerTask(text) {
+  return String(text ?? '').trimStart().startsWith(PLAYER_TASK_TAG)
+}
+
+// 261017 (pass 14b): whether the heartbeat file still holds a player task.
+export function hasPlayerTask(fullText) {
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(line)
+    if (m && isPlayerTask(m[1])) return true
+  }
+  return false
+}
+
+// 261020 (pass 20): the goal texts in the heartbeat file, oldest first, with
+// the player-task tag kept and the stamps dropped.
+export function goalEntries(fullText) {
+  const out = []
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[[^\]]*\]\s*(.*)$/.exec(line)
+    if (m && m[1].trim()) out.push(m[1].trim())
+  }
+  return out
+}
+
+// 261022 (pass 22): the player tasks in the heartbeat file, oldest first:
+// { at } is the stamp in ms (NaN when unreadable), { text } the goal text
+// without the tag, { key } the text as appendGoal dedups it.
+export function playerTaskEntries(fullText) {
+  const out = []
+  for (const line of String(fullText ?? '').split('\n')) {
+    const m = /^- \[([^\]]*)\]\s*(.*)$/.exec(line)
+    if (!m || !isPlayerTask(m[2])) continue
+    const text = stripPlayerTaskTag(m[2])
+    if (text) out.push({ at: Date.parse(m[1]), text, key: goalKey(text) })
+  }
+  return out
+}
+
+// A goal's text as appendGoal compares it (tag, case and punctuation dropped).
+export function goalKey(text) {
+  return normalizeForDedup(text)
+}
+
+// 261022 (pass 22c): which of the player's tasks an action works, from the
+// item and block names in its args against the task's words ("oak_log" and
+// "Get 8 logs for Alex's dock" share "log"). A player name never links: a
+// walk to the player belongs to no one task. Empty when nothing is shared.
+const LINK_SKIP = new Set(['the', 'and', 'for', 'with', 'any', 'block', 'blocks', 'item', 'items', 'nearest'])
+const stemWord = (w) => {
+  if (w.length > 4 && w.endsWith('ies')) return `${w.slice(0, -3)}y`
+  if (w.length > 4 && /(ch|sh|s|x)es$/.test(w)) return w.slice(0, -2)
+  if (w.length > 3 && w.endsWith('s') && !w.endsWith('ss')) return w.slice(0, -1)
+  return w
+}
+const linkWords = (text) => String(text ?? '').toLowerCase().split(/[^a-z]+/)
+  .filter((w) => w.length >= 3 && !LINK_SKIP.has(w)).map(stemWord)
+export function tasksOfAction(args, tasks, { names = [] } = {}) {
+  const skip = new Set((names ?? []).flatMap((n) => linkWords(n)))
+  const words = new Set()
+  const walk = (v, depth) => {
+    if (depth > 2 || v == null) return
+    if (typeof v === 'string') { for (const w of linkWords(v)) if (!skip.has(w)) words.add(w) } else if (Array.isArray(v)) { for (const x of v) walk(x, depth + 1) } else if (typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) if (k !== 'player' && k !== 'username') walk(x, depth + 1)
+    }
+  }
+  walk(args, 0)
+  if (!words.size) return []
+  return (tasks ?? []).filter((t) => linkWords(t?.text).some((w) => !skip.has(w) && words.has(w)))
+}
+
+function stripPlayerTaskTag(text) {
+  const t = String(text ?? '').trim()
+  return t.startsWith(PLAYER_TASK_TAG) ? t.slice(PLAYER_TASK_TAG.length).trim() : t
+}
+
 export function createHeartbeatLog({ path: filePath } = {}) {
   if (!filePath) throw new Error('createHeartbeatLog: path required')
   return {
     path: filePath,
-    append: (text, when) => appendGoal(filePath, text, when),
+    append: (text, when, opts) => appendGoal(filePath, text, when, opts),
     remove: (query) => removeGoal(filePath, query),
     readAll: () => readHeartbeatFull(filePath),
   }
 }
 
-export async function appendGoal(filePath, text, when) {
-  const safe = String(text ?? '').replace(/\s*\n+\s*/g, ' ').trim()
-  if (!safe) return 0
+export async function appendGoal(filePath, text, when, { forPlayer = false } = {}) {
+  const folded = String(text ?? '').replace(/\s*\n+\s*/g, ' ')
+  const body = stripPlayerTaskTag(folded)
+  if (!body) return 0
+  // The model may also copy the tag into the text itself from the seed view.
+  const safe = (forPlayer || isPlayerTask(folded)) ? `${PLAYER_TASK_TAG} ${body}` : body
   let whenDate
   if (when instanceof Date) whenDate = when
   else if (typeof when === 'string') whenDate = new Date(when)
@@ -97,7 +180,10 @@ export async function appendGoal(filePath, text, when) {
  * Returns the number of removed lines.
  */
 export async function removeGoal(filePath, query) {
-  const q = String(query ?? '').trim().toLowerCase()
+  // 261020 (pass 20 review): NUDGES.heartbeatNow shows a long goal cut at 157
+  // characters with "..." on the end. A clearGoal that copies that line whole
+  // must still match, so a trailing ellipsis is not part of the substring.
+  const q = String(query ?? '').trim().replace(/\s*(\.\.\.|…)$/, '').trim().toLowerCase()
   if (!q) return 0
 
   return withFileLock(filePath, async () => {

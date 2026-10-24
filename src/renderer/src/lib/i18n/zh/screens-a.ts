@@ -65,6 +65,8 @@ export const ZH_SCREENS_A: Record<string, string> = {
   'and': '和',
   'Privacy Policy': '《隐私政策》',
   'Forgot your password?': '忘记密码？',
+  'Signed up with Google or ChatGPT? Use that button, or reset your password.':
+    '用 Google 或 ChatGPT 注册的？请用对应的按钮登录，或重置密码。',
   'or': '或',
   'Sign up with Google': '使用 Google 注册',
   'Sign in with Google': '使用 Google 登录',
@@ -255,4 +257,7 @@ export const ZH_SCREENS_A: Record<string, string> = {
   'You: {text}': '你：{text}',
   'Voice recognition hiccup. Install the local backup model so calls keep working offline?':
     '语音识别出现问题。安装本地备用模型，让通话在离线时也能继续？',
+  // Home "up next" strip (261013)
+  'Up next with {name}': '和{name}的下一步',
+  'Call {name}': '给{name}打电话',
 };

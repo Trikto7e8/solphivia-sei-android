@@ -108,16 +108,19 @@ export const THOUGHT_JOINING_CALL =
  * chat was opened straight out of onboarding: the greeting should use what
  * onboarding learned (the name, already in the system prompt) and end on ONE
  * concrete thing to do together. The renderer draws the matching buttons under
- * the greeting, so the line only has to make the offer. Chess is the default
- * because it needs no install; Minecraft leads only when a LAN world is open.
- * Folded AFTER THOUGHT_FIRST_MEETING in the same note, so its "end it by"
- * instruction is the last thing the model reads.
+ * the greeting, so the line only has to make the offer. Backseat is the
+ * default (261023: it is what most new players came for and needs no
+ * install); Minecraft leads when a LAN world is open, and chess when the model
+ * cannot see images. Folded AFTER THOUGHT_FIRST_MEETING in the same note, so
+ * its "end it by" instruction is the last thing the model reads.
  */
-export function thoughtFirstMoment(primary: 'chess' | 'minecraft'): string {
+export function thoughtFirstMoment(primary: 'chess' | 'minecraft' | 'backseat'): string {
   const offer =
     primary === 'minecraft'
       ? 'End it by asking if they want you to join the Minecraft world they have open right now.'
-      : 'End it by inviting them to play a game of chess with you right now. Chess opens right here beside the chat and needs nothing installed.';
+      : primary === 'backseat'
+        ? 'End it by inviting them to share their screen and play a game while you watch and talk along. It works with any game, and they can start it right now.'
+        : 'End it by inviting them to play a game of chess with you right now. Chess opens right here beside the chat and needs nothing installed.';
   return (
     'This human just finished setting up Sei, so this is their first time here. ' +
     'If you know their name, use it. Keep the whole greeting short. ' +

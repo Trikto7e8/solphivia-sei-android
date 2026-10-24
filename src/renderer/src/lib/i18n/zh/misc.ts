@@ -103,6 +103,7 @@ export const ZH_MISC: Record<string, string> = {
   'smelting…': '正在熔炼…',
   'rummaging through chests…': '正在翻箱子…',
   'dropping items…': '正在丢弃物品…',
+  'picking up items…': '正在捡起物品…',
   'reading a sign…': '正在读告示牌…',
   'fiddling with something…': '正在摆弄东西…',
   'adventuring…': '正在冒险…',
@@ -120,6 +121,24 @@ export const ZH_MISC: Record<string, string> = {
   '[voice paused, out of credits]': '[语音已暂停，额度已用完]',
   '[voice unavailable, this voice is not in your ElevenLabs library]':
     '[语音不可用，这个声音不在你的 ElevenLabs 声音库中]',
+  // 261019: the user's own ElevenLabs account answered (direct key route).
+  '[voice unavailable, free ElevenLabs plans cannot use this voice]':
+    '[语音不可用，ElevenLabs 免费套餐无法使用这个声音]',
+  '[voice paused, your ElevenLabs account is out of credits]':
+    '[语音已暂停，你的 ElevenLabs 账户额度已用完]',
+  '[voice unavailable, ElevenLabs rejected your key]': '[语音不可用，ElevenLabs 拒绝了你的密钥]',
+  // 261020 (T158): a cloud line for an own ElevenLabs voice spoken with the
+  // character's stand-in Sei voice instead.
+  '[speaking with a Sei voice, add your ElevenLabs key in Settings to hear their own voice]':
+    '[正在使用 Sei 的声音，在设置中添加你的 ElevenLabs 密钥即可听到 TA 自己的声音]',
+  '[speaking with a Sei voice, ElevenLabs rejected your key]':
+    '[正在使用 Sei 的声音，ElevenLabs 拒绝了你的密钥]',
+  '[speaking with a Sei voice, their voice is no longer in your ElevenLabs account]':
+    '[正在使用 Sei 的声音，TA 的声音已不在你的 ElevenLabs 账户中]',
+  '[speaking with a Sei voice, your ElevenLabs account is out of credits]':
+    '[正在使用 Sei 的声音，你的 ElevenLabs 账户额度已用完]',
+  '[speaking with a Sei voice, your ElevenLabs plan cannot use their voice]':
+    '[正在使用 Sei 的声音，你的 ElevenLabs 套餐无法使用 TA 的声音]',
   // 260816 local speech: the sherpa voice pack for this call is not downloaded.
   '[voice unavailable, download the local voice pack in Settings]':
     '[语音不可用，请在设置中下载本地语音包]',
@@ -149,6 +168,13 @@ export const ZH_MISC: Record<string, string> = {
   'No microphone was found. Connect one and try again.': '没有找到麦克风。请连接后重试。',
   'Microphone access is off for Sei.': 'Sei 的麦克风权限已关闭。',
   'Voice call failed to start. Try again in a moment.': '语音通话启动失败。请稍后再试。',
+  // 261023: call-start failures that used to fall through to the line above.
+  'Your microphone could not be opened. Close other apps that use it, or pick a different microphone in your sound settings, then try again.':
+    '无法打开你的麦克风。请关闭正在使用它的其他应用，或在声音设置中选择其他麦克风，然后重试。',
+  'Voice recognition took too long to download. Check your connection and try again.':
+    '语音识别下载时间过长。请检查网络连接后重试。',
+  'Voice recognition could not start. Check your connection and try again.':
+    '语音识别无法启动。请检查网络连接后重试。',
 
   // ── OS permission cards (MicAccessCard / ScreenAccessGate, 260929) ────
   'Turn on your microphone': '开启麦克风',
@@ -333,6 +359,35 @@ export const ZH_MISC: Record<string, string> = {
   'Calmness': '平稳度',
   'Higher is steadier and more even. Lower is more dramatic.':
     '越高越平稳均匀，越低越富有戏剧性。',
+  // 261019: the user's own ElevenLabs voices in the picker.
+  'Your ElevenLabs voices': '你的 ElevenLabs 声音',
+  'Voices from your own ElevenLabs account. They play through your key.':
+    '来自你自己 ElevenLabs 账户的声音，通过你的密钥播放。',
+  'No voices in your ElevenLabs account yet. Voices you clone, design or save there show up here.':
+    '你的 ElevenLabs 账户里还没有声音。你在那里克隆、设计或收藏的声音会显示在这里。',
+  'Refresh': '刷新',
+  'Cloned voice': '克隆声音',
+  'Professional clone': '专业克隆',
+  'Designed voice': '设计的声音',
+  'Library voice': '声音库声音',
+  'Your voice': '你的声音',
+  'From your ElevenLabs account.': '来自你的 ElevenLabs 账户。',
+  'From your ElevenLabs account. It plays only with your ElevenLabs key.':
+    '来自你的 ElevenLabs 账户，只有使用你的 ElevenLabs 密钥才能播放。',
+  // 261020 (T158): cloud users with no key hear the stand-in Sei voice.
+  'From your ElevenLabs account. Without your ElevenLabs key, a Sei voice speaks for them.':
+    '来自你的 ElevenLabs 账户。没有你的 ElevenLabs 密钥时，会由一个 Sei 的声音代为说话。',
+  'Have your own ElevenLabs voices? Add your ElevenLabs key in Settings, under Voice.':
+    '有自己的 ElevenLabs 声音？请在设置的“声音”中添加你的 ElevenLabs 密钥。',
+  'Could not read your ElevenLabs voices. Check your ElevenLabs key in Settings.':
+    '无法读取你的 ElevenLabs 声音。请在设置中检查你的 ElevenLabs 密钥。',
+  'Could not load your ElevenLabs voices right now.': '暂时无法加载你的 ElevenLabs 声音。',
+  "Sei's voices play through your ElevenLabs key on paid ElevenLabs plans. On a free plan, use your own voices.":
+    'Sei 的声音在 ElevenLabs 付费套餐下可通过你的密钥播放。免费套餐请使用你自己的声音。',
+  'Free ElevenLabs plans cannot play this voice through your key. Pick one of your own voices.':
+    'ElevenLabs 免费套餐无法通过你的密钥播放这个声音。请选择你自己的声音。',
+  'Your ElevenLabs account is out of credits.': '你的 ElevenLabs 账户额度已用完。',
+  'ElevenLabs rejected your key. Check it in Settings.': 'ElevenLabs 拒绝了你的密钥。请在设置中检查。',
 
   // ── Small components (BrowseCard, IdTag, InfoTip, chrome, buttons) ─────
   'Open {name}': '打开 {name}',
@@ -350,4 +405,64 @@ export const ZH_MISC: Record<string, string> = {
   'Continue with Google': '通过 Google 继续',
   'Companion': '伙伴',
   'You': '你',
+
+  // ── 261017 (issue #46): ChatGPT plan ERROR_COPY rows ──────────────────
+  "You've reached your ChatGPT plan's usage limit. Check Manage usage in ChatGPT to see when it resets, or switch to another AI option in Settings.":
+    '你已达到 ChatGPT 套餐的用量上限。在 ChatGPT 的「管理用量」中查看何时重置，或在设置中换用其他 AI 选项。',
+  "This ChatGPT account can't use its plan in Sei. Sign in with a different account, or pick another AI option in Settings.":
+    '这个 ChatGPT 账户无法在 Sei 中使用其套餐。请换一个账户登录，或在设置中选择其他 AI 选项。',
+  "ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan. Pick another AI option in Settings.":
+    '目前无法在这里使用 ChatGPT 套餐，可能受你所在地区或套餐的限制。请在设置中选择其他 AI 选项。',
+  "ChatGPT didn't accept Sei's sign-in, even after renewing it. Continue with ChatGPT in Settings to sign in again.":
+    'ChatGPT 不接受 Sei 的登录，即使已经续期也一样。请在设置中点击 Continue with ChatGPT 重新登录。',
+  "ChatGPT didn't accept the request Sei sent, so your companion stopped. Try again, or pick another AI option in Settings.":
+    'ChatGPT 不接受 Sei 发送的请求，所以你的伙伴已停下。请重试，或在设置中选择其他 AI 选项。',
+  "The ChatGPT model picked in Settings can't handle this request. Pick another model in Settings and try again.":
+    '设置中选择的 ChatGPT 模型无法处理这个请求。请在设置中换一个模型后重试。',
+  'Your ChatGPT sign-in ended. Continue with ChatGPT in Settings to sign in again.':
+    '你的 ChatGPT 登录已失效。请在设置中点击 Continue with ChatGPT 重新登录。',
+  "ChatGPT plan use isn't turned on for this sign-in. Turn it on in Settings, then try again.":
+    '这次登录没有开启 ChatGPT 套餐使用权限。请在设置中开启后重试。',
+  // 261019: own ElevenLabs voice on a shared character ("Others will hear").
+  "Your voice is from your ElevenLabs account, so others can't play it. Others will hear:":
+    '这个声音来自你的 ElevenLabs 账号，其他人无法播放。其他人会听到：',
+  'Voice others will hear': '其他人听到的声音',
+  'Closest Sei voice ({name})': '最接近的 Sei 声音（{name}）',
+  'Closest Sei voice': '最接近的 Sei 声音',
+  'Sei voice': 'Sei 声音',
+  'Voice for others: {name}': '其他人听到的声音：{name}',
+  'Voice for others: a Sei voice': '其他人听到的声音：一个 Sei 声音',
+
+  // ── 261023: Continue with ChatGPT as a Sei account sign-in ────────────
+  'ChatGPT did not confirm this email, so Sei checks it once.': 'ChatGPT 没有确认这个邮箱，所以 Sei 需要验证一次。',
+  'ChatGPT sign-in': 'ChatGPT 登录',
+  'ChatGPT sign-in hit a snag. Try again.': 'ChatGPT 登录出了点问题，请重试。',
+  'ChatGPT sign-in is having trouble right now. Try again in a moment.': 'ChatGPT 登录暂时有问题，请稍后再试。',
+  "ChatGPT sign-in isn't available in your region.": '你所在的地区无法使用 ChatGPT 登录。',
+  'ChatGPT sign-in was declined. Try again, or use another way to sign in.': 'ChatGPT 登录被拒绝。请重试，或换一种方式登录。',
+  "Couldn't reach Sei. Check your internet and try again.": '无法连接到 Sei。请检查网络后重试。',
+  'Finish in your browser': '请在浏览器中完成',
+  'Finish signing in to ChatGPT in the browser tab that opened.': '请在打开的浏览器标签页中完成 ChatGPT 登录。',
+  'First time on this computer. Enter the code to confirm it is you.': '这是你第一次在这台电脑上登录。请输入验证码确认是你本人。',
+  'Link ChatGPT': '关联 ChatGPT',
+  'Linked': '已关联',
+  'Unlink': '取消关联',
+  "Couldn't unlink right now. Try again later.": '暂时无法取消关联，请稍后再试。',
+  "Sei couldn't confirm your ChatGPT sign-in. Try again.": 'Sei 无法确认你的 ChatGPT 登录，请重试。',
+  "Sei couldn't open your browser. Try again.": 'Sei 无法打开你的浏览器，请重试。',
+  'Sign in to Sei first.': '请先登录 Sei。',
+  'That Sei account is already linked to a different ChatGPT account. Sign in with your email or Google instead.':
+    '这个 Sei 账户已经关联了另一个 ChatGPT 账户。请改用邮箱或 Google 登录。',
+  'That code expired or had too many tries. Start again.': '验证码已过期或尝试次数过多，请重新开始。',
+  "That code isn't right. Check it and try again.": '验证码不正确，请检查后重试。',
+  'The ChatGPT sign-in took too long. Try again.': 'ChatGPT 登录用时过长，请重试。',
+  'This ChatGPT account is already linked to a different Sei account.': '这个 ChatGPT 账户已经关联了另一个 Sei 账户。',
+  'This email already has a Sei account. Enter the code to sign in to it with ChatGPT.':
+    '这个邮箱已经有 Sei 账户。输入验证码，即可用 ChatGPT 登录该账户。',
+  'Too many tries. Wait a bit, or continue with Google.': '尝试次数过多，请稍等一会儿，或使用 Google 继续。',
+  'Too many tries. Wait a bit and try again.': '尝试次数过多，请稍等一会儿再试。',
+  "We opened a browser tab to finish signing in with ChatGPT. Come back when you're done; this picks up on its own.":
+    '我们打开了一个浏览器标签页来完成 ChatGPT 登录。完成后回到这里，会自动继续。',
+  "Your ChatGPT account didn't share an email address, so Sei can't make an account from it.":
+    '你的 ChatGPT 账户没有提供邮箱地址，所以 Sei 无法用它创建账户。',
 };

@@ -101,6 +101,8 @@ export function actionVerb(action: BotAction | undefined | null, opts?: ActionVe
       return t('rummaging through chests…');
     case 'dropItem':
       return t('dropping items…');
+    case 'pickup':
+      return t('picking up items…');
     case 'readSign':
       return t('reading a sign…');
     case 'activateItem':

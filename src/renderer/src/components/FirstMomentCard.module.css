@@ -77,9 +77,26 @@
   filter: brightness(1.08);
 }
 
-/* The game the companion just offered: an accent ring so the eye lands there. */
+/* What the companion just offered. No ring or border (261023, borderless
+ * buttons): an art tile lifts on a soft shadow, an icon tile takes the accent
+ * fill. */
 .primary {
-  box-shadow: 0 0 0 2px var(--accent);
+  box-shadow: var(--shadow-pop);
+  filter: brightness(1.06);
+}
+
+.callTile.primaryFill {
+  background-color: var(--accent);
+  color: var(--accent-text);
+  box-shadow: var(--shadow-pop);
+}
+
+.callTile.primaryFill .callIcon {
+  color: var(--accent-text);
+}
+
+.callTile.primaryFill:hover {
+  background-color: var(--accent-strong);
 }
 
 .callTile:hover {

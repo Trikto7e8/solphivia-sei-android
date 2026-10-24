@@ -15,9 +15,13 @@ import { prefilterToolBatch, postProcessToolBatch } from './toolBatch.js'
 import { classifyConnectError } from './errors.js'
 import { createDashboardTelemetry } from './dashboard/telemetry.js'
 import { createDefaultRegistry } from './registry.js'
+import { sessionActionStats, classifyActionOutcome } from '../../brain/actionStats.js'
 import { createSnapshotComposer } from './observers/snapshot.js'
 import { getProgression as readProgression } from './observers/progression.js'
 import { setWorldPaused } from './behaviors/pause.js'
+import { continueAttack } from './behaviors/attack.js'
+import { staleAttackerText } from './observers/staleAttacker.js'
+import { minecraftVocabulary } from './vocabulary.js'
 import { closeContainerSession } from './behaviors/container.js'
 import { closeFurnaceSession } from './behaviors/furnace.js'
 import { wireBotEvents } from './fsmWires.js'
@@ -46,7 +50,14 @@ import {
  *   is the authoritative belt-and-suspenders gate (VIS-03).
  * @returns {import('../../brain/types.js').Adapter}
  */
-export function createMinecraftAdapter({ bot, config, visionEnabled = false }) {
+// Actions that may run while a furnace or chest window stays open.
+const KEEPS_WINDOW_OPEN = new Set([
+  'openContainer', 'depositItem', 'withdrawItem',
+  'openFurnace', 'smeltInput', 'addFuel', 'takeSmelted',
+  'find', 'look', 'readSign',
+])
+
+export function createMinecraftAdapter({ bot, config, visionEnabled = false, actionStats = sessionActionStats }) {
   if (!bot) throw new Error('createMinecraftAdapter: bot required')
   if (!config) throw new Error('createMinecraftAdapter: config required')
 
@@ -83,10 +94,37 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false }) {
       // follow's persistent trailing runs OUTSIDE execute (background tick),
       // so follow keeps its gaze pitch-tracking.
       bot._seiActionActive = (bot._seiActionActive ?? 0) + 1
+      // 261011: an open furnace or chest window makes other inventory actions
+      // misbehave. With the furnace open, craft(oak_planks) resolved as
+      // "crafted 4 oak_planks" without using a log, and the next craft
+      // reported missing planks. Close the window before any action that is
+      // not one of the window verbs or a read that leaves the inventory alone.
+      if (!KEEPS_WINDOW_OPEN.has(name)) {
+        try { await closeContainerSession() } catch {}
+        try { await closeFurnaceSession() } catch {}
+      }
+      // 261011: aggregate outcome telemetry (brain/actionStats.js). Counts and
+      // a closed failure class only; the result text never leaves this frame.
+      const startedAt = Date.now()
+      try { actionStats?.noteActionStarted() } catch {}
+      let result, error
       try {
-        return await registry.execute(name, args, bot, execConfig)
+        result = await registry.execute(name, args, bot, execConfig)
+        return result
+      } catch (err) {
+        error = err ?? new Error('unknown')
+        throw err
       } finally {
         bot._seiActionActive = Math.max(0, (bot._seiActionActive ?? 1) - 1)
+        try {
+          const reason = classifyActionOutcome({ result, error, aborted: execConfig.signal?.aborted === true })
+          // Only registered names are recorded: `name` is the model's tool_use
+          // name, and a hallucinated one (any provider can emit a tool name it
+          // was not offered) is model-written text that must not become an
+          // analytics property key.
+          const statName = registry.schema(name) ? name : 'other'
+          actionStats?.recordAction(statName, Date.now() - startedAt, reason)
+        } catch {}
       }
     },
 
@@ -136,8 +174,13 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false }) {
     capabilityParagraph: () => capabilityParagraph(config?.vision?.mode),
     actionRules: () => actionRules(config?.vision?.mode),
     cuboidGrammar,
-    eventAddendum: (event, data) => eventAddendum(event, data, config?.vision?.mode),
+    // 261019: an attack event whose mob died or left view before this turn
+    // gets plain "it is gone" text instead of "attack it now".
+    eventAddendum: (event, data) => staleAttackerText(bot, event, data) ?? eventAddendum(event, data, config?.vision?.mode),
     cantReachNudge,
+    // 261013: item, block and mob names for the brain's repeat note
+    // (vocabulary.js), so it never names the job as a habit.
+    gameVocabulary: () => minecraftVocabulary(bot.version),
 
     // ─── Session lifecycle ───────────────────────────────────────────
     attach(handlers) {
@@ -230,8 +273,15 @@ export function createMinecraftAdapter({ bot, config, visionEnabled = false }) {
     progressActions: (name, args) => name === 'build' || name === 'gather' || (name === 'dig' && !!args?.to),
     visionActions: ['look'],
     prefilterToolBatch,
+    // 261019 (pass 18): attackEntity again on the fight already running
+    // tops it up instead of restarting it (behaviors/attack.js).
+    continueRunningAction: (running, use) => continueAttack(bot, running, use),
+    fightActions: ['attackEntity'],
     postProcessToolBatch: (toolUses, results, loopState) =>
       postProcessToolBatch(toolUses, results, loopState, cantReachNudge),
+    // give hands items over; its success line starts "gave N item to ...".
+    handOverResult: (name, resultText) =>
+      name === 'give' ? /^gave \d/.test(String(resultText ?? '')) : null,
     surfaceBaseline: () => MINECRAFT_BASELINE,
     sessionEndClause: () => SESSION_END_CLAUSE,
     stuckNudges: () => ({ vision: ACTION_STUCK_NUDGE_VISION, noVision: ACTION_STUCK_NUDGE_NOVISION }),

@@ -37,6 +37,8 @@ import {
   type SpokenLineContext,
 } from '../shared/ipc';
 import { GAME_IDS, isGameId, type GameId, type WorldState, type WorldStates } from '../shared/gameIpc';
+import type { HomeNextStep } from '../shared/homeNextStep';
+import { BACKSEAT_START_TRIGGERS, CALL_END_REASONS } from '../shared/callEndReasons';
 import { CharacterSchema, UserConfigSchema, UserPreferencesSchema, MAX_COMPANION_SLOTS, type Character, type UserConfig } from '../shared/characterSchema';
 import { SHOWN_PROVIDERS, GRANDFATHERED_PROVIDERS, type ProviderKind } from '../shared/llmCatalog';
 import { loadConfig } from './configStore';
@@ -194,6 +196,8 @@ export interface IpcHandlerDeps {
   notifyLaunchFailed: (characterId: string, reason: string) => void;
   /** Task 4 — true only when the character's bot is fully spawned in-world. */
   isSessionOnline: (characterId: string) => boolean;
+  /** 261020: the game of the character's live play session, or null (chat quit_game plan label). */
+  sessionGame?: (characterId: string) => GameId | null;
   /**
    * Voice streaming (260706): push ONE already-persisted companion message to the
    * renderer (the `chat:message` channel, no re-persist). Backs the streaming
@@ -205,7 +209,7 @@ export interface IpcHandlerDeps {
    * reports how long audio flowed). Posts the "You and X called for Y" system
    * row to the transcript. Wired in index.ts to emitCallSession.
    */
-  notifyCallEnded?: (characterId: string, connectedMs: number) => void;
+  notifyCallEnded?: (characterId: string, connectedMs: number, reason: string) => void;
   /**
    * Voice calls (260705): the call pipeline went live — make the companion
    * speak first. In-game → supervisor.greetVoiceCall port event; idle → a
@@ -1390,6 +1394,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         // Task 4 — when the character is already in-game (spawned), route this
         // message into that live session instead of the standalone chat brain.
         isInGame: (id) => deps.isSessionOnline(id),
+        liveGame: (id) => deps.sessionGame?.(id) ?? null,
         routeToBot: (id, payload) => deps.supervisor.sendSeiChat(id, payload),
         onLaunchFailed: (id, reason) => deps.notifyLaunchFailed(id, reason),
         // Task 5 — the companion called quit() from chat: end the live session.
@@ -1597,6 +1602,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         mode: z.enum(['voice', 'text']),
         // 260929 backseat games: ids only; main looks the game up itself.
         game: BackseatGameSelectionSchema.optional(),
+        // 261023 (analytics): what started the share.
+        trigger: z.enum(BACKSEAT_START_TRIGGERS).optional(),
       })
       .parse(argsRaw);
     const { BACKSEAT_ERR_MC_ACTIVE } = await import('../shared/backseatIpc');
@@ -1608,6 +1615,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
       args.sourceName,
       args.mode,
       args.game,
+      args.trigger,
     );
   });
   // 260929 backseat games: the "which game are you playing?" step. Lookups
@@ -1668,9 +1676,14 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
       })
       .parse(tickRaw);
     const backseat = await import('./backseat/backseatService');
+    // 261023: the opening look waits for its turn and says how it went, so
+    // the renderer can take a failed or empty one again (shouldRetryOpening).
+    // The renderer sends it from a detached task, never its capture loop.
+    if (tick.kind === 'start') return await backseat.handleTick(tick).catch(() => 'failed' as const);
     // Fire and forget: the renderer must not block its capture loop on a turn
     // that takes a second or more.
     void backseat.handleTick(tick).catch(() => {});
+    return undefined;
   });
   // macOS system-audio tap (260728): the overlay renderer cannot hear the
   // system on macOS (Chromium loopback is Windows-only, measured), so main
@@ -1735,10 +1748,16 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     if (!resolved.startsWith(nodePath.resolve(root) + nodePath.sep)) return;
     shell.showItemInFolder(resolved);
   });
-  ipcMain.handle(IpcChannel.backseat.end, async (_event, idArg: unknown) => {
+  ipcMain.handle(IpcChannel.backseat.end, async (_event, idArg: unknown, reasonArg: unknown) => {
     const id = IdSchema.parse(idArg);
+    // 261023: why it ended, validated against a fixed vocabulary (an unknown
+    // or missing reason becomes 'unspecified'). Only a stop the player chose
+    // runs the player-end "next time" check; a lost window or a failed
+    // capture is not the player leaving.
+    const { normalizeBackseatEndReason, isPlayerEndedReason } = await import('../shared/callEndReasons');
+    const reason = normalizeBackseatEndReason(reasonArg);
     const backseat = await import('./backseat/backseatService');
-    await backseat.endBackseat(id);
+    await backseat.endBackseat(id, reason, { playerEnded: isPlayerEndedReason(reason) });
   });
 
   // ── Minecraft dashboard (260721) ──────────────────────────────────────────
@@ -2098,6 +2117,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         connectedMs: z.number().int().nonnegative().optional(),
         // Connect report (260926): the call went live. See markCallLive.
         live: z.boolean().optional(),
+        // Hang-up only (261023): why the call ended, for voice_call_ended.
+        reason: z.enum(CALL_END_REASONS).optional(),
       })
       .parse(argsRaw);
     // The state transition and its account-switch cases live in callState
@@ -2105,7 +2126,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { applyCallReport } = await import('./voice/callState');
     const fx = applyCallReport(args);
     if (fx.voiceCall !== null) deps.supervisor.setVoiceCall(args.characterId, fx.voiceCall);
-    if (fx.endedMs !== null) deps.notifyCallEnded?.(args.characterId, fx.endedMs);
+    if (fx.endedMs !== null) deps.notifyCallEnded?.(args.characterId, fx.endedMs, args.reason ?? 'unspecified');
     if (!fx.stamp) return;
     // Presence (260707): a call is a real interaction, so stamp last_chatted at
     // BOTH edges. Game sessions and text chat already drive the "online" dot;
@@ -2483,6 +2504,40 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return listPoolVoices();
   });
 
+  // The user's OWN ElevenLabs voices (261019): listed in main with the stored
+  // key (direct route only); the renderer gets names + labels, never the key
+  // or preview URLs. Never throws for upstream reasons (status field).
+  ipcMain.handle(IpcChannel.voice.ownList, async (_event, argsRaw: unknown) => {
+    const args = z.object({ refresh: z.boolean().optional() }).catch({}).parse(argsRaw ?? {});
+    const { listOwnVoices } = await import('./voice/ownVoices');
+    return listOwnVoices({ refresh: args.refresh === true });
+  });
+
+  // Own-voice sample: ElevenLabs' ready-made preview (fetched + disk-cached
+  // in main) when the voice has one, else the picker sample line synthesized
+  // through the key. Both paths re-check the id against the listed library.
+  ipcMain.handle(IpcChannel.voice.ownPreview, async (_event, argsRaw: unknown): Promise<ArrayBuffer> => {
+    const args = z.object({ voiceId: z.string().min(1).max(64) }).parse(argsRaw);
+    const { ownVoicePreviewBytes } = await import('./voice/ownVoices');
+    const bytes = await ownVoicePreviewBytes(args.voiceId);
+    if (bytes) return bytes;
+    const { voicePreviewTts } = await import('./voice/tts');
+    return await voicePreviewTts({ voiceId: args.voiceId });
+  });
+
+  // Voice for others (261019): the close pool voice an adopter hears for a
+  // character whose voice is the author's own ElevenLabs voice, when the
+  // author has not chosen one. Same roll resolveVoiceId uses on their side.
+  ipcMain.handle(IpcChannel.voice.sharedDefault, async (_event, argsRaw: unknown): Promise<{ voiceId: string }> => {
+    const args = z
+      .object({ characterId: z.string().uuid(), ownGender: z.string().max(20).optional() })
+      .parse(argsRaw);
+    const character = await getCharacter(args.characterId);
+    if (!character) throw new Error('Character not found');
+    const { closeSharedVoiceId } = await import('./voice/voiceAssign');
+    return { voiceId: closeSharedVoiceId(character, args.ownGender) };
+  });
+
   ipcMain.handle(IpcChannel.voice.preview, async (_event, argsRaw: unknown): Promise<ArrayBuffer> => {
     // Playground params (260725): calmness is optional and re-clamped inside
     // voicePreviewTts, so a stale renderer sending junk can only get a valid
@@ -2521,6 +2576,13 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const args = z.object({ key: z.string().min(8).max(200).nullable() }).parse(argsRaw);
     const { setElevenLabsKey } = await import('./voice/elevenLabsKeyStore');
     await setElevenLabsKey(args.key);
+    // A new (or removed) key names a different account: drop its voice list.
+    const { invalidateOwnVoices } = await import('./voice/ownVoices');
+    invalidateOwnVoices();
+    // ...and any remembered own-voice refusals (261020): re-saving the same
+    // key after fixing the ElevenLabs account retries at once.
+    const { clearOwnKeyFailures } = await import('./voice/tts');
+    clearOwnKeyFailures();
   });
 
   ipcMain.handle(IpcChannel.voice.elevenKeyStatus, async (): Promise<{ present: boolean }> => {
@@ -2537,7 +2599,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   // greeting also ends on an offer to play `primary`. A malformed options arg
   // degrades to a plain greeting rather than failing the open.
   const ChatOpenedOptsSchema = z
-    .object({ firstMoment: z.object({ primary: z.enum(['chess', 'minecraft']) }).optional() })
+    .object({ firstMoment: z.object({ primary: z.enum(['chess', 'minecraft', 'backseat']) }).optional() })
     .optional();
   ipcMain.handle(IpcChannel.chat.opened, async (_event, idArg: unknown, optsArg?: unknown): Promise<ChatMessage[]> => {
     const id = IdSchema.parse(idArg);
@@ -2565,6 +2627,25 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         } catch {
           /* per-character read failure — skip this id, never throw the batch */
         }
+      }),
+    );
+    return out;
+  });
+
+  // 261013 (T119): the Home "up next" card. Ids are the renderer's Home
+  // roster (at most a handful); each one reads its own memory dir, and a
+  // character with nothing to show (or an unreadable dir) is just omitted.
+  ipcMain.handle(IpcChannel.home.nextSteps, async (_event, idsArg: unknown): Promise<Record<string, HomeNextStep>> => {
+    // Each id becomes a path component under paths.memoryDir, so it is
+    // format-gated like the recovery handlers' (no separator, no dot).
+    const ids = z.array(z.string().regex(/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/)).max(16).parse(idsArg);
+    const { readHomeNextStep } = await import('./homeNextStep');
+    const now = Date.now();
+    const out: Record<string, HomeNextStep> = {};
+    await Promise.all(
+      [...new Set(ids)].map(async (id) => {
+        const step = await readHomeNextStep(paths.memoryDir(id), id, now);
+        if (step) out[id] = step;
       }),
     );
     return out;
@@ -3037,6 +3118,52 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { testProvider } = await import('./llm/listModels');
     return await testProvider(args.provider, args.model);
   });
+  // === ChatGPT plan (261017, issue #46) ===
+  // Main owns the OAuth session (src/main/chatgptPlan). The renderer only ever
+  // sees account summaries; tokens stay in main and reach a bot over its port.
+  const ChatgptSignInArgs = z
+    .object({ accountId: z.string().max(400).nullable().optional(), enablePlan: z.boolean().optional() })
+    .default({});
+  const ChatgptAccountArg = z.object({ accountId: z.string().max(400) });
+  ipcMain.handle(IpcChannel.chatgpt.status, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().status();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.signIn, async (_event, raw: unknown) => {
+    const args = ChatgptSignInArgs.parse(raw ?? {});
+    // 261023: with a live Sei session the plan sign-in also links the
+    // ChatGPT identity to the account (no code on the next ChatGPT login);
+    // without one, or when the link cannot run, it is the plain sign-in.
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    const r = await chatgptAccountLogin().connectPlan(args);
+    // A new account brings a new model catalog (default model + vision).
+    if (r.ok) void import('./llm/capability').then((m) => m.pushLlmCapability());
+    return r;
+  });
+  ipcMain.handle(IpcChannel.chatgpt.cancelSignIn, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    chatgptSession().cancelSignIn();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.signOut, async (_event, raw: unknown) => {
+    const { accountId } = z.object({ accountId: z.string().max(400).optional() }).parse(raw ?? {});
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().signOut(accountId);
+  });
+  ipcMain.handle(IpcChannel.chatgpt.switchAccount, async (_event, raw: unknown) => {
+    const { accountId } = ChatgptAccountArg.parse(raw);
+    const { chatgptSession } = await import('./chatgptPlan');
+    const r = await chatgptSession().switchAccount(accountId);
+    void import('./llm/capability').then((m) => m.pushLlmCapability());
+    return r;
+  });
+  ipcMain.handle(IpcChannel.chatgpt.dismissWelcome, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().dismissWelcome();
+  });
+  ipcMain.handle(IpcChannel.chatgpt.clearLimit, async () => {
+    const { chatgptSession } = await import('./chatgptPlan');
+    return await chatgptSession().clearBlock();
+  });
   ipcMain.handle(IpcChannel.llm.capabilityGet, async () => {
     const { currentLlmCapability } = await import('./llm/capability');
     return await currentLlmCapability();
@@ -3263,6 +3390,41 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   ipcMain.handle(IpcChannel.auth.cancelGoogle, async () => {
     const { cancelGoogle } = await import('./auth/authHandlers');
     return await cancelGoogle();
+  });
+  // 261023 "Continue with ChatGPT" account login. Tokens, the ticket and the
+  // code never come back over IPC; see shared/ipc.ts ChatgptLoginResult.
+  ipcMain.handle(IpcChannel.auth.signinChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().login();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptVerifyCode, async (_e, codeRaw: unknown) => {
+    const code = z.string().trim().min(4).max(16).regex(/^[0-9\s]+$/).parse(codeRaw);
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().verifyCode(code);
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptResendCode, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().resendCode();
+  });
+  ipcMain.handle(IpcChannel.auth.cancelChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    chatgptAccountLogin().cancel();
+  });
+  ipcMain.handle(IpcChannel.auth.linkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().link();
+  });
+  ipcMain.handle(IpcChannel.auth.unlinkChatgpt, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().unlink();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptLoginStatus, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return await chatgptAccountLogin().status();
+  });
+  ipcMain.handle(IpcChannel.auth.chatgptTakePlanOffer, async () => {
+    const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
+    return chatgptAccountLogin().takePlanOffer();
   });
   ipcMain.handle(IpcChannel.auth.signout, async () => {
     const { signOut } = await import('./auth/authHandlers');
@@ -3602,6 +3764,24 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return importLocalProfileInto(scope, characterIds ? { characterIds } : undefined);
   });
 
+  // 261023: "already offered the own-key import" for the signed-in account
+  // (device-global, keyed by the active scope). Signed out reads as offered.
+  ipcMain.handle(IpcChannel.profile.importOffered, async (_event, actionArg: unknown): Promise<{ offered: boolean }> => {
+    const action = z.enum(['get', 'set']).parse(actionArg);
+    const { getActiveScope } = await import('./paths');
+    const { wasLocalImportOffered, markLocalImportOffered } = await import('./profile/localImportOffered');
+    const scope = getActiveScope();
+    if (action === 'set') {
+      try {
+        await markLocalImportOffered(scope);
+      } catch (err) {
+        console.warn(`[sei] profile.importOffered set failed: ${(err as Error).message}`);
+      }
+      return { offered: true };
+    }
+    return { offered: await wasLocalImportOffered(scope) };
+  });
+
   // === Phase 12 — Browse + moderation + reports + capabilities ===
   //
   // Three-layer contract: channel strings in src/shared/ipc.ts (already
@@ -3884,7 +4064,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         try { await deps.supervisor.shutdown(); } catch { /* best-effort */ }
         try { (await import('./chess/chessService')).shutdownChess(); } catch { /* best-effort */ }
         try { (await import('./draw/drawService')).shutdownDraw(); } catch { /* best-effort */ }
-        try { await (await import('./backseat/backseatService')).clearAllBackseat(); } catch { /* best-effort */ }
+        try { await (await import('./backseat/backseatService')).clearAllBackseat('factory_reset'); } catch { /* best-effort */ }
         // A leftover tray-settings.json (retired tray mode) is the only record
         // that Sei registered a login item: remove the item before the wipe.
         try { (await import('./legacyTrayCleanup')).cleanupLegacyTraySettings(); } catch { /* best-effort */ }

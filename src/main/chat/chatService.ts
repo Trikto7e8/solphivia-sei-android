@@ -26,6 +26,8 @@ import { raiseUsageLimitPopup } from './usageLimit';
 import {
   buildSystemBlocks,
   markLastMessageCached,
+  appendUncachedTail,
+  clockTailNote,
   chatSurfaceTools,
   SELF_LAUNCH_GAMES,
 } from './chatPrompts';
@@ -35,13 +37,14 @@ import type { LlmCallParams, LlmMessage, LlmProvider, LlmResult, LlmToolDef } fr
 import type { UserConfig } from '../../shared/characterSchema';
 import { appendMemory, humanizeMemoryStamps } from '../../bot/brain/memory/memoryLog.js';
 import { isSilenceFiller } from '../../bot/brain/silenceFiller.js';
-import { normalizeNextStep, nextStepMemoryLine } from '../../bot/brain/nextStep.js';
-import { NEXT_TIME_GREETING } from '../../bot/brain/promptLibrary.js';
-import { noteCompanionGoodbye } from '../sessionGoodbye';
+import { normalizeNextStep, nextStepMemoryLine, normalizePlayerLine, parsePlanGameField, PLAN_GAMES } from '../../bot/brain/nextStep.js';
+import { callGreetingNote } from '../../bot/brain/promptLibrary.js';
+import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye';
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
 import { isCallActive } from '../voice/callState';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from '../voice/audioTags';
-import { readChatContext, foldIfDue, formatChatTimestamp } from './continuity';
+import { readChatContext, foldIfDue } from './continuity';
+import { toMessages, voiceWindowStart } from './transcript';
 import { scopedTurnCurrent, withScopedTurn } from '../profile/scopeBarrier';
 import { maybeCompactChatMemory } from './memoryCompaction';
 import { readKnowledgeForPrompt } from '../knowledge/knowledgeStore';
@@ -68,6 +71,12 @@ export interface ChatDeps {
   summon: (characterId: string, game?: GameId) => Promise<void>;
   /** Task 4 — true when the character's bot is fully spawned in-world right now. */
   isInGame?: (characterId: string) => boolean;
+  /**
+   * 261020 (review): the game of the character's live play session, or null.
+   * A chat quit_game whose plan leaves next_time_game out labels the plan
+   * with it, matching the tag main gives the plan at game end.
+   */
+  liveGame?: (characterId: string) => GameId | null;
   /**
    * Task 4 — route a message INTO the live game session (shared brain + prompt
    * cache). Returns false if no session took it, so the caller can fall back to
@@ -113,6 +122,14 @@ const MEMORY_BUDGET_BYTES = 12000;
 // session's own per-turn budget (maxCallsPerTurn) bounds the spin below
 // this. Non-web turns still exit on the first hop with no tool_use.
 const MAX_HOPS = 6;
+
+/**
+ * 261020: tools whose result the model does not need in order to answer the
+ * player. A hop that already answered and called only these ends the turn;
+ * see the "answered" guard in the hop loop. Web tools and launch() are absent
+ * on purpose: their results change what the reply should say.
+ */
+export const NO_FOLLOW_UP_TOOLS: ReadonlySet<string> = new Set(['remember']);
 
 /**
  * 260917: ONE tool list per surface shape, built here so the four voice turn
@@ -192,7 +209,7 @@ async function followUpWebTools(p: {
   return { ...next, content, text: textOf(content) };
 }
 /**
- * Voice calls (260706): cap the transcript sent to the model to the last N rows.
+ * Voice calls (260706): cap the transcript sent to the model to the recent rows.
  * Memory (MEMORY.md) + the rolling summary still carry older context, so the
  * companion keeps continuity, but a live call sends a tiny window instead of the
  * full 50-99 verbatim tail — the prompt (and the cache-write during dialing) is
@@ -201,6 +218,15 @@ async function followUpWebTools(p: {
  * there and richer context reads better.
  */
 const VOICE_RECENT_CAP = 10;
+/**
+ * 261024: the voice window's start moves in steps of this many conversation
+ * rows (so a call turn sends 10 to 19 of them), instead of sliding by one every
+ * turn. A sliding start changed the first transcript row on every turn, which
+ * re-wrote the whole window to the prompt cache each time. The steps are
+ * counted on absolute transcript positions, so neither a fold nor the
+ * MAX_UNSUMMARIZED cap on the tail moves them. See voiceWindowStart.
+ */
+const VOICE_WINDOW_STEP = 10;
 
 /**
  * In-flight chat turn per character (chat #9). A new send for the same character
@@ -286,7 +312,7 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
     const text = String((b.input as { text?: string })?.text ?? '').trim();
     if (!text) continue;
     try {
-      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text);
+      const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), text, undefined, { section: 'app' });
       if (written > 0) appended = true;
     } catch (err) {
       console.warn(`[sei] voice remember() append failed: ${(err as Error).message}`);
@@ -304,18 +330,36 @@ async function honorRememberCalls(characterId: string, content: Anthropic.Messag
  * this only saves the FIELD to the shared MEMORY.md (the next greeting on any
  * surface reads it back) and reports whether one was given, for the
  * session's _ended event. Best-effort: a failed write never breaks the turn.
+ * 261014: the result also carries `next_time_for_player`, the step written to
+ * the player; it is not saved here but rides the goodbye note to the Home
+ * card's tag (sessionGoodbye.ts).
+ *
+ * 261020 (review): + `next_time_game`, the game the step is for. A named game
+ * labels the memory line ("Plan for next time in Minecraft: ...") and rides
+ * the goodbye note to the tag, so a call's Minecraft plan offers Minecraft
+ * and is not raised as a task in Stardew. Left out (or 'none'), the plan has
+ * no game: a game greeting raises it as talk, not as a task there.
+ * Delta review: a quit from a live game passes `liveGame`, the label for a
+ * plan that leaves the field out, because main tags that plan with the
+ * session's game (goodbyePlanPlace); the line and the tag must agree.
  */
-async function honorNextStep(characterId: string, input: unknown): Promise<boolean> {
-  const step = normalizeNextStep((input as { next_time?: unknown } | null)?.next_time);
-  if (!step) return false;
-  if (!turnMayWrite(characterId, 'next_time')) return true;
+async function honorNextStep(characterId: string, input: unknown, liveGame: GameId | null = null): Promise<NextStepHookResult> {
+  const fields = input as { next_time?: unknown; next_time_for_player?: unknown; next_time_game?: unknown } | null;
+  const step = normalizeNextStep(fields?.next_time);
+  if (!step) return { hook: false, line: null, game: null };
+  const game = parsePlanGameField(fields?.next_time_game);
+  const result = { hook: true, line: normalizePlayerLine(fields?.next_time_for_player), game };
+  if (!turnMayWrite(characterId, 'next_time')) return result;
+  const label = game === 'none' ? undefined : game ? PLAN_GAMES[game] : liveGame ? PLAN_GAMES[liveGame] : undefined;
   try {
-    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step));
+    const written = await appendMemory(path.join(paths.memoryDir(characterId), 'MEMORY.md'), nextStepMemoryLine(step, label), undefined, {
+      section: 'app',
+    });
     if (written > 0) void maybeCompactChatMemory(characterId).catch(() => {});
   } catch (err) {
     console.warn(`[sei] next_time append failed: ${(err as Error).message}`);
   }
-  return true;
+  return result;
 }
 
 /**
@@ -563,89 +607,9 @@ function textOf(content: Array<{ type: string }>): string {
   return replyTextOf(content, ' ');
 }
 
-/**
- * Map the persisted transcript into an alternating Anthropic messages array.
- * Exported for testing. Every emitted row — play rows included — flows through
- * the ONE shared same-role merge at the bottom: a play row is just a `user` row
- * with bracketed content, so two adjacent play rows (or a user message followed
- * by a play row) fold into a single user turn instead of two adjacent `user`
- * messages that Anthropic rejects with 400 "roles must alternate".
- */
-export function toMessages(history: ChatMessage[]): Array<{ role: 'user' | 'assistant'; content: unknown }> {
-  const out: Array<{ role: 'user' | 'assistant'; content: unknown }> = [];
-  for (const m of history) {
-    // Per row, derive role + content first; then run the single shared merge.
-    let role: 'user' | 'assistant';
-    let content: string;
-    if (m.role === 'system' && m.event?.kind === 'play') {
-      // A finished play session is shared history, not chatter: surface it as a
-      // bracketed system fact so the companion knows you actually played together
-      // (the game→chat memory gap — otherwise chat only sees MEMORY.md, which may
-      // never have captured the session). Framed so the model doesn't read it as
-      // the player speaking or as a still-hypothetical plan.
-      role = 'user';
-      content = `[${formatChatTimestamp(m.ts)}] [Shared history: ${m.text} You were there together in the world — treat it as something you actually did, not a plan.]`;
-    } else if (m.role === 'system' && m.event?.kind === 'call') {
-      // A finished voice call is shared history the same way a play session is
-      // (260705): without it, a later turn only sees the transcript lines and
-      // may not realize they were spoken on a real call.
-      role = 'user';
-      content = `[${formatChatTimestamp(m.ts)}] [Shared history: ${m.text} That was a real voice call you were both on — treat it as a conversation you actually had.]`;
-    } else if (m.role === 'system') {
-      // Other system rows (e.g. "joined your world") are UI-only; skip them so
-      // they don't pollute the model's turn-taking.
-      continue;
-    } else {
-      // A quoted reply is surfaced to the model as a short lead-in so it knows
-      // what the user is referring to, then the actual message text.
-      content = m.text;
-      if (m.replyTo) {
-        const who = m.replyTo.role === 'companion' ? 'your earlier message' : 'their earlier message';
-        content = `(replying to ${who}: "${m.replyTo.text}")\n${m.text}`;
-      }
-      role = m.role === 'companion' ? 'assistant' : 'user';
-      // 261003b: a line spoken from a real web lookup gets the lookup in front
-      // of it, as a user-side note between the line before the search and the
-      // answer, the way the results arrived. Without it a real lookup and a
-      // "let me check" followed by a made-up answer looked the same in
-      // history, and the model copied the made-up shape.
-      const queries = role === 'assistant' ? (m.lookup?.queries ?? []).filter((q) => typeof q === 'string' && q.trim()) : [];
-      if (queries.length) {
-        const note = `[results of your web search for ${queries.map((q) => `"${q.trim()}"`).join(', ')} came back here]`;
-        const prev = out[out.length - 1];
-        if (prev && prev.role === 'user' && typeof prev.content === 'string') prev.content = `${prev.content}\n${note}`;
-        else out.push({ role: 'user', content: note });
-      }
-      // 260703: stamp USER messages with their send time so the model can feel
-      // gaps (overnight silence vs rapid-fire). Assistant turns stay unstamped —
-      // stamping the model's own prior output teaches it to emit timestamps.
-      if (role === 'user') content = `[${formatChatTimestamp(m.ts)}] ${content}`;
-    }
-    // Merge consecutive same-role turns. An interrupted turn (#9) leaves a user
-    // message with no reply, and play rows arrive as user rows, so the transcript
-    // can hold two user turns in a row; Anthropic requires strict alternation, so
-    // fold them into one.
-    const last = out[out.length - 1];
-    if (last && last.role === role && typeof last.content === 'string') {
-      last.content = `${last.content}\n${content}`;
-    } else {
-      out.push({ role, content });
-    }
-  }
-  // Anthropic requires the first message to be from the user. Never satisfy
-  // that by DROPPING a leading assistant turn: after a first-meeting greeting
-  // the transcript is [companion..., user reply], so the shifted-off assistant
-  // turn was the ENTIRE conversation — the model got the player's "the latter
-  // :)" with no antecedent and asked what it was replying to (260721 live
-  // capture). Seat a neutral marker user turn instead; it makes no claim about
-  // who spoke first or whether this is the conversation's absolute start, so
-  // it is also safe for mid-conversation windows (voice recentCap, fold
-  // watermark) that happen to open on an assistant row.
-  if (out.length && out[0].role !== 'user') {
-    out.unshift({ role: 'user', content: '[Session transcript begins here.]' });
-  }
-  return out;
-}
+// toMessages moved to ./transcript (261024) so offline harnesses can build the
+// exact messages array without electron; re-exported for existing importers.
+export { toMessages };
 
 /**
  * Fold a bracketed model-facing note into the messages array without breaking
@@ -717,7 +681,7 @@ async function prepareChatTurn(
   // Watermark-based context (260702): every not-yet-summarized message verbatim
   // (50-99 between folds) + the rolling summary. Pure read — the batch fold runs
   // in the background AFTER the reply (see foldIfDue).
-  const [{ summary, history }, memory, knowledge] = await Promise.all([
+  const [{ summary, history, base }, memory, knowledge] = await Promise.all([
     readChatContext(characterId),
     readMemoryTail(characterId),
     readKnowledgeForPrompt(characterId).catch(() => ''),
@@ -747,12 +711,25 @@ async function prepareChatTurn(
     // 261008: every chat and voice turn offers remember() (chatSurfaceTools),
     // so the status block carries the per-turn memory check.
     memoryGuide: true,
+    // 261020: every chat and voice turn offers web search (chatTools), so the
+    // status block carries the search check too.
+    searchGuide: true,
+    // 261024: on a call the clock rides after the last cache breakpoint (see
+    // clockNote below), so a minute rollover no longer re-writes the cached
+    // transcript.
+    clockInTail: opts.voiceCall === true,
   });
-  // Voice: only the last N rows go to the model (VOICE_RECENT_CAP). Slice the raw
-  // transcript BEFORE toMessages so role-merge + first-must-be-user still hold.
-  const windowed = opts.recentCap ? history.slice(-opts.recentCap) : history;
+  // Voice: only the recent rows go to the model (VOICE_RECENT_CAP, stepped by
+  // VOICE_WINDOW_STEP so the cached transcript prefix holds across turns; see
+  // voiceWindowStart). Slice the raw transcript BEFORE toMessages so role-merge
+  // + first-must-be-user still hold.
+  const windowed = opts.recentCap
+    ? history.slice(voiceWindowStart(history, base ?? 0, opts.recentCap, VOICE_WINDOW_STEP))
+    : history;
   const messages = toMessages(windowed);
-  return { character, config, system, messages, punctuation };
+  // Voice calls append this after markLastMessageCached (appendUncachedTail).
+  const clockNote = opts.voiceCall === true ? clockTailNote() : '';
+  return { character, config, system, messages, punctuation, clockNote };
 }
 
 /**
@@ -950,6 +927,8 @@ async function sendChatMessageImpl(
     // Prompt caching (260706): mark the last message AFTER every foldUserNote —
     // the transcript is then cached prefix-incrementally across the call's turns.
     markLastMessageCached(messages);
+    // 261024: the call clock goes after the breakpoint (no-op in typed chat).
+    appendUncachedTail(messages, prep.clockNote);
     const llm = await buildLlmProvider();
 
     // Voice calls (260706): STREAM the reply so TTS can start on sentence 1 while
@@ -1021,6 +1000,9 @@ async function sendChatMessageImpl(
     let replyText = '';
     /** The hop that produced `replyText` was cut by the token cap (tidyReply). */
     let truncated = false;
+    /** The hop that produced `replyText` also called remember() (noteLeak's
+     * second tier, same as the single-shot voice turns). */
+    let replyRememberCalled = false;
     // Task 2 — the actual summon is deferred until AFTER the reply is persisted,
     // so the companion's "hopping in" acknowledgement lands in chat before the
     // live-session popup (SummonedWidget) appears. Set when launch() resolves to
@@ -1058,6 +1040,8 @@ async function sendChatMessageImpl(
     };
 
     for (let hop = 0; hop < MAX_HOPS; hop++) {
+      /** Streamed lines emitted before this hop (the "answered" guard below). */
+      const streamedBeforeHop = streamedReplies.length;
       // Hard cap kept low so a reply can't ratchet into paragraphs. Each turn
       // feeds the model its own prior replies (toMessages), and with a generous
       // ceiling it self-conditions on the last (longest) turn and creeps up a
@@ -1152,6 +1136,7 @@ async function sendChatMessageImpl(
       if (text) {
         replyText = text;
         truncated = res.stopReason === 'max_tokens';
+        replyRememberCalled = res.content.some((b) => b.type === 'tool_use' && b.name === 'remember');
         // 260909: with the server-side search the "lemme check" line and the
         // answer arrive in ONE response as text blocks on either side of the
         // search. On the blocking typed path push the pre-search line now (it
@@ -1217,8 +1202,10 @@ async function sendChatMessageImpl(
           quitCalled = true;
           // 261008: only a live world has a session for bot_session_ended to
           // close; otherwise the note would wait for an unrelated one.
-          const nextStepHook = await honorNextStep(args.characterId, toolUse.input);
-          if (deps.isInGame?.(args.characterId)) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
+          const inGame = deps.isInGame?.(args.characterId) ?? false;
+          const liveGame = inGame ? (deps.liveGame?.(args.characterId) ?? null) : null;
+          const nextStepHook = await honorNextStep(args.characterId, toolUse.input, liveGame);
+          if (inGame) noteCompanionGoodbye(args.characterId, 'game', nextStepHook);
           deps.leaveGame?.(args.characterId);
           note =
             'You have left the Minecraft world and logged off. You are back in chat only now — ' +
@@ -1241,7 +1228,7 @@ async function sendChatMessageImpl(
           if (memText) {
             try {
               const written = turnMayWrite(args.characterId, 'remember()')
-                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText)
+                ? await appendMemory(path.join(paths.memoryDir(args.characterId), 'MEMORY.md'), memText, undefined, { section: 'app' })
                 : 0;
               // 260725: appendMemory returns 0 when its bounded duplicate guard
               // skips the write. Reporting a save that never happened taught the
@@ -1298,6 +1285,24 @@ async function sendChatMessageImpl(
       // "log off and hop back in" needs its follow-up "hopping back in" line).
       const spokeThisTurn = isStreaming ? streamedReplies.length > 0 : Boolean(replyText.trim());
       if ((endCallRequested || quitCalled) && spokeThisTurn && !launchCalled) break;
+
+      // 261020: the "answered" guard. The memory check asks for remember()
+      // "after your reply", so the usual shape is reply text plus remember()
+      // in ONE response. Running another hop on that handed the model its own
+      // finished reply plus "Saved, continue your reply", and it answered the
+      // same message a second time in new words. On a call both rounds were
+      // spoken (live 261020: one typed line, five spoken lines, the second
+      // round a reworded copy of the first); in typed chat the second round
+      // silently replaced the first. A hop that already answered the player
+      // and called only tools whose result changes nothing (remember) ends
+      // the turn here; its tool_use needs no tool_result because the hop
+      // history is dropped with the turn. A hop with a web tool or launch()
+      // keeps going, since that result is what the next line is about, and a
+      // remember() with no reply text yet still gets the hop that answers.
+      const answeredThisHop = isStreaming
+        ? streamedReplies.length > streamedBeforeHop
+        : Boolean(text.trim()) && Boolean(replyText.trim());
+      if (answeredThisHop && toolUses.every((b) => NO_FOLLOW_UP_TOOLS.has(b.name))) break;
     }
 
     // #9 — if a newer send arrived (or we were aborted) while this turn ran,
@@ -1324,6 +1329,7 @@ async function sendChatMessageImpl(
             voice: args.voiceCall === true,
             truncated,
             local: llm.backend === 'local',
+            rememberCalled: replyRememberCalled,
           })
         : [];
 
@@ -1570,6 +1576,9 @@ async function sendFirstMeetingTurnImpl(
 async function sendVoiceGreetingTurnImpl(
   characterId: string,
   peers: string[] = [],
+  // 261014: the saved plan still open for this greeting (index.ts reads it
+  // with readPendingPlan before marking it used). null = none.
+  opts: { plan?: string | null } = {},
 ): Promise<ChatMessage[]> {
   inflight.get(characterId)?.abort();
   const ctrl = new AbortController();
@@ -1586,21 +1595,11 @@ async function sendVoiceGreetingTurnImpl(
     const { system, messages } = prep;
     // Multi-companion (260706): a companion ADDED to an ongoing call greets the
     // group (it is joining a call already in progress), not the player cold.
-    const note =
-      peers.length > 0
-        ? `[System note — not the player speaking: you were just added to an ongoing group voice call with the player and ${peers.join(' and ')}. ` +
-          'Announce yourself to the room in one short spoken line, in your own voice, like walking into a call already in progress. Do not mention this note.]'
-        : '[System note — not the player speaking: the player just started a voice call with you ' +
-          'and the line is live now. Greet them first, like answering the phone: one short line, ' +
-          'in your own voice. They often call with no particular reason, just to hang out, so do not ' +
-          'ask why they called or what is up. You can bring up something you remember about them, ' +
-          `or just say hi. ${NEXT_TIME_GREETING} Do not mention this note.]`;
-    const last = messages[messages.length - 1];
-    if (last && last.role === 'user' && typeof last.content === 'string') {
-      last.content = `${last.content}\n${note}`;
-    } else {
-      messages.push({ role: 'user', content: note });
-    }
+    // 261014: a solo greeting raises the open plan (promptLibrary callGreetingNote).
+    // 261024: the note goes after the cache breakpoint (appendUncachedTail
+    // below), so the transcript prefix this greeting writes is the one the
+    // first user turn reads.
+    const note = callGreetingNote({ peers, plan: opts.plan ?? null });
 
     const llm = await buildLlmProvider();
     // Cache PREWARM (260706): this greeting fires while the call is still
@@ -1610,6 +1609,7 @@ async function sendVoiceGreetingTurnImpl(
     // not a cacheRead" symptom). Matching them writes the tools+system prefix
     // here, during the ring, so the first spoken user reply is a fast cache READ.
     markLastMessageCached(messages);
+    appendUncachedTail(messages, note, prep.clockNote);
     const tools = chatTools(llm, true);
     const first = await llm.call({
       maxTokens: 200,
@@ -1748,9 +1748,13 @@ async function sendCompanionVoiceTurnImpl(
       'If the exchange has genuinely run its course, reply with exactly (silence) and nothing else; it is never spoken, it just ends your turn quietly.' +
       windDown +
       ' Do not mention this note.]';
-    foldUserNote(messages, note);
     // Share the same warm tools+system cache prefix as every other voice turn.
+    // 261024: the breakpoint sits on the heard line itself, which later turns
+    // send unchanged, and the note rides after it (appendUncachedTail). Folded
+    // in before the breakpoint, every group-call reaction wrote a prefix that
+    // no turn ever read back.
     markLastMessageCached(messages);
+    appendUncachedTail(messages, note, prep.clockNote);
 
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
@@ -1822,6 +1826,17 @@ async function sendVoiceIdleTurnImpl(
   // Without this guard the turn still runs a full paid LLM round-trip and
   // persists a voice-flagged line that is never spoken anywhere.
   if (!isCallActive(characterId)) return { messages: [] };
+  // 261023: a companion watching the screen has her own idle looks (backseat);
+  // a screenless nudge alongside them talks over that loop. The renderer no
+  // longer picks her; this is the backstop. (Before the inflight check, so
+  // that check and the claim below stay in one synchronous step.)
+  try {
+    const { getBackseatState } = await import('../backseat/backseatService');
+    const bs = getBackseatState(characterId);
+    if (bs && bs.phase !== 'ended') return { messages: [] };
+  } catch {
+    /* no backseat module: nothing to defer to */
+  }
   if (inflight.has(characterId)) return { messages: [] };
   const ctrl = new AbortController();
   inflight.set(characterId, ctrl);
@@ -1853,9 +1868,10 @@ async function sendVoiceIdleTurnImpl(
         'You can start a topic in one short spoken line: something you remember about the player, something from earlier in this call, or a genuine question. ' +
         'Or reply with exactly (silence) and let the quiet sit, which is completely fine; it is never spoken, it just ends your turn. ' +
         'Do not greet them again and do not ask if they are still there. Do not mention this note.]';
-    foldUserNote(messages, note);
     // Same warm tools+system cache prefix as every other voice turn.
+    // 261024: the note rides after the breakpoint (see the companion turn).
     markLastMessageCached(messages);
+    appendUncachedTail(messages, note, prep.clockNote);
     const llm = await buildLlmProvider();
     const tools = chatTools(llm, true);
     const first = await llm.call({
@@ -2073,6 +2089,18 @@ function blockedReason(errorClass: string): string {
       return 'the Ollama model picked in Settings is not downloaded; the player needs to pull it in Ollama or pick another model';
     case 'OLLAMA_MODEL_NO_TOOLS':
       return 'the Ollama model picked in Settings cannot use tools, which you need to play games; the player needs to pick one that can, like qwen3, in Settings';
+    case 'CHATGPT_USAGE_LIMIT':
+      return "the player's ChatGPT plan usage limit is reached; they can check Manage usage in ChatGPT or pick another AI option in Settings";
+    case 'CHATGPT_SIGNED_OUT':
+    case 'CHATGPT_PLAN_DISABLED':
+    case 'CHATGPT_AUTH_REJECTED':
+      return 'the ChatGPT sign-in needs attention; the player needs to sign in with ChatGPT again in Settings';
+    case 'CHATGPT_NOT_ELIGIBLE':
+      return "this ChatGPT account can't be used here; the player needs another account or AI option in Settings";
+    case 'CHATGPT_FORBIDDEN':
+      return "ChatGPT plan use isn't available here right now, likely a region or plan restriction; the player needs another AI option in Settings";
+    case 'CHATGPT_REQUEST_REJECTED':
+      return "ChatGPT did not accept the request; the player can try again or pick another AI option in Settings";
     case 'FORGE_HOST_BLOCKED':
       return "the world is running Forge or NeoForge, which you can't join; the player needs to open the Sei profile in the Minecraft Launcher and host the world from there";
     default:

@@ -124,13 +124,18 @@ const POOL_GENDER: Map<string, string> = new Map(
  * 'female': an arbitrary but stable default, chosen over guessing from the
  * persona because a wrong-but-consistent voice beats one that flips.
  */
-export function voiceGenderFor(voiceId: string | undefined | null): VoiceGender {
+export function voiceGenderFor(voiceId: string | undefined | null, genderHint?: string | null): VoiceGender {
   if (!voiceId) return 'female';
   const pool = POOL_GENDER.get(voiceId);
   if (pool === 'male') return 'male';
   if (pool === 'female') return 'female';
   if (pool === 'neutral') return 'female';
-  return LEGACY_VOICE_GENDER[voiceId] ?? 'female';
+  const legacy = LEGACY_VOICE_GENDER[voiceId];
+  if (legacy) return legacy;
+  // A voice from the user's own ElevenLabs account (261019) is not in either
+  // table; its ElevenLabs gender label rides metadata.voiceOwn.gender.
+  if (genderHint === 'male') return 'male';
+  return 'female';
 }
 
 /** Pick the local voice slot for (gender, conversation language). Only zh has

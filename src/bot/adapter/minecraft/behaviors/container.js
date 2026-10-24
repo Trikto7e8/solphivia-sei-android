@@ -29,6 +29,44 @@ function itemIdByName(bot, name) {
   }
 }
 
+// 261011: the open timeout used to be a bare setTimeout that was never
+// cleared, so it closed the window OPEN_TIMEOUT_MS after every SUCCESSFUL
+// open, and the next slot call found "no furnace open". The timer and the
+// abort listener now apply only until the open settles.
+function raceOpen(op, timeoutMs, signal, close) {
+  return new Promise((resolve) => {
+    let done = false
+    const finish = (v) => {
+      if (done) return false
+      done = true
+      clearTimeout(timer)
+      signal?.removeEventListener?.('abort', onAbort)
+      resolve(v)
+      return true
+    }
+    const timer = setTimeout(async () => {
+      if (done) return
+      done = true
+      signal?.removeEventListener?.('abort', onAbort)
+      try { await close() } catch {}
+      resolve('timeout')
+    }, timeoutMs)
+    const onAbort = async () => {
+      if (done) return
+      done = true
+      clearTimeout(timer)
+      try { await close() } catch {}
+      resolve('aborted')
+    }
+    signal?.addEventListener?.('abort', onAbort, { once: true })
+    op.then((v) => {
+      // A window that opens after the timeout or abort already answered is
+      // closed again so it cannot leak into the next session.
+      if (!finish(v)) close().catch(() => {})
+    })
+  })
+}
+
 function attachAbort(signal, onAbort) {
   return new Promise((r) => {
     if (!signal) return
@@ -68,14 +106,7 @@ export async function openContainerAction(args, bot, config) {
       return r ? `cannot open ${targetName}: ${r}` : `cannot open ${targetName}`
     })
 
-  const tmo = new Promise((r) => setTimeout(async () => {
-    await closeContainerSession()
-    r('timeout')
-  }, timeoutMs))
-
-  const abrt = attachAbort(signal, closeContainerSession)
-
-  return Promise.race([op, tmo, abrt])
+  return raceOpen(op, timeoutMs, signal, closeContainerSession)
 }
 
 export async function depositItemAction(args, bot, config) {

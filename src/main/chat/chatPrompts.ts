@@ -26,6 +26,8 @@ import {
   VOICE_PUNCTUATION_DIRECTIVE,
   renderLanguageDirective,
   NEXT_TIME_FIELD,
+  NEXT_TIME_FOR_PLAYER_FIELD,
+  NEXT_TIME_GAME_FIELD,
   NEXT_TIME_GOODBYE,
   NEXT_TIME_SPOKEN,
 } from '../../bot/brain/promptLibrary.js';
@@ -170,11 +172,32 @@ export interface BuildSystemArgs {
    */
   pinnedClock?: string;
   /**
+   * 261024: voice calls. The status block sits above every message, so its
+   * minute clock re-wrote the whole cached transcript on each minute rollover
+   * (several times a minute on a call's rapid turns). With this set, the
+   * status block points at a clock stamp instead, and the caller appends that
+   * stamp (clockTailNote, "[now: Sat 24 Oct 2026, 03:05]") after the last
+   * cache breakpoint with appendUncachedTail, where it costs a few plain input
+   * tokens per turn. The stamp is bare on purpose: the earlier "[System note,
+   * not the player speaking: ...]" wording was answered as text the player
+   * had typed in 10 of 354 sampled replies ("that bracket isn't from Ren, I'm
+   * ignoring it"), the bare stamp in 0 of 354. Dropping the clock and reading
+   * the time off the player line's own stamp also scored 0 misreads but made
+   * player turns go silent more often (19 of 304 vs 1 of 152), see
+   * scripts/call-clock-eval.ts. Ignored for surface 'game'.
+   */
+  clockInTail?: boolean;
+  /**
    * 261008: the chat surface offers CHAT_REMEMBER_TOOL, so the status block
    * ends with CHAT_MEMORY_CHECK. Set by chatService only: backseat,
    * chess and Draw! offer the plain REMEMBER_TOOL under their own contracts.
    */
   memoryGuide?: boolean;
+  /**
+   * 261020: the chat surface offers web search, so the status block carries
+   * CHAT_SEARCH_CHECK (ahead of the memory check). Set by chatService only.
+   */
+  searchGuide?: boolean;
 }
 
 /**
@@ -199,6 +222,21 @@ export const CHAT_MEMORY_CHECK =
   'or a plan you two agreed on. ' +
   'When they say goodbye, look back over this conversation: anything above that you would want next time and have not saved yet (a plan for tomorrow, something they told you) goes into remember() now, since this conversation will be gone. ' +
   'If there is nothing like that, just reply.';
+
+/**
+ * 261020: the per-turn search check, in the status block next to the memory
+ * check and for the same reason (the model follows what it reads last). After
+ * a server-side web_search the answer cites the pages, and a cited span is the
+ * page's own sentence: Sui's lowercase texting slid into "Zombies, Drowned,
+ * and Husks are now immune to freezing and will not take damage from the
+ * Freezing effect". The same rule only in CHAT_BASELINE (block 0) did not move
+ * it (scripts/search-qa/chat.qa.ts, 12 samples each). This frames the results
+ * as notes she retells, not text she passes on. Static text, no cache miss.
+ */
+export const CHAT_SEARCH_CHECK =
+  'Search check: what a search finds is notes for you, written in the style of the pages, not yours. ' +
+  'When you answer from them, retell the one or two facts that matter the way you would text a friend, in your usual voice and casing, short. ' +
+  'Do not copy sentences or phrases from the pages, even short ones.';
 
 /**
  * Multi-companion voice (260706): the group-call awareness note, added to block
@@ -311,7 +349,11 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
   // expanded prompt omits proactiveness (it is parsed out at expansion), so we
   // append the chat-flavored proactiveness directive here off the same dial.
   const personaParts = [
-    renderPersona({ name: args.name, expanded: args.persona.expanded || args.persona.source }),
+    // 261013: renderPersona also fills card {{user}}/{{char}} placeholders.
+    renderPersona(
+      { name: args.name, expanded: args.persona.expanded || args.persona.source },
+      { userName: args.preferredName },
+    ),
   ];
   if (args.preferredName) personaParts.push(`The player's name is ${args.preferredName}.`);
   personaParts.push(renderChatProactivenessDirective(args.proactiveness));
@@ -400,7 +442,9 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
         // session when the caller provides it — a live clock here re-bills the
         // surface's whole cached tool thread on every minute rollover.
         `The current date and time is ${args.pinnedClock ?? formatNow()}.`
-      : `The current date and time is ${formatNow()}.\n` +
+      : (args.clockInTail
+          ? 'The current date and time is the "now" stamp at the end of the latest message.\n'
+          : `The current date and time is ${formatNow()}.\n`) +
         `${connLine}\n` +
         (args.openWorldDetected
           ? 'World status: an open Minecraft world is detected, so you could join if asked. ' +
@@ -416,6 +460,7 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
               : `\nWorld status: no open ${w.name} world is detected, so launch with game "${w.game}" would fail. Do not call launch for it; if they want to play ${w.name}, ask them to open their world in the game first.`,
           )
           .join('') +
+        (args.searchGuide ? `\n${CHAT_SEARCH_CHECK}` : '') +
         (args.memoryGuide ? `\n${CHAT_MEMORY_CHECK}` : ''),
   });
 
@@ -430,9 +475,10 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
   //     churn re-bills only the memory/summary tail.
   //   • the last STABLE block (memory/summary when present) — unchanged during
   //     a session unless the companion remembers or the summary folds;
-  //   • the status block — its only volatile part is the minute-granular clock,
-  //     so within a minute (i.e. across the rapid turns of a live call) the WHOLE
-  //     system prompt is a cache hit; a minute rollover misses only this tail.
+  //   • the status block — its only volatile part is the minute-granular clock.
+  //     A rollover changes it, and everything cached after it (the transcript)
+  //     is re-written, so voice calls move the clock below the transcript
+  //     (clockInTail, 261024) and their status block stays stable.
   // markLastMessageCached() adds the fourth breakpoint (the transcript) per
   // turn — exactly Anthropic's 4-breakpoint budget (3 when persona IS the
   // stable block, i.e. no memory or summary yet). All four are spoken for, so
@@ -459,6 +505,46 @@ export function markLastMessageCached(
   messages: Array<{ role: 'user' | 'assistant'; content: unknown }>,
 ): void {
   markMessageCached(messages, messages.length - 1);
+}
+
+/**
+ * 261024: the per-turn clock for a voice call, as the stamp appendUncachedTail
+ * adds after the last breakpoint (see BuildSystemArgs.clockInTail). No
+ * "System note" wording: that read as text the player typed.
+ */
+export function clockTailNote(): string {
+  return `[now: ${formatNow()}]`;
+}
+
+/**
+ * 261024: add per-turn text AFTER the last cache breakpoint. Call it after
+ * markLastMessageCached: the note becomes a second, unmarked text block of the
+ * last user message, so the cached prefix ends right before it and the next
+ * turn (which rebuilds that message without the note) still reads the cache.
+ * When the last message is not a user turn, the note becomes its own user
+ * message. A blank note is a no-op. Per-turn system notes (a greeting, idle or
+ * group-call reaction note) go here too, never before the breakpoint: folded
+ * into the last message they made the cached prefix end on text that no later
+ * turn sends, so its cache write was never read back.
+ */
+export function appendUncachedTail(
+  messages: Array<{ role: 'user' | 'assistant'; content: unknown }>,
+  ...notes: string[]
+): void {
+  // 261024: several per-turn notes (a turn's own system note, then the clock)
+  // ride as one block, in order; blank ones are skipped.
+  const note = notes.filter((n) => typeof n === 'string' && n.trim()).join('\n');
+  if (!note) return;
+  const last = messages[messages.length - 1];
+  if (!last || last.role !== 'user') {
+    messages.push({ role: 'user', content: note });
+    return;
+  }
+  if (typeof last.content === 'string') {
+    last.content = [{ type: 'text', text: last.content }, { type: 'text', text: note }];
+  } else if (Array.isArray(last.content)) {
+    last.content.push({ type: 'text', text: note });
+  }
 }
 
 /**
@@ -570,7 +656,13 @@ export const END_CALL_TOOL = {
   input_schema: {
     type: 'object' as const,
     // 261008: retention hook, saved to MEMORY.md (chatService honorNextStep).
-    properties: { next_time: { type: 'string', description: NEXT_TIME_FIELD } },
+    // 261014: + the same step written to the player, for the Home card.
+    properties: {
+      next_time: { type: 'string', description: NEXT_TIME_FIELD },
+      next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+      // 261020: the game the step is for; left out, a call plan has none.
+      next_time_game: { type: 'string', description: NEXT_TIME_GAME_FIELD },
+    },
     required: [] as string[],
   },
 };
@@ -588,7 +680,13 @@ export const QUIT_TOOL = {
     ' You can still be reached here in chat afterward.',
   input_schema: {
     type: 'object' as const,
-    properties: { next_time: { type: 'string', description: NEXT_TIME_FIELD } },
+    properties: {
+      next_time: { type: 'string', description: NEXT_TIME_FIELD },
+      next_time_for_player: { type: 'string', description: NEXT_TIME_FOR_PLAYER_FIELD },
+      // 261020: the game the step is for. Left out, the plan is for the live
+      // game being quit (chatService honorNextStep labels it, goodbyePlanPlace tags it).
+      next_time_game: { type: 'string', description: NEXT_TIME_GAME_FIELD },
+    },
     required: [] as string[],
   },
 };

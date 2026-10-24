@@ -42,3 +42,33 @@ describe('ownerDistanceBlocks — NaN guard (260703)', () => {
     }
   })
 })
+
+// 261011: the owner's health in the snapshot owner line.
+import { ownerHealth, ownerHealthClause } from './snapshot.js'
+
+describe('ownerHealth (261011)', () => {
+  const registry = { entitiesByName: { player: { metadataKeys: ['shared_flags', 'air_supply', 'custom_name', 'custom_name_visible', 'silent', 'no_gravity', 'pose', 'ticks_frozen', 'living_entity_flags', 'health'] } } }
+
+  it('reads health from the player metadata slot named by the registry', () => {
+    const meta = []
+    meta[9] = 3
+    expect(ownerHealth(registry, { metadata: meta })).toBe(3)
+    meta[9] = 19.5
+    expect(ownerHealth(registry, { metadata: meta })).toBe(20)
+  })
+
+  it('returns null when the registry or slot is missing or garbage', () => {
+    expect(ownerHealth(null, { metadata: [] })).toBeNull()
+    expect(ownerHealth(registry, { metadata: [] })).toBeNull()
+    const meta = []
+    meta[9] = 'x'
+    expect(ownerHealth(registry, { metadata: meta })).toBeNull()
+    expect(ownerHealth(registry, null)).toBeNull()
+  })
+
+  it('formats the clause and marks low health', () => {
+    expect(ownerHealthClause(null)).toBe('')
+    expect(ownerHealthClause(20)).toBe(', hp 20/20')
+    expect(ownerHealthClause(3)).toBe(', hp 3/20 (low)')
+  })
+})

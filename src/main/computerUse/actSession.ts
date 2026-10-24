@@ -76,6 +76,8 @@ export interface ControlStartOptions {
   characterId: string;
   characterName: string;
   persona?: string;
+  /** The player's display name (card {{user}} placeholders in the persona). */
+  playerName?: string;
   sourceId: string;
   sourceName: string;
   goal: string;
@@ -307,6 +309,7 @@ async function startControlInner(o: ControlStartOptions, token: StartToken): Pro
     const system = buildActSystem({
       characterName: o.characterName,
       persona: o.persona,
+      playerName: o.playerName,
       target,
       targetLabel: o.sourceName,
       origin: o.origin,

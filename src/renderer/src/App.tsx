@@ -37,6 +37,7 @@ import { useTutorialStore, type TutorialStep } from './lib/stores/useTutorialSto
 import { useFirstMomentStore } from './lib/stores/useFirstMomentStore';
 import { firstMomentCompanion } from './lib/firstMoment';
 import { DEFAULT_CHARACTER_UUIDS } from '@shared/defaultCharacters';
+import type { WhatsNewEvent } from '@shared/ipc';
 import { SkinSetupScreen } from './screens/SkinSetupScreen';
 import { CharactersScreen } from './screens/CharactersScreen';
 import { AwakenScreen } from './screens/AwakenScreen';
@@ -75,7 +76,10 @@ import { BotCrashModal } from './components/BotCrashModal';
 import { SetupWizardModal } from './components/SetupWizardModal';
 import { LogsBar } from './components/LogsBar';
 import { UpdatePopup, type UpdatePopupState } from './components/UpdatePopup';
-import { UpdatePill, type UpdatePillState } from './components/UpdatePill';
+import { ChatgptPlanHost } from './components/ChatgptPlanHost';
+import { UpdatedToast } from './components/UpdatedToast';
+import { useUpdateStore } from './lib/stores/useUpdateStore';
+import { topChangelogLine } from './lib/changelog';
 import { NoticesInboxModal } from './components/NoticesInboxModal';
 import { RecoveryPrompt } from './components/recovery/RecoveryPrompt';
 import { useNoticesStore } from './lib/stores/useNoticesStore';
@@ -96,6 +100,19 @@ import { HardStopModal } from './components/HardStopModal';
 import { SetNewPasswordModal } from './components/SetNewPasswordModal';
 import { MigrateLocalCharsModal } from './components/MigrateLocalCharsModal';
 import { ImportLocalProfileModal } from './components/ImportLocalProfileModal';
+import {
+  BOOT_OFFER_FIRST_MS,
+  BOOT_OFFER_POLL_MS,
+  checkBootImportOffer,
+  localImportOfferTiming,
+  shouldOfferLocalImport,
+  type BootOfferUi,
+} from './lib/localImportOffer';
+import { liveSessionForRestart } from './components/UpdateRailButton';
+import { useVoiceStore } from './lib/stores/useVoiceStore';
+import { useBackseatStore } from './lib/stores/useBackseatStore';
+import { useChessStore } from './lib/stores/useChessStore';
+import { useDrawStore } from './lib/stores/useDrawStore';
 import type { PeekLocalProfileResult } from '../../shared/ipc';
 import { usePermissionResume } from './lib/permissions/usePermissionResume';
 
@@ -155,20 +172,31 @@ export function App(): React.ReactElement {
   // needs a decision RIGHT NOW (260801):
   //   • updatePopup — modal: the optional-update offer (changelog + consent),
   //     the post-update what's-new, and the critical apply:'now' restart.
-  //   • updatePill — corner card, never blocks: download progress, then
-  //     "ready, restart to apply". Downloading used to be a scrimmed modal, so
-  //     both the consented download AND the silent mandatory patch download
-  //     locked the user out of the app until they finished.
+  //   • useUpdateStore — never blocks: download progress, then the sidebar
+  //     "Update Sei" button (261023, was the corner UpdatePill), and the
+  //     "Updated to vX" toast after an accepted update relaunches. Downloading
+  //     used to be a scrimmed modal, so both the consented download AND the
+  //     silent mandatory patch download locked the user out of the app until
+  //     they finished.
   const [updatePopup, setUpdatePopup] = useState<UpdatePopupState | null>(null);
-  const [updatePill, setUpdatePill] = useState<UpdatePillState | null>(null);
   // Plan 11-18 (D-20) — one-shot local→cloud migration prompt. Auto-mounts
   // the first time a user is signed_in + ToS-accepted + has at least one
   // local-only character + has not yet seen this prompt. Re-openable from
   // Settings independently of this flag.
   const [autoMigrateOpen, setAutoMigrateOpen] = useState<boolean>(false);
-  // 260603: on first sign-in to a fresh account, offer to import the anonymous
-  // `local` profile's companion. Non-null = the import-offer modal is shown.
-  const [importOffer, setImportOffer] = useState<PeekLocalProfileResult | null>(null);
+  // 260603: on a sign-in from the anonymous `local` (own key) profile, offer to
+  // import its companions. 261023: for an existing account too, and after the
+  // first-run scene when the sign-in happened inside it. Non-null = the
+  // import-offer modal is shown. `after` = what to do once the player chooses
+  // (the scene's hand-off); absent = the scope-change routing.
+  const [importOffer, setImportOffer] = useState<{
+    peek: PeekLocalProfileResult;
+    existingAccount: boolean;
+    after?: () => void;
+  } | null>(null);
+  // A sign-in landed while the first-run scene was up: offer the import when
+  // the scene hands off (handleOnboardComplete).
+  const importAfterOnboardRef = useRef(false);
   // RESEARCH §Pitfall 3 — Linux-only basic_text safeStorage warning. Main
   // computes this from `apiKeyStore.safeStorageBackendKind()` and exposes it via the
   // app:warnings IPC. The keychain banner (api_key.bin) is dismissed for the
@@ -336,12 +364,107 @@ export function App(): React.ReactElement {
     };
   }, [authState, tosAccepted]);
 
+  // ── One-time own-key import offer at boot (261023). ──────────────────────
+  //    The import used to be offered only on a local→account sign-in, so an
+  //    account that signed in on an older build never saw it and its local
+  //    companions stayed stranded. Once per account per device (main records
+  //    the answer in local-import-offered.json), only on Home with nothing
+  //    else on screen: no modal, no tour or first moment, no call or game.
+  //    Polls instead of firing once because "nothing else on screen" is often
+  //    false at launch (ToS, update popup, a call started straight away).
+  const bootOfferUiRef = useRef({ importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery });
+  bootOfferUiRef.current = { importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery };
+  const bootOfferUserId = authState.kind === 'signed_in' ? authState.user.id : null;
+  useEffect(() => {
+    if (!bootOfferUserId) return;
+    let stopped = false;
+    let running = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const ui = (): BootOfferUi => {
+      const r = bootOfferUiRef.current;
+      const ui = useUiStore.getState();
+      const fm = useFirstMomentStore.getState().status;
+      const voice = useVoiceStore.getState();
+      const backseat = useBackseatStore.getState();
+      const live =
+        liveSessionForRestart({
+          callStatus: voice.status,
+          summons: useDataStore.getState().summons,
+          chessGames: useChessStore.getState().games,
+          backseat: backseat.active,
+          drawGames: useDrawStore.getState().games,
+        }) !== null ||
+        voice.participants.length > 0 ||
+        backseat.sharingFor != null ||
+        backseat.starting ||
+        backseat.watch != null;
+      return {
+        signedIn: useAuthStore.getState().state.kind === 'signed_in',
+        viewKind: ui.view.kind,
+        modalOpen:
+          ui.modal != null ||
+          r.importOffer != null ||
+          r.autoMigrateOpen ||
+          r.updatePopup != null ||
+          r.tosAccepted !== true ||
+          r.passwordRecovery ||
+          (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') != null),
+        tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
+        liveSession: live,
+      };
+    };
+    const tick = async (): Promise<void> => {
+      if (stopped || running) return;
+      running = true;
+      try {
+        const res = await checkBootImportOffer({
+          ui,
+          peek: () => sei.profilePeekLocal(),
+          offered: async () => (await sei.profileImportOffered('get')).offered,
+        });
+        if (stopped) return;
+        if (res.kind === 'show') {
+          // `after` keeps the player where they are (Home); only data reloads.
+          setImportOffer({ peek: res.peek, existingAccount: true, after: () => undefined });
+          stopped = true;
+          return;
+        }
+        if (res.kind === 'done') {
+          stopped = true;
+          return;
+        }
+      } catch {
+        // Best effort: a failed peek waits for the next launch (Settings
+        // still has the row).
+        stopped = true;
+        return;
+      } finally {
+        running = false;
+      }
+      timer = setTimeout(() => void tick(), BOOT_OFFER_POLL_MS);
+    };
+    timer = setTimeout(() => void tick(), BOOT_OFFER_FIRST_MS);
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [bootOfferUserId]);
+
   // ── In-app updater subscriptions (quick/260604-uoy). ──────────────────────
   //    Wired ONCE at mount. onUpdateAvailable fires only for OPTIONAL updates
   //    (mandatory ones download without asking) and opens the modal; progress /
-  //    downloaded drive the non-blocking pill; whats-new is the post-update
-  //    changelog on the next launch.
+  //    downloaded drive the non-blocking sidebar button; whats-new is the
+  //    post-update changelog (or, for an update the user accepted after reading
+  //    it, the brief "Updated to vX" toast) on the next launch.
   useEffect(() => {
+    const updates = useUpdateStore.getState();
+    const showWhatsNew = (ev: WhatsNewEvent): void => {
+      if (ev.brief) {
+        updates.showToast({ version: ev.version, headline: topChangelogLine(ev.changelog) });
+        return;
+      }
+      setUpdatePopup((prev) => prev ?? { kind: 'whats-new', version: ev.version, changelog: ev.changelog });
+    };
     const unsubs = [
       sei.onUpdateAvailable((info) => {
         setUpdatePopup({
@@ -352,15 +475,15 @@ export function App(): React.ReactElement {
         });
       }),
       sei.onUpdateProgress((ev) => {
-        // Background: the pill, not the popup. Fires for the consented download
-        // AND for the silent mandatory one, which is why it must never block.
-        setUpdatePill({ kind: 'downloading', percent: ev.percent });
+        // Background: the sidebar, not the popup. Fires for the consented
+        // download AND for the silent mandatory one, so it must never block.
+        updates.setDownloading(ev.percent);
       }),
       sei.onUpdateDownloaded((ev) => {
         if (ev.forced) {
           // apply:'now' mandatory — main restarts automatically after a brief
           // delay; show the non-dismissable critical overlay until it does.
-          setUpdatePill(null);
+          updates.clearRail();
           setUpdatePopup({ kind: 'forced' });
           return;
         }
@@ -368,18 +491,23 @@ export function App(): React.ReactElement {
         // disk and applies on the next quit via autoInstallOnAppQuit. Offer the
         // restart, never take it: the user may be mid-game or on a call, and
         // the accepted download may have been started minutes ago.
-        setUpdatePill({ kind: 'ready' });
+        updates.setReady(ev.version);
       }),
       sei.onUpdateError(() => {
         // A download that dies mid-flight stops pushing progress, and the
-        // downloading pill has no dismiss (there is nothing to decide while it
+        // downloading bar has no dismiss (there is nothing to decide while it
         // works), so without this it would sit at whatever percent it reached
         // for the rest of the session. Clear it and say nothing: the user did
         // not ask for a mandatory download, and Settings owns the error copy
-        // for the check they DID ask for.
-        setUpdatePill(null);
+        // for the check they DID ask for. A ready update stays (clearRail
+        // only clears a download in flight).
+        updates.clearRail();
       }),
       sei.onWhatsNew((ev) => {
+        if (ev.brief) {
+          showWhatsNew(ev);
+          return;
+        }
         setUpdatePopup({ kind: 'whats-new', version: ev.version, changelog: ev.changelog });
       }),
       // Notices ride the update check's cadence in main, so their subscription
@@ -393,7 +521,7 @@ export function App(): React.ReactElement {
     // never reliably shows the changelog. This pull is the race-proof path; the
     // guard avoids stomping a live optional-update popup if one is already up.
     void sei.getWhatsNew().then((ev) => {
-      if (ev) setUpdatePopup((prev) => prev ?? { kind: 'whats-new', version: ev.version, changelog: ev.changelog });
+      if (ev) showWhatsNew(ev);
     });
     return () => unsubs.forEach((u) => u());
   }, []);
@@ -477,7 +605,11 @@ export function App(): React.ReactElement {
         // race against the authState push because app:scope-changed is
         // emitted after the async scope teardown, so the sign-out routing
         // must live here.
-        if (ev.reason === 'sign-out') { navigate({ kind: 'onboard', signin: true }); return; }
+        if (ev.reason === 'sign-out') {
+          importAfterOnboardRef.current = false;
+          navigate({ kind: 'onboard', signin: true });
+          return;
+        }
         // Re-seed the credits store now that the scope has ACTUALLY switched.
         // The authState-keyed effect above already reset()+init()'d it from the
         // SYNCHRONOUS signed_in push — which fires BEFORE this async scope switch
@@ -496,8 +628,27 @@ export function App(): React.ReactElement {
         // 260728 Sui onboarding: while the first-run scene is driving (view
         // 'onboard'), it owns navigation — the sign-in that just landed came
         // from the scene's own panel, and the scene continues into setup +
-        // generation itself. The data reloads above still ran.
+        // generation itself. The data reloads above still ran. 261023: the
+        // local-import offer waits for the scene's hand-off.
+        const offerTiming = localImportOfferTiming(ev.reason, useUiStore.getState().view.kind === 'onboard');
+        if (offerTiming === 'after-onboarding') {
+          importAfterOnboardRef.current = true;
+          return;
+        }
         if (useUiStore.getState().view.kind === 'onboard') return;
+        // Own-key (local) companions: offer to bring them into the account,
+        // new or existing (261023: existing accounts used to skip this and
+        // strand them). The modal routes onward (handleImportOfferDone).
+        if (offerTiming === 'now') {
+          try {
+            const peek = await sei.profilePeekLocal();
+            const existingAccount = Boolean(onboardedName);
+            if (shouldOfferLocalImport(peek, existingAccount)) {
+              setImportOffer({ peek, existingAccount });
+              return;
+            }
+          } catch { /* no offer; route as usual */ }
+        }
         // Onboarded but skin-setup still pending → resume the dedicated step.
         if (onboardedName && skinPending) { navigate({ kind: 'skin-setup' }); return; }
         // Onboarded account → home, on the HOME tab (which shows the welcome
@@ -511,15 +662,7 @@ export function App(): React.ReactElement {
           navigate({ kind: 'home' });
           return;
         }
-        // Fresh account. On FIRST sign-in only (never account→account), offer to
-        // import the anonymous local profile's companion if there's anything to
-        // bring across; the modal routes onward. Otherwise → onboarding.
-        if (ev.reason === 'sign-in') {
-          try {
-            const peek = await sei.profilePeekLocal();
-            if (peek.hasData) { setImportOffer(peek); return; }
-          } catch { /* fall through to onboarding */ }
-        }
+        // Fresh account with nothing to import (offered above) → onboarding.
         navigate({ kind: 'onboard' });
       })();
     });
@@ -528,7 +671,17 @@ export function App(): React.ReactElement {
   // Resolve the import-offer modal: re-read config (the import may have copied
   // preferred_name across) + reload characters, then route home-or-onboarding.
   async function handleImportOfferDone(_didImport: boolean): Promise<void> {
+    const after = importOffer?.after;
     setImportOffer(null);
+    // Any answer (Bring it over, Not now, Start fresh) counts: the boot offer
+    // does not ask this account again. Settings keeps a row for later.
+    void sei.profileImportOffered('set').catch(() => undefined);
+    if (after) {
+      try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
+      try { await useLibraryStateStore.getState().refresh(); } catch { /* none */ }
+      after();
+      return;
+    }
     let onboardedName = '';
     let skinPending = false;
     try {
@@ -537,6 +690,8 @@ export function App(): React.ReactElement {
       skinPending = cfg.skin_setup_pending === true;
     } catch { /* onboarding */ }
     try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
+    // The import can add World companions / Sui to the roster (added_world_ids).
+    try { await useLibraryStateStore.getState().refresh(); } catch { /* none */ }
     if (!onboardedName) { navigate({ kind: 'onboard' }); return; }
     if (skinPending) { navigate({ kind: 'skin-setup' }); return; }
     useUiStore.getState().setHomeTab('home');
@@ -795,6 +950,23 @@ export function App(): React.ReactElement {
         // acceptance insert, and a stale `false` mounts the blocking legal
         // modal over the tutorial (260729).
         void useAuthStore.getState().refreshTosStatus();
+        // 261023: a sign-in landed inside the scene. Offer the own-key
+        // companions first; the routing below runs once the player chooses.
+        // The account has a profile by now, so only companions or memories
+        // are worth asking about.
+        if (importAfterOnboardRef.current) {
+          importAfterOnboardRef.current = false;
+          try {
+            const peek = await sei.profilePeekLocal();
+            if (useAuthStore.getState().state.kind === 'signed_in' && shouldOfferLocalImport(peek, true)) {
+              setImportOffer({ peek, existingAccount: true, after: () => void routeAfterOnboard() });
+              return;
+            }
+          } catch { /* no offer */ }
+        }
+        await routeAfterOnboard();
+      })();
+      async function routeAfterOnboard(): Promise<void> {
         if (res.tutorial) {
           // The guided first moment (260926): a NEW player's tour ends in their
           // companion's chat, greeted first, with a next step to click. Only
@@ -818,7 +990,7 @@ export function App(): React.ReactElement {
           setHomeTab('home');
           navigate({ kind: 'home' });
         }
-      })();
+      }
     },
     [navigate, setHomeTab, resumeSavedTutorial],
   );
@@ -829,6 +1001,17 @@ export function App(): React.ReactElement {
   // rather than mounting the prior boot pulse.
   if (view.kind === 'loading') return <></>;
 
+  // 260603 / 261023: the own-key (local) import offer. Rendered on the
+  // first-run scene too, because a sign-in made there is offered when the
+  // scene hands off, before the routing that follows.
+  const importOfferModal = importOffer ? (
+    <ImportLocalProfileModal
+      peek={importOffer.peek}
+      existingAccount={importOffer.existingAccount}
+      onDone={(d) => void handleImportOfferDone(d)}
+    />
+  ) : null;
+
   // 260728: the Sui onboarding scene is chromeless — no MacosWindow drag
   // strip, no version tag, no rail; the mac traffic lights hide over IPC
   // while it is mounted (OnboardApp's own effect).
@@ -836,12 +1019,15 @@ export function App(): React.ReactElement {
     // key: a signin-variant mount must not reuse a full-scene instance's
     // state (and vice versa) if the view flips between them.
     return (
-      <OnboardApp
-        key={view.signin ? 'signin' : 'full'}
-        startAtSignIn={view.signin === true}
-        onStartFresh={() => navigate({ kind: 'onboard' })}
-        onComplete={handleOnboardComplete}
-      />
+      <>
+        <OnboardApp
+          key={view.signin ? 'signin' : 'full'}
+          startAtSignIn={view.signin === true}
+          onStartFresh={() => navigate({ kind: 'onboard' })}
+          onComplete={handleOnboardComplete}
+        />
+        {importOfferModal}
+      </>
     );
   }
 
@@ -1121,27 +1307,23 @@ export function App(): React.ReactElement {
           WizardStepMachine), so suppress the global modal there to avoid a
           double-render. Elsewhere (Settings "Re-run setup") it works as before. */}
       {view.kind !== 'skin-setup' ? <SetupWizardModal /> : null}
+      {/* 261017 (issue #46): ChatGPT-plan welcome + usage-limit dialogs. */}
+      <ChatgptPlanHost />
       {updatePopup ? (
         <UpdatePopup
           state={updatePopup}
           onUpdateNow={() => {
             // Consent to download the optional update. The modal closes right
-            // away and the corner pill takes over at 0%, so the user is back in
-            // the app before the first progress tick arrives.
+            // away and the sidebar progress bar takes over at 0%, so the user
+            // is back in the app before the first progress tick arrives.
             setUpdatePopup(null);
-            setUpdatePill({ kind: 'downloading', percent: 0 });
+            useUpdateStore.getState().setDownloading(0);
             void sei.downloadUpdate();
           }}
           onDismiss={() => setUpdatePopup(null)}
         />
       ) : null}
-      {updatePill ? (
-        <UpdatePill
-          state={updatePill}
-          onRestart={() => void sei.installUpdate()}
-          onDismiss={() => setUpdatePill(null)}
-        />
-      ) : null}
+      <UpdatedToast />
       {/* Notices inbox (260725). Self-mounting: the store decides visibility, so
           this renders null until a notice arrives (opens once) or the user
           reopens it from Playtime → Inbox. */}
@@ -1198,13 +1380,12 @@ export function App(): React.ReactElement {
         <MigrateLocalCharsModal onClose={() => setAutoMigrateOpen(false)} />
       ) : null}
       {/*
-        260603 — first sign-in to a fresh account: offer to bring the anonymous
-        local profile's companion (characters + memory + onboarding) into the
-        account. onScopeChanged sets importOffer; the modal routes onward.
+        260603 / 261023 — a sign-in from the anonymous local (own key)
+        profile, to a new or existing account: offer to bring its companions
+        (characters + memory + onboarding) into the account. onScopeChanged
+        sets importOffer; the modal routes onward.
       */}
-      {importOffer ? (
-        <ImportLocalProfileModal peek={importOffer} onDone={(d) => void handleImportOfferDone(d)} />
-      ) : null}
+      {importOfferModal}
       {/*
         Phase 13 — Plan 13-19 (PROXY-06). HardStopModal mounts at the App
         root so the out-of-credits / rate-limited blocking overlay sits

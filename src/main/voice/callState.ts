@@ -194,6 +194,20 @@ export function wasCallRecentlyActive(characterId: string): boolean {
   return false;
 }
 
+/**
+ * 261013 (T120): the open calls that connected, with how long each has been
+ * live, for the app-quit "next time" record. Read-only: the quit path ends
+ * nothing here.
+ */
+export function liveCallsNow(now = Date.now()): Array<{ characterId: string; connectedMs: number }> {
+  const out: Array<{ characterId: string; connectedMs: number }> = [];
+  for (const id of activeCalls) {
+    const since = liveSince.get(id);
+    if (since !== undefined) out.push({ characterId: id, connectedMs: Math.max(0, now - since) });
+  }
+  return out;
+}
+
 /** Ids with an open call — used by the renderer-death sweep in index.ts. */
 export function activeCallIds(): string[] {
   return [...activeCalls];

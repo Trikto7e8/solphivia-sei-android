@@ -13,7 +13,7 @@
  *     the cloud). Mirrors the last_launched stamp in botSupervisor.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { mkdtemp, rm, readFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, rm, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { _setUserDataOverride, paths } from '../paths';
@@ -61,9 +61,10 @@ vi.mock('../llm/webSearchSettings', () => ({
 
 import type { ChatDeps } from './chatService';
 import type { LanHost } from '../../shared/ipc';
-import { sendChatMessage, sendLaunchFailedTurn, sendVoiceIdleTurn, sendCompanionVoiceTurn, cancelInflightTurn, CHAT_ABORTED } from './chatService';
+import { sendChatMessage, sendLaunchFailedTurn, sendVoiceIdleTurn, sendCompanionVoiceTurn, sendVoiceGreetingTurn, cancelInflightTurn, CHAT_ABORTED } from './chatService';
 import { setCallActive } from '../voice/callState';
-import { readAll as chatStoreRead } from './chatStore';
+import { readAll as chatStoreRead, appendMessage } from './chatStore';
+import { consumeGoodbye, _resetGoodbyeNotes } from '../sessionGoodbye';
 
 const CHAR = '55555555-5555-4555-8555-555555555555';
 let dir: string;
@@ -277,15 +278,15 @@ describe('sendChatMessage — parallel tool_use blocks', () => {
     expect(result.replies.map((r) => r.text)).toEqual(['aight, catch you later']);
   });
 
-  it('remember() on a voice turn appends to MEMORY.md and answers the tool_use', async () => {
-    createSpy
-      .mockResolvedValueOnce({
-        content: [
-          { type: 'text', text: 'oh a big exam, noted.' },
-          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a big exam on friday' } },
-        ],
-      })
-      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'good luck friday.' }] });
+  it('remember() on a voice turn appends to MEMORY.md and ends the turn once the reply is out', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'oh a big exam, noted.' },
+        { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a big exam on friday' } },
+      ],
+    });
+    // A second response is staged but must never be consumed (261020).
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'good luck friday.' }] });
 
     const result = await sendChatMessage(
       { characterId: CHAR, text: 'i have a big exam friday', voiceCall: true },
@@ -294,11 +295,8 @@ describe('sendChatMessage — parallel tool_use blocks', () => {
 
     const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
     expect(mem).toContain('player has a big exam on friday');
-    // The tool_use was answered (second hop ran) and the reply survived.
-    const secondReq = createSpy.mock.calls[1][0] as { messages: Array<{ role: string; content: unknown }> };
-    const blocks = secondReq.messages[secondReq.messages.length - 1].content as Array<{ type: string; tool_use_id: string }>;
-    expect(blocks.map((b) => b.tool_use_id)).toEqual(['tu_rem']);
-    expect(result.replies.length).toBeGreaterThan(0);
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(result.replies.map((r) => r.text)).toEqual(['oh a big exam, noted.']);
   });
 
   it('typed chat (261008) offers remember() and writes it to MEMORY.md too', async () => {
@@ -633,6 +631,88 @@ describe('silence-by-convention + idle nudge (260707)', () => {
   });
 });
 
+// 261020 (review): a call's goodbye plan names the game it is for. Without
+// it the plan has no game, and a Minecraft plan made at a hang-up became the
+// main thing of a Stardew greeting. Named, it is labeled in MEMORY.md and the
+// goodbye note carries the game to the Home card's tag.
+describe('end_call next_time_game (261020 review)', () => {
+  beforeEach(async () => {
+    _resetGoodbyeNotes();
+    await mkdir(paths.memoryDir(CHAR), { recursive: true });
+  });
+
+  it('offers the field on the call tools', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: '(silence)' }] });
+    await sendVoiceIdleTurn(CHAR, 42, []);
+    const req = createSpy.mock.calls[0][0] as { tools: Array<{ name: string; input_schema: { properties: Record<string, unknown> } }> };
+    expect(req.tools.find((t) => t.name === 'end_call')?.input_schema.properties).toHaveProperty('next_time_game');
+  });
+
+  it('a named game labels the plan and rides the goodbye note', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok bye, copper next time' },
+        { type: 'tool_use', id: 'tu_end', name: 'end_call', input: { next_time: 'get copper for the lighthouse', next_time_game: 'Minecraft' } },
+      ],
+    });
+    await sendVoiceIdleTurn(CHAR, 90, []);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time in Minecraft: get copper for the lighthouse');
+    expect(consumeGoodbye(CHAR, 'call').nextStepGame).toBe('minecraft');
+  });
+
+  it('left out, the call plan has no game', async () => {
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'bye, good luck' },
+        { type: 'tool_use', id: 'tu_end', name: 'end_call', input: { next_time: 'ask how the interview went' } },
+      ],
+    });
+    await sendVoiceIdleTurn(CHAR, 90, []);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time: ask how the interview went');
+    const note = consumeGoodbye(CHAR, 'call');
+    expect(note.nextStepHook).toBe(true);
+    expect(note.nextStepGame).toBeUndefined();
+  });
+
+  // Delta review: main tags a chat quit's plan with the live session's game
+  // when the field is left out (goodbyePlanPlace), so the memory line says so too.
+  it('a chat quit_game that leaves the field out labels the plan with the live game', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok heading out, parsnips next time' },
+        { type: 'tool_use', id: 'tu_quit', name: 'quit_game', input: { next_time: 'plant the parsnips' } },
+      ],
+    });
+    const d: ChatDeps = { ...deps(), isInGame: () => true, liveGame: () => 'stardew' };
+    await sendChatMessage({ characterId: CHAR, text: 'you can head off' }, d);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time in Stardew Valley: plant the parsnips');
+    const note = consumeGoodbye(CHAR, 'game');
+    expect(note.nextStepHook).toBe(true);
+    expect(note.nextStepGame).toBeUndefined();
+    expect(d.leaveGame).toHaveBeenCalledTimes(1);
+  });
+
+  it('a chat quit_game with no live game still saves an unlabeled plan', async () => {
+    createSpy.mockResolvedValueOnce({
+      content: [
+        { type: 'text', text: 'ok bye' },
+        { type: 'tool_use', id: 'tu_quit', name: 'quit_game', input: { next_time: 'ask how the interview went', next_time_game: 'none' } },
+      ],
+    });
+    const d: ChatDeps = { ...deps(), isInGame: () => true, liveGame: () => 'stardew' };
+    await sendChatMessage({ characterId: CHAR, text: 'you can head off' }, d);
+    const mem = await readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+    expect(mem).toContain('Plan for next time: ask how the interview went');
+    expect(consumeGoodbye(CHAR, 'game').nextStepGame).toBe('none');
+  });
+});
+
 // 260708: while one companion was in the player's world, a call-only companion
 // was told "no world open" (openWorldDetected hardcoded false) and its launch()
 // calls were dropped (single-shot turns run no tool loop) — it could only join
@@ -936,5 +1016,205 @@ describe('streamed voice turn: spoken text keeps its punctuation and carries rep
     await sendChatMessage({ characterId: CHAR, text: 'can you help', voiceCall: true }, { ...deps(), emitReply });
 
     expect(emitReply.mock.calls.map(([, , speech]) => speech.more)).toEqual([false, false]);
+  });
+});
+
+describe('one player message gets one reply round (261020)', () => {
+  /** A streamed response: text deltas, then the final message with any tool_use. */
+  function streamedResponse(text: string, toolUses: Array<{ id: string; name: string; input: unknown }> = []) {
+    const content = [
+      ...(text ? [{ type: 'text', text }] : []),
+      ...toolUses.map((t) => ({ type: 'tool_use', ...t })),
+    ];
+    return {
+      async *[Symbol.asyncIterator]() {
+        if (text) yield { type: 'content_block_delta', delta: { type: 'text_delta', text } };
+      },
+      finalMessage: async () => ({ content, usage: {}, stop_reason: toolUses.length ? 'tool_use' : 'end_turn' }),
+    };
+  }
+  const memoryFile = () => readFile(path.join(paths.memoryDir(CHAR), 'MEMORY.md'), 'utf8');
+
+  it('a typed line on a call answered with text + remember() is spoken once, not reworded in a second hop', async () => {
+    // Live 261020 (v0.6.9-beta.3, 1:1 call, typed "remind me next time, we
+    // need to get copper first"): hop 0 spoke three lines and called
+    // remember(); the loop re-called the model with "Saved to your memory.
+    // Continue your reply" and hop 1 said the same thing again in new words.
+    setCallActive(CHAR, true);
+    streamSpy
+      .mockReturnValueOnce(
+        streamedResponse("Yeah, copper first, got it. I'll bring it up next time, don't you worry.", [
+          { id: 'tu_rem', name: 'remember', input: { text: 'next session: get copper before the lighthouse base' } },
+        ]),
+      )
+      .mockReturnValueOnce(streamedResponse("I'll bring it up next time so we don't skip it."));
+    const emitReply = vi.fn();
+
+    const result = await sendChatMessage(
+      { characterId: CHAR, text: 'remind me next time, we need to get copper first', voiceCall: true },
+      { ...deps(), emitReply },
+    );
+
+    expect(streamSpy).toHaveBeenCalledTimes(1);
+    expect(emitReply.mock.calls.map(([, msg]) => msg.text)).toEqual([
+      'Yeah, copper first, got it.',
+      "I'll bring it up next time, don't you worry.",
+    ]);
+    expect(result.streamed).toBe(true);
+    expect(await memoryFile()).toContain('get copper before the lighthouse base');
+  });
+
+  it('typed chat keeps the reply written beside remember() instead of swapping it for a second one', async () => {
+    createSpy
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'copper bulb lighthouse, that is going to look so good at night' },
+          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'favorite block is the copper bulb' } },
+        ],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'wait i gotta ask, you building it solo?' }] });
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'remember this: my favorite block is copper bulb' }, deps());
+
+    expect(createSpy).toHaveBeenCalledTimes(1);
+    expect(result.replies.map((r) => r.text)).toEqual(['copper bulb lighthouse, that is going to look so good at night']);
+    expect(await memoryFile()).toContain('favorite block is the copper bulb');
+  });
+
+  it('remember() with no reply text yet still gets the hop that answers', async () => {
+    createSpy
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player has a dog named Pepper' } }],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'pepper is such a good name' }] });
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'my dog is called pepper' }, deps());
+
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(result.replies.map((r) => r.text)).toEqual(['pepper is such a good name']);
+  });
+
+  it('on a call, a lead line + search, then a remember()-only hop, still continues to the answer', async () => {
+    // The guard is per hop: the lead line spoken before the lookup does not
+    // count as the answer.
+    setCallActive(CHAR, true);
+    webRuns.length = 0;
+    streamSpy
+      .mockReturnValueOnce(streamedResponse('one sec, let me check.', [{ id: 'tu_s', name: 'search', input: { query: 'minecraft snapshot' } }]))
+      .mockReturnValueOnce(streamedResponse('', [{ id: 'tu_rem', name: 'remember', input: { text: 'player follows snapshots' } }]))
+      .mockReturnValueOnce(streamedResponse('yeah there is a new snapshot with brittle ice.'));
+    const emitReply = vi.fn();
+
+    await sendChatMessage({ characterId: CHAR, text: 'anything new for minecraft this week', voiceCall: true }, { ...deps(), emitReply });
+
+    expect(streamSpy).toHaveBeenCalledTimes(3);
+    expect(emitReply.mock.calls.map(([, msg]) => msg.text)).toEqual([
+      'one sec, let me check.',
+      'yeah there is a new snapshot with brittle ice.',
+    ]);
+  });
+
+  it('an answer that arrives after a search and also calls remember() ends the turn there', async () => {
+    webRuns.length = 0;
+    createSpy
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'lemme check.' },
+          { type: 'tool_use', id: 'tu_s', name: 'search', input: { query: 'netherite armor' } },
+        ],
+      })
+      .mockResolvedValueOnce({
+        content: [
+          { type: 'text', text: 'smithing table, diamond gear plus an ingot.' },
+          { type: 'tool_use', id: 'tu_rem', name: 'remember', input: { text: 'player is going for netherite' } },
+        ],
+      })
+      .mockResolvedValueOnce({ content: [{ type: 'text', text: 'so yeah, smithing table.' }] });
+    const pushed: string[] = [];
+    const d: ChatDeps = { ...deps(), emitReply: (_id, m) => { pushed.push(m.text); } };
+
+    const result = await sendChatMessage({ characterId: CHAR, text: 'how do i make netherite armor' }, d);
+
+    expect(createSpy).toHaveBeenCalledTimes(2);
+    expect(pushed).toEqual(['lemme check']);
+    expect(result.replies.map((r) => r.text)).toEqual(['smithing table, diamond gear plus an ingot']);
+  });
+});
+
+// 261024: a single-shot voice turn's own system note rides AFTER the last cache
+// breakpoint, with the clock. Folded in before it, the cached prefix ended on
+// text no later turn sends, so the cache write was never read back.
+describe('single-shot voice turns keep their note after the cache breakpoint (261024)', () => {
+  type Block = { type: string; text?: string; cache_control?: unknown };
+  type Msg = { role: string; content: string | Block[] };
+
+  /** Text of every block after the last cache_control block, and of the marked block itself. */
+  function split(messages: Msg[]): { marked: string; tail: string; tailRole: string } {
+    let mi = -1;
+    let bi = -1;
+    messages.forEach((m, i) => {
+      if (Array.isArray(m.content)) m.content.forEach((b, j) => { if (b.cache_control) { mi = i; bi = j; } });
+    });
+    expect(mi).toBeGreaterThanOrEqual(0);
+    const after: string[] = [];
+    messages.forEach((m, i) => {
+      const blocks: Block[] = typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : m.content;
+      blocks.forEach((b, j) => { if (i > mi || (i === mi && j > bi)) after.push(b.text ?? ''); });
+    });
+    const markedBlock = (messages[mi].content as Block[])[bi];
+    return { marked: markedBlock.text ?? '', tail: after.join('\n'), tailRole: messages[messages.length - 1].role };
+  }
+
+  async function seed(rows: Array<['user' | 'companion', string]>): Promise<void> {
+    let t = Date.now() - rows.length * 1000;
+    for (const [role, text] of rows) {
+      await appendMessage(CHAR, { id: `r${t}`, role, text, ts: t++, voice: true } as never);
+    }
+  }
+
+  it('idle nudge: the breakpoint is on the last transcript line and the note follows it', async () => {
+    await seed([['user', 'hey marv'], ['companion', 'hey.']]);
+    setCallActive(CHAR, true);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'so, about that robot arm.' }] });
+
+    await sendVoiceIdleTurn(CHAR, 30, []);
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail, tailRole } = split(req.messages);
+    expect(marked).toBe('hey.');
+    expect(tail).toContain('quiet for about 30 seconds');
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
+    expect(tail.indexOf('quiet for about')).toBeLessThan(tail.indexOf('[now: '));
+    expect(tailRole).toBe('user');
+  });
+
+  it('companion reaction: the breakpoint is on the heard line, which later turns resend unchanged', async () => {
+    await seed([['user', 'hey both']]);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'lol true' }] });
+
+    await sendCompanionVoiceTurn(CHAR, { speakerName: 'Sui', text: 'this game is chaos', peers: ['Sui'] });
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail } = split(req.messages);
+    expect(marked).toContain('(Sui, on the call): this game is chaos');
+    expect(marked).not.toContain('System note');
+    expect(tail).toContain('Sui just said the line above on the call');
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
+  });
+
+  it('greeting: the note follows the breakpoint', async () => {
+    await seed([['user', 'bye for now'], ['companion', 'later.']]);
+    createSpy.mockResolvedValueOnce({ content: [{ type: 'text', text: 'oh hey.' }] });
+
+    await sendVoiceGreetingTurn(CHAR, [], { plan: null });
+
+    const req = createSpy.mock.calls[0][0] as { messages: Msg[] };
+    const { marked, tail } = split(req.messages);
+    expect(marked).toBe('later.');
+    expect(tail).toMatch(/System note/);
+    expect(tail).toMatch(/\[now: \w{3} \d{1,2} \w{3} \d{4}, \d{2}:\d{2}\]/);
+    expect(tail).not.toContain('System note, not the player speaking: the current');
   });
 });

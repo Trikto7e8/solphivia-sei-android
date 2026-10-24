@@ -6,11 +6,14 @@
  */
 import type { ControlOrigin } from './controlPolicy';
 import type { ActTarget } from './types';
+import { fillPersonaPlaceholders } from '../../bot/brain/personaPlaceholders.js';
 
 export interface ActPromptInput {
   characterName: string;
   /** The character's expanded persona, trimmed by the caller. */
   persona?: string;
+  /** The player's display name, for card {{user}} placeholders ('' -> "the player"). */
+  playerName?: string;
   target: ActTarget;
   targetLabel: string;
   /**
@@ -38,7 +41,10 @@ function howItStarted(p: ActPromptInput): string {
 }
 
 export function buildActSystem(p: ActPromptInput): string {
-  const persona = (p.persona ?? '').trim().slice(0, PERSONA_MAX_CHARS);
+  const persona = fillPersonaPlaceholders((p.persona ?? '').trim(), {
+    charName: p.characterName,
+    userName: p.playerName,
+  }).slice(0, PERSONA_MAX_CHARS);
   return [
     `You are ${p.characterName}. You are on a call with the player, and they have shared ${sharedWhat(p.target, p.targetLabel)} with you. ${howItStarted(p)}, so right now you are using their Mac for them with the mouse and keyboard.`,
     persona ? `Who you are:\n${persona}` : '',

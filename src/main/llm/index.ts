@@ -25,10 +25,13 @@ import type { UserConfig } from '../../shared/characterSchema';
 import { getAiBackendKind, hasApiKey, loadApiKey } from '../apiKeyStore';
 import { loadConfig } from '../configStore';
 import { createAnthropicProvider } from './anthropic';
-import { createOpenAICompatProvider } from './openaiCompat';
+import { createOpenAICompatProvider, effectiveTimeoutMs as openaiCompatTimeoutMs } from './openaiCompat';
 import { createGeminiProvider } from './gemini';
-import { createOllamaProvider, OLLAMA_DEFAULT_BASE_URL } from './ollama';
+import { createOllamaProvider, effectiveTimeoutMs as ollamaTimeoutMs, OLLAMA_DEFAULT_BASE_URL } from './ollama';
 import { ollamaModelVision } from './ollamaCapabilities';
+import { createChatgptProvider } from './chatgptResponses';
+import { chatgptModelVision, pickDefaultChatgptModel, pickReasoningEffort } from '../../shared/chatgptPlan';
+import { chatgptSession } from '../chatgptPlan';
 import type { LlmProvider } from './types';
 
 export type { LlmCallParams, LlmProvider, LlmResult, LlmToolUse, LlmUsage } from './types';
@@ -92,6 +95,17 @@ export async function buildLocalProviderFor(
   if (kind === 'ollama') {
     return createOllamaProvider({ model, baseUrl: entry.base_url ?? OLLAMA_DEFAULT_BASE_URL });
   }
+  if (kind === 'chatgpt') {
+    // 261017 (issue #46): ChatGPT plan. The credential is main's OAuth
+    // session (tokens never leave main); no api_key.bin involved.
+    const r = await resolveChatgptModel(modelOverride ?? entry.model);
+    return createChatgptProvider({
+      model: r.model,
+      reasoningEffort: r.reasoningEffort,
+      vision: r.vision,
+      session: chatgptSession(),
+    });
+  }
   // Every remaining provider needs the BYOK key. Missing → the same visible
   // failure class as Anthropic BYOK (never a silent cloud fallback).
   if (!(await hasApiKey())) {
@@ -106,6 +120,45 @@ export async function buildLocalProviderFor(
   const baseUrl = entry.base_url ?? OPENAI_COMPAT_BASE_URLS[kind];
   if (!baseUrl) throw new Error(`LLM provider '${kind}' has no base URL configured.`);
   return createOpenAICompatProvider({ kind, apiKey, baseUrl, model });
+}
+
+/**
+ * 261017 (issue #46): the ChatGPT-plan model to run, plus its reasoning
+ * effort and vision verdict. A stored pick wins; otherwise the account
+ * catalog's default (pickDefaultChatgptModel), read from the cache or, when
+ * the cache is empty, from /v1/models (bounded; any failure falls back to
+ * the static catalog default). Never throws.
+ */
+export async function resolveChatgptModel(
+  stored?: string,
+): Promise<{ model: string; reasoningEffort: string | null; vision: VisionVerdict }> {
+  const s = chatgptSession();
+  let catalog = s.cachedModels();
+  if (catalog.length === 0) {
+    try {
+      catalog = await Promise.race([
+        s.listModels(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000)),
+      ]);
+    } catch {
+      catalog = [];
+    }
+  }
+  const pick = stored?.trim();
+  // A stored pick the account no longer lists (plan change, retired model)
+  // falls back to the catalog default instead of failing every call.
+  const model =
+    pick && (catalog.length === 0 || catalog.some((m) => m.slug === pick))
+      ? pick
+      : catalog.length
+        ? pickDefaultChatgptModel(catalog)
+        : DEFAULT_MODELS.chatgpt;
+  const entry = catalog.find((m) => m.slug === model);
+  return {
+    model,
+    reasoningEffort: entry ? pickReasoningEffort(entry.reasoning_levels) : null,
+    vision: chatgptModelVision(model, catalog),
+  };
 }
 
 /**
@@ -138,6 +191,12 @@ export async function activeLlmVision(): Promise<VisionVerdict> {
     if (kind === 'ollama') {
       return await ollamaModelVision(providerConfigEntry(cfg, kind).base_url ?? OLLAMA_DEFAULT_BASE_URL, model);
     }
+    if (kind === 'chatgpt') {
+      // Catalog-aware, and the default model comes from the catalog too.
+      const stored = providerConfigEntry(cfg, kind).model;
+      const catalog = chatgptSession().cachedModels();
+      return chatgptModelVision(stored ?? (catalog.length ? pickDefaultChatgptModel(catalog) : model), catalog);
+    }
     return modelVision(kind, model);
   } catch {
     return 'unknown';
@@ -161,4 +220,19 @@ export async function activeLlmModelLabel(): Promise<string | null> {
   } catch {
     return null;
   }
+}
+
+/**
+ * The deadline a caller should put on its OWN abort timer for one `provider`
+ * request (261011). Providers apply a floor to `timeoutMs` (Ollama 120s for a
+ * cold local load + full prompt eval, DeepSeek's first-token floor), but a
+ * caller that aborts through its own AbortController after a fixed delay
+ * (Draw! guessed at 30s and drew at 60s) bypassed those floors, so on local
+ * hardware every Draw! call was cut off before the model answered. Cloud and
+ * Anthropic BYOK keep `ms` unchanged.
+ */
+export function providerTimeoutMs(provider: Pick<LlmProvider, 'kind'>, ms: number): number {
+  if (provider.kind === 'ollama') return ollamaTimeoutMs(ms);
+  if (provider.kind === 'anthropic' || provider.kind === 'gemini' || provider.kind === 'chatgpt') return ms;
+  return openaiCompatTimeoutMs(provider.kind as ProviderKind, ms);
 }

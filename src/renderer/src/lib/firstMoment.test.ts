@@ -23,42 +23,98 @@ describe('firstMomentCompanion', () => {
 });
 
 describe('planFirstMoment', () => {
-  it('chess leads and Minecraft is hidden when there is no Minecraft at all', () => {
-    expect(planFirstMoment({ lanOpen: false, mcInstalled: false })).toEqual({ primary: 'chess', minecraft: false });
+  const env = (o: Partial<{ lanOpen: boolean; mcInstalled: boolean; backseatOk: boolean }>) => ({
+    lanOpen: false,
+    mcInstalled: false,
+    backseatOk: true,
+    ...o,
   });
 
-  it('an installed Minecraft is offered second, chess still leads', () => {
-    expect(planFirstMoment({ lanOpen: false, mcInstalled: true })).toEqual({ primary: 'chess', minecraft: true });
+  it('Backseat leads and Minecraft is hidden when there is no Minecraft at all', () => {
+    expect(planFirstMoment(env({}))).toEqual({ primary: 'backseat', minecraft: false, backseat: true });
+  });
+
+  it('an installed Minecraft is offered, Backseat still leads', () => {
+    expect(planFirstMoment(env({ mcInstalled: true }))).toEqual({ primary: 'backseat', minecraft: true, backseat: true });
   });
 
   it('an open LAN world makes Minecraft the lead, even when the install probe missed it', () => {
-    expect(planFirstMoment({ lanOpen: true, mcInstalled: false })).toEqual({ primary: 'minecraft', minecraft: true });
-    expect(planFirstMoment({ lanOpen: true, mcInstalled: true })).toEqual({ primary: 'minecraft', minecraft: true });
+    expect(planFirstMoment(env({ lanOpen: true }))).toEqual({ primary: 'minecraft', minecraft: true, backseat: true });
+    expect(planFirstMoment(env({ lanOpen: true, mcInstalled: true }))).toEqual({
+      primary: 'minecraft',
+      minecraft: true,
+      backseat: true,
+    });
+  });
+
+  it('a model that cannot see images drops Backseat and chess leads', () => {
+    expect(planFirstMoment(env({ backseatOk: false }))).toEqual({ primary: 'chess', minecraft: false, backseat: false });
+    expect(planFirstMoment(env({ backseatOk: false, mcInstalled: true }))).toEqual({
+      primary: 'chess',
+      minecraft: true,
+      backseat: false,
+    });
+    expect(planFirstMoment(env({ backseatOk: false, lanOpen: true }))).toEqual({
+      primary: 'minecraft',
+      minecraft: true,
+      backseat: false,
+    });
   });
 });
 
 describe('firstMomentButtons', () => {
-  it('chess only, then the call', () => {
-    expect(firstMomentButtons({ primary: 'chess', minecraft: false })).toEqual(['chess', 'call']);
+  it('Backseat first, then chess, then the call', () => {
+    expect(firstMomentButtons({ primary: 'backseat', minecraft: false, backseat: true })).toEqual([
+      'backseat',
+      'chess',
+      'call',
+    ]);
   });
 
-  it('chess first, Minecraft second, then the call', () => {
-    expect(firstMomentButtons({ primary: 'chess', minecraft: true })).toEqual(['chess', 'minecraft', 'call']);
+  it('Backseat first, Minecraft second when installed', () => {
+    expect(firstMomentButtons({ primary: 'backseat', minecraft: true, backseat: true })).toEqual([
+      'backseat',
+      'minecraft',
+      'chess',
+      'call',
+    ]);
   });
 
-  it('Minecraft first when it leads', () => {
-    expect(firstMomentButtons({ primary: 'minecraft', minecraft: true })).toEqual(['minecraft', 'chess', 'call']);
+  it('Minecraft first when it leads, Backseat next', () => {
+    expect(firstMomentButtons({ primary: 'minecraft', minecraft: true, backseat: true })).toEqual([
+      'minecraft',
+      'backseat',
+      'chess',
+      'call',
+    ]);
   });
 
-  it('the call is always offered and always last', () => {
-    for (const plan of [
-      { primary: 'chess' as const, minecraft: false },
-      { primary: 'chess' as const, minecraft: true },
-      { primary: 'minecraft' as const, minecraft: true },
-    ]) {
-      const b = firstMomentButtons(plan);
-      expect(b[b.length - 1]).toBe('call');
-      expect(b[0]).toBe(plan.primary);
-    }
+  it('without Backseat: chess only, or chess then Minecraft', () => {
+    expect(firstMomentButtons({ primary: 'chess', minecraft: false, backseat: false })).toEqual(['chess', 'call']);
+    expect(firstMomentButtons({ primary: 'chess', minecraft: true, backseat: false })).toEqual([
+      'chess',
+      'minecraft',
+      'call',
+    ]);
+    expect(firstMomentButtons({ primary: 'minecraft', minecraft: true, backseat: false })).toEqual([
+      'minecraft',
+      'chess',
+      'call',
+    ]);
+  });
+
+  it('the primary leads, nothing repeats, chess and the call are always offered and the call is last', () => {
+    for (const lanOpen of [false, true])
+      for (const mcInstalled of [false, true])
+        for (const backseatOk of [false, true]) {
+          const plan = planFirstMoment({ lanOpen, mcInstalled, backseatOk });
+          const b = firstMomentButtons(plan);
+          expect(b[0]).toBe(plan.primary);
+          expect(b[b.length - 1]).toBe('call');
+          expect(b).toContain('chess');
+          expect(new Set(b).size).toBe(b.length);
+          expect(b.includes('backseat')).toBe(plan.backseat);
+          expect(b.includes('minecraft')).toBe(plan.minecraft);
+        }
   });
 });

@@ -10,6 +10,7 @@ import Anthropic from '@anthropic-ai/sdk';
 import type { LlmCallParams, LlmResult, LlmToolUse } from '../llm/types';
 import type { LlmCall } from './visionChooser';
 import { applyAnthropicModelDefaults } from '../../bot/brain/llm/anthropicModelDefaults.js';
+import { applyPromptBudget, describeBudgetReport } from '../../bot/brain/llm/promptBudget.js';
 
 export function createDirectAnthropicCall(apiKey: string, opts: { baseURL?: string } = {}): LlmCall {
   const client = new Anthropic({ apiKey, maxRetries: 0, ...(opts.baseURL ? { baseURL: opts.baseURL } : {}) });
@@ -24,6 +25,8 @@ export function createDirectAnthropicCall(apiKey: string, opts: { baseURL?: stri
       ...(p.anthropicExtra ?? {}),
     };
     applyAnthropicModelDefaults(body);
+    const budget = applyPromptBudget(body);
+    if (budget) console.warn(describeBudgetReport(budget, 'direct'));
     const res = (await client.messages.create(body as unknown as Anthropic.MessageCreateParamsNonStreaming, {
       ...(p.timeoutMs !== undefined ? { timeout: p.timeoutMs } : {}),
       ...(p.signal ? { signal: p.signal } : {}),

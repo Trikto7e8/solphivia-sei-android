@@ -33,6 +33,9 @@ import { ConfigSchema, GAME_KINDS } from './config.js'
 import { applyLlmInit } from './llmInit.js'
 import { preparePackLoader } from './packLoader.js'
 import { start as startBrain } from './brain/index.js'
+import { sessionActionStats, llmMetaFromConfig } from './brain/actionStats.js'
+import { sessionDigest } from './brain/sessionDigest.js'
+import { setChatgptTokenTransport, deliverChatgptToken } from './brain/llm/chatgptTokenBridge.js'
 
 // 260926: the static graph above (config, zod, the brain, the LLM SDKs) is
 // evaluated by now. See bootTiming.js for the phase list.
@@ -121,12 +124,19 @@ export async function start(config, hooks = {}) {
     // main-initiated stop would (drain, disconnect, exit → supervisor reaps).
     // 261008: `nextStepHook` = the quit carried a next_time hook (already
     // saved to MEMORY.md); it rides summon-stopped for bot_session_ended.
-    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true }) } catch {} },
+    // 261014: + `nextStepLine`, that plan written to the player (Home card).
+    // 261020: + `nextStepGame`, the game the plan is for ('none' = no game).
+    onQuitRequested: (info) => { try { gracefulShutdown('quit', { nextStepHook: info?.nextStepHook === true, nextStepLine: info?.nextStepLine, nextStepGame: info?.nextStepGame }) } catch {} },
     // Voice calls (260705) — the bot called end_call(): ask main to hang up
     // the player's call (the bot stays in the game). The farewell say() was
     // already routed up before this fires, and the renderer drains its TTS
     // queue before tearing the call down.
-    onCallEndRequested: (info) => emitLifecycle({ type: 'call-end', nextStepHook: info?.nextStepHook === true }),
+    onCallEndRequested: (info) => emitLifecycle({
+      type: 'call-end',
+      nextStepHook: info?.nextStepHook === true,
+      ...(typeof info?.nextStepLine === 'string' && info.nextStepLine ? { nextStepLine: info.nextStepLine } : {}),
+      ...(info?.nextStepHook === true && typeof info?.nextStepGame === 'string' ? { nextStepGame: info.nextStepGame } : {}),
+    }),
   })
 
   _runtime = await mod.createRuntime(config, {
@@ -314,11 +324,66 @@ function requestJwtRefresh() {
 }
 let _shuttingDown = false   // re-entry guard for gracefulShutdown
 
+/**
+ * 261011: Minecraft action-outcome telemetry (brain/actionStats.js). The bot
+ * posts a cumulative snapshot as {type:'action-stats'} every
+ * ACTION_STATS_FLUSH_MS while something changed, and once more right before
+ * any terminal lifecycle (error / summon-stopped), so main holds the final
+ * numbers when it closes the play session. A hard kill or native crash loses
+ * at most one interval. Raw port message, no stdout mirror (nothing in it is
+ * useful in the rolling log). Main ships ONE event per session.
+ */
+const ACTION_STATS_FLUSH_MS = 15_000
+let _actionStatsEnabled = false
+let _actionStatsTimer = null
+function postActionStats({ force = false } = {}) {
+  if (!_actionStatsEnabled || !initPort) return
+  try {
+    if (!force && !sessionActionStats.isDirty()) return
+    initPort.postMessage({ type: 'action-stats', stats: sessionActionStats.snapshot() })
+  } catch {}
+}
+function startActionStats(config) {
+  _actionStatsEnabled = true
+  sessionActionStats.setMetaProvider(() => llmMetaFromConfig(config))
+  _actionStatsTimer = setInterval(() => postActionStats(), ACTION_STATS_FLUSH_MS)
+  _actionStatsTimer.unref?.()
+}
+
+/**
+ * 261011: the session's recent conversation (brain/sessionDigest.js), for
+ * main's player-end "next time" check (src/main/playerEndNextStep.ts). Same
+ * shape as action-stats: posted on a timer while it changes and once more
+ * right before any terminal lifecycle, so main has the last lines when the
+ * session closes even if the brain was already torn down. Every game, since
+ * the brain is shared. Conversation text, so a raw port message with no
+ * stdout mirror (the rolling log must not gain a second copy of the chat).
+ */
+let _digestTimer = null
+function postSessionDigest({ force = false } = {}) {
+  if (!initPort) return
+  try {
+    if (!force && !sessionDigest.isDirty()) return
+    initPort.postMessage({ type: 'session-digest', digest: sessionDigest.snapshot() })
+  } catch {}
+}
+function startSessionDigest() {
+  if (_digestTimer) return
+  _digestTimer = setInterval(() => postSessionDigest(), ACTION_STATS_FLUSH_MS)
+  _digestTimer.unref?.()
+}
+
 function emitLifecycle(payload) {
   // payload conforms to BotLifecycle (src/shared/ipc.ts):
   //   {type:'init-ack'} | {type:'connected'} | {type:'disconnected', reason?}
   // | {type:'error', error:ErrorClass, message} | {type:'chat', from, text}
   // | {type:'summon-ready'} | {type:'summon-stopped'} | {type:'exit', code}
+  // 261011: the final telemetry snapshot must reach main BEFORE the status
+  // that closes the play session (same port, so ordering holds).
+  if (payload?.type === 'error' || payload?.type === 'summon-stopped') {
+    postActionStats({ force: true })
+    postSessionDigest({ force: true })
+  }
   if (initPort) {
     try { initPort.postMessage(payload) } catch {}
   }
@@ -416,6 +481,14 @@ async function bootstrapWithInit(initData) {
     // and the cold FIRST CONTACT greeting is skipped on the first tick (no race
     // with the post-spawn {type:'voice-call'} message). See orchestrator.js.
     voiceCallActive: initVoiceCallActive,   // boolean | undefined
+    // 261014: the saved plan still open for this session's first greeting
+    // (main's homeNextStep readPendingPlan, read before the session marks it
+    // used). Stashed as config._seiNextStepPlan for FIRST_CONTACT. null = none
+    // open; undefined (older main / CLI) = the greeting gets the soft hint.
+    nextStepPlan,         // string | null | undefined
+    // 261020: true = that plan is not tied to this session's game (a call
+    // plan, or one about no game): raised as talk, not as a task here.
+    nextStepPlanNotForGame, // boolean | undefined
     // 260909: web search settings bridged from UserConfig.web_search_* by
     // the supervisor: { provider, api_key } | undefined. Maps into config.web
     // below; absent (older main) -> keyless 'auto' chain.
@@ -604,6 +677,10 @@ async function bootstrapWithInit(initData) {
     return
   }
 
+  // 261011: per-action outcome telemetry (Minecraft only; see postActionStats).
+  if (game === 'minecraft') startActionStats(config)
+  startSessionDigest()
+
   // 260618: stash the initial companion roster on the (mutable) parsed config
   // so chat.js — which runs without an orchestrator handle — can read it to skip
   // interrupts aimed at a sibling. Re-applied to the brain after it starts, and
@@ -625,6 +702,13 @@ async function bootstrapWithInit(initData) {
   // orchestrator can append it to the cached system prefix. Best-effort.
   try {
     config._seiKnowledge = typeof knowledge === 'string' ? knowledge : ''
+  } catch {}
+
+  // 261014: the open plan for FIRST_CONTACT (see nextStepPlan above).
+  try {
+    config._seiNextStepPlan =
+      typeof nextStepPlan === 'string' && nextStepPlan.trim() ? nextStepPlan : nextStepPlan === null ? null : undefined
+    config._seiNextStepPlanNotForGame = nextStepPlanNotForGame === true
   } catch {}
 
   // 260801: the supervisor's watchdog deadline, read by connect.js to size its
@@ -794,7 +878,7 @@ async function emitVisionCapability() {
  *   lifecycle so main can tell a companion that quit() on its own from any
  *   other clean exit.
  */
-async function gracefulShutdown(reason = 'stop', { nextStepHook = false } = {}) {
+async function gracefulShutdown(reason = 'stop', { nextStepHook = false, nextStepLine = null, nextStepGame = null } = {}) {
   // Re-entry guard. Both the bot's own onTerminalError and the supervisor's
   // {type:'stop'} can drive shutdown concurrently (the daily-limit / depleted
   // backstop in botSupervisor.ts now actively drains the session on the same
@@ -819,7 +903,13 @@ async function gracefulShutdown(reason = 'stop', { nextStepHook = false } = {}) 
       ])
     }
   } catch {}
-  emitLifecycle({ type: 'summon-stopped', reason, ...(nextStepHook ? { nextStepHook: true } : {}) })
+  emitLifecycle({
+    type: 'summon-stopped',
+    reason,
+    ...(nextStepHook ? { nextStepHook: true } : {}),
+    ...(nextStepHook && typeof nextStepLine === 'string' && nextStepLine ? { nextStepLine } : {}),
+    ...(nextStepHook && typeof nextStepGame === 'string' ? { nextStepGame } : {}),
+  })
   // Give the lifecycle message a tick to flush before exiting
   setTimeout(() => process.exit(0), 100)
 }
@@ -870,6 +960,9 @@ if (process.parentPort) {
       }
       initPort = ports[0]
       initPort.start()
+      // 261017 (issue #46): ChatGPT-plan token requests go up this port;
+      // main answers with {type:'chatgpt-token'} (handled below).
+      setChatgptTokenTransport((msg) => { initPort?.postMessage(msg) })
       // 260926: boot-phase stamps go up as full snapshots (no stdout mirror:
       // main folds them into the summon diagnostics). The first post is the
       // init_received stamp in bootstrapWithInit, which carries the phases
@@ -951,6 +1044,19 @@ if (process.parentPort) {
             //       the data.type === 'jwt' branch so rotation actually
             //       reaches the live SDK.
             try { _running?.setAuthToken?.(data.jwt) } catch {}
+          } else if (data && data.type === 'chatgpt-token') {
+            // 261017 (issue #46): main's ChatGPT-plan session rotated the
+            // access token (or answered a request-chatgpt-token). A null
+            // token means signed out; waiting callers reject with
+            // CHATGPT_SIGNED_OUT.
+            try {
+              deliverChatgptToken({
+                token: typeof data.token === 'string' ? data.token : null,
+                expiresAt: Number.isFinite(data.expiresAt) ? data.expiresAt : null,
+                error: typeof data.error === 'string' ? data.error : undefined,
+                code: typeof data.code === 'string' ? data.code : undefined,
+              })
+            } catch {}
           } else if (data && data.type === 'backend-switch') {
             // WR-05 follow-up: the user flipped cloud ↔ local in Settings
             // while the bot is running. The supervisor ships the new routing

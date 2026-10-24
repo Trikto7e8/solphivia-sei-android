@@ -6,7 +6,7 @@
  * transcript formatting the fold and the offline eval share.
  */
 import { describe, it, expect } from 'vitest';
-import { buildFoldSystem, buildFoldTranscript, extractSummaryTag } from './foldPrompt';
+import { buildFoldCalendar, buildFoldSystem, buildFoldTranscript, buildFoldUserText, extractSummaryTag } from './foldPrompt';
 
 describe('extractSummaryTag', () => {
   it('strips a preamble outside the tags (the measured Sonnet failure)', () => {
@@ -52,13 +52,47 @@ describe('buildFoldSystem', () => {
 });
 
 describe('buildFoldTranscript', () => {
-  it('renders roles and stamps the way the fold always has', () => {
+  it('renders roles and weekday stamps', () => {
     const out = buildFoldTranscript([
-      { role: 'user', text: 'hi', ts: Date.UTC(2026, 6, 3, 10, 34) },
+      { role: 'user', text: 'hi', ts: new Date(2026, 6, 3, 10, 34).getTime() },
       { role: 'companion', text: 'hey' },
     ]);
     const lines = out.split('\n');
-    expect(lines[0]).toMatch(/^Player \(3 Jul \d{2}:\d{2}\): hi$/);
+    expect(lines[0]).toBe('Player (Fri 3 Jul 10:34): hi');
     expect(lines[1]).toBe('You: hey');
+  });
+
+  it("labels another companion's heard line with that companion's name (group calls)", () => {
+    const out = buildFoldTranscript([
+      { role: 'user', text: '(Marv, on the call): i hate spiders', ts: new Date(2026, 9, 16, 18, 20).getTime() },
+      { role: 'user', text: 'same honestly' },
+    ]);
+    expect(out.split('\n')).toEqual(['Marv (Fri 16 Oct 18:20): i hate spiders', 'Player: same honestly']);
+  });
+});
+
+describe('buildFoldCalendar / buildFoldUserText', () => {
+  it('lists the days from the batch through two weeks after it, with weekdays', () => {
+    const cal = buildFoldCalendar([
+      { role: 'user', text: 'a', ts: new Date(2026, 9, 24, 16, 45).getTime() },
+      { role: 'user', text: 'b', ts: new Date(2026, 9, 24, 17, 5).getTime() },
+    ]);
+    expect(cal.startsWith('Calendar for working out dates: Sat 24 Oct, Sun 25 Oct,')).toBe(true);
+    expect(cal).toContain('Thu 29 Oct');
+    expect(cal).toContain('Sat 31 Oct, Sun 1 Nov');
+    expect(cal.endsWith('Sat 7 Nov.')).toBe(true);
+  });
+
+  it('starts at most a week before the last message on a long batch', () => {
+    const cal = buildFoldCalendar([
+      { role: 'user', text: 'a', ts: new Date(2026, 8, 1, 9, 0).getTime() },
+      { role: 'user', text: 'b', ts: new Date(2026, 9, 24, 9, 0).getTime() },
+    ]);
+    expect(cal.startsWith('Calendar for working out dates: Sat 17 Oct,')).toBe(true);
+  });
+
+  it('is empty without stamps, and the user text then matches the old shape', () => {
+    expect(buildFoldCalendar([{ role: 'user', text: 'a' }])).toBe('');
+    expect(buildFoldUserText('', [{ role: 'user', text: 'a' }])).toBe('Existing summary:\n(none yet)\n\nNew messages:\nPlayer: a');
   });
 });

@@ -11,7 +11,8 @@
  *   - whats-new → post-update changelog with [Got it].
  *
  * The download itself is NOT here (260801): progress and the "ready, restart to
- * apply" prompt moved to UpdatePill, a corner card that doesn't block the app.
+ * apply" prompt moved out of the modal (260801), and since 261023 they live in
+ * the sidebar "Update Sei" button (UpdateRailButton), which never blocks.
  * `forced` is the one updater state that still takes over the window, because
  * main quits and installs a few seconds later either way.
  *
@@ -30,6 +31,7 @@ import React from 'react';
 import { useT } from '../lib/i18n';
 import { Button } from './Button';
 import { ModalShell, ModalFooter } from './ModalShell';
+import { stripDuplicateTitleHeading } from '../lib/changelog';
 import styles from './UpdatePopup.module.css';
 
 /** The discriminated state the popup renders. */
@@ -142,7 +144,15 @@ export function UpdatePopup({ state, onUpdateNow, onDismiss }: UpdatePopupProps)
 
     case 'whats-new':
       title = t('What’s new in {version}', { version: state.version });
-      body = <div className={styles.changelog}>{renderChangelog(state.changelog)}</div>;
+      // 261020: the feed's changelog usually opens with the same "What's new
+      // in X" line; don't show the title twice.
+      body = (
+        <div className={styles.changelog}>
+          {renderChangelog(
+            stripDuplicateTitleHeading(state.changelog, [title, `What’s new in ${state.version}`]),
+          )}
+        </div>
+      );
       footer = (
         <Button kind="primary" size="md" onClick={() => onDismiss?.()}>
           {t('Got it')}

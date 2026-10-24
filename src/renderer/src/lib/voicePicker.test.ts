@@ -2,7 +2,7 @@
  * Voice-picker pure logic (260720) — grouping, selection, legacy detection.
  */
 import { describe, it, expect } from 'vitest';
-import type { VoiceInfo } from '@shared/ipc';
+import type { OwnVoiceInfo, VoiceInfo } from '@shared/ipc';
 import {
   groupVoices,
   reduceSelection,
@@ -12,6 +12,15 @@ import {
   PITCH_DEFAULT,
   CALMNESS_DEFAULT,
   NO_VOICE_ID,
+  OWN_TAB_KEY,
+  ownVoicePickFor,
+  ownVoiceCategoryLabel,
+  ownVoiceDetail,
+  ownVoicesView,
+  poolUsesOwnKey,
+  elevenKeyHintShown,
+  defaultVoiceTab,
+  applyVoicePick,
 } from './voicePicker';
 
 function v(id: string, gender: string): VoiceInfo {
@@ -112,5 +121,92 @@ describe('normalizeVoiceParams', () => {
   it('passes through absent keys untouched', () => {
     expect(normalizeVoiceParams({})).toEqual({});
     expect(normalizeVoiceParams({ pitch: 0.9 })).toEqual({ pitch: 0.9 });
+  });
+});
+
+// 261019: the user's own ElevenLabs voices tab.
+function own(id: string, extra: Partial<OwnVoiceInfo> = {}): OwnVoiceInfo {
+  return { id, name: `Voice ${id}`, category: 'cloned', hasPreview: false, ...extra };
+}
+
+describe('own ElevenLabs voices', () => {
+  it('ownVoicePickFor marks only ids from the own list', () => {
+    const list = [own('Own1', { gender: 'male' }), own('Own2')];
+    expect(ownVoicePickFor('Own1', list)).toEqual({ name: 'Voice Own1', gender: 'male' });
+    expect(ownVoicePickFor('Own2', list)).toEqual({ name: 'Voice Own2' });
+    expect(ownVoicePickFor('pool1', list)).toBeNull();
+    expect(ownVoicePickFor(null, list)).toBeNull();
+    expect(ownVoicePickFor(NO_VOICE_ID, list)).toBeNull();
+  });
+
+  it('a pick from the own tab persists the same voiceId path a pool pick does', () => {
+    const id = 'aBcDeFgHiJkLmNoPqRsT';
+    const list = [own(id, { name: 'My Clone', gender: 'female' })];
+    const meta = applyVoicePick({ voicePitch: 1.2 }, id, ownVoicePickFor(id, list));
+    expect(meta).toEqual({ voicePitch: 1.2, voiceId: id, voiceOwn: { name: 'My Clone', gender: 'female' } });
+    // switching back to a Sei voice drops the marker
+    expect(applyVoicePick(meta, 'PoolVoice1234567890a', ownVoicePickFor('PoolVoice1234567890a', list))).toEqual({
+      voicePitch: 1.2,
+      voiceId: 'PoolVoice1234567890a',
+    });
+  });
+
+  it('category labels are fixed English strings, unknown → generic', () => {
+    expect(ownVoiceCategoryLabel('cloned')).toBe('Cloned voice');
+    expect(ownVoiceCategoryLabel('professional')).toBe('Professional clone');
+    expect(ownVoiceCategoryLabel('generated')).toBe('Designed voice');
+    expect(ownVoiceCategoryLabel('famous')).toBe('Library voice');
+    expect(ownVoiceCategoryLabel('something_new')).toBe('Your voice');
+  });
+
+  it('detail prefers the description, else the labels', () => {
+    expect(ownVoiceDetail(own('a', { description: 'raspy', gender: 'male' }))).toBe('raspy');
+    expect(ownVoiceDetail(own('a', { gender: 'male', age: 'old', accent: 'british' }))).toBe('male, old, british');
+    expect(ownVoiceDetail(own('a'))).toBe('');
+  });
+
+  it('view: tab on ok, quiet hint on a bad key or error, nothing otherwise', () => {
+    expect(ownVoicesView(null)).toBe('none');
+    expect(ownVoicesView({ status: 'unavailable', voices: [] })).toBe('none');
+    expect(ownVoicesView({ status: 'ok', voices: [] })).toBe('tab');
+    expect(ownVoicesView({ status: 'bad_key', voices: [] })).toBe('hint');
+    expect(ownVoicesView({ status: 'error', voices: [] })).toBe('hint');
+  });
+
+  it('the free-plan pool hint shows only while the key route is active', () => {
+    expect(poolUsesOwnKey(null, 'local')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'unavailable', voices: [] }, 'local')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, 'local')).toBe(true);
+    expect(poolUsesOwnKey({ status: 'bad_key', voices: [] }, 'local')).toBe(true);
+    // 261020 (T158): on Sei Cloud the pool stays on the proxy even with a key.
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, 'cloud-proxy')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'bad_key', voices: [] }, 'cloud-proxy')).toBe(false);
+    expect(poolUsesOwnKey({ status: 'ok', voices: [] }, null)).toBe(false);
+  });
+
+  it('the add-your-key pointer shows once the probe says no key, on both backends', () => {
+    expect(elevenKeyHintShown(false, false)).toBe(true);
+    expect(elevenKeyHintShown(true, false)).toBe(false);
+    expect(elevenKeyHintShown(null, false)).toBe(false); // still probing
+    expect(elevenKeyHintShown(false, true)).toBe(false); // local voice packs
+  });
+
+  it('defaultVoiceTab opens where the selection lives', () => {
+    const groups = groupVoices([v('f1', 'female'), v('m1', 'male')]);
+    const list = [own('Own1')];
+    expect(defaultVoiceTab('Own1', groups, list)).toBe(OWN_TAB_KEY);
+    expect(defaultVoiceTab('m1', groups, list)).toBe('male');
+    // Auto / unknown: the own tab when it has voices, else the first group
+    expect(defaultVoiceTab(null, groups, list)).toBe(OWN_TAB_KEY);
+    expect(defaultVoiceTab(null, groups, [])).toBe('female');
+    expect(defaultVoiceTab(null, groups, null)).toBe('female');
+    expect(defaultVoiceTab(null, [], [])).toBe(OWN_TAB_KEY);
+    expect(defaultVoiceTab(null, [], null)).toBeNull();
+  });
+
+  it('an own voice is not "unlisted" once the own list is merged in', () => {
+    const pool = [v('f1', 'female')];
+    expect(isUnlistedVoice('Own1', pool)).toBe(true);
+    expect(isUnlistedVoice('Own1', [...pool, own('Own1')])).toBe(false);
   });
 });

@@ -81,3 +81,40 @@ describe('createAnthropicProvider request shape', () => {
     expect(req).not.toHaveProperty('temperature');
   });
 });
+
+describe('createAnthropicProvider prompt-size guard (261013)', () => {
+  beforeEach(() => {
+    create.mockClear();
+  });
+  const turns = (n: number, words: number) => {
+    const out: Array<{ role: string; content: string }> = [];
+    for (let i = 0; i < n; i++) out.push({ role: i % 2 ? 'assistant' : 'user', content: `t${i} ` + 'abcd '.repeat(words) });
+    out.push({ role: 'user', content: 'latest' });
+    return out;
+  };
+
+  it('passes a request over the 100k tier through untouched', async () => {
+    sdkModel = 'claude-haiku-5-5';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const provider = await createAnthropicProvider('cloud' as never);
+    const messages = turns(10, 20_000);
+    await provider.call({ maxTokens: 200, messages } as never);
+    expect((create.mock.calls[0][0] as { messages: unknown }).messages).toBe(messages);
+    expect(warn).toHaveBeenCalledWith(expect.stringMatching(/sent untouched/));
+    warn.mockRestore();
+  });
+
+  it('trims only past the context safety net, oldest first', async () => {
+    sdkModel = 'claude-haiku-5-5';
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const provider = await createAnthropicProvider('cloud' as never);
+    const messages = turns(24, 20_000);
+    await provider.call({ maxTokens: 200, messages } as never);
+    const sent = (create.mock.calls[0][0] as { messages: Array<{ role: string; content: string }> }).messages;
+    expect(sent.length).toBeLessThan(messages.length);
+    expect(sent[0].role).toBe('user');
+    expect(sent[0].content.startsWith('[Earlier turns')).toBe(true);
+    expect(sent.at(-1)).toBe(messages.at(-1));
+    warn.mockRestore();
+  });
+});

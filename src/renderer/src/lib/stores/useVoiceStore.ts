@@ -47,8 +47,10 @@ import { useDataStore } from './useDataStore';
 // turn to is already running one with the screen attached. One-way — the
 // backseat store knows nothing about calls.
 import { useBackseatStore, backseatCapture } from './useBackseatStore';
+import { backseatReasonForCallEnd, type CallEndReason } from '@shared/callEndReasons';
 import { createStaleGate } from '../backseat/staleGate';
 import { voicePitchRate } from '@shared/voicePitch';
+import type { VoiceTtsNoticePush } from '@shared/ipc';
 import { createAudioQueue, type AudioQueue, type TtsStreamHandle } from '../voice/audioQueue';
 import { t, uiLanguage } from '../i18n';
 import { currentResetLine } from '../useResetLine';
@@ -72,6 +74,7 @@ import {
 import { prefetchVoiceModel } from '../voice/modelPrefetch';
 import { registerVoiceHooks } from '../voice/voiceBridge';
 import { decideReaction, isJunkTranscript, type Participant } from '../voice/pfcSteer';
+import { idleNudgeEligible, reactorPool } from '../voice/turnEligibility';
 import type { SpokenLineContext } from '../voice/voiceBridge';
 import {
   startRingtone,
@@ -83,6 +86,7 @@ import {
 } from '../voice/callTones';
 import { warm as warmPitchBus } from '../voice/pitchBus';
 import { isPermissionRefusal, micPreflight } from '../permissions/permissionFlow';
+import { callSetupFailureProps } from '../voice/callSetupFailure';
 
 /**
  * 260929: a call held up by microphone access. MicAccessCard (mounted in
@@ -177,10 +181,12 @@ interface VoiceState {
   startCall: (characterId: string) => Promise<void>;
   /** Add a companion to the live call (no-op if already on it). */
   addParticipant: (characterId: string) => void;
-  /** Drop one companion from the call (ends the whole call if it was the last). */
-  removeParticipant: (characterId: string) => void;
-  /** Hang up the whole call. */
-  endCall: () => void;
+  /** Drop one companion from the call (ends the whole call if it was the last).
+   *  `reason` (261023) is why, for that companion's voice_call_ended. */
+  removeParticipant: (characterId: string, reason?: CallEndReason) => void;
+  /** Hang up the whole call. `reason` (261023) is why, for voice_call_ended
+   *  and for the share the call takes with it (callEndReasons.ts). */
+  endCall: (reason?: CallEndReason) => void;
   /** Accept the local-backup offer: persists stt_local_fallback = true and
    * starts the model download now; the fallback applies from the NEXT call. */
   acceptSttFallback: () => Promise<void>;
@@ -586,6 +592,13 @@ function friendlyError(err: unknown): string {
   // empty — the `name` is the reliable signal (NotAllowedError / NotFoundError).
   const name = (err as { name?: string })?.name ?? '';
   if (/VOICE_NO_SESSION/.test(msg)) return t('Sign in to use voice calls.');
+  // 261019: the user's OWN ElevenLabs account answered (direct key route).
+  // Checked before the Sei-credit copy: a BYOK user has no Sei credits.
+  if (/VOICE_NEEDS_PAID_PLAN/.test(msg)) {
+    return t('Free ElevenLabs plans cannot play this voice through your key. Pick one of your own voices.');
+  }
+  if (/VOICE_ELEVEN_QUOTA/.test(msg)) return t('Your ElevenLabs account is out of credits.');
+  if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) return t('ElevenLabs rejected your key. Check it in Settings.');
   if (/VOICE_NO_CREDITS/.test(msg)) {
     // 260926: say when free play comes back, not just that it is gone.
     const base = t("You've used this week's credits. Upgrade or top up to keep calling.");
@@ -604,10 +617,24 @@ function friendlyError(err: unknown): string {
   if (name === 'NotFoundError' || /device not found/i.test(msg)) {
     return t('No microphone was found. Connect one and try again.');
   }
+  // 261023: the mic exists but would not open. On Windows this is most often
+  // another app holding it (exclusive mode, a game or chat app's voice), and
+  // "try again in a moment" sent people round the same failure several times.
+  if (name === 'NotReadableError' || name === 'AbortError' || name === 'OverconstrainedError') {
+    return t('Your microphone could not be opened. Close other apps that use it, or pick a different microphone in your sound settings, then try again.');
+  }
   if (name === 'NotAllowedError' || /permission/i.test(msg)) {
     // 260929: the fix lives on MicAccessCard (why, Open Settings, and the call
     // starts by itself once access is on), so this line only names the state.
     return t('Microphone access is off for Sei.');
+  }
+  // 261023: the local speech model's own failures (dictation.ts names them).
+  // Before this the download watchdog's message was built and then thrown away.
+  if (name === 'TimeoutError') {
+    return t('Voice recognition took too long to download. Check your connection and try again.');
+  }
+  if (name === 'ModelLoadError') {
+    return t('Voice recognition could not start. Check your connection and try again.');
   }
   return t('Voice call failed to start. Try again in a moment.');
 }
@@ -638,6 +665,30 @@ function substitutePackNotice(push: { missingPackId: string; spokenPackId: strin
   return isZhPack(push.missingPackId)
     ? t('[spoken with the English voice, download the Chinese voice pack in Settings for a better fit]')
     : t('[spoken with the Chinese voice, download the English voice pack in Settings for a better fit]');
+}
+
+/** Notice copy when a cloud line for the user's OWN ElevenLabs voice was
+ * spoken with the character's stand-in Sei voice instead (261020, T158). */
+export function ownVoiceStandInNotice(
+  reason: 'no-key' | 'key-invalid' | 'voice-missing' | 'quota' | 'plan',
+): string {
+  switch (reason) {
+    case 'no-key':
+      return t('[speaking with a Sei voice, add your ElevenLabs key in Settings to hear their own voice]');
+    case 'key-invalid':
+      return t('[speaking with a Sei voice, ElevenLabs rejected your key]');
+    case 'voice-missing':
+      return t('[speaking with a Sei voice, their voice is no longer in your ElevenLabs account]');
+    case 'quota':
+      return t('[speaking with a Sei voice, your ElevenLabs account is out of credits]');
+    case 'plan':
+      return t('[speaking with a Sei voice, your ElevenLabs plan cannot use their voice]');
+  }
+}
+
+/** The call notice for one voice:tts-notice push. */
+function ttsNoticeText(push: VoiceTtsNoticePush): string {
+  return push.kind === 'own-voice-stand-in' ? ownVoiceStandInNotice(push.reason) : substitutePackNotice(push);
 }
 
 export const useVoiceStore = create<VoiceState>((set, get) => {
@@ -683,7 +734,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       remoteEndAt = null;
       remoteDrainedAt = null;
       const characterId = s.callCharacterId;
-      get().endCall();
+      get().endCall('companion_hangup');
       const ui = useUiStore.getState();
       if (ui.view.kind === 'voice-call' && ui.view.characterId === characterId) {
         ui.navigate({ kind: 'chat', characterId });
@@ -699,7 +750,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     if (s.participants.length > 1) {
       // Let the goodbye clip (already queued) play, then remove just this one.
       remoteEndTimers.push(
-        window.setTimeout(() => get().removeParticipant(characterId), REMOTE_END_GRACE_MS + REMOTE_END_TAIL_MS),
+        window.setTimeout(() => get().removeParticipant(characterId, 'companion_hangup'), REMOTE_END_GRACE_MS + REMOTE_END_TAIL_MS),
       );
       return;
     }
@@ -746,6 +797,13 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         // BYOK key + a curated-pool voice: every clip fails until they add the
         // voice to their own ElevenLabs library or pick another one (260726).
         set({ callNotice: t('[voice unavailable, this voice is not in your ElevenLabs library]') });
+      } else if (/VOICE_NEEDS_PAID_PLAN/.test(msg)) {
+        // 261019: free ElevenLabs plan + a Voice Library (pool) voice.
+        set({ callNotice: t('[voice unavailable, free ElevenLabs plans cannot use this voice]') });
+      } else if (/VOICE_ELEVEN_QUOTA/.test(msg)) {
+        set({ callNotice: t('[voice paused, your ElevenLabs account is out of credits]') });
+      } else if (/VOICE_ELEVEN_KEY_INVALID/.test(msg)) {
+        set({ callNotice: t('[voice unavailable, ElevenLabs rejected your key]') });
       } else if (/VOICE_PACK_MISSING/.test(msg)) {
         // Local TTS (260816): NO installed voice pack can speak this line
         // (main already falls back to any installed pack, 260908). The
@@ -973,14 +1031,15 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     // state. All reactors in-game → the chain rests and the game brains carry
     // the conversation.
     const chainSummons = useDataStore.getState().summons;
-    const reactorPool = parts.filter((id) => {
-      if (id === speakerId) return true; // decideReaction excludes the speaker itself
-      const k = chainSummons[id]?.kind;
-      return k !== 'online' && k !== 'connecting';
-    });
+    // 261023: the companion watching the screen is excluded the same way, for
+    // the same reason: her backseat loop is her brain on this call, and a
+    // screenless reaction turn here would double-drive her. She still hears
+    // the room (the mirror below records peers' lines into her transcript),
+    // and her next look answers with the screen in view.
+    const pool = reactorPool(parts, speakerId, chainSummons, useBackseatStore.getState().sharingFor);
     const decision = decideReaction({
       speakerId,
-      participants: asParticipants(reactorPool),
+      participants: asParticipants(pool),
       depth,
       lastReactorId,
       // The line just spoken — if it names a peer, that peer is forced to answer.
@@ -1207,10 +1266,12 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
     // the call through say()); nudging them here too would double-drive. Pick
     // only from participants NOT in a game session; all in-game → skip.
     const summons = useDataStore.getState().summons;
-    const eligible = s.participants.filter((id) => {
-      const k = summons[id]?.kind;
-      return k !== 'online' && k !== 'connecting';
-    });
+    // 261023: nor the companion watching the screen. Backseat is her loop:
+    // its idle looks already break the quiet, with the screen in view. A
+    // nudge here ran a second, screenless turn alongside it, so she talked
+    // over her own commentary about something unrelated to the game, and the
+    // nudge's end_call could hang up the call in the middle of the share.
+    const eligible = idleNudgeEligible(s.participants, summons, useBackseatStore.getState().sharingFor);
     idleNudgeInFlight = true;
     // Read BEFORE the turn runs and spend it here: main gets a different note
     // for a follow-up, and only one follow-up goes out per question.
@@ -1291,7 +1352,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         set({ inactivityPrompt: false, inactivitySecondsLeft: 0 });
         // The normal hang-up path, so every teardown (dictation, queue,
         // voiceCallSetActive with connectedMs, UI state) runs as usual.
-        get().endCall();
+        get().endCall('inactivity');
         return; // endCall bumped the session; this chain is dead
       }
       if (decision === 'prompt') {
@@ -1494,13 +1555,14 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
   }
 
   // Substitute-pack notice (260908): the line played, but with a local voice
-  // pack that does not match the conversation language. A system notice, not
-  // companion speech — see callNotice.
+  // pack that does not match the conversation language. 261020: or with the
+  // stand-in Sei voice for an own ElevenLabs voice the key cannot speak. A
+  // system notice, not companion speech — see callNotice.
   try {
     offTtsNotice =
       sei.onVoiceTtsNotice?.((push) => {
         if (!get().participants.length) return; // no call surface to show it on
-        set({ callNotice: substitutePackNotice(push) });
+        set({ callNotice: ttsNoticeText(push) });
       }) ?? null;
   } catch {
     /* preload without onVoiceTtsNotice — the line still plays, just unannotated */
@@ -1522,7 +1584,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       sei.onCreditsHardStop?.(() => {
         const st = useVoiceStore.getState();
         if (st.participants.length > 0 && (st.status === 'live' || st.status === 'connecting')) {
-          st.endCall();
+          st.endCall('credits_depleted');
         }
       }) ?? null;
   } catch {
@@ -1903,10 +1965,17 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
         // capture init, dictation boot). A superseded/ended session returned
         // above, so this is a genuine failure, not a hang-up. Shape only: a
         // fixed class token, never the error text the user sees.
+        // 261023: plus WHERE it failed — `stage` and a fixed-vocab
+        // `error_name` (callSetupFailure.ts), and which STT path the call was
+        // booting, so the Windows failure rate can be split into a refused
+        // mic, a busy or missing mic, and a speech model that never loaded.
         sei.track('surface_error', {
           surface: 'voice',
           error_class: 'call_setup_failed',
           character_id: characterId,
+          ...callSetupFailureProps(err),
+          stt_local: policy.localModel,
+          stt_engine: policy.localEngine,
         });
         // A refused mic gets the card, not just a line of text (260929). If
         // macOS already reports access as granted, the grant has not reached
@@ -2021,12 +2090,23 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       }
     },
 
-    removeParticipant: (characterId) => {
+    removeParticipant: (characterId, reason = 'companion_hangup') => {
       const s = get();
       if (!s.participants.includes(characterId)) return;
       const next = s.participants.filter((id) => id !== characterId);
+      if (next.length === 0) {
+        // The last one leaving ends the call: one teardown, one reason.
+        get().endCall(reason);
+        return;
+      }
       if (useBackseatStore.getState().watch?.characterId === characterId) {
         useBackseatStore.getState().stopWatch();
+      }
+      // 261023: a share belongs to the companion it shows the screen to. One
+      // who left the call must not keep watching (and commenting into a chat
+      // thread nobody is looking at) for the rest of the call.
+      if (useBackseatStore.getState().sharingFor === characterId) {
+        void useBackseatStore.getState().stopSharing('companion_left');
       }
       // A membership change is a barge point: cancel any in-flight companion chain
       // so the departing companion's queued reaction can't still fire (the
@@ -2047,12 +2127,9 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
           characterId,
           active: false,
           ...(since !== undefined ? { connectedMs: Date.now() - since } : {}),
+          reason,
         })
         .catch(() => {});
-      if (next.length === 0) {
-        get().endCall();
-        return;
-      }
       set({
         participants: next,
         callCharacterId: next[0],
@@ -2062,12 +2139,20 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
       });
     },
 
-    endCall: () => {
+    endCall: (reason = 'user_hangup') => {
       const { participants } = get();
       session += 1;
       // A share waiting for its game's window (261004) belongs to this call:
       // the window opening after the call is over must not start one.
       useBackseatStore.getState().stopWatch();
+      // 261023: and so does a running share. Only the hang-up button used to
+      // stop it, so a call that ended any other way (the companion hanging
+      // up, the inactivity watchdog, the usage limit) left capture running
+      // and the companion commenting into a call that was gone. Stopped
+      // first, so capture ends before the call does (as the button did).
+      // Sharing requires a call, so any share goes (as the button did).
+      const bs = useBackseatStore.getState();
+      if (bs.sharingFor) void bs.stopSharing(backseatReasonForCallEnd(reason));
       directorSeq++; // cancel any running companion chain (bump + clear travel together)
       clearTurnCapture();
       speakerOriginSeq.clear();
@@ -2094,6 +2179,7 @@ export const useVoiceStore = create<VoiceState>((set, get) => {
             characterId: id,
             active: false,
             ...(since !== undefined ? { connectedMs: now - since } : {}),
+            reason,
           })
           .catch(() => {});
       }
@@ -2185,7 +2271,7 @@ export function voiceTtsDrained(): boolean {
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
     try {
-      useVoiceStore.getState().endCall();
+      useVoiceStore.getState().endCall('dev_reload');
     } catch {
       /* dispose must never block the reload */
     }

@@ -313,7 +313,12 @@ that ran at the wrong time. The pieces, all in `src/bot/brain/` and pinned in
   an idle turn is nudged to speak. The window applies only while her line is
   the last thing said, and opens when the PACED line is readable
   (`_lastChatSendDeadline`), not when it was decided. Replayed over the session:
-  35 of its 40 idle turns would have been deferred.
+  35 of its 40 idle turns would have been deferred. Since 260924 it is
+  always on only in Stardew; since 261011 it also applies in every game after
+  a loop that only TALKED (`_lastLoopTalkOnly`), while a loop that did world
+  work keeps the 5 s agentic cadence for resuming the goal. In the Minecraft
+  quality eval most repetitive lines were idle turns 5-7 s after a line of
+  hers that took no action.
 - **Her lines are recorded when DECIDED, not when the paced send fires**
   (`emitChatMessages`). With realistic typing a line reaches chat 1-6 s after
   the turn that wrote it, and a turn composed inside that gap did not know the
@@ -336,6 +341,10 @@ that ran at the wrong time. The pieces, all in `src/bot/brain/` and pinned in
   as unanswered (`_unansweredRetried`, through the action-tick channel or the
   loop's next call, whichever comes first). The scratchpad is NOT salvaged on
   these turns: beside a world action it is usually reasoning about the chore.
+  261011: a TEXT-ONLY answer (no tool at all) gets the same single retry
+  (`unansweredRetryFor`): re-called at once with the nudge when nothing is
+  running, through the action tick when something is. `end_loop` alone is
+  her explicit choice of silence and is never retried.
 - **What a web lookup FOUND outlives its loop** (`lookups.js`, seed block
   `lookups`). She searched in three separate turns inside 50 s (four billed
   searches); no turn could see what the previous one found, so each re-derived
@@ -390,6 +399,13 @@ log's timing, not a new session.
   it's in. These headers are deliberately NOT entry lines (`- [`), and both the
   seed-truncation (`readMemoryForSeed`) and the **segment-aware compactor** are
   written to preserve them — touch those two if you change the header format.
+  261020: headers name their game, and app-side writers file under
+  `APP_SECTION_HEADER` (see "Plans and goals belong to a game" below), so a
+  player who alternates a game and texting gets a new header pair every
+  session. The compactor therefore merges every occurrence of a section (a
+  world by number) into one segment at its last place (`coalesceSegments`),
+  and the seed reader pays for headers from its budget and keeps only the
+  headers of kept entries plus the last one.
 > The old CLAUDE.md framed this as "the LLM decides when to compact at semantic
 > boundaries" — misleading. The *write* is LLM-driven; the *compaction* is
 > mechanical (byte threshold).
@@ -638,8 +654,9 @@ built for the loop itself.
   the pre-search line was pushed twice (the client-tool emit used the full
   text instead of the already-split remainder), and `textOf` joins text
   blocks with a space, not `''`.
-- **Settings:** the "Search" group in Settings (bottom, above About) is the
-  only UI: provider `Seg` (Auto (free) / Brave / Tavily / Serper) plus a
+- **Settings:** the "Web search" tab of the "Games & search" group
+  (`SearchSettingsSection`, an `extraTabs` entry of `GamesSettingsGroup`;
+  its own group above About until 261023) is the only UI: provider `Seg` (Auto (free) / Brave / Tavily / Serper) plus a
   masked key editor shown only for a keyed provider. Persisted as
   `UserConfig.web_search_provider` / `web_search_api_key` (both `.optional()`
   with NO default so the renderer's whole-config literals keep typechecking;
@@ -675,9 +692,24 @@ this, onboarding landed on Home: 24% of new installs never used any surface.
   active or a game is open). The full tour opens the chat at its say-hi step,
   so the greeting can land mid-tour; the card waits for the tour to end.
 - **Buttons reuse existing paths.** Chess and Minecraft go through
-  `requestGameLaunch` + `openGame` (the Play together tiles), the call through
-  `startOrOpenCall`. Minecraft is offered only when a LAN world is open (then
-  it leads) or an install was detected; otherwise chess leads, with no install.
+  `requestGameLaunch` + `openGame` (the Play together tiles), Backseat through
+  `requestGameLaunch` + the top bar's cold `share-screen` picker (confirming a
+  source starts the call too), the call through `startOrOpenCall`.
+- **What leads (261023).** Backseat leads ("Show me your game"), then
+  Minecraft when offered, then chess, then the call. Minecraft leads instead
+  when a LAN world is open, and is offered at all only then or when an install
+  was detected. Backseat is left off (and chess leads) only when the vision
+  probe says the model cannot see images (`visionBlocked`, same rule as the
+  top bar button). Why: on fresh 0.6.8 installs (10-10..10-22, n=307 real) the
+  card led with chess for 255 of 258 people and chess was tapped 13 times;
+  Backseat was the first activity for 80 people (Minecraft 27, chess 15)
+  without being on the card, and /ai-backseat-gamer is the top download page
+  after the home page. 20 people
+  finished onboarding and never used anything; 14 of them saw the card and
+  left without tapping it (~/suisei/reports/onboarding-funnel-2026-10-23.md).
+  `thoughtFirstMoment('backseat')` makes the greeting invite a screen share.
+  Primary styling is borderless: an art tile lifts on `--shadow-pop`, an icon
+  tile takes the accent fill.
   "Not now", any tile, or the player typing a message instead (`typed`)
   retires the card for the session. Nothing persists; an account scope change
   resets the store. LAN state is read from main at planning time (the state
@@ -691,12 +723,13 @@ this, onboarding landed on Home: 24% of new installs never used any surface.
   player's first message. The one-time games tip is held back while the
   moment is pending or showing (`shouldShowGamesTip.firstMomentLive`).
 - **Analytics (shape only, renderer `sei.track`):** `first_moment_shown
-  {primary, minecraft_offered, companion: sui|generated}`,
-  `first_moment_action {action: chess|minecraft|call|dismiss|typed, primary,
-  ms_since_shown}`, `first_moment_fallback {reason}`. Not session events, so
+  {primary, minecraft_offered, backseat_offered, companion: sui|generated}`,
+  `first_moment_action {action: backseat|chess|minecraft|call|dismiss|typed,
+  primary, ms_since_shown}`, `first_moment_fallback {reason}`. Not session events, so
   nothing to add to `SESSION_EVENTS`.
-- **Verify in a tab:** `?dashshot=chatfirst` (chess + Minecraft + call),
-  `&nomc=1` (chess + call), `&lan=1` (Minecraft leads). The harness greeting is
+- **Verify in a tab:** `?dashshot=chatfirst` (Backseat + Minecraft + chess +
+  call), `&nomc=1` (no Minecraft), `&lan=1` (Minecraft leads), `&novision=1`
+  (text-only model: chess leads, no Backseat). The harness greeting is
   a stub; the live greeting's wording is the model's.
 
 ## Chess minigame (260710)
@@ -1935,6 +1968,50 @@ The design and its measurements are committed at
     in 14. A cut line ends at its last finished sentence (`endAtLastSentence`,
     positional, not content-based). User turns stay at 400.
 
+- **Sessions hold, and every end says why (261023, branch fix/session-hold).**
+  From 30 days of PostHog: 746 of 794 sessions ended with no reason, 221
+  restarted within 30 s of the previous end, 86 never said a line.
+  - **Capture recovery.** A capture track that ends no longer ends the
+    session. `useBackseatStore.onCaptureEnded` retries the source list
+    (`REACQUIRE_TRIES` 4, about 5 s) and reopens the same window by id, or by
+    the same name and kind (`pickReacquireSource`, pure + tested), inside the
+    SAME session with no opening look (`backseat_capture_recovered {match,
+    gap_ms}`). On macOS a same-id end with the window still listed is the
+    system "Stop sharing" control and ends the share
+    (`capture_stopped_by_os`). Unverified on a Mac or Windows machine.
+  - **Resume note.** A share that starts under `RESUME_WINDOW_MS` (2 min)
+    after one where she spoke (`resumedAfterMs`) gets the resume start note
+    (`tickNote` `resumedAfterS`): no second hello, one thought about the
+    screen.
+  - **Opening look.** 20 s budget with no SDK retry (`START_LOOK_TIMEOUT_MS`;
+    the default 30 s retried once meant up to 60 s of silence), one renderer
+    retry on a failed or empty look (`shouldRetryOpening`), never
+    stale-gated, own cap `BACKSEAT_START_MAX_TOKENS` 80 (45 cut 31 of 100
+    opening lines). A line cut inside its text by any cap ends at its last
+    finished sentence and is NOT spoken when it has none
+    (`endAtLastSentence` returns ''); the replays had spoken 46 half
+    sentences in 909 looks.
+  - **One loop per sharer.** Every call end stops the share with its reason,
+    a companion leaving a group call stops hers, and the idle starter and
+    group reactions skip the sharer (`voice/turnEligibility.ts`; main
+    backstops the idle turn in `sendVoiceIdleTurnImpl`).
+  - **End reasons** (`src/shared/callEndReasons.ts`, pinned in its test):
+    `voice_call_ended.reason` (renderer: user_hangup, companion_hangup,
+    inactivity, credits_depleted, scope_reset, dev_reload; main closes and
+    reports calls itself with app_quit, account_switch, window_closed,
+    renderer_gone, renderer_reload) and `backseat_ended.reason` (user_stop,
+    user_hangup, game_switch, game_launch, capture_lost,
+    capture_stopped_by_os, `capture_failed:<class>`, scope_changed,
+    watch_stopped, companion_left, `call_ended:<call reason>`, replaced, plus
+    main's app_quit, account_switch, window/renderer reasons, factory_reset;
+    unknown = `unspecified`). `backseat_ended` adds `first_line_ms`,
+    `failed_turns`, `last_error_class`; `backseat_started` adds `trigger`,
+    `replaced_live`, `since_prev_end_ms`, `prev_end_reason`. Only user_stop
+    and user_hangup run the player-end next-step check. A new end path must
+    pass a reason and add it to the list: main records an unknown backseat
+    reason as `unspecified`, and the voice.callState schema rejects an
+    unknown call reason.
+
 **Extracted:** the screen-watching half is mirrored as a public standalone repo
 at `sei-studio/backseat` (AGPL-3.0) with a plain-language architecture README.
 Changes here should be mirrored there when the design moves.
@@ -2013,8 +2090,9 @@ Both tiles are `available: true` in `src/shared/games.ts` (flipped 260908 so
 the user can run the live checklist from the app itself); the live checklist
 (plan section 5, M3, per game) is still owed, and neither game self-launches
 (`selfLaunch` off: each needs a player-run install pass first). Settings
-hosts every game under ONE "Games" group (`GamesSettingsGroup`: left column
-picks the game, right column shows that game's registered section).
+hosts every game under ONE "Games & search" group (`GamesSettingsGroup`: left
+column picks the game, right column shows that game's registered section; a
+rule then the non-game `extraTabs`, today only "Web search").
 
 - **Neither game has a mineflayer.** DST has no headless client and Steam
   allows one instance per account; a Stardew split-screen farmhand is
@@ -2876,7 +2954,173 @@ CONTACT, voice-call greeting note) is told it may bring it up
 `ended_by_companion`. The goodbye and the end event come from different
 processes, so `src/main/sessionGoodbye.ts` holds a short-lived note between
 them. A player Stop, player hang-up or world close has no companion goodbye
-and reports `false`.
+and reports `false`; a hook set by the goodbye adds `next_step_source:
+'companion'`.
+
+**Player-ended sessions get the same hook (261011).** Most sessions end with
+the player (Stop, closing the world, hanging up), so main runs ONE small
+background call after teardown (`src/main/playerEndNextStep.ts`, system text
+promptLibrary `PLAYER_END_NEXT_STEP_SYSTEM`) on the session's own provider:
+max 150 output tokens, input = the last 16 conversation lines, the game's
+goals (`HEARTBEAT[.game].md`) and the MEMORY.md tail; it answers a few-word
+plan or `none`, saved with the same `Plan for next time:` line. Covered:
+every bot game (closePlaySession on `user_stop` / `world_closed` /
+`disconnected`; the bot posts a `{type:'session-digest'}` port message,
+`src/bot/brain/sessionDigest.js`, fed by convoMemory's `onLine` tap), an
+out-of-game call the player hung up (voice rows of the chat transcript), and
+a backseat the player ended (`endBackseat(..., { playerEnded: true })` from
+the IPC End handler only). Rules: skipped under 2 min or with fewer than two
+player lines and no goal, when offline (remote models), or when
+`cloudOverLimit()` (never raises the wall); time-boxed at 15 s
+(`providerTimeoutMs` floor for local models); single-flight per character
+with a 60 s dedupe; a new session aborts a check running on Ollama; runs as a
+scoped turn so an account switch drops the write. Never awaited by teardown.
+Analytics are shape only: `next_step_checked {source:'player_end', surface,
+game?, saved, outcome}` and `next_step_saved {source:'player_end', surface,
+game?}` as follow-ups (the `_ended` event has already gone out). Live check:
+`npx tsx scripts/player-end-next-step-probe.ts --reps 3`.
+
+**The Home "up next" strip reads those plans back (261013, T119).** One
+strip above the party wall: the first Home companion (wall order) with an
+unconsumed `Plan for next time:` under 7 days old, else the first with an
+active goal (`HEARTBEAT[.game].md`, also under 7 days), with one button that
+reuses the tile launch paths (bot game: gate + `openGame`; backseat game: its
+modal; call: `startOrOpenCall`; unknown: the games picker). No plan and no
+goal renders nothing. Companions in a game or call are skipped; the x hides a
+card for the app session. Rules: `src/main/homeNextStep.ts` (pure +
+tested). MEMORY.md does not say where a plan came from and is model-facing,
+so main keeps a sidecar `NEXT_STEP.json` in the memory dir: tags (plan text
+key -> surface/game, written right after a goodbye plan or a player-end save)
+and a `consumedAt` watermark set when a bot session goes online or a call
+greeting runs (both greetings are told about the plan). Only the NEWEST plan
+counts: a consumed or expired newest plan never falls back to an older one.
+IPC `home:next-steps` + push `home:next-step-changed`; renderer
+`lib/homeNextStep.ts`, `useHomeNextStepStore` (cleared on account switch),
+`HomeNextStepCard`. Events (shape only): `home_next_step_shown` (once per
+card per app session) and `home_next_step_clicked`, both `{character_id,
+source: plan|goal, age_hours, surface: game|call|backseat|unknown, game?}`.
+Verify with `?dashshot=home&step=plan|call|untagged|goal|long|none`.
+
+**Strip text addressed to the player, and greetings that raise the plan
+(261014).** The saved plan is the companion's private note ("ask Alex what
+the vet says about Pepper's leg on Thursday"); shown verbatim on the strip it
+talked about the player in the third person and kept stale days
+("tomorrow"). So every plan writer also produces a short line written TO the
+player ("Tell Roger what the vet said about Pepper"): the player-end check
+answers two labeled lines, `note:` and `player:` (`PLAYER_END_NEXT_STEP_SYSTEM`,
+parsed by `parsePlayerEndReply`; an unlabeled reply still reads as the note
+alone), and every goodbye tool has an optional `next_time_for_player` field
+(`NEXT_TIME_FOR_PLAYER_FIELD`). The line never goes into MEMORY.md (the model
+would read it as a second plan): it rides to main (bot: `nextStepLine` on
+`summon-stopped` / `call-end`; chat: `honorNextStep`'s result) through the
+goodbye note in `sessionGoodbye.ts` (never analytics) and is stored as `line`
+on the plan's tag in `NEXT_STEP.json`. `nextStep.js normalizePlayerLine`
+cleans it (drops tomorrow/tonight anywhere and next time/later/today at the
+edges, cuts past 60 chars at a clause break, hard cap 90 with an ellipsis;
+idempotent, since main runs it again, and a possessive like "tonight's
+stream" is left alone). Before storing, `tagLatestPlan` checks it with
+`acceptPlayerLine` / `playerLineProblem` against the companion and player
+names (`playerLineNames.ts`): a line that opens like a note to self ("ask
+how...", "remember to...", "find out..." not followed by the companion's
+name), names the player in the third person, or uses I/me/we is dropped.
+The card shows the tag's line, else the note as before (old plans, a goodbye
+that left the field out, a dropped line). The player-end prompt names the companion with
+`nameInSentence` (`src/shared/homeNextStep.ts`), which the card also uses for
+"Up next with Red" / "Call Red": an all-lowercase name gets its first letter
+raised in those sentences only (the party tile caption keeps it as typed).
+Greetings: main reads the OPEN plan (`readPendingPlan`: newest, under 7 days,
+unconsumed) before marking it used and hands it over, as init `nextStepPlan`
+-> `config._seiNextStepPlan` -> `FIRST_CONTACT({ plan })` for a game, and as
+`sendVoiceGreetingTurn(id, peers, { plan })` -> `callGreetingNote` for a
+call. With a plan, `nextTimeGreeting(plan)` quotes it and asks for it to be
+the main thing the greeting is about (the "only a hint" escape is left out);
+`null` means none open and drops the hint entirely, so an old raised plan
+still in MEMORY.md is not raised again; `undefined` (CLI, or the supervisor's 1s
+plan read timing out) keeps the old soft hint. Two wording traps found live: the cue must not say "the last thing
+said" (the call primer's `(silence)` rule keys on it), and must not call the
+plan a "note" (collides with the call's "Do not mention this note"); both
+made calls answer with `(silence)`. The call greeting now also says it is
+never `(silence)`. Probe: `npx tsx scripts/next-step-examples.ts` (10 scripted
+sessions, plan reps + greetings, `--greet-only <results.json> --greet-reps 4`)
+and `scripts/next-step-examples-strips.ts` (renders the strips via
+`?dashshot=home&name=&text=&surface=`). 261014 run: greetings raised the plan
+36 of 36 (was 26 of 36; Marv 0 of 4 and Roger 1 of 4 before).
+
+**Plans and goals belong to a game (261020).** Live on v0.6.9-beta.3: a
+Minecraft build (a copper bulb lighthouse, discussed in a text chat) showed on
+Home as "Get copper for ouen's copper bulb lighthouse" with Play Stardew
+Valley. Chat memories had been filed under the last world's header (a Stardew
+farm), nothing in a game's seed said memories span games, so the Stardew
+session greeted with the plan, setGoal'd it into `HEARTBEAT.stardew.md`, and
+the player-end check tagged its plan with the session's game. Now:
+- MEMORY.md sections name their game (`## World 2 — Sui Farm (Stardew
+  Valley)`, `noteWorld(..., game)`), and app-side writers (chat, voice,
+  chess, Draw!, backseat, an out-of-game player-end plan) pass
+  `appendMemory(..., { section: 'app' })`, which opens
+  `APP_SECTION_HEADER` when the last section is a world. Seed truncation, the
+  compactor and the dedupe guard split on any `## ` header.
+- Plan lines carry their game: `Plan for next time in Minecraft: ...`
+  (`nextStepMemoryLine(step, gameName)`, read back by `parsePlanLine`). The
+  player-end check answers a third line, `game:` (a game or `none`), decided
+  from the step, not the session (`resolvePlanPlace`); its memories are
+  grouped under their section headers (`memoryEntries`), which is what lets
+  it tell Minecraft copper from Stardew copper (live probe: 0 of 4 right
+  without the headers, every labeled answer right with them).
+- `readPendingPlan` / `consumeNextStep` take `{ game }`: a game session
+  neither greets with nor consumes a plan for another game.
+- Game seeds say memories span games and another game's plans stay there
+  (`memoryGameScope`, `chatContinuityGameScope`, heartbeat header names the
+  game); setGoal's description says a goal is for the current game and to
+  start with a headline that leaves the player's name out. Prompt only, no
+  matcher. Unverified live in Stardew. Old data is not migrated: an existing
+  wrong goal in `HEARTBEAT.stardew.md` still shows until cleared.
+- Goodbye plans name their game too: quit_game, end_call (bot) and the chat
+  end_call take `next_time_game` (`NEXT_TIME_GAME_FIELD`, static text),
+  parsed by `parsePlanGameField` (a whole id, name, leading part of a name
+  or short name like MC/DST; a short answer starting with none is `none`;
+  "craft" or "Minecraft Dungeons" is no game). Main tags the ledger with
+  `goodbyePlanPlace`: a named game wins; `none` drops the game (Home shows
+  the picker); a missing field keeps the in-game session's game and leaves a
+  call plan unscoped. The memory line's label follows the same rule (bot
+  end_call `saveNextStep(..., { call: true })`, chat quit_game `liveGame`
+  from main's `sessionGame`). A game session
+  that loads an unscoped or other-surface plan (`readPendingPlanFor`,
+  `notForGame`) greets with it as something to talk about, not a task to
+  start (`nextTimeGreeting(plan, { notForGame })`). The player-end parser only
+  splits a run-on reply at a later label in order (`note`, `player`, `game`),
+  and at `game:` only when the rest is an exact game or `none`, so a step
+  like "play the board game: Catan" stays whole. Live Haiku probe of the
+  field (forced tool, 16 runs: MC plan quit from Stardew, Stardew plan, MC
+  plan on a call, non-game call plan): 16 of 16 right.
+
+**Sessions an app quit ended get the check on the next launch (261013,
+T120).** Quit (window close on Windows, Cmd-Q, app quit with a bot or call
+live) has no time for an LLM call, so it never ran the player-end check
+(live 0.6.8: 3 of 73 session ends had a hook). `src/main/quitNextStep.ts`
+splits it across the quit. In before-quit, `closePlaySession` with reason
+`app_quit` (skipped when a goodbye already ended it) and `persistCallsForQuit`
+(out-of-game calls that connected, `callState.liveCallsNow`) write
+`PENDING_NEXT_STEP.json` to the character's memory dir: synchronous
+mkdir + write + rename of a few KB, try/catch, no network or await, so it
+cannot delay or break quit. A game keeps its session digest (refreshed by
+the final digest the bot posts while `supervisor.shutdown()` drains it,
+`refreshQuitDigest`); a call keeps only its window (its lines are voice rows
+in the transcript). Sessions under 2 min write nothing. On the next launch
+(`LAUNCH_DELAY_MS` 10 s after bootstrap, and after every scope switch via
+`initProfileScope({ onScopeSwitched })`) each pending file in the active
+profile runs through `startPlayerEndNextStep` (same gates: trivial, offline,
+over limit, local time box, scoped turn; plus a cloud backend needs a
+signed-in session first, else the file waits), saves + tags the plan and
+notifies Home. Deleted after any answer; kept for up to 3 launches when the
+check failed (offline / error / timeout), kept as is when busy or cancelled.
+Dropped unrun after 7 days, or when a newer session with the character
+started (game online / call greeting this run, `noteNewSessionForQuit`, or a
+later bot-game play / call row in the transcript); such a check in flight is
+aborted on any provider (`yieldAlways`). Events: the same
+`next_step_checked` / `next_step_saved` with `source: 'app_quit'` and
+`late_hours`. Not covered: a crash or force-kill (nothing runs at exit), and
+on macOS a call whose window was closed earlier still counts as live at the
+later Cmd-Q (its duration is overstated; the lines are right).
 
 **Forge/NeoForge hosts are blocked before summon (260929).** Only on STRONG
 evidence: the status ping's forgeData/modinfo (`forgeModCount != null`) or an
@@ -2976,6 +3220,22 @@ file appears, and keep `noteLaunch()` ahead of anything that writes userData.
   path, skipped_creation}` per OnboardApp screen (`onboard/onboardSteps.ts`;
   not the boot sign-in variant). A new screen or button that skips needs a
   step name in `ONBOARD_STEPS` and, for a skip, `markStep('skip')`.
+  The intro step's closing event carries `intro_advanced_by`
+  (`transition | watchdog | skip | reduced_motion`), `intro_watchdog_stage`
+  and `intro_hidden_at_start`; a watchdog on a later scene stage (walk-off,
+  send-off walk-in) adds `scene_watchdog` to the step it closes
+  (`tracker.annotate`, 261012).
+- **The onboarding scene never waits on `transitionend` alone (261012).**
+  8 of 42 fresh v0.6.8 first launches never left the intro: its four stages
+  (ground in, Sui in, Sui out, ground out) advanced only on CSS
+  `transitionend`, with no timer and no button. Each stage is now a gate
+  (`onboard/sceneGate.ts`, armed in `OnboardScene`) that completes exactly
+  once on transitionend, a watchdog at `max(css + 1.5 s, 3 s)`, a click or
+  key during the intro (skip), or at once under `prefers-reduced-motion`. A
+  hidden window holds the first slide and the watchdog until it is shown,
+  bounded by `HIDDEN_CEILING_MS`. The CSS durations are mirrored as
+  constants in `OnboardScene.tsx` (a test checks). Verify in a tab with
+  `?dashshot=onboard` (track calls land on `window.__seiDevTrack`).
   `onboarding_abandoned` comes from the renderer on unmount (`left_view`) and
   from main at quit / last-window-close (`src/main/onboardingFunnel.ts`, fed
   by the analytics:track handler).
@@ -3026,7 +3286,9 @@ had it from the start. The contract is three things.
    in `extraStable` so they ride inside the cached region.
 2. **OUT, long-term** — offer `REMEMBER_TOOL` (`src/main/chat/chatPrompts.ts`)
    on the surface's turns, so the character can write to the same per-character
-   `MEMORY.md` that chat, voice and the bot share. In a **tool loop**, answer it
+   `MEMORY.md` that chat, voice and the bot share. A surface outside a game
+   world passes `appendMemory(file, text, undefined, { section: 'app' })` (261020)
+   so its lines are not filed under the last game world. In a **tool loop**, answer it
    with a `tool_result` note and treat `appendMemory() === 0` as "duplicate, not
    written" rather than claiming a save. In a **single-shot** call, honor it
    inline after the response (`honorRememberCalls`) or the write is silently
@@ -3233,18 +3495,41 @@ updates install from the zip artifact.
 **The download never blocks the app (260801).** Two renderer surfaces, split by
 whether the state needs a decision right now: `UpdatePopup` is the modal (the
 optional-update offer with its changelog, the post-update what's-new, and the
-`apply:'now'` restart), `UpdatePill` is a corner card that never takes the
-pointer (download progress, then "ready, restart to apply"). Before the split,
-`app:update-progress` drove the popup into a scrimmed `downloading` state with
-no dismiss path, so a routine MANDATORY patch, which updater.ts deliberately
-downloads without asking, locked the user out of the app until it finished.
-The consented flow no longer auto-installs either: the accepted download may
-land minutes later with the user mid-game, so `autoInstallOnAppQuit` applies it
-on the next quit and the pill only OFFERS the restart. `forced` is the one
-state that still takes the window, because main quits a few seconds later
-regardless. The `downloading` pill has no dismiss (nothing to decide while it
-works), so `App.tsx` must clear it on `app:update-error` or a dead download
-pins it at whatever percent it reached.
+`apply:'now'` restart); everything else lives in `useUpdateStore` and never
+takes the pointer. Before the split, `app:update-progress` drove the popup into
+a scrimmed `downloading` state with no dismiss path, so a routine MANDATORY
+patch, which updater.ts deliberately downloads without asking, locked the user
+out of the app until it finished. The consented flow no longer auto-installs
+either: the accepted download may land minutes later with the user mid-game,
+so `autoInstallOnAppQuit` applies it on the next quit and the UI only OFFERS
+the restart. `forced` is the one state that still takes the window, because
+main quits a few seconds later regardless. The downloading state has no
+dismiss (nothing to decide while it works), so `App.tsx` clears it on
+`app:update-error` or a dead download pins it at whatever percent it reached
+(`clearRail` never clears a READY update).
+
+**"Update Sei" is a sidebar button, and one click finishes the job (261023).**
+`UpdateRailButton` sits full-bleed at the foot of `IconRail` (Telegram's
+"Update Telegram" footer is the reference): a quiet hairline bar while
+downloading, a `--green` to `--accent-strong` block when ready, a spinner while
+restarting. It replaced the corner `UpdatePill`, which was easy to dismiss and
+forget. A click while a call, a companion bot, chess, a screen share or a
+Draw! turn is live confirms first (`liveSessionForRestart`). The install args
+come from `src/main/updateInstall.ts` (`restartInstallArgs`): on Windows
+`quitAndInstall(true, true)`, which NsisUpdater turns into
+`--updated /S --force-run`, so no installer window appears and the one-click
+installer reopens Sei when it is done (the old bare `quitAndInstall()` was
+`--updated --force-run`: it also reopened Sei, but showed the "Installing,
+please wait" banner meanwhile). macOS ignores the args (Squirrel relaunches).
+The update-on-quit run stays `--updated /S` with no relaunch.
+`build/installer.nsh` tells the two silent runs apart by `--force-run`: the
+one-time legacy per-machine cleanup (a UAC prompt) runs on the in-app restart
+but never on the quit run. `.github/workflows/nsis-upgrade-check.yml` covers
+both paths (relaunch or not, no visible installer window, the timing). An
+accepted OPTIONAL download stashes `pending` with `brief: true`, so the
+relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
+changelog bullet, `topChangelogLine`) instead of reopening the changelog the
+user already read; mandatory updates keep the full what's-new modal.
 
 ---
 
@@ -3350,6 +3635,33 @@ pins it at whatever percent it reached.
     is kept in `callState` (`endCallFromCompanion`) so the switch closes it
     and writes its row in the old account; `applyCallReport` is the pure
     composition the `voice:call-state` handler runs.
+- **Own-key companions stranded or mis-owned on sign-in (261023)** → the
+  `local` profile → account import (`src/main/profile/localImport.ts`) is
+  offered on EVERY local→account sign-in that finds companions or memories,
+  new account or existing (App.tsx; a sign-in inside the first-run scene is
+  offered when the scene hands off). It merges, never replaces
+  (`profile/memoryMerge.ts`): an account copy of the same id keeps its JSON
+  and art, MEMORY.md / archive / chat.jsonl are line-unioned, `worlds.json`
+  merges by fingerprint and renumbers the local `## World N` headers. Only
+  owner-null companions are stamped with the account; World companions and
+  Sui/Lyra/Marv keep their real owner and go into `added_world_ids`
+  (stamping them made the sign-in reconcile sweep delete them as leaks).
+  Idempotent; moved data is removed from `local`.
+  Accounts that signed in on an older build never saw the offer, so it is
+  also shown ONCE at boot per account per device (`checkBootImportOffer` in
+  `lib/localImportOffer.ts`; only on a calm Home: no modal, tour, first
+  moment, call, game or share), and Settings → Account has a "Bring
+  companions from this computer" row (`settings/LocalImportRow.tsx`). Any
+  answer from any entry point is recorded in the device-global
+  `<userData>/local-import-offered.json` (`profile/localImportOffered.ts`,
+  IPC `profile:import-offered`). Those two entry points ignore the Sui the
+  first-run scene seeded when the player never touched her (no memory
+  entry, knowledge, bridge, or non-assistant chat row:
+  `peek.untouchedSeedIds`); the sign-in offer does not. A failed import
+  keeps the modal up with an error line and "Try again". A local
+  `## World N` header with no `worlds.json` entry gets a fresh number above
+  every number in use, reserved in the account's registry under
+  `UNREGISTERED_WORLD_FP` so the bot never reuses it.
 - **A whole-config write reverts other writers (260929)** → every main-process
   write of the profile `config.json` goes through `configStore.updateConfig`
   (locked read-modify-write, path fixed when the call starts) and sets only

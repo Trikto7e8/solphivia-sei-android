@@ -51,6 +51,11 @@ import { CreationLimitModal } from '../components/CreationLimitModal';
 import { BrowseCard } from '../components/BrowseCard';
 import { portraitSrc } from '../lib/portraitSrc';
 import { Button } from '../components/Button';
+import { HomeNextStepCard } from '../components/HomeNextStepCard';
+import { useHomeNextStepStore } from '../lib/stores/useHomeNextStepStore';
+import { useVoiceStore } from '../lib/stores/useVoiceStore';
+import { chooseHomeNextStep } from '../lib/homeNextStep';
+import { activeGameFor } from '../lib/gameLaunch';
 import type { Character } from '@shared/characterSchema';
 import { MAX_COMPANION_SLOTS } from '@shared/characterSchema';
 import type { BrowseEntry } from '@shared/ipc';
@@ -290,8 +295,44 @@ function HomeGrid(): React.ReactElement {
   );
   const emptyCount = Math.max(0, MAX_COMPANION_SLOTS - slotCharacters.length);
 
+  // The "up next" strip (261013, T119): one saved plan (or active goal) for a
+  // Home companion. Re-read when the roster changes and when main says a plan
+  // was saved or used (home:next-step-changed).
+  const nextSteps = useHomeNextStepStore((s) => s.steps);
+  const nextDismissed = useHomeNextStepStore((s) => s.dismissed);
+  const loadNextSteps = useHomeNextStepStore((s) => s.load);
+  const dismissNextStep = useHomeNextStepStore((s) => s.dismiss);
+  const callParticipants = useVoiceStore((s) => s.participants);
+  const callStatus = useVoiceStore((s) => s.status);
+  const nextStepIds = slotCharacters.filter((c) => !placeholderIds.has(c.id)).map((c) => c.id);
+  const nextStepIdsKey = nextStepIds.join(',');
+  useEffect(() => {
+    const ids = nextStepIdsKey ? nextStepIdsKey.split(',') : [];
+    void loadNextSteps(ids);
+    return sei.onHomeNextStepChanged(({ characterId }) => {
+      if (ids.includes(characterId)) void loadNextSteps(ids);
+    });
+  }, [nextStepIdsKey, loadNextSteps]);
+  const inCall = callStatus === 'live' || callStatus === 'connecting' ? callParticipants : [];
+  const nextStep = chooseHomeNextStep(
+    nextStepIds,
+    nextSteps,
+    (id) => inCall.includes(id) || summons[id]?.kind === 'online' || summons[id]?.kind === 'connecting' || activeGameFor(id) != null,
+    nextDismissed,
+  );
+  const nextStepCharacter = nextStep ? slotCharacters.find((c) => c.id === nextStep.characterId) : undefined;
+
   return (
     <div className={homeStyles.root}>
+      {nextStep && nextStepCharacter ? (
+        <HomeNextStepCard
+          step={nextStep}
+          name={nextStepCharacter.name}
+          portraitImage={nextStepCharacter.portrait_image}
+          theme={theme}
+          onDismiss={dismissNextStep}
+        />
+      ) : null}
       <section className={homeStyles.panels} aria-label={t('Party')}>
         {slotCharacters.map((c) => {
           const isPlaceholder = placeholderIds.has(c.id);

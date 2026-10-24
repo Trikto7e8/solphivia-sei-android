@@ -133,10 +133,16 @@ describe('sendFirstMeetingTurn with firstMoment', () => {
 
 describe('thoughtFirstMoment copy', () => {
   it('is plain model-facing text with no em or en dashes', () => {
-    for (const p of ['chess', 'minecraft'] as const) {
+    for (const p of ['chess', 'minecraft', 'backseat'] as const) {
       const t = thoughtFirstMoment(p);
       expect(t).not.toMatch(/[—–]/);
       expect(t).toContain('button');
     }
+  });
+
+  it('each lead makes its own offer', () => {
+    expect(thoughtFirstMoment('backseat')).toContain('share their screen');
+    expect(thoughtFirstMoment('chess')).toContain('chess');
+    expect(thoughtFirstMoment('minecraft')).toContain('Minecraft world');
   });
 });

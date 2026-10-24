@@ -1,7 +1,7 @@
 // src/behaviors/dig.js — single-flight dig with timeout + abort (D-22, Pitfall 2)
 import { Vec3 } from 'vec3'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
-import { goTo } from './pathfind.js'
+import { goTo, stopPathfinderDig, dropWalkOpts } from './pathfind.js'
 import { equipBestTool, harvestNote } from './toolSelect.js'
 import { firstLine, truncate } from '../../../brain/errStrings.js'
 
@@ -12,6 +12,23 @@ export const DEFAULT_TIMEOUT_MS = 8000
 export const MAX_TIMEOUT_MS = 30000
 const PICKUP_TIMEOUT_MS = 3000
 export const DIG_REACH = 4.5  // mineflayer's effective reach for breaking blocks
+
+/**
+ * Distance that decides whether a block is in dig reach: from the bot's EYES
+ * to the block's CENTER, the way mineflayer's canDigBlock and the server
+ * measure it (mineflayer allows 5.1; DIG_REACH keeps a margin).
+ *
+ * 261011: this used to be feet to the block's min corner, which reads a log
+ * five blocks up the trunk as 5.0m away while the eyes are 3.9m from it, so
+ * every tree's top log came back "out of range" from the spot it could have
+ * been dug from, and gather stopped short.
+ */
+export function digReachDistance(bot, pos) {
+  const p = bot?.entity?.position
+  if (!p || !pos) return Infinity
+  const eye = Number.isFinite(bot.entity?.eyeHeight) ? bot.entity.eyeHeight : 1.62
+  return Math.hypot(pos.x + 0.5 - p.x, pos.y + 0.5 - (p.y + eye), pos.z + 0.5 - p.z)
+}
 
 // LLM-facing tool description moved to ../prompts.js → ACTION_DESCRIPTIONS.dig.
 
@@ -58,10 +75,9 @@ export async function digCuboid(args, bot, config) {
       config?.onProgress?.({ dug, skippedAir, total, currentY: c.y })
       continue
     }
-    const p = bot.entity?.position
-    const dist = p ? Math.sqrt((p.x - c.x) ** 2 + (p.y - c.y) ** 2 + (p.z - c.z) ** 2) : Infinity
+    const dist = digReachDistance(bot, c)
     if (dist > DIG_REACH) {
-      await goTo(bot, c.x, c.y, c.z, 3, timeoutMs)
+      await goTo(bot, c.x, c.y, c.z, 3, timeoutMs, signal, { reach: DIG_REACH - 0.3 })
       if (signal?.aborted) return `aborted after ${dug}/${total}`
     }
     const r = await digAction({ x: c.x, y: c.y, z: c.z }, bot, config)
@@ -94,6 +110,15 @@ export async function digAction(args, bot, config) {
   const blockName = block.name
   const bx = block.position.x, by = block.position.y, bz = block.position.z
 
+  // A dig left running by a walk's pathfinder (a route that breaks a block)
+  // is not ours: cancel it rather than refusing. 261011: the walk onto a
+  // drop timed out while the pathfinder was breaking the log above it, and
+  // every later dig of that tree answered "busy digging".
+  if (bot.targetDigBlock != null && !(bot._seiDigActive > 0)) {
+    stopPathfinderDig(bot)
+    await new Promise((r) => setTimeout(r, 60))
+  }
+
   // Single-flight guard (Pitfall 2: re-entry into mineflayer dig is fatal).
   // Surface what is currently being dug so the LLM doesn't reflexively retry.
   if (bot.targetDigBlock != null) {
@@ -106,8 +131,8 @@ export async function digAction(args, bot, config) {
 
   // Reach check — pathfinder is best-effort, the LLM should know it needs to
   // walk closer before issuing another dig at this block.
-  const dist = bot.entity?.position?.distanceTo?.(block.position)
-  if (typeof dist === 'number' && dist > DIG_REACH) {
+  const dist = digReachDistance(bot, block.position)
+  if (Number.isFinite(dist) && dist > DIG_REACH) {
     const baseMsg = `out of range (${dist.toFixed(1)}m, need ≤${DIG_REACH}) for ${blockName} @${bx},${by},${bz}`
     const bp = bot.entity?.position
     if (bp && by > bp.y + 2) {
@@ -151,8 +176,16 @@ export async function digAction(args, bot, config) {
   const dropPos = { x: bx, y: by, z: bz }
   let pickupNote = ''
 
+  bot._seiDigActive = (bot._seiDigActive ?? 0) + 1
+  let digReleased = false
+  const releaseDig = () => {
+    if (digReleased) return
+    digReleased = true
+    bot._seiDigActive = Math.max(0, (bot._seiDigActive ?? 1) - 1)
+  }
   const op = bot.dig(block)
     .then(async () => {
+      releaseDig()
       // Walk onto the drop so mineflayer's auto-pickup fires. Best-effort:
       // bounded timeout, ignore result (if blocked, we still dug successfully).
       //
@@ -171,12 +204,17 @@ export async function digAction(args, bot, config) {
           if (!below || !/^(air|cave_air|void_air|water)$/.test(below.name)) break
           ly--
         }
-        const r = await goTo(bot, dropPos.x, ly, dropPos.z, 0, PICKUP_TIMEOUT_MS)
+        // Range 1 is close enough for auto-pickup (the pickup box reaches a
+        // block past the body). Under a tree the walk may not break anything
+        // (it would start chopping the trunk); a stone or ore drop sits in the
+        // hole it left and the walk may dig its way in (dropWalkOpts).
+        const r = await goTo(bot, dropPos.x, ly, dropPos.z, 1, PICKUP_TIMEOUT_MS, undefined, dropWalkOpts(blockName))
         if (r !== 'reached') pickupNote = ' (pickup walk did not reach)'
       } catch {}
       return `dug ${blockName}${pickupNote}${harvest ? '' : harvestNote(blockName)}`
     })
     .catch((err) => {
+      releaseDig()
       // Distinguish target-already-changed from generic dig failures.
       const reason = truncate(firstLine(err?.message ?? err), 80)
       // If the block at the original coords no longer matches, mineflayer
@@ -202,6 +240,7 @@ export async function digAction(args, bot, config) {
   let timer = null
   let onAbort = null
   const cleanup = () => {
+    releaseDig()
     if (timer) { clearTimeout(timer); timer = null }
     if (onAbort && signal) { signal.removeEventListener('abort', onAbort); onAbort = null }
   }

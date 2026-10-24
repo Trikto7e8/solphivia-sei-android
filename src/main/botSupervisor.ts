@@ -42,6 +42,14 @@ import { isGameId, type GameId } from '../shared/gameIpc';
 import { getGameModule, type GameModule } from './games';
 import { clampChatLanguage } from '../shared/chatLanguage';
 import { buildLlmInitSection, type LlmInitSection } from './llmInitSection';
+import { chatgptSession } from './chatgptPlan';
+import {
+  answerChatgptTokenRequest,
+  ChatgptSummonError,
+  chatgptBotInitSection,
+  pushChatgptTokens,
+} from './chatgptPlan/botBridge';
+import { resolveChatgptModel } from './llm';
 import { checkOllamaForGame } from './llm/ollamaCapabilities';
 import { OLLAMA_DEFAULT_BASE_URL } from './llm/ollama';
 import { resolveWebSearchSettings } from './llm/webSearchSettings';
@@ -49,11 +57,12 @@ import { getCharacter, patchCharacter } from './characterStore';
 import { loadApiKey, hasApiKey, getAiBackendKind, type AiBackendKind } from './apiKeyStore';
 import { buildLaunchContinuity } from './chat/continuity';
 import { readKnowledgeForPrompt } from './knowledge/knowledgeStore';
+import { readPendingPlanFor } from './homeNextStep';
 import { loadConfig as loadUserConfig } from './configStore'; // UserConfig for bot init
 import { paths } from './paths';
 import { createLogRouter, type LogRouter } from './logRouter';
 import { bootPhaseProps, type SummonFailureInfo, type SummonPhase } from './diagnostics';
-import { noteCompanionGoodbye } from './sessionGoodbye';
+import { goodbyeGame, noteCompanionGoodbye } from './sessionGoodbye';
 
 /**
  * The READY budget: from the bot reporting "booted" (its init-ack) to
@@ -186,6 +195,13 @@ const PROXY_BASE_URL = process.env.SEI_PROXY_URL ?? 'https://api.sei.gg';
  * matches; if Anthropic changes their wire format and the smoke test
  * regresses, extend this regex AND the renderer's classifyRendererError.
  */
+/** 261017: the model the player picked for `provider` in Settings, if any. */
+function storedProviderModel(cfg: { provider_config?: unknown }, provider: string): string | undefined {
+  const pc = (cfg.provider_config as Record<string, unknown> | undefined)?.[provider];
+  const m = pc && typeof pc === 'object' ? (pc as { model?: unknown }).model : undefined;
+  return typeof m === 'string' && m.trim() ? m.trim() : undefined;
+}
+
 function classifyChildError(err: unknown): ErrorClass {
   const msg = (err && typeof err === 'object' && 'message' in err)
     ? String((err as { message: unknown }).message)
@@ -359,6 +375,21 @@ export interface BotSupervisorOptions {
    * before it crosses to the renderer. Optional — undefined no-ops.
    */
   onDashboard?: (characterId: string, snapshot: unknown) => void;
+  /**
+   * 261011: cumulative per-action outcome counters from the live Minecraft bot
+   * ({type:'action-stats'} port message, every ~15s while changing plus once
+   * before any terminal lifecycle). Forwarded RAW; mcActionTelemetry.ts
+   * validates. Optional — undefined no-ops.
+   */
+  onActionStats?: (characterId: string, stats: unknown) => void;
+  /**
+   * 261011: the session's recent conversation ({type:'session-digest'} port
+   * message, every ~15s while changing plus once before any terminal
+   * lifecycle), for the player-end "next time" check. Forwarded RAW;
+   * playerEndNextStep.ts validates. Holds chat text: never logged, never
+   * sent to analytics. Optional; undefined no-ops.
+   */
+  onSessionDigest?: (characterId: string, digest: unknown) => void;
   /** Forward to renderer via webContents.send('bot:log:batch', batch). Batched. */
   sendLog: (batch: LogBatch) => void;
   /**
@@ -549,6 +580,14 @@ interface ActiveSession {
    */
   teardownJwtRotation?: () => void;
   /**
+   * 261017 (issue #46): the ChatGPT-plan token push subscription
+   * (chatgptPlan/botBridge.ts pushChatgptTokens), set only while the session
+   * runs the 'chatgpt' provider. Torn down with the JWT pump.
+   */
+  teardownChatgptTokens?: () => void;
+  /** 261017: the local LLM provider kind this session runs (llmInit.provider). */
+  llmProvider?: string;
+  /**
    * 260618: timestamp of the last reactive JWT-refresh request from this bot
    * (it posts {type:'request-jwt'} on a 401 expired_jwt). Debounced so a burst
    * of 401s triggers at most one refreshSession() call.
@@ -728,6 +767,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // onto a disposed port. setupJwtRotation re-checks `running` between
     // the await and the postMessage; the teardown closure flips that flag.
     try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
+    try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+    session.teardownChatgptTokens = undefined;
     try {
       session.port1.postMessage({ type: 'stop' });
     } catch {
@@ -1021,7 +1062,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // it — the no-cloud-fallback property still holds, because llmInit
       // below routes the fork to the ollama provider, never the proxy.
       const localProvider = userCfg.provider ?? 'anthropic';
-      if (localProvider !== 'ollama') {
+      // 261017 (issue #46): the ChatGPT plan's credential is main's OAuth
+      // session, not api_key.bin; it is resolved into llmInit below.
+      if (localProvider !== 'ollama' && localProvider !== 'chatgpt') {
         if (!(await hasApiKey())) {
           const message =
             'Local mode is on but no API key is saved. Add your API key in Settings, or switch to managed billing.';
@@ -1082,6 +1125,36 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     let llmInit: LlmInitSection | undefined;
     if (aiBackendKind === 'local') {
       llmInit = buildLlmInitSection(userCfg, apiKey);
+      if (llmInit.provider === 'chatgpt') {
+        // 261017 (issue #46): ChatGPT plan. A fresh ACCESS token from main's
+        // session (the refresh token never leaves main) plus the account
+        // catalog's model. A paused plan, a dead sign-in or plan use turned
+        // off refuses here, before the fork, with the matching error class.
+        try {
+          llmInit = await chatgptBotInitSection(chatgptSession(), async () => {
+            // Only a model the player PICKED is passed; otherwise the
+            // account catalog's default (buildLlmInitSection would have
+            // filled the static fallback).
+            const r = await resolveChatgptModel(storedProviderModel(userCfg, 'chatgpt'));
+            return { model: r.model, reasoningEffort: r.reasoningEffort, vision: r.vision === 'yes' };
+          });
+        } catch (err) {
+          const code = err instanceof ChatgptSummonError ? err.code : 'NETWORK_OFFLINE';
+          const message = err instanceof Error ? err.message : String(err);
+          logger.warn(`[sei/sup] summon blocked: ${code}: ${message}`);
+          if (
+            code === 'CHATGPT_USAGE_LIMIT' ||
+            code === 'CHATGPT_NOT_ELIGIBLE' ||
+            code === 'CHATGPT_FORBIDDEN' ||
+            code === 'CHATGPT_AUTH_REJECTED' ||
+            code === 'CHATGPT_REQUEST_REJECTED'
+          ) {
+            chatgptSession().reportError(err instanceof ChatgptSummonError ? { code } : err);
+          }
+          sendStatus({ kind: 'error', error: code as ErrorClass, message, characterId });
+          throw new Error(`${code}: ${message}`);
+        }
+      }
     }
     if (!preferred_name) {
       // 260828: this used to send error: 'BOT_CRASH' while throwing the
@@ -1221,6 +1294,17 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // payload (the continuity pattern) and appended to the bot's cached
     // system prefix. Pure disk read; edits apply on the next summon.
     const knowledgeP: Promise<string> = readKnowledgeForPrompt(characterId).catch(() => '');
+    // 261014: the saved plan the first-spawn greeting should raise. Read now,
+    // before the session going online marks it used (index.ts
+    // consumeNextStep). Pure disk read; null = none open. 261020: a plan for
+    // a different game is not this greeting's (null), and stays open.
+    // 261020 (review): with whether it is tied to this game; a plan with no
+    // game is raised as talk, not as a task here.
+    const nextStepPlanP: Promise<{ text: string; notForGame: boolean } | null | undefined> = readPendingPlanFor(
+      paths.memoryDir(characterId),
+      Date.now(),
+      { game },
+    ).catch(() => undefined);
     // ITEM 1 (quick/260523-t8d): expose the AI-backend mode + has-key state to
     // the bot child so brain/log.js can suppress the noisy game-state +
     // [haiku?] prompt logs when running in local (BYOK) mode without a key —
@@ -1257,6 +1341,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       game,
       username,
       backendKind: aiBackendKind,
+      llmProvider: llmInit?.provider,
       startedAtMs,
       child,
       port1,
@@ -1390,6 +1475,20 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         void handleJwtRefreshRequest(characterId);
         return;
       }
+      // 261017 (issue #46): a ChatGPT-plan bot wants a fresh access token
+      // (near expiry, or a 401 with force). Only a session that runs the
+      // chatgpt provider is ever answered.
+      if ((data as { type?: string }).type === 'request-chatgpt-token') {
+        const s = sessions.get(characterId);
+        if (s && s.backendKind === 'local' && s.llmProvider === 'chatgpt') {
+          void answerChatgptTokenRequest(
+            chatgptSession(),
+            (m) => s.port1.postMessage(m),
+            (data as { force?: unknown }).force === true,
+          );
+        }
+        return;
+      }
       // The in-game bot is replying to a message that was routed in from the
       // in-app chat (task 4). Deliver it to the chat transcript + renderer. Not
       // a BotStatus event, so return before lifecycleToStatus.
@@ -1401,7 +1500,12 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // player's call (the bot stays in the game). Not a BotStatus event.
       if ((data as { type?: string }).type === 'call-end') {
         // 261008: voice_call_ended reads this back (sessionGoodbye.ts).
-        noteCompanionGoodbye(characterId, 'call', (data as { nextStepHook?: boolean }).nextStepHook === true);
+        const end = data as { nextStepHook?: boolean; nextStepLine?: unknown; nextStepGame?: unknown };
+        noteCompanionGoodbye(characterId, 'call', {
+          hook: end.nextStepHook === true,
+          line: typeof end.nextStepLine === 'string' ? end.nextStepLine : null,
+          game: goodbyeGame(end.nextStepGame) ?? null,
+        });
         opts.onCallEndRequested?.(characterId);
         return;
       }
@@ -1418,6 +1522,15 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // it. Not a BotStatus event — return before lifecycleToStatus.
       if ((data as { type?: string }).type === 'dashboard') {
         opts.onDashboard?.(characterId, (data as { snapshot?: unknown }).snapshot);
+        return;
+      }
+      // 261011: action-outcome telemetry snapshot. Not a BotStatus event.
+      if ((data as { type?: string }).type === 'action-stats') {
+        try { opts.onActionStats?.(characterId, (data as { stats?: unknown }).stats); } catch { /* telemetry never breaks the session */ }
+        return;
+      }
+      if ((data as { type?: string }).type === 'session-digest') {
+        try { opts.onSessionDigest?.(characterId, (data as { digest?: unknown }).digest); } catch { /* never breaks the session */ }
         return;
       }
       // Don't Starve Together (game-adapters M2, 260908): the bot's loopback
@@ -1503,7 +1616,13 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         session.selfStopReason = data.reason;
         // 261008: a companion quit() says whether its goodbye left a next_time
         // hook; bot_session_ended reads it back (sessionGoodbye.ts).
-        if (data.reason === 'quit') noteCompanionGoodbye(characterId, 'game', data.nextStepHook === true);
+        if (data.reason === 'quit') {
+          noteCompanionGoodbye(characterId, 'game', {
+            hook: data.nextStepHook === true,
+            line: typeof data.nextStepLine === 'string' ? data.nextStepLine : null,
+            game: goodbyeGame(data.nextStepGame) ?? null,
+          });
+        }
       }
       if (data.type === 'error' && !summonResolved) {
         summonResolved = true;
@@ -1562,6 +1681,16 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // and, on timeout, kill the child so the character actually leaves.
         void _stop(characterId, STOP_TIMEOUT_MS);
       }
+      // 261017 (issue #46): the bot stopped on a ChatGPT-plan answer (usage
+      // limit, not eligible, signed out, ...). Latch it in main's session so
+      // the renderer shows the usage-limit dialog and every other surface
+      // fails fast instead of asking again, and drive the same drain as the
+      // credits path so the body leaves even if the bot's own exit stalls.
+      if (data.type === 'error' && typeof data.error === 'string' && data.error.startsWith('CHATGPT_')) {
+        logger.warn(`[sei/sup] ChatGPT plan stopped the session: ${data.error}`);
+        try { chatgptSession().reportError({ code: data.error }); } catch { /* best-effort */ }
+        void _stop(characterId, STOP_TIMEOUT_MS);
+      }
       const status = lifecycleToStatus(data, characterId, startedAtMs);
       if (status) sendStatus(status);
     });
@@ -1599,6 +1728,12 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         const knowledge = await Promise.race([
           knowledgeP,
           new Promise<string>((r) => setTimeout(() => r(''), 2_000)),
+        ]);
+        // A slow read is "not known" (undefined: the greeting keeps the soft
+        // hint), not "no open plan" (null: no hint at all).
+        const nextStepPlan = await Promise.race([
+          nextStepPlanP,
+          new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_000)),
         ]);
         // Ship mc_username, preferred_name, and skinServerBaseUrl so the bot
         // can satisfy ConfigSchema, seed player_username for player-recognition
@@ -1694,6 +1829,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
               // bot skips its cold FIRST CONTACT greeting (which would otherwise
               // double the standalone launch reply). Deterministic; no race.
               voiceCallActive: opts.isVoiceCallActive?.(characterId) ?? false,
+              // 261014: the open plan for the FIRST CONTACT greeting (null = none).
+              nextStepPlan: nextStepPlan === undefined ? undefined : (nextStepPlan?.text ?? null),
+              // 261020: true = that plan is not tied to this game (talk, not a task).
+              ...(nextStepPlan?.notForGame ? { nextStepPlanNotForGame: true } : {}),
               // 260909: { provider, api_key } for the brain's search / visit
               // tools. The bot maps it onto config.web in bootstrapWithInit.
               webSearch,
@@ -1904,6 +2043,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // Party redesign §5: session ended (clean exit or crash) — clear the
         // action verb so a stale "gathering…" doesn't outlive the bot.
         opts.onBotAction?.(characterId, null, undefined, Date.now());
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
         session.resolveExited();
       });
     });
@@ -1933,6 +2074,12 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       }
     }
 
+    // 261017 (issue #46): ChatGPT-plan rotations (and sign-out) go straight
+    // to this bot over its port.
+    if (aiBackendKind === 'local' && llmInit?.provider === 'chatgpt') {
+      session.teardownChatgptTokens = pushChatgptTokens(chatgptSession(), (m) => port1.postMessage(m));
+    }
+
     // Wait for summon-ready or fail
     try {
       await summonPromise;
@@ -1945,6 +2092,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // _stopActive, so a pending tick doesn't postMessage onto a port
       // we're about to close.
       try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
+      try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+      session.teardownChatgptTokens = undefined;
       try {
         await router.close();
       } catch {
@@ -1997,6 +2146,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // Track the live kind so updateJwt / the reactive 401 refresh treat
         // this session as a legitimate JWT consumer from here on (260703).
         session.backendKind = 'cloud-proxy';
+        // 261017: a cloud session never takes ChatGPT-plan tokens.
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
+        session.llmProvider = undefined;
         try {
           session.port1.postMessage({
             type: 'backend-switch',
@@ -2041,7 +2194,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // 260817 (china-compat W10): ollama is keyless — mirror _summon's guard
       // skip so a keyless ollama config never gets a spurious INVALID_API_KEY
       // advisory on a cloud→local switch.
-      const keylessProvider = (userCfg?.provider ?? 'anthropic') === 'ollama';
+      // 261017 (issue #46): the ChatGPT plan has no key either; its
+      // credential comes from main's OAuth session below.
+      const keylessProvider = ['ollama', 'chatgpt'].includes(userCfg?.provider ?? 'anthropic');
       if (!keylessProvider) {
         try {
           // 260703: a MISSING key gets the same clear INVALID_API_KEY surface as
@@ -2062,7 +2217,21 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // Anthropic with stale defaults regardless of the configured provider.
       // Ship the SAME llm section a fresh summon would build (shared helper),
       // so the bot's applyLlmSwitch can reroute its provider/model/config.
-      const llm = buildLlmInitSection(userCfg ?? {}, apiKey);
+      let llm = buildLlmInitSection(userCfg ?? {}, apiKey);
+      let keyErrorClass: ErrorClass | null = null;
+      if (llm.provider === 'chatgpt') {
+        try {
+          llm = await chatgptBotInitSection(chatgptSession(), async () => {
+            const r = await resolveChatgptModel(storedProviderModel(userCfg ?? {}, 'chatgpt'));
+            return { model: r.model, reasoningEffort: r.reasoningEffort, vision: r.vision === 'yes' };
+          });
+        } catch (err) {
+          // The bot still flips off the cloud; with no token its first call
+          // asks main and stops on the same refusal.
+          keyError = err;
+          keyErrorClass = (err instanceof ChatgptSummonError ? err.code : 'NETWORK_OFFLINE') as ErrorClass;
+        }
+      }
       for (const session of sessions.values()) {
         // 260703 hard guard: flip the tracked kind FIRST so no concurrent
         // updateJwt tick can post a token to a session that is now BYOK.
@@ -2071,9 +2240,10 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           const message = (keyError && typeof keyError === 'object' && 'message' in keyError)
             ? String((keyError as { message: unknown }).message)
             : String(keyError);
-          const ec = message.startsWith('LOCAL_NO_API_KEY')
-            ? ('INVALID_API_KEY' as const)
-            : classifyChildError(keyError);
+          const ec = keyErrorClass
+            ?? (message.startsWith('LOCAL_NO_API_KEY')
+              ? ('INVALID_API_KEY' as const)
+              : classifyChildError(keyError));
           // ADVISORY, not terminal: this session STAYS LIVE — the bot remains
           // connected in-world and just 401s on its next LLM call. Flag
           // transient so broadcastStatus does not drop it from onlineIds (which
@@ -2091,6 +2261,14 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // can't post a stray cloud-jwt-update after the switch.
         try { session.teardownJwtRotation?.(); } catch { /* best-effort */ }
         session.teardownJwtRotation = undefined;
+        // 261017: (re)wire the ChatGPT-plan token push to match the provider.
+        session.llmProvider = llm.provider;
+        try { session.teardownChatgptTokens?.(); } catch { /* best-effort */ }
+        session.teardownChatgptTokens = undefined;
+        if (llm.provider === 'chatgpt') {
+          const port = session.port1;
+          session.teardownChatgptTokens = pushChatgptTokens(chatgptSession(), (m) => port.postMessage(m));
+        }
         try {
           session.port1.postMessage({ type: 'backend-switch', apiKey, llm });
         } catch {

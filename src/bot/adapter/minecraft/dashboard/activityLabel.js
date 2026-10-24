@@ -60,6 +60,8 @@ export function activityLabel(name, args) {
     case 'unfollow':
       return 'standing by...'
     case 'goTo': {
+      const who = typeof args?.player === 'string' && args.player.trim() ? args.player.trim() : null
+      if (who) return `walking to ${who}...`
       const x = num(args, 'x')
       const z = num(args, 'z')
       return x != null && z != null ? `walking to ${x}, ${z}...` : 'walking somewhere...'
@@ -117,6 +119,12 @@ export function activityLabel(name, args) {
       return 'checking a chest...'
     case 'dropItem':
       return 'dropping items...'
+    case 'give': {
+      const item = term(args, ['item'])
+      return item ? `handing over ${item}...` : 'handing something over...'
+    }
+    case 'pickup':
+      return 'picking up items...'
     case 'readSign':
       return 'reading a sign...'
     case 'activateItem':

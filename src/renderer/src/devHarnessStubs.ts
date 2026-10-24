@@ -61,6 +61,42 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   // denied and the Screen Recording probe never succeeds, so the cards hold
   // still; `platform` follows the part (mic-win is Windows).
   const permsMode = (params.get('dashshot') ?? '') === 'perms';
+  // ?dashshot=onboard (261012): OnboardApp from the intro. Analytics calls are
+  // kept on window.__seiDevTrack so a driver can read onboarding_step.
+  const onboardMode = (params.get('dashshot') ?? '') === 'onboard';
+  // ?dashshot=home (261013): the Home wall with the "up next" strip. `&step=`
+  // picks the card for the first companion: plan (a Minecraft plan, the
+  // default), call, untagged, goal, long (two-line clamp), or none (no card).
+  // Analytics calls are kept on window.__seiDevTrack.
+  const homeMode = (params.get('dashshot') ?? '') === 'home';
+  // ?dashshot=art (261023): names over character art (DevArtShot). The
+  // generic Proxy answers whatever the page, call and grid ask.
+  const artMode = (params.get('dashshot') ?? '') === 'art';
+  // ?dashshot=authchoice|signinmodal (261023): the sign-in surfaces with
+  // "Continue with ChatGPT". &reason=existing_account|new_device|unverified_email
+  // picks the code step the stubbed login answers; &gpt=fail answers a
+  // linked-elsewhere refusal instead. Code 000000 is "wrong", anything else
+  // signs in.
+  const authMode = ['authchoice', 'signinmodal'].includes(params.get('dashshot') ?? '');
+  // ?dashshot=voicekey (261020, T158): the ElevenLabs key surfaces.
+  // `&backend=local` for My key (default Sei Cloud), `&key=1` for a saved key.
+  const voiceKeyMode = (params.get('dashshot') ?? '') === 'voicekey';
+  const voiceKeyBackend = params.get('backend') === 'local' ? 'local' : 'cloud-proxy';
+  const voiceKeySaved = params.get('key') === '1';
+  // &chatgpt=1 (261023): local backend on the ChatGPT plan, one signed-in
+  // account, so the connected row renders.
+  const voiceKeyChatgpt = params.get('chatgpt') === '1';
+  const voiceKeyChatgptStatus = {
+    accounts: voiceKeyChatgpt
+      ? [{ id: 'acc1', email: 'player@example.com', label: 'player@example.com', signedIn: true, planEnabled: true }]
+      : [],
+    activeId: voiceKeyChatgpt ? 'acc1' : null,
+    signingIn: false,
+    usageLimited: false,
+    blockedCode: null,
+    welcomeSeen: true,
+    models: [],
+  };
   const now = Date.now();
   const chatRows = Array.from({ length: 24 }, (_, i) => ({
     id: `row-${i}`,
@@ -73,9 +109,10 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
   }));
   // ?dashshot=chatfirst (260926): the guided first moment. An empty
   // transcript, so the armed greeting fires, answered after a short think with
-  // a two-bubble greeting that ends on the chess offer. `&nomc=1` reports no
-  // Minecraft install (chess + call only); `&lan=1` has a LAN world open
-  // (Minecraft leads).
+  // a two-bubble greeting that ends on the Backseat offer (261023). `&nomc=1`
+  // reports no Minecraft install (Backseat + chess + call); `&lan=1` has a LAN
+  // world open (Minecraft leads); `&novision=1` is a text-only model (chess
+  // leads, no Backseat).
   const firstMode = params.get('dashshot') === 'chatfirst';
   const noMc = params.has('nomc');
   const firstGreeting = async (): Promise<unknown[]> => {
@@ -86,7 +123,11 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
       {
         id: 'fm-2',
         role: 'companion',
-        text: lan ? "i see your world is open. want me to hop in right now?" : 'wanna play a quick game of chess with me? i promise to go easy. maybe.',
+        text: lan
+          ? "i see your world is open. want me to hop in right now?"
+          : params.has('novision')
+            ? 'wanna play a quick game of chess with me? i promise to go easy. maybe.'
+            : "put a game on and share your screen, i'll watch and talk along.",
         ts: Date.now(),
       },
     ];
@@ -181,10 +222,12 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
     worldCheckNow: async () => null,
     lanCheckNow: async () => ({ kind: 'closed' }),
     getConfig: async () => ({}),
+    // `&plan=quest|party` (261023): a subscriber's plan cards; `&under=1`
+    // answers an account that still has allowance left (no wall).
     creditsGet: async () => ({
-      plan: 'free',
-      usage_pct: 100,
-      over_limit: true,
+      plan: params.get('plan') === 'quest' || params.get('plan') === 'party' ? params.get('plan') : 'free',
+      usage_pct: params.has('under') ? 40 : 100,
+      over_limit: !params.has('under'),
       resets_at: new Date(now + 3 * 86_400_000).toISOString(),
       extra_credits_used: 0,
       extra_credits_total: 0,
@@ -212,8 +255,134 @@ if (import.meta.env.DEV && w && w.sei == null && new URLSearchParams(w.location.
           track: () => undefined,
         }
       : {}),
+    ...(homeMode
+      ? {
+          // &art= (261023): every wall slot has a last line, the call row
+          // Shawn's report showed, so the hover reveal has text to measure.
+          ...(params.has('art')
+            ? {
+                chatPreviews: async () =>
+                  Object.fromEntries(
+                    ['sui', 'marv', 'lyra'].map((n) => [
+                      `dashshot-home-${n}`,
+                      { role: 'system', text: `You and ${n[0].toUpperCase()}${n.slice(1)} called for a few seconds.`, ts: Date.now() - 3_600_000 },
+                    ]),
+                  ),
+              }
+            : {}),
+          homeNextSteps: async (ids: string[]) => {
+            const kind = params.get('step') ?? 'plan';
+            const id = ids[0];
+            if (!id || kind === 'none') return {};
+            const at = Date.now() - 20 * 3_600_000;
+            // &text= (261014): a given plan text, for rendering real
+            // generated plans (scripts/next-step-examples.ts); &surface=call
+            // makes it a call plan, anything else a Minecraft plan.
+            // &game= (261020) picks the plan's game: stardew, dontstarve,
+            // or unknown (a game plan with no game, which offers the picker).
+            const given = params.get('text');
+            const surface = params.get('surface') === 'call' ? 'call' : 'game';
+            const gameParam = params.get('game');
+            const game = surface !== 'game' ? null : gameParam === 'unknown' ? null : gameParam === 'stardew' || gameParam === 'dontstarve' ? gameParam : 'minecraft';
+            const card = given
+              ? { source: 'plan', text: given, surface, game }
+              : kind === 'goal'
+                ? { source: 'goal', text: 'Get iron tools together', surface: 'game', game: 'minecraft' }
+                : kind === 'call'
+                  ? { source: 'plan', text: 'Ask how the job interview went', surface: 'call', game: null }
+                  : kind === 'untagged'
+                    ? { source: 'plan', text: 'Finish the cabin roof', surface: null, game: null }
+                    : kind === 'long'
+                      ? {
+                          source: 'plan',
+                          text: 'Finish the lake house roof with the spruce planks we saved, then build the dock out past the reeds so we can fish from it at night',
+                          surface: 'game',
+                          game: 'minecraft',
+                        }
+                      : { source: 'plan', text: 'Finish the lake house roof with the spruce planks we saved', surface: 'game', game: 'minecraft' };
+            return { [id]: { characterId: id, at, ...card } };
+          },
+          track: (event: string, props: unknown) => {
+            const dev = window as unknown as { __seiDevTrack?: Array<{ event: string; props: unknown; at: number }> };
+            (dev.__seiDevTrack ??= []).push({ event, props, at: Date.now() });
+          },
+        }
+      : {}),
+    ...(voiceKeyMode
+      ? {
+          getConfig: async () => ({
+            ai_backend_kind: voiceKeyBackend,
+            tts_engine: 'elevenlabs',
+            ...(voiceKeyChatgpt ? { provider: 'chatgpt' } : {}),
+          }),
+          chatgptStatus: async () => voiceKeyChatgptStatus,
+          onChatgptStatus: () => () => {},
+          creditsGet: async () => ({
+            plan: 'free',
+            usage_pct: 10,
+            over_limit: false,
+            resets_at: new Date(now + 3 * 86_400_000).toISOString(),
+            extra_credits_used: 0,
+            extra_credits_total: 0,
+            renews_at: null,
+            ends_at: null,
+            subscription_status_raw: null,
+            ai_backend_kind: voiceKeyBackend,
+            feedback_reward_available: false,
+          }),
+          hasApiKey: async () => voiceKeyBackend === 'local',
+          voiceElevenKeyStatus: async () => ({ present: voiceKeySaved }),
+          voicePreviewAvailable: async () => true,
+          voiceListVoices: async () => [
+            { id: 'f1', label: 'Sarah', gender: 'female', age: 'young', tags: [], vibe: 'bright and warm' },
+            { id: 'f2', label: 'Lily', gender: 'female', age: 'adult', tags: [], vibe: 'soft, British' },
+            { id: 'm1', label: 'Liam', gender: 'male', age: 'young', tags: [], vibe: 'easygoing, American' },
+          ],
+          voiceListOwnVoices: async () =>
+            voiceKeySaved
+              ? {
+                  status: 'ok',
+                  voices: [
+                    { id: 'own1', name: 'My voice', category: 'cloned', hasPreview: true },
+                    { id: 'own2', name: 'Narrator', category: 'generated', description: 'calm storyteller', hasPreview: true },
+                  ],
+                }
+              : { status: 'unavailable', voices: [] },
+        }
+      : {}),
+    // The onboarding AuthPanel reuses the same ChatGPT stubs (?dashshot=onboard).
+    ...(authMode || onboardMode
+      ? {
+          regionStatus: async () => ({ blocked: false }),
+          signInChatgpt: async () => {
+            await new Promise((r) => setTimeout(r, 400));
+            if (params.get('gpt') === 'fail') {
+              return { ok: false, reason: 'linked_elsewhere', message: 'linked elsewhere' };
+            }
+            return {
+              ok: true,
+              kind: 'email_code',
+              emailHint: 's***@example.com',
+              reason: params.get('reason') ?? 'existing_account',
+            };
+          },
+          chatgptLoginVerifyCode: async (code: string) =>
+            code === '000000'
+              ? { ok: false, reason: 'invalid_code', message: 'wrong' }
+              : { ok: true, kind: 'signed_in', created: false, planEnabled: true },
+          chatgptLoginResendCode: async () => ({ ok: true }),
+        }
+      : {}),
+    ...(onboardMode
+      ? {
+          track: (event: string, props: unknown) => {
+            const dev = window as unknown as { __seiDevTrack?: Array<{ event: string; props: unknown; at: number }> };
+            (dev.__seiDevTrack ??= []).push({ event, props, at: Date.now() });
+          },
+        }
+      : {}),
   };
-  (window as unknown as { sei: Record<string, unknown> }).sei = chatMode || creditWallMode || robloxMode || permsMode
+  (window as unknown as { sei: Record<string, unknown> }).sei = authMode || chatMode || creditWallMode || robloxMode || permsMode || onboardMode || homeMode || voiceKeyMode || artMode
     ? new Proxy(base, {
         get(target, key) {
           if (key in target) return target[key as string];

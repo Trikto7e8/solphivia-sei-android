@@ -264,10 +264,15 @@ function wireIpc(): () => void {
   // backend. Seeded by pull (the push only fires on change) and kept current
   // by the llm:capability push. Optional-call like onBotAction: an older
   // preload without the method just skips the feature.
-  const applyLlmCapability = (cap: { vision: 'yes' | 'no' | 'unknown'; model?: string | null }): void => {
+  const applyLlmCapability = (cap: {
+    vision: 'yes' | 'no' | 'unknown';
+    model?: string | null;
+    provider?: string | null;
+  }): void => {
     const ui = useUiStore.getState();
     ui.setLlmVision(cap.vision);
     ui.setLlmModel(cap.model ?? null);
+    ui.setLlmProvider(cap.provider ?? null);
   };
   const offLlmCapability = sei.onLlmCapability?.(applyLlmCapability) ?? (() => {});
   sei

@@ -1080,13 +1080,17 @@ export function SettingsScreen(): React.ReactElement {
             </div>
 
             {/* 261023: the own-key (local profile) import, for a player who
-                said "Not now" to the offer. Hidden when there is nothing. */}
+                said "Not now" to the offer. Hidden when there is nothing.
+                261024: worded apart from the upload row below. This one
+                MOVES companions made before signing in (the signed-out
+                profile) into this account; that one UPLOADS this account's
+                companions that are not in the cloud yet. */}
             <LocalImportRow accountId={authState.user.id} />
 
             <div className={styles.row}>
-              <span className={styles.label}>{t('Migrate local companions')}</span>
+              <span className={styles.label}>{t('Upload companions to the cloud')}</span>
               <Button kind="ghost" size="sm" onClick={() => setMigrateModalOpen(true)}>
-                {t('Migrate')}
+                {t('Upload')}
               </Button>
             </div>
 

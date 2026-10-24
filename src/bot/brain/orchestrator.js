@@ -36,6 +36,7 @@ import {
   teammateVoiceGuidance,
   NEXT_TIME_FIELD,
   NEXT_TIME_GOODBYE,
+  NEXT_TIME_OWN_PLAN,
   NEXT_TIME_GREETING,
   NEXT_TIME_FOR_PLAYER_FIELD,
   NEXT_TIME_GAME_FIELD,
@@ -2020,7 +2021,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         'Put your goodbye in the `farewell` field. It is spoken to chat for you as you leave, so do NOT also call say(). ' +
         'Calling quit_game means you ARE leaving: the farewell must read as a goodbye, never "no" or "I\'m staying". ' +
         'If you intend to stay, do not call quit_game. You can still be reached in Sei chat afterward. ' +
-        'Leaving the game does NOT hang up a live voice call: if you are on a call and the player wants you out of the game but still talking (for example "let\'s just chat"), call quit_game and keep the conversation going on the call.',
+        'Leaving the game does NOT hang up a live voice call: if you are on a call and the player wants you out of the game but still talking (for example "let\'s just chat"), call quit_game and keep the conversation going on the call. ' +
+        // 261024 (pass 26): whose plan the next step is (promptLibrary).
+        NEXT_TIME_OWN_PLAN,
       input_schema: {
         type: 'object',
         properties: {
@@ -2056,7 +2059,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         'Use it when the conversation is clearly over or the player asks you to hang up. You stay in the game; only the call ends. ' +
         'If the player wants you to stop playing while you talk, call quit_game() instead; the call keeps going after you leave the game. ' +
         'Put your goodbye in the `farewell` field. It is spoken into the call for you as it ends, so do NOT also call say(). ' +
-        'You cannot start calls, only end them.',
+        'You cannot start calls, only end them. ' + NEXT_TIME_OWN_PLAN,
       input_schema: {
         type: 'object',
         properties: {
@@ -5081,6 +5084,25 @@ function maybeWarnByteCap(loop, warned) {
     return `${line.who ? `${line.who} ` : 'The player '}said: "${line.text}". Your last turn did NOT call say(), so they heard nothing back from you. Whatever you wrote in your text was private; it never reached them. Answer them now with one short say(), in this turn, alongside whatever else you do (skip it only if their line truly needs no reply at all).`
   }
 
+  // 261024 (pass 26): R3-stop ended the loop on every stop with no new
+  // action. In the 261023 compare, "actually forget the logs, just meet me
+  // over here" got stop + say("ok coming to you, bringing the logs too") in
+  // 3 of 6 errands runs, her scratchpad planning the walk ("I'll stop it and
+  // carry the logs over myself") that she never called.
+  // The stop ended the loop, the idle tick 5 s later walked her over and said
+  // the same line again, and the judge marked it repetitive each time. So a
+  // stop on a player line that did not ask her to stop or wait gets one more
+  // call in the same loop (NUDGES.stopThenNext), where her own say() is
+  // right above and she can start what the line asked for. A line that asks
+  // her to stop or wait (asksToStop) ends the loop as before. Once per loop.
+  function stopWantsNextCall(loop, { hasStop, hasEndLoop, toolUses, newSuspendingTools, p1 }) {
+    if (!hasStop || hasEndLoop || newSuspendingTools.length > 0 || !p1) return false
+    if (loop._stopContinue || loop._groupVoiceLine || loop.isTerminal || loop._pendingActionUse) return false
+    if (toolUses.some(u => u.name === 'quit_game' || u.name === 'end_call')) return false
+    const line = loop._lastPlayerLine?.text
+    return !!line && !asksToStop(line) && !isBareStopLine(line)
+  }
+
   // 261015 (quality pass 8): the one-shot "your goal starts nothing" nudge
   // for a turn whose only work was writing a NEW goal (see the call site in
   // runIterations). Returns the nudge text or null.
@@ -5486,6 +5508,13 @@ function maybeWarnByteCap(loop, warned) {
         toolUses.some(u => u.name === 'clearGoal') && !toolUses.some(u => isHandOver(u.name)))
         ? { who: loop._lastPlayerLine.who ?? null, line: loop._lastPlayerLine.text }
         : null
+      // 261024 (pass 26): a stop with no new action, on a player line that
+      // did not ask her to stop, gets one more call in this loop (see the
+      // R3-stop gate below). Decided here so the stay note waits for it.
+      const stopContinues = stopWantsNextCall(loop, { hasStop, hasEndLoop, toolUses, newSuspendingTools, p1: _p1Trigger })
+      // The stop of the turn before, when this is the call after it.
+      const stopBefore = loop._stopContinue?.pending === true
+      if (loop._stopContinue) loop._stopContinue.pending = false
       if (_p1Trigger && loop._lastPlayerLine) {
         // 261013: a goal set from the player's line is new work too. The
         // idle tick is what starts it, so a hold left on would sit on it.
@@ -5503,12 +5532,16 @@ function maybeWarnByteCap(loop, warned) {
         // startLongRunner, on any turn.
         const calledUnfollow = actingTools.some(u => u.name === 'unfollow')
         const newWork = actingTools.some(u => !STATIONARY_ACTIONS.has(u.name)) || setsGoal
+        // 261024 (pass 26): a stop that gets the call after it sets the note
+        // only if that call starts nothing either (stopBefore).
         if (newWork) {
           if (stayNote) logger.info?.(`[sei/orch] stay note cleared: new work from the player's line (loop=${loop.id})`)
           stayNote = null
-        } else if ((hasStop || calledUnfollow) && !loop._groupVoiceLine) {
+        } else if (stopContinues) {
+          // decided on the next call
+        } else if ((hasStop || calledUnfollow || stopBefore) && !loop._groupVoiceLine) {
           stayNote = { at: Date.now(), who: loop._lastPlayerLine.who ?? null, line }
-          logger.info?.(`[sei/orch] stay note set: she ${hasStop ? 'stopped' : 'unfollowed'} on the player's line (loop=${loop.id})`)
+          logger.info?.(`[sei/orch] stay note set: she ${hasStop || stopBefore ? 'stopped' : 'unfollowed'} on the player's line (loop=${loop.id})`)
         }
         // 261022 (pass 22): she stopped, or replaced with another action, the
         // action she was running for a task of the player's, and neither
@@ -5633,7 +5666,10 @@ function maybeWarnByteCap(loop, warned) {
         // and end the loop (what end_loop alone used to do). A background
         // action (follow) is not ended by aborting its in_flight entry, so
         // its own stop action (unfollow) runs too.
-        logger.debug?.(`[sei/orch] R3 stop: cancelling in_flight=${loop.inFlight?.name ?? '(none)'} loop=${loop.id}`)
+        // 261024 (pass 26): unless stopContinues (see stopWantsNextCall):
+        // then the action is cancelled the same way and the loop stays up
+        // for one more call, which is told what stopped.
+        logger.debug?.(`[sei/orch] R3 stop: cancelling in_flight=${loop.inFlight?.name ?? '(none)'} loop=${loop.id}${stopContinues ? ' (one more call)' : ''}`)
         if (loop.inFlight) {
           loop._stoppedAction = loop.inFlight.name
           const bgStop = caps.backgroundActions[loop.inFlight.name]
@@ -5644,8 +5680,18 @@ function maybeWarnByteCap(loop, warned) {
               .then(() => registry.execute(bgStop, {}, null, { ...config }))
               .catch(err => logger.warn?.(`[sei/orch] stop -> ${bgStop} failed: ${err?.message ?? err}`))
           }
+          // Its settle comes later and is dropped (tick-claimed, aborted);
+          // the next call must not see it as running.
+          if (stopContinues) loop.inFlight = null
         }
-        terminateLoop(loop, 'R3-stop')
+        if (stopContinues) {
+          // An action that already finished during this turn owes the loop
+          // nothing after a stop (terminateLoop used to drop its completion).
+          loop._settleOwed = null
+          loop._stopContinue = { pending: true, stopped: loop._stoppedAction ?? null, spoke: saySpokenThisTurn }
+        } else {
+          terminateLoop(loop, 'R3-stop')
+        }
       } else if (hasEndLoop && newSuspendingTools.length === 0 && (inFlightIsForeground || loopAwaitsSettle(loop)) &&
                  !(_p1Trigger && !loop._groupVoiceLine && isBareStopLine(loop._lastPlayerLine?.text))) {
         // (A bare "stop" from the player answered with end_loop instead of
@@ -5985,7 +6031,9 @@ function maybeWarnByteCap(loop, warned) {
       // when a foreground action is running (the goal is then the next job),
       // and never on a duplicate setGoal (not newly added).
       const goalOnlyNudge = goalNotStartedNudgeFor(loop, { toolUses, results, continueLoop, hasEndLoop, hasStop })
-      const finalNudgeText = goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
+      // 261024 (pass 26): the call after a stop that did not end the loop.
+      const stopNudge = loop._stopContinue?.pending && !loop.isTerminal ? NUDGES.stopThenNext(loop._stopContinue) : null
+      const finalNudgeText = stopNudge ?? goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
 
       loop.appendToolResults(results, {
         snapshot: snapshotText(),
@@ -5999,6 +6047,10 @@ function maybeWarnByteCap(loop, warned) {
       // long-runner tool_use) as "keep iterating" — so we honor isTerminal
       // first.
       if (loop.isTerminal) return
+      if (stopNudge) {
+        logger.info?.(`[sei/orch] stop on a line that asked for more than a stop — one more call (loop=${loop.id}, stopped=${loop._stopContinue.stopped ?? 'nothing'})`)
+        continue
+      }
       if (goalOnlyNudge) {
         loop._goalStartNudged = true
         logger.info?.(`[sei/orch] goal set with no action started — one more call to start it or end the turn (loop=${loop.id})`)

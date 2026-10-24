@@ -696,8 +696,27 @@ export const NEXT_TIME_FOR_PLAYER_FIELD =
 export const NEXT_TIME_GAME_FIELD =
   'Fill this whenever you fill next_time: the game the step is played in, one of Minecraft, Stardew Valley or Don\'t Starve Together, or none when it is not about playing one of them. Decide it from the step itself, not from where you are now: you may be talking about one game while you are in another, or on a call.'
 
+// 261024 (pass 26): start or finish follows how far it got, I or we follows
+// whose plan it is. The two examples used to differ on both at once, and
+// "whichever matches how far it got" made "we" read as the word for
+// progress (see NEXT_TIME_OWN_PLAN).
 export const NEXT_TIME_GOODBYE =
-  'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time I\'ll start on the roof" or "next time we finish the roof", whichever matches how far it got. If you leave it out, just say a normal goodbye.'
+  'If you fill next_time, work that next step into your goodbye in your own words, the way a friend would say "next time I\'ll start on the roof" or "next time we finish the roof": start or finish by how far it got, and I or we by whose plan it is. If you leave it out, just say a normal goodbye.'
+
+// 261024 (pass 26): game goodbyes only (bot quit_game / end_call). In the
+// 261023 compare every night_social goodbye pulled the player into her own
+// goal, set on her first spawn and never brought up with them: "come back
+// and we'll start the iron thing", "stone pickaxe is still on the list so
+// come back for it", next_time "finish the wood to iron kit with alex".
+// The heartbeat already says which goals are hers and which are player
+// tasks; nothing said what that means for a goodbye.
+// pass26-probe, 16 runs per case: her own goal said as shared in 9 of 48
+// goodbyes on dev, 4 of 48 with this. The agreed-plan control (bye_together)
+// went 14 to 12 of 16, the misses neutral ("walls look good, door is next").
+// A softer wording without the "no we" list kept the control at 14 but put
+// her own goal back into 8 of 48.
+export const NEXT_TIME_OWN_PLAN =
+  'Whose plan the next step is decides how you say it. A plan is shared when the player proposed it, asked for it or said yes to it in the conversation, even if you wrote it down as your own goal: say we for it, like "next time we finish the roof". A goal you came up with yourself that they never took up is yours alone: say it as yours in the farewell and in next_time, like "next time I\'ll go find iron", with no we, no their name, and no asking them to come back for it or help with it.'
 
 // 261008: what the next session's greeting is told about a saved hook. The
 // line is written by nextStep.js (nextStepMemoryLine) and read back from
@@ -978,6 +997,13 @@ export const NUDGES = {
   // unanswered-line nudge follows it and asks for the say(), so this one
   // says nothing about speaking.
   goalNotStartedReplyOwed: `Your goal is written down, but writing it down does not start any work. If you are starting on it now, call the action for its first step. If it waits until later, call end_loop.`,
+
+  // 261024 (pass 26): the one extra call after a stop with no new action, on
+  // a player line that did not ask her to stop (orchestrator
+  // stopWantsNextCall). "actually forget the logs, just meet me over here"
+  // got stop + say("on my way") and no move; the loop ended there and the
+  // idle tick after it moved her and said the line a second time.
+  stopThenNext: ({ stopped, spoke } = {}) => `You stopped ${stopped ? `the ${stopped} action` : 'what you were doing'}, and nothing is running now. If their line also asked you to do something, like come to them, call that action now.${spoke ? ' You already answered them with say() just now, so do not call say() again.' : ''} If it asked for nothing more, call end_loop.`,
 
   // 261012: closes the reply text of a player line (idle and mid-action).
   // The same rule in the conversation header did not hold on its own: in the

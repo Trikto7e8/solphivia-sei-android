@@ -20,19 +20,21 @@ import { Vec3 } from 'vec3'
 import mcDataLib from 'minecraft-data'
 import { digAction as realDigAction, digReachDistance, DIG_REACH } from './dig.js'
 import { goTo as realGoTo, dropWalkOpts } from './pathfind.js'
-import { isUnreachable, noteUnreachable } from './unreachable.js'
+import { isUnreachable, noteUnreachable, isUnreachableResult } from './unreachable.js'
 import { inventoryCounts } from './pickup.js'
 import { dropItemsFor } from './mineVein.js'
 import { droppedItemName } from '../observers/entities.js'
 import { resolveBlock, isStaleHandle } from '../observers/targeting.js'
 import { resolveTerm } from '../loose-terms.js'
 
-// An out-of-range dig from within this distance means she stood by the block
-// and still could not reach it.
+// An out-of-range dig only says something about the block when she ended up
+// within this distance of it (the rule registry.js and unreachable.js keep).
 export const UNREACHABLE_NEAR_M = 8
 // A dig out of range with the block within this horizontal distance means she
 // stands under it: walking closer would not have helped.
 const DIG_UNDER_H = 2
+// pathfind's vertical hint, which the dig result can carry as well.
+const VERTICAL_HINT = / — unreachable — try build to Y=-?\d+(\.\d+)?/
 // Name lookups look at this many hits, nearest first, so blocks she could not
 // reach a moment ago can be skipped.
 const NAME_CANDIDATES = 24
@@ -45,6 +47,34 @@ const DROP_WALK_MS = 3000
 
 function isItemEntity(e) {
   return !!e && (e.name === 'item' || e.name === 'item_stack' || e.displayName === 'Item')
+}
+
+/** Ids of the item entities lying around right now. */
+function itemIdsNow(bot) {
+  const ids = new Set()
+  for (const e of Object.values(bot.entities ?? {})) if (isItemEntity(e)) ids.add(e.id)
+  return ids
+}
+
+/**
+ * Whether an out-of-range dig after `walk` means the block cannot be reached
+ * from here, so find, gather and name digs should skip it for a while.
+ * 261025 review: only when she ended up near it, and only when the walk said
+ * so. A timed-out walk says nothing about the block, and a walk that ended
+ * for its own reason (stuck in a hole, aborted) is about her, not the block.
+ */
+function shouldMarkUnreachable(bot, pos, walk) {
+  const p = bot.entity?.position
+  if (!p) return false
+  if (digReachDistance(bot, pos) > UNREACHABLE_NEAR_M) return false
+  if (walk == null) {
+    // No walk ran: she stands under it, or it is more than 2 above her feet.
+    const horiz = Math.hypot(pos.x + 0.5 - p.x, pos.z + 0.5 - p.z)
+    return horiz <= DIG_UNDER_H || pos.y > Math.floor(p.y + 0.01) + 2
+  }
+  const w = String(walk)
+  if (w === 'reached') return true
+  return isUnreachableResult(w) && !w.startsWith('timeout')
 }
 
 function blockIdsFor(bot, name) {
@@ -102,12 +132,17 @@ async function resolveTarget(args, bot) {
   return findNamedBlock(bot, name, args.maxDistance ?? 32)
 }
 
-/** Our block's drops lying near `around`, nearest first. */
-function dropsOnGround(bot, items, around) {
+/**
+ * Our block's drops lying near `around`, nearest first. Items that were
+ * already lying there before the dig (`before`, a set of entity ids) are not
+ * ours, even when their name has not decoded.
+ */
+function dropsOnGround(bot, items, around, before) {
   const out = []
   if (!around) return out
   for (const e of Object.values(bot.entities ?? {})) {
     if (!isItemEntity(e) || e.isValid === false || !e.position) continue
+    if (before?.has(e.id)) continue
     const d = Math.hypot(e.position.x - around.x, e.position.y - around.y, e.position.z - around.z)
     if (d > DROP_LOOK_M) continue
     const it = droppedItemName(e)
@@ -175,17 +210,27 @@ export async function digToolAction(args, bot, config, _deps) {
   }
 
   const before = inventoryCounts(bot)
-  let r = await digAction({ x: pos.x, y: pos.y, z: pos.z }, bot, config)
+  const itemsBefore = itemIdsNow(bot)
+  const dig = () => digAction({ x: pos.x, y: pos.y, z: pos.z }, bot, config)
+  let r = await dig()
+  if (typeof r === 'string' && (r.startsWith('busy ') || /^dig failed: digging aborted/i.test(r))) {
+    // The walk's pathfinder can still be finishing a dig of its own, or cancel
+    // ours as it stops. Give it a moment and try once more, as gather does.
+    await sleep(400)
+    if (signal?.aborted) return 'aborted'
+    r = await dig()
+  }
+  if (r === 'aborted') return 'aborted'
 
   if (typeof r === 'string' && r.startsWith('out of range')) {
-    const p = bot.entity?.position
-    const dist = digReachDistance(bot, pos)
-    const horiz = p ? Math.hypot(pos.x + 0.5 - p.x, pos.z + 0.5 - p.z) : Infinity
-    const above = p ? pos.y > Math.floor(p.y + 0.01) + 2 : false
-    // She walked and ended near it, or stands under it: the next find,
+    // She ended up near it and still could not reach it: the next find,
     // gather or dig should pick another block.
-    if (dist <= UNREACHABLE_NEAR_M || horiz <= DIG_UNDER_H || above) noteUnreachable(bot, pos, 'out of reach')
-    if (walk != null) r = `${r} (the walk toward it ended: ${walk})`
+    if (shouldMarkUnreachable(bot, pos, walk)) noteUnreachable(bot, pos, 'out of reach')
+    if (walk != null) {
+      // Say the vertical hint once.
+      const w = VERTICAL_HINT.test(r) ? String(walk).replace(VERTICAL_HINT, '') : walk
+      r = `${r} (the walk toward it ended: ${w})`
+    }
     return r
   }
   if (typeof r !== 'string' || !r.startsWith('dug ')) return r
@@ -198,20 +243,22 @@ export async function digToolAction(args, bot, config, _deps) {
     await sleep(DROP_POLL_MS)
     got = gainOf(before, bot, items)
   }
+  if (signal?.aborted) return 'aborted'
   // Still not in the bag: one short walk onto the drop where it actually lies
   // (it can bounce or roll off the spot the dig walked to).
-  let lying = got === 0 ? dropsOnGround(bot, items, pos) : []
+  let lying = got === 0 ? dropsOnGround(bot, items, pos, itemsBefore) : []
   if (got === 0 && lying.length && !signal?.aborted) {
     const ep = lying[0].position
     await goTo(bot, Math.floor(ep.x), Math.floor(ep.y), Math.floor(ep.z), 1, DROP_WALK_MS, signal, dropWalkOpts(name))
     if (signal?.aborted) return 'aborted'
     const until = Date.now() + DROP_WAIT_MS / 2
     got = gainOf(before, bot, items)
-    while (got === 0 && Date.now() < until) {
+    while (got === 0 && Date.now() < until && !signal?.aborted) {
       await sleep(DROP_POLL_MS)
       got = gainOf(before, bot, items)
     }
-    lying = got === 0 ? dropsOnGround(bot, items, pos) : []
+    if (signal?.aborted) return 'aborted'
+    lying = got === 0 ? dropsOnGround(bot, items, pos, itemsBefore) : []
   }
 
   const base = r.replace(' (pickup walk did not reach)', '')

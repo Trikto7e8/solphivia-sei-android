@@ -261,7 +261,7 @@ export const ACTION_DESCRIPTIONS = {
     'Toggle PvP spar mode: `{enabled:true}` when the player asks to spar/fight/duel/PvP you, `{enabled:false}` when they ask to stop. While ON you may attackEntity the player and hit back when they hit you; while OFF (the default) you never attack or retaliate against the player. If they named a weapon for the duel ("stick fight", "fists only"), equip exactly that item first — a stick fight means holding a stick, not a sword. Turn it OFF the moment they call it off.',
 
   dig:
-    'Break a block: `{block:"<name>"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.',
+    'Break a block: `{block:"<name>"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). It walks into reach on its own, so you do not need goTo first, and the result says whether the drop reached your inventory. Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.',
 
   gather:
     'Bulk-mine one block type in one call: `{name:"<term>"}` (loose category or exact id) or an `{x,y,z}` anchor, `{count:N}` how many (default 16, max 64). Runs to completion before your next turn. Equips the best tool you own automatically, per block.',

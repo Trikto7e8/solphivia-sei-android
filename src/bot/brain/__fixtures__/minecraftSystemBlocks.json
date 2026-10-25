@@ -244,7 +244,7 @@
       },
       {
         "name": "dig",
-        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
+        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). It walks into reach on its own, so you do not need goTo first, and the result says whether the drop reached your inventory. Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1298,7 +1298,7 @@
       },
       {
         "name": "dig",
-        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
+        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). It walks into reach on its own, so you do not need goTo first, and the result says whether the drop reached your inventory. Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2351,7 +2351,7 @@
       },
       {
         "name": "dig",
-        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
+        "description": "Break a block: `{block:\"<name>\"}` for the nearest of that type, `{x,y,z}` for an exact cell, or `{x,y,z, to:{x,y,z}}` for a cuboid (<=256, top-down). It walks into reach on its own, so you do not need goTo first, and the result says whether the drop reached your inventory. Use gather for whole trees / ore / N of one block. The best tool you own is equipped automatically before every swing, so never call equip first; if you own nothing that can harvest the block the result says so and you need to craft the right pickaxe.",
         "input_schema": {
           "type": "object",
           "properties": {

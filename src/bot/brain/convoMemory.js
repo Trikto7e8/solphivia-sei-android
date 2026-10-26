@@ -196,7 +196,7 @@ export function createConvoMemory({ onLine = null, trackHandOvers = false } = {}
       .sort((a, b) => (a.at - b.at) || (a.o - b.o) || (a.i - b.i))
     // 261026 (pass 28): the hand-over line closes the record. It covers the
     // whole session, so it is not placed in time order.
-    const tail = trackHandOvers ? `\n${handOvers.describe()}` : ''
+    const tail = trackHandOvers ? `\n${handOvers.describe({ label: playerLabel })}` : ''
     return `${SEED_HEADERS.conversation}\n${all.map((x) => x.line).join('\n')}${tail}`
   }
 

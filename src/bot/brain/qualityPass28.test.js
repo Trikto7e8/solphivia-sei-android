@@ -78,7 +78,7 @@ describe('convoMemory hand-over line', () => {
     off.recentChat.pushPlayer('Alex', 'give me some coal')
     on.recentChat.noteGiven({ item: 'coal', n: 7, to: 'Alex' })
     const block = on.recentChat.formatConversationBlock()
-    expect(block.trim().split('\n').pop()).toMatch(/^Handed over this session: you gave Alex 7 coal\./)
+    expect(block.trim().split('\n').pop()).toMatch(/^Handed over this session: you gave player \(Alex\) 7 coal\./)
 
     off.recentChat.noteGiven({ item: 'coal', n: 7, to: 'Alex' })
     expect(off.recentChat.formatConversationBlock()).not.toContain('Handed over this session')
@@ -199,6 +199,6 @@ describe('orchestrator: the hand-over line', () => {
     await flush()
     await drain()
     const last = allText(provider.calls[provider.calls.length - 1])
-    expect(last).toContain('Handed over this session: you gave Steve 7 coal.')
+    expect(last).toContain('Handed over this session: you gave player (Steve) 7 coal.')
   })
 })

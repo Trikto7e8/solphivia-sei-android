@@ -330,7 +330,7 @@ export function createHandOverLedger() {
   /** @param {{item: string, n: number, to?: string|null}|null|undefined} h */
   function gave(h) {
     if (!h || typeof h.item !== 'string' || !h.item || !Number.isFinite(h.n) || h.n <= 0) return
-    const to = String(h.to ?? '').trim() || 'the player'
+    const to = String(h.to ?? '').trim()
     if (!given.has(to)) given.set(to, new Map())
     addCount(given.get(to), h.item, h.n)
   }
@@ -342,10 +342,19 @@ export function createHandOverLedger() {
     }
   }
 
-  function describe() {
+  /**
+   * @param {{ label?: (name: string) => string }} [opts] label: how the
+   *   transcript names a player (convoMemory.playerLabel), so the recipient
+   *   reads the same as their lines and a player named like her stays them.
+   */
+  function describe({ label = (name) => name } = {}) {
     const list = (m) => joinAnd([...m].map(([item, n]) => `${n} ${item}`))
+    const who = (to) => {
+      if (!to) return 'the player'
+      try { return String(label(to) || to) } catch { return to }
+    }
     const out = given.size
-      ? `you gave ${joinAnd([...given].map(([to, items]) => `${to} ${list(items)}`))}.`
+      ? `you gave ${joinAnd([...given].map(([to, items]) => `${who(to)} ${list(items)}`))}.`
       : 'you have not given anything to anyone.'
     const inn = received.size
       ? ` ${list(received)} came into your inventory without an action of yours (handed to you or picked up).`

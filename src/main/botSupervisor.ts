@@ -1740,7 +1740,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         // without disk reads, and log the skin server URL for verification.
         // The bot itself never hits the skin server — the consumer is the host
         // MC client via CustomSkinLoader. character.username is preferred over
-        // sanitizeMcName(character.name) so each persona connects under its
+        // the folded display name (effectiveMcUsername) so each persona connects under its
         // own in-game name.
         try {
           child.postMessage(

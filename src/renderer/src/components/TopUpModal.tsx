@@ -59,7 +59,7 @@ export function TopUpModal({ onClose, onProceed }: TopUpModalProps): React.React
       </p>
 
       <div className={styles.packs}>
-        {packages.map((pkg, i) => (
+        {packages.map((pkg) => (
           <div key={pkg.kind} className={styles.pack}>
             <span className={styles.packPrice}>{pkg.price}</span>
             <span className={styles.packCredits}>{pkg.credits}</span>
@@ -69,8 +69,6 @@ export function TopUpModal({ onClose, onProceed }: TopUpModalProps): React.React
                 kind="primary"
                 size="md"
                 arrow
-                // Neighbouring packs sweep out of step (261027).
-                glintOffset={i % 2 === 1}
                 disabled={busy}
                 onClick={() => handleBuy(pkg.kind)}
               >

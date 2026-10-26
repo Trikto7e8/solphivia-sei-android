@@ -21,7 +21,7 @@
  * checkout logic moves.
  */
 
-import React from 'react';
+import React, { useLayoutEffect, useRef } from 'react';
 import { ArrowIcon } from './icons';
 import styles from './PlanButton.module.css';
 
@@ -36,9 +36,6 @@ export interface PlanButtonProps {
   /** Leading icon (e.g. the check on "Current plan"). */
   icon?: React.ReactNode;
   disabled?: boolean;
-  /** Run the glint half a loop out of step, for a primary beside another
-   *  primary (the Quest card next to Party), so they never sweep together. */
-  glintOffset?: boolean;
   'aria-label'?: string;
   title?: string;
 }
@@ -51,15 +48,27 @@ export function PlanButton({
   arrow = false,
   icon,
   disabled,
-  glintOffset = false,
   title,
   ...rest
 }: PlanButtonProps): React.ReactElement {
-  const cls = [styles.button, styles[kind], styles[size], glintOffset ? styles.glintOffset : '']
-    .filter(Boolean)
-    .join(' ');
+  const cls = [styles.button, styles[kind], styles[size]].join(' ');
+  const ref = useRef<HTMLButtonElement>(null);
+  // Every glint on screen sweeps at the same moment (Shawn, 261027). A CSS
+  // animation starts when its element mounts or is re-enabled, so a button
+  // that appears later (the usage-limit popup over the plan cards, a card
+  // that turns primary when the plan loads) would run out of step. Pinning
+  // the glint's start to the document timeline's zero puts them all on one
+  // shared phase; the duration (and --flux) still come from the CSS.
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el || typeof el.getAnimations !== 'function') return;
+    for (const a of el.getAnimations({ subtree: true })) {
+      if (a instanceof CSSAnimation && a.animationName.includes('plan-glint')) a.startTime = 0;
+    }
+  }, [kind, disabled]);
   return (
     <button
+      ref={ref}
       type="button"
       className={cls}
       onClick={onClick}

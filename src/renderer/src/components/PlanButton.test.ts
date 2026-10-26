@@ -15,11 +15,12 @@
  *         band, no shadow under the primary, no border line on either kind.
  *   P.6 — the primary carries the old Summon glint (ef346069 .deployBtn), on a
  *         1.8s loop (261027, was 3.4s) scaled by --flux, moved by transform,
- *         and not on a disabled button. Quest runs half a loop out of step.
+ *         and not on a disabled button. Every glint shares one phase (Shawn,
+ *         261027: the plan buttons sweep together), no offset class.
  *   P.7 — the primary fill is its own --plan-cta token family (the old
  *         Summon blue), set in every theme and falling back to --accent.
- *         On midnight the global accent is that blue (261027), so the plan
- *         tokens point at it; ice keeps its calmer global accent.
+ *         On midnight the global accent itself is brighter (261027), so the
+ *         plan tokens point at it; ice keeps its calmer global accent.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -35,6 +36,7 @@ const CREDITS = read('../screens/CreditsScreen.tsx');
 const TOPUP = read('TopUpModal.tsx');
 const HARDSTOP = read('HardStopModal.tsx');
 const TOKENS = read('../styles/tokens.css');
+const PLANBUTTON = read('PlanButton.tsx');
 const ZH = read('../lib/i18n/zh/screens-b.ts') + read('../lib/i18n/zh/modals.ts');
 
 describe('PlanButton', () => {
@@ -82,8 +84,12 @@ describe('PlanButton', () => {
     expect(keyframes).toMatch(/92%,\s*100%\s*\{\s*transform: translateX\(250%\)/);
     expect(keyframes.slice(0, keyframes.indexOf('}\n}'))).not.toMatch(/left:/);
     expect(CSS).toMatch(/\.primary:disabled::after\s*\{\s*display:\s*none/);
-    expect(CSS).toMatch(/\.glintOffset::after\s*\{\s*animation-delay:\s*calc\(-0\.9s \/ var\(--flux, 1\)\)/);
-    expect(CREDITS).toMatch(/glintOffset=\{card\.tier === 'quest'\}/);
+    // In sync: no per-button delay anywhere, and each glint is pinned to the
+    // document timeline's zero so a button that mounts later joins the phase.
+    expect(CSS).not.toMatch(/animation-delay/);
+    expect(CSS).not.toMatch(/glintOffset/);
+    expect(CREDITS + TOPUP).not.toMatch(/glintOffset/);
+    expect(PLANBUTTON).toMatch(/animationName\.includes\('plan-glint'\)\) a\.startTime = 0/);
   });
 
   it('P.7 the primary uses its own --plan-cta fill, per theme', () => {
@@ -95,9 +101,9 @@ describe('PlanButton', () => {
     for (const b of blocks) {
       for (const tok of ['--plan-cta:', '--plan-cta-strong:', '--plan-cta-text:']) expect(b).toContain(tok);
     }
-    // Midnight's global accent is the old Summon blue itself (261027), so the
+    // Midnight's global accent is the brighter middle blue (261027), and the
     // plan buttons follow it there.
-    expect(blocks[1]).toMatch(/--accent:\s*#7fb0ff/);
+    expect(blocks[1]).toMatch(/--accent:\s*#76a6f0/);
     expect(blocks[1]).toMatch(/--plan-cta:\s*var\(--accent\)/);
     // Ice keeps the calmer global accent; only its plan buttons are brighter.
     expect(blocks[0]).toMatch(/--plan-cta:\s*#3f7fd6/);

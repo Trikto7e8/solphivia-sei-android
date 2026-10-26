@@ -493,13 +493,7 @@ export function CreditsScreen(): React.ReactElement {
                     {isCurrent && cancelScheduled ? (
                       // Resume the existing to-be-cancelled sub (Polar portal
                       // uncancel) rather than starting a new one that bills now.
-                      <PlanButton
-                        kind="primary"
-                        arrow
-                        glintOffset={card.tier === 'quest'}
-                        disabled={checkoutActive}
-                        onClick={handleResume}
-                      >
+                      <PlanButton kind="primary" arrow disabled={checkoutActive} onClick={handleResume}>
                         {t('Resume {name}', { name: card.name })}
                       </PlanButton>
                     ) : isCurrent ? (
@@ -521,8 +515,6 @@ export function CreditsScreen(): React.ReactElement {
                       <PlanButton
                         kind="primary"
                         arrow
-                        // Quest sweeps half a loop after Party (261027).
-                        glintOffset={card.tier === 'quest'}
                         disabled={checkoutActive}
                         onClick={() => handlePlanSelect(card.tier as Exclude<PlanTier, 'free'>)}
                       >

@@ -244,25 +244,25 @@
   --muted: #82807a;
   --muted-2: #56544e;
 
-  /* 261027 (Shawn: "making all of the light blue brighter in dark theme"):
-     back to the old Summon periwinkle (ef346069) for the whole accent
-     family. 260929 (811a4312) had dimmed it to #6c9ae0 / #86ade8 because it
-     glared on the dark popups; the middle step tried was #76a6f0 / #91b9f4.
-     Brighter only gains contrast here: the dark label on the fill is 8.4:1
-     (was 6.5), the accent as text 8.7:1 on --bg2 (was 6.7) and 6.9:1 on
-     --bg4 (was 5.3), accent on --accent-soft over --bg4 5.0:1 (was 4.1). */
-  --accent: #7fb0ff;
-  --accent-strong: #9cc4ff;
-  --accent-soft: rgba(127, 176, 255, 0.16);
+  /* 261027 (Shawn: "making all of the light blue brighter in dark theme",
+     then "do the middle one"): halfway between the 260929 periwinkle
+     (811a4312: #6c9ae0 / #86ade8, dimmed because the old #7fb0ff / #9cc4ff
+     glared on the dark popups) and that old Summon blue. Brighter only
+     gains contrast here: the dark label on the fill is 7.5:1 (was 6.5), the
+     accent as text 7.7:1 on --bg2 (was 6.7) and 6.1:1 on --bg4 (was 5.3),
+     accent on --accent-soft over --bg4 4.6:1 (was 4.1). */
+  --accent: #76a6f0;
+  --accent-strong: #91b9f4;
+  --accent-soft: rgba(118, 166, 240, 0.16);
   /* Text/icon on an accent fill — the mockup hardcodes #1a1206 on the CTA
      regardless of accent hue; near-black on the periwinkle fill (white
-     would be 2.2:1). */
+     would be 2.5:1). */
   --accent-text: #1a1206;
-  --acc: 127 176 255;
+  --acc: 118 166 240;
   --acc-c: rgb(var(--acc));
-  /* PlanButton fill: the global accent IS the old Summon blue on midnight
-     now, so the plan buttons follow it (they had their own #7fb0ff while
-     the accent was the dimmer #6c9ae0). */
+  /* PlanButton fill: midnight's plan buttons follow the brighter global
+     accent (they had their own #7fb0ff while the accent was the dimmer
+     #6c9ae0). Dark label 7.5:1 at rest, 8.3:1 on hover. */
   --plan-cta: var(--accent);
   --plan-cta-strong: var(--accent-strong);
   --plan-cta-text: var(--accent-text);

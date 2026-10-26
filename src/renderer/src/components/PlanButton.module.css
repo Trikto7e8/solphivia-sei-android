@@ -128,13 +128,6 @@
   }
 }
 
-/* Half a loop out of step, for a primary that sits beside another one (the
-   Quest card next to Party), so the two never sweep together. Negative, so
-   it starts mid-loop rather than waiting. */
-.glintOffset::after {
-  animation-delay: calc(-0.9s / var(--flux, 1));
-}
-
 /* A dimmed, unclickable button does not glint. */
 .primary:disabled::after {
   display: none;

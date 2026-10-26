@@ -68,7 +68,7 @@ export function signInFailureText(reason: ChatgptSignInFailure, t: (s: string) =
  */
 export function chatgptPlanDisclosure(t: (s: string) => string): string {
   return `${t('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')} ${t(
-    "Works on every Sei plan, including Free. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.",
+    "Works with your ChatGPT Free, Go, Plus or Pro account. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.",
   )}`;
 }
 

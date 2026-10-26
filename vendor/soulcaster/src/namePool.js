@@ -18,7 +18,8 @@
 // toneless pinyin written as one word (Mingyu). Plain ASCII letters only (no
 // diacritics): a generated character has no username, so its Minecraft name
 // is name.replace(/[^A-Za-z0-9_]/g, '') and "Sofía" would become "Sofa".
-// Hyphens are fine ("Min-jun" plays as "Minjun").
+// Hyphens are fine ("Min-jun" plays as "Minjun"). Every name must also
+// sanitize to 3-16 characters, the Minecraft username length range.
 //
 // KEEP IN SYNC: this is a copy of sei-proxy src/anthropic/names/namePool.ts
 // (the cloud path draws there; this copy serves BYOK/local casts). Edit both
@@ -101,17 +102,17 @@ export const NAME_POOL_SOURCE = {
       Jiamin Shuyi Yuelin Qingyi
     `,
     male: `
-      Bowen Bo Dawei Deming Feng Gang Guang Haoran Haoyu Hao Heng Hongwei Jian Jianguo Jianhua
-      Jiahao Jiale Jiaming Jie Jin Jinhai Junjie Junhao Kai Kang Lei Liang Long Ming Mingyu
-      Minghao Peng Qiang Qiming Rui Shaowei Shen Tao Tianyu Wenbo Wenjie Wenhao Xiang Xiaobo
-      Xiaojun Xiaolong Xu Yang Yifan Yihang Yong Yuchen Yuhang Yunfei Zhiwei Zhiqiang Zhihao Zihao
-      Zimo Zirui Zeyu Zhenyu Haoxuan Hanwen Guowei Chenyu Boyang Junwei Kaiwen Liwei Mingxuan
-      Ruochen Siyuan Tianhao Weiming Xiaoming Xingyu Yansong Yiming Yuze Zhengyang Hongyu Jianyu
-      Kun Shuo Song Wenxuan Zhiyuan Huaqiang Jingyu Lixin Pengfei Shengli Weidong Yuanhang Zhongyi
+      Bowen Dawei Deming Feng Gang Guang Haoran Haoyu Hao Heng Hongwei Jian Jianguo Jianhua Jiahao
+      Jiale Jiaming Jie Jin Jinhai Junjie Junhao Kai Kang Lei Liang Long Ming Mingyu Minghao Peng
+      Qiang Qiming Rui Shaowei Shen Tao Tianyu Wenbo Wenjie Wenhao Xiang Xiaobo Xiaojun Xiaolong
+      Yang Yifan Yihang Yong Yuchen Yuhang Yunfei Zhiwei Zhiqiang Zhihao Zihao Zimo Zirui Zeyu
+      Zhenyu Haoxuan Hanwen Guowei Chenyu Boyang Junwei Kaiwen Liwei Mingxuan Ruochen Siyuan
+      Tianhao Weiming Xiaoming Xingyu Yansong Yiming Yuze Zhengyang Hongyu Jianyu Kun Shuo Song
+      Wenxuan Zhiyuan Huaqiang Jingyu Lixin Pengfei Shengli Weidong Yuanhang Zhongyi
     `,
     unisex: `
-      Wei Hua Tian Xin Yi Yu Qing Yutong Zihan Jiaqi Chenxi Zixuan Xiaoyu Yuan Lingyun An Ning
-      Ruoyu Siyu Jun Yunxi Mo Jing
+      Wei Hua Tian Xin Qing Yutong Zihan Jiaqi Chenxi Zixuan Xiaoyu Yuan Lingyun Ning Ruoyu Siyu
+      Jun Yunxi Jing
     `,
   },
 
@@ -160,7 +161,7 @@ export const NAME_POOL_SOURCE = {
       Sune Svein Sverre Tor Torbjorn Torsten Torvald Trygve Ulf Vidar Viggo Vilhelm Yngve Aatu
       Eino Ilmari Jussi Kalle Lauri Mikko Onni Otso Sampo Tapio Toivo Veikko Vaino Arnar Gisli
       Hrafn Snorri Halldor Egill Soren Morten Kasper Mads Torben Emil Elias Hugo Sixten Algot Ebbe
-      Eskil Bo Love Vide Kai
+      Eskil Love Vide Kai
     `,
     unisex: `
       Kim Robin Mio Sol Lumi Aamu Noa Eli Sky Alex Ilo

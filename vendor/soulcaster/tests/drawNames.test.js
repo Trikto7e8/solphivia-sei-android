@@ -32,13 +32,14 @@ test('no name twice within a heritage; single given names only', () => {
 
 test('every name survives the Minecraft username sanitizer intact', () => {
   // A generated character has no username, so its MC name is
-  // name.replace(/[^A-Za-z0-9_]/g, '') capped at 16. Only hyphens may drop.
+  // name.replace(/[^A-Za-z0-9_]/g, ''), which must be 3-16 chars. Only hyphens may drop.
   for (const [h, e] of Object.entries(NAME_POOL)) {
     for (const n of [...e.female, ...e.male, ...e.unisex]) {
       assert.match(n, /^[A-Za-z][A-Za-z'-]*[A-Za-z]$/, `${h}: ${n}`);
       const mc = n.replace(/[^A-Za-z0-9_]/g, '');
       assert.equal(mc, n.replace(/[-' ]/g, ''), `${h}: ${n}`);
-      assert.ok(mc.length <= 16, `${h}: ${n}`);
+      // Minecraft usernames are 3-16 characters; vanilla/LAN servers reject shorter.
+      assert.ok(mc.length >= 3 && mc.length <= 16, `${h}: ${n} sanitizes to ${mc.length} chars`);
     }
   }
 });

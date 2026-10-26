@@ -1382,6 +1382,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       const { snapshot, goals, frontier } = _repeatsContext
       return ownRepeatsNote(selfLines, playerLines, {
         mode, names, context: [snapshot, goals, frontier], vocab: gameVocab(), signature: config?.persona?.expanded,
+        common: _instructionText,
       })
     } catch { return null }
   }
@@ -2114,6 +2115,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   }
 
   let cachedSystemBlocks = null
+  // 261026: the instruction text of the cached prefix, without the persona.
+  // ownRepeats reads its words as plain English, so a word the card's sample
+  // lines share with it ("sorry", "back") is never named as a signature.
+  let _instructionText = ''
   function rebuildPersonalitySystem() {
     // Static blocks composed from brain (game-agnostic) + adapter (game-specific).
     // Order is fixed for cache-key stability and indexed by src/bot/brain/log.js
@@ -2122,6 +2127,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
     // 260618: the proactiveness directive lives HERE (cached, sent once per
     // session) instead of in the per-loop heartbeat, since it is static for the
     // session. This is the big static block that used to re-bill every loop.
+    _instructionText = [
+      UNIVERSAL_BASELINE, caps.surfaceBaseline(), adapter.capabilityParagraph(), adapter.worldPrimer(), adapter.actionRules(),
+    ].filter((t) => typeof t === 'string').join('\n')
     cachedSystemBlocks = anthropic.buildCachedSystem(
       [
         // Contract v2: the game-surface half is adapter-declared

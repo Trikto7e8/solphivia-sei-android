@@ -167,14 +167,198 @@ export function repeatedOwnTerms(selfLines, playerLines = [], { window = 4, minT
   return out
 }
 
-/** The tic half of the note (repeatedOwnTerms hits), or null when nothing repeats. */
-function ticNote(hits) {
-  if (!hits.length) return null
-  const quoted = hits.map((h) => `"${h.term}"`).join(' and ')
-  const n = hits[0].of
-  return `Your own recent lines keep using ${quoted} (in ${hits[0].count} of your last ${n}). ` +
-    'A signature word or catchphrase wears thin when it is in every line, so leave it out of this one unless the moment really calls for it. ' +
-    'You still sound like yourself without it.'
+// ---------------------------------------------------------------------------
+// 261026: the card's own signature words, named after a single use.
+//
+// The 3-of-4 bar above needs three earlier turns, so the first lines of a
+// session, and every line after a quiet stretch, carried the tic untouched.
+// In the persona eval on dev d8fefa4b (one greeting before the line under
+// test) Roger said "big brother" in 87% of his lines and Lyra "nya" in 100%,
+// and the greeting that came before already had it in 15 of 15. Each one of
+// those words is in the card's example lines, which is where the model copies
+// it from (261012: removing the word from Lyra's examples took her from 100%
+// to 0%). So a word from the card's example lines that she used in one of her
+// last two lines is named in the next turn's note. A tic can then come up
+// every second or third line instead of in all of them.
+//
+// Which words count is read from the card, never from a fixed list: the
+// card's quoted lines, its sample-line lists, and the short lines under a
+// voice or example header. Plain English words that the card's examples also
+// happen to use ("okay", "come back", "try") must not be named, or the note
+// would fire on almost every line and push ordinary words out. The words our
+// own instruction text uses (`common`, passed in by the orchestrator: the
+// baseline and the game prompts, about 1800 words) stand in for ordinary
+// English: "sorry" or "back" are in there, "nya", "universe" or "brother"
+// are not.
+
+// The instruction text is written English, so the most common words of
+// spoken chat are missing from it. These are ordinary in any voice. Measured
+// on the dev persona eval lines, without them "ok", "yeah", "sorry" and "hurt"
+// were named as signatures as often as the real ones.
+const CHAT_WORDS = new Set((
+  'ok okay yeah yep yup nope nah yo hey hi hello bye sorry thanks thank please sure right well ' +
+  'wait look see know think feel good great nice cool fine bad sad happy hurt lost try trying help ' +
+  'love want need someone something thing stuff time day night today tomorrow anyway maybe ' +
+  'little bit kind thought sorta guess mean'
+).split(' '))
+
+// Header of a section whose short lines are sample lines.
+const VOICE_HEADER_RE = /^#+\s*.*\b(voice|speech|example|examples|sample|samples|dialog|dialogue|lines|quotes)\b/i
+// The longest line still read as a sample line under such a header. Prose
+// paragraphs are longer.
+const SAMPLE_LINE_MAX_WORDS = 16
+// A short intro line ending in a colon ("Sample lines:", "Examples:").
+const LIST_INTRO_MAX_WORDS = 5
+const STUTTER_RE = /^([a-z])-(?=\1)/
+
+/** The lines a card gives as things the character says. */
+export function cardSampleLines(card) {
+  const text = typeof card === 'string' ? card : ''
+  if (!text) return []
+  const out = []
+  for (const m of text.matchAll(/["“]([^"”\n]{1,240})["”]/g)) out.push(m[1])
+  let list = false
+  let voice = false
+  for (const raw of text.split('\n')) {
+    const l = raw.trim()
+    if (/^#/.test(l)) { voice = VOICE_HEADER_RE.test(l); list = false; continue }
+    if (!l) { list = false; continue }
+    const words = l.split(/\s+/).length
+    if (/:\s*$/.test(l) && words <= LIST_INTRO_MAX_WORDS) { list = true; continue }
+    const item = l.replace(/^[-*•]\s+/, '').replace(/^["“]|["”]$/g, '')
+    if (list || (voice && words <= SAMPLE_LINE_MAX_WORDS)) out.push(item)
+  }
+  return out
+}
+
+// A stutter ("b-big", "o-oh") matches its word too.
+const unstutter = (w) => w.replace(STUTTER_RE, '')
+// Two-word phrases never cross punctuation: "big brother, look" holds "big
+// brother", not "brother look".
+const clauseTokens = (text) => String(text ?? '').split(/[,.!?;:…—–]+|\s-\s/).map(tokensOf).filter((t) => t.length)
+
+let _cardCache = { card: null, common: null, terms: null }
+/**
+ * Words and two-word phrases from the card's sample lines that are not plain
+ * English (see the note above). Keyed by every spelling (wordKeys), each with
+ * the number of sample lines it is in.
+ *
+ * @returns {Map<string, number>}
+ */
+export function signatureTerms(card, common = '') {
+  if (_cardCache.card === card && _cardCache.common === common) return _cardCache.terms
+  const commonKeys = new Set(CHAT_WORDS)
+  for (const w of tokensOf(common)) for (const k of wordKeys(w)) commonKeys.add(k)
+  // A stutter the card writes out ("o-oh", "w-wait") is how this character
+  // talks, whatever the word under it.
+  const plain = (w) => !STUTTER_RE.test(w) && (!isContent(w) || wordKeys(w).some((k) => commonKeys.has(k) || STOP.has(k)))
+  const terms = new Map()
+  for (const line of cardSampleLines(card)) {
+    const seen = new Set()
+    for (const t of clauseTokens(line)) {
+      t.forEach((w, i) => {
+        for (const v of new Set([w, unstutter(w)])) if (!plain(v)) for (const k of wordKeys(v)) seen.add(k)
+        const n = t[i + 1]
+        if (n && !STOP.has(unstutter(w)) && !STOP.has(unstutter(n)) && (!plain(w) || !plain(n))) {
+          for (const k of termKeys(`${unstutter(w)} ${unstutter(n)}`)) seen.add(k)
+        }
+      })
+    }
+    for (const k of seen) terms.set(k, (terms.get(k) ?? 0) + 1)
+  }
+  _cardCache = { card, common, terms }
+  return terms
+}
+
+const SIG_TURNS = 2
+const SIG_WITHIN_MS = 300_000
+const MAX_SIGS = 2
+
+/**
+ * Signature words from the card (signatureTerms) that she used in at least
+ * one of her last `turns` turns, said in the last `withinMs`. Never a name,
+ * a word the player also used recently, or an item, block, mob or task word
+ * (`context`, `vocab`), the same as repeatedOwnTerms. A phrase covers the
+ * words inside it ("big brother", not "brother").
+ *
+ * @param {Array<{at:number,text:string}>} selfLines   oldest first
+ * @param {Array<{text:string,who?:string}>} [playerLines]
+ * @returns {Array<{term:string, count:number, of:number, inLast:boolean}>}
+ */
+export function recentSignatureTerms(selfLines, playerLines = [], {
+  card = '', common = '', now = Date.now(), turns = SIG_TURNS, withinMs = SIG_WITHIN_MS, max = MAX_SIGS,
+  playerWindow = 8, names = [], context = [], vocab = null,
+} = {}) {
+  const sig = signatureTerms(card, common)
+  if (!sig.size) return []
+  const recent = groupTurns(selfLines).filter((t) => !Number.isFinite(t.at) || now - t.at <= withinMs).slice(-turns)
+  if (!recent.length) return []
+  const heard = new Set()
+  for (const l of (playerLines ?? []).slice(-playerWindow)) for (const t of termsOf(l?.text)) for (const k of termKeys(t)) heard.add(k)
+  const known = new Set()
+  for (const n of [...(names ?? []), ...(playerLines ?? []).map((l) => l?.who), ...(context ?? [])]) {
+    for (const w of tokensOf(n)) if (w.length > 1) for (const k of wordKeys(w)) known.add(k)
+  }
+  const game = vocabKeys(vocab)
+  const blocked = (term) => term.split(' ').some((w) => wordKeys(unstutter(w)).some((k) => known.has(k) || game?.has(k))) ||
+    termKeys(term).some((k) => heard.has(k))
+  const isSig = (term) => termKeys(term).some((k) => sig.has(k))
+  const weight = (term) => Math.max(0, ...termKeys(term).map((k) => sig.get(k) ?? 0))
+
+  const found = new Map()
+  recent.forEach((turn, idx) => {
+    const terms = new Set()
+    for (const t of clauseTokens(turn.text)) {
+      t.forEach((w, i) => {
+        if (isSig(w) && w.length > 1) terms.add(w)
+        else if (unstutter(w) !== w && isSig(unstutter(w))) terms.add(unstutter(w))
+        const n = t[i + 1]
+        if (n) { const p = `${unstutter(w)} ${unstutter(n)}`; if (isSig(p)) terms.add(p) }
+      })
+    }
+    for (const term of terms) {
+      if (blocked(term)) continue
+      const f = found.get(term) ?? { term, count: 0, of: recent.length, inLast: false }
+      f.count++
+      if (idx === recent.length - 1) f.inLast = true
+      found.set(term, f)
+    }
+  })
+  const hits = [...found.values()].sort((a, b) =>
+    b.count - a.count || b.term.split(' ').length - a.term.split(' ').length || weight(b.term) - weight(a.term))
+  const out = []
+  // One term per habit: two terms that share a word are the same one.
+  const overlap = (a, b) => a.split(' ').some((w) => b.split(' ').includes(w))
+  for (const h of hits) {
+    if (out.some((o) => overlap(h.term, o.term))) continue
+    out.push(h)
+    if (out.length >= max) break
+  }
+  return out
+}
+
+const TIC_ASK_ONE = 'A signature word or catchphrase wears thin when it is in every line, so leave it out of this one unless the moment really calls for it. ' +
+  'You still sound like yourself without it.'
+const TIC_ASK_TWO = 'A signature word or catchphrase wears thin when it is in every line, so leave them out of this one unless the moment really calls for them. ' +
+  'You still sound like yourself without them.'
+
+/**
+ * The tic half of the note, or null when nothing repeats. `hits` are the
+ * repeatedOwnTerms habits (3 of 4 turns), `sigs` the card's signature words
+ * she used in her last line or two (recentSignatureTerms).
+ */
+function ticNote(hits, sigs = []) {
+  const quote = (list) => list.map((h) => `"${h.term}"`).join(' and ')
+  const lead = []
+  if (hits.length) lead.push(`Your own recent lines keep using ${quote(hits)} (in ${hits[0].count} of your last ${hits[0].of}).`)
+  if (sigs.length) {
+    const where = sigs.every((s) => s.inLast && s.count === 1) ? 'your last line'
+      : sigs.length === 1 && sigs[0].count === 1 ? 'one of your last two lines' : 'your last two lines'
+    lead.push(`You already used ${quote(sigs)} in ${where}.`)
+  }
+  if (!lead.length) return null
+  // The ask in the form it was measured with (261012) when one word is named.
+  return `${lead.join(' ')} ${hits.length + sigs.length > 1 ? TIC_ASK_TWO : TIC_ASK_ONE}`
 }
 
 // ---------------------------------------------------------------------------
@@ -484,7 +668,16 @@ function linesNote(selfLines, playerLines, opts = {}) {
 export function ownRepeatsNote(selfLines, playerLines = [], opts = {}) {
   const { names, context } = opts
   const tics = repeatedOwnTerms(selfLines, playerLines, { names, context })
-  const lines = linesNote(selfLines, playerLines, { ...opts, skipTerms: tics.map((h) => h.term) })
-  const parts = [lines, ticNote(tics)].filter(Boolean)
+  // 261026: the card's signature words after one use. `signature` is the
+  // card, `common` the instruction text that marks plain English.
+  const covered = (term) => tics.some((h) => ` ${h.term} `.includes(` ${term} `) || ` ${term} `.includes(` ${h.term} `))
+  const sigs = opts.signature
+    ? recentSignatureTerms(selfLines, playerLines, {
+      card: opts.signature, common: opts.common, now: opts.now, names, context, vocab: opts.vocab,
+    }).filter((s) => !covered(s.term)).slice(0, Math.max(0, MAX_SIGS - tics.length))
+    : []
+  const named = [...tics, ...sigs].map((h) => h.term)
+  const lines = linesNote(selfLines, playerLines, { ...opts, skipTerms: named })
+  const parts = [lines, ticNote(tics, sigs)].filter(Boolean)
   return parts.length ? parts.join(' ') : null
 }

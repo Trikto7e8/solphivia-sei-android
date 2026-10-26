@@ -1,5 +1,8 @@
 import { describe, it, expect } from 'vitest'
-import { groupTurns, repeatedOwnTerms, ownRepeatsNote, recentOwnTurns, repeatedOwnPhrases, repeatedOpener } from './ownRepeats.js'
+import {
+  groupTurns, repeatedOwnTerms, ownRepeatsNote, recentOwnTurns, repeatedOwnPhrases, repeatedOpener,
+  cardSampleLines, signatureTerms, recentSignatureTerms,
+} from './ownRepeats.js'
 
 // One say() line is recorded as several chat messages within a few ms; turns
 // are seconds apart.
@@ -439,5 +442,136 @@ describe('repeatedOpener, context and signatures', () => {
     const lines = session(["table's down", "table's ready"])
     expect(ownRepeatsNote(lines, [], { now: nowAfter(2) })).toContain('keep starting with')
     expect(ownRepeatsNote(lines, [], { now: nowAfter(2), context: ['crafting_table×1'] })).not.toContain('keep starting with')
+  })
+})
+
+// 261026: the card's own signature words, named after one use.
+const CARD = [
+  '# IDENTITY',
+  'You are Mia, a catgirl maid who calls the player big brother when she is happy.',
+  '',
+  '# VOICE',
+  'Soft and polite. End lines with "nya" when emotion runs high, but not every line.',
+  '',
+  'Sample lines:',
+  '  um... right behind you',
+  "  okay! i'll try my best nya",
+  "  s-sorry, didn't mean to",
+  '  big brother, look at the stars!',
+  '',
+  '# DEFAULT DYNAMIC',
+  'She follows the player and keeps close, and she worries when they get hurt in a long fight at night.',
+].join('\n')
+// Stands in for the instruction text: the ordinary words.
+const COMMON = 'Stay close to the player, look around, say sorry when you mean to, try your best, and keep lines short. Do not use stars or emotes.'
+
+describe('cardSampleLines', () => {
+  it('reads quoted spans, sample-line lists and short lines under a voice header', () => {
+    const lines = cardSampleLines(CARD)
+    expect(lines).toContain('nya')
+    expect(lines).toContain("okay! i'll try my best nya")
+    expect(lines).toContain('big brother, look at the stars!')
+    // A short line under a voice header.
+    expect(lines).toContain('Soft and polite. End lines with "nya" when emotion runs high, but not every line.')
+    // Prose under other headers is not a sample line.
+    expect(lines.some((l) => /worries when they get hurt/.test(l))).toBe(false)
+  })
+
+  it('is empty for no card', () => {
+    expect(cardSampleLines('')).toEqual([])
+    expect(cardSampleLines(undefined)).toEqual([])
+  })
+})
+
+describe('signatureTerms', () => {
+  it('keeps the words that are not ordinary English and drops the ones the instructions use', () => {
+    const t = signatureTerms(CARD, COMMON)
+    expect(t.has('nya')).toBe(true)
+    expect(t.has('big brother')).toBe(true)
+    // In the instruction text, so ordinary: never a signature.
+    expect(t.has('sorry')).toBe(false)
+    expect(t.has('try')).toBe(false)
+    expect(t.has('close')).toBe(false)
+  })
+
+  it('keeps a written-out stutter as a signature even when the word under it is ordinary', () => {
+    const t = signatureTerms(CARD, COMMON)
+    expect(t.has('s-sorry')).toBe(true)
+  })
+})
+
+describe('recentSignatureTerms', () => {
+  const opts = (extra = {}) => ({ card: CARD, common: COMMON, now: 1_000_000 + 60_000, ...extra })
+
+  it('names a card word after a single use in her last line', () => {
+    const lines = session(['ok, the logs are here', 'thank you nya, that was scary'])
+    expect(recentSignatureTerms(lines, [], opts())).toEqual([{ term: 'nya', count: 1, of: 2, inLast: true }])
+  })
+
+  it('names the phrase, not the words inside it', () => {
+    const lines = session(['big brother, a zombie!'])
+    expect(recentSignatureTerms(lines, [], opts()).map((h) => h.term)).toEqual(['big brother'])
+  })
+
+  it('looks only at her last two turns', () => {
+    const lines = session(['yay nya', 'the chest is full', 'i put the wood away'])
+    expect(recentSignatureTerms(lines, [], opts())).toEqual([])
+  })
+
+  it('leaves out a line from long ago', () => {
+    const lines = session(['yay nya'])
+    expect(recentSignatureTerms(lines, [], opts({ now: 1_000_000 + 600_000 }))).toEqual([])
+  })
+
+  it('never names ordinary words, words the player used, names or game words', () => {
+    const lines = session(['sorry, i will try my best near the stars'])
+    expect(recentSignatureTerms(lines, [], opts())).toEqual([])
+    const heard = session(['nya to you too'])
+    expect(recentSignatureTerms(heard, [{ text: 'say nya again' }], opts())).toEqual([])
+    const card = `${CARD}\nSample:\n  rex, where are you`
+    const named = session(['rex, wait for me'])
+    expect(recentSignatureTerms(named, [], opts({ card, names: ['Rex'] }))).toEqual([])
+    const vocab = ['rex']
+    expect(recentSignatureTerms(named, [], opts({ card, vocab }))).toEqual([])
+  })
+
+  it('is empty without a card', () => {
+    expect(recentSignatureTerms(session(['nya']), [], { now: 1_000_100 })).toEqual([])
+  })
+})
+
+describe('ownRepeatsNote, card signature words', () => {
+  const now = 1_000_000 + 10_000
+
+  it('names a card word she used in her last line', () => {
+    const note = ownRepeatsNote(session(['thank you nya!']), [], { now, signature: CARD, common: COMMON })
+    expect(note).toContain('You already used "nya" in your last line.')
+    expect(note).toContain('leave it out of this one unless the moment really calls for it')
+  })
+
+  it('says which of her last two lines, and uses the plural ask for two terms', () => {
+    const one = ownRepeatsNote(session(['big brother, look!', 'ok coming']), [], { now, signature: CARD, common: COMMON })
+    expect(one).toContain('You already used "big brother" in one of your last two lines.')
+    const two = ownRepeatsNote(session(['big brother!', 'yay nya']), [], { now, signature: CARD, common: COMMON })
+    expect(two).toMatch(/"(big brother|nya)" and "(big brother|nya)" in your last two lines\./)
+    expect(two).toContain('leave them out of this one')
+  })
+
+  it('adds nothing without the card, and nothing for ordinary words', () => {
+    expect(ownRepeatsNote(session(['thank you nya!']), [], { now, mode: 'idle' })).toBeNull()
+    expect(ownRepeatsNote(session(['sorry, i will try']), [], { now, mode: 'idle', signature: CARD, common: COMMON })).toBeNull()
+  })
+
+  it('does not name a word twice when the 3-of-4 habit already names it', () => {
+    const lines = session(['hi nya', 'ok nya', 'wood nya', 'done nya'])
+    const note = ownRepeatsNote(lines, [], { now: 1_000_000 + 30_000, mode: 'idle', signature: CARD, common: COMMON })
+    expect(note.match(/"nya"/g)).toHaveLength(1)
+    expect(note).toContain('Your own recent lines keep using "nya" (in 4 of your last 4).')
+  })
+
+  it('rides the idle note with no quote of her lines, and uses no dashes', () => {
+    const note = ownRepeatsNote(session(['yay nya']), [], { now, mode: 'idle', signature: CARD, common: COMMON })
+    expect(note).toBe('You already used "nya" in your last line. A signature word or catchphrase wears thin when it is in every line, so leave it out of this one unless the moment really calls for it. You still sound like yourself without it.')
+    expect(note).not.toMatch(/[—–]/)
   })
 })

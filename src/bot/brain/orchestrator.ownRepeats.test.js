@@ -28,7 +28,7 @@ function makeProvider(script) {
   }
 }
 
-function makeOrch(script, executeAction = () => Promise.resolve('done')) {
+function makeOrch(script, executeAction = () => Promise.resolve('done'), { expanded = 'You are a chaotic gremlin.', rules = 'rules' } = {}) {
   const provider = makeProvider(script)
   const adapter = {
     gameName: 'Minecraft',
@@ -37,7 +37,7 @@ function makeOrch(script, executeAction = () => Promise.resolve('done')) {
     getActionDescription: (n) => `do ${n}`,
     capabilityParagraph: () => 'caps',
     worldPrimer: () => 'world',
-    actionRules: () => 'rules',
+    actionRules: () => rules,
     eventAddendum: () => '',
     createSnapshotComposer: () => ({ next: () => 'SNAPSHOT' }),
     chat: vi.fn(),
@@ -48,7 +48,7 @@ function makeOrch(script, executeAction = () => Promise.resolve('done')) {
   const config = {
     player_username: 'newb',
     preferred_name: 'newb',
-    persona: { name: 'Sui', expanded: 'You are a chaotic gremlin.', proactiveness: 2 },
+    persona: { name: 'Sui', expanded, proactiveness: 2 },
     anthropic: { model: 'claude-haiku-4-5', timeout_ms: 20_000, max_retries: 1 },
     llm: { provider: 'anthropic', rate_limit_per_min: 60, debounce_ms: 0, max_hops: 5 },
     memory: {
@@ -163,5 +163,25 @@ describe('own_repeats on the reply to a hello that crossed hers', () => {
     orch.recordIncomingChat('newb', 'wanna get wood')
     await orch.handleDispatch('sei:chat_received', chat('wanna get wood'))
     expect(blockText(provider.calls[2], 'own_repeats')).toContain(REPLY_ASK)
+  })
+})
+
+// 261026: a word from the card's sample lines is named after one use, and a
+// word the instruction text also uses is ordinary English, never named.
+describe('own_repeats names the card signature words', () => {
+  it('names the card word from her last line, not one the instructions use', async () => {
+    _setTickIntervalForTests(10_000_000)
+    const expanded = '# VOICE\nSample lines:\n  nehehe, on it\n  more tunnels!'
+    const { orch, provider } = makeOrch([
+      { text: '', toolUses: [say('t1', 'nehehe ok, tunnels it is')] },
+      { text: '', toolUses: [say('t2', 'sure')] },
+    ], undefined, { expanded, rules: 'Dig tunnels with care.' })
+    orch.recordIncomingChat('newb', 'dig')
+    await orch.handleDispatch('sei:chat_received', chat('dig'))
+    orch.recordIncomingChat('newb', 'cool')
+    await orch.handleDispatch('sei:chat_received', chat('cool'))
+    const note = blockText(provider.calls[1], 'own_repeats')
+    expect(note).toContain('You already used "nehehe" in your last line.')
+    expect(note).not.toContain('"tunnels"')
   })
 })

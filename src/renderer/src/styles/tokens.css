@@ -120,6 +120,16 @@
   --acc: 63 111 196;
   --acc-c: rgb(var(--acc));
 
+  /* The PlanButton primary's own fill (261027, Shawn): the brighter blue of
+     the old Summon CTA (ef346069 light accent #3f7fd6, strong #2f6cc0), on
+     the plan buttons ONLY; --accent stays the calmer #3f6fc4 everywhere
+     else. White label 4.0:1 at rest, 4.5:1 on hover. Each theme sets its
+     own; PlanButton falls back to --accent / --accent-strong / --accent-text
+     for a theme that does not. */
+  --plan-cta: #3f7fd6;
+  --plan-cta-strong: #2f6cc0;
+  --plan-cta-text: #ffffff;
+
   --green: #18a85c;           /* fresh spring green — complements periwinkle */
   --red: #d94f3a;
   --red-strong: #b83f2c;
@@ -169,6 +179,9 @@
   --accent-soft: rgba(63, 111, 196, 0.14);
   --accent-text: #ffffff;
   --acc: 63 111 196;
+  --plan-cta: #3f7fd6;
+  --plan-cta-strong: #2f6cc0;
+  --plan-cta-text: #ffffff;
   --green: #18a85c;
   --red: #d94f3a;
   --red-strong: #b83f2c;
@@ -242,6 +255,12 @@
   --accent-text: #1a1206;
   --acc: 108 154 224;
   --acc-c: rgb(var(--acc));
+  /* PlanButton fill (261027): the old Summon CTA's full periwinkle (ef346069
+     dark accent #7fb0ff, strong #9cc4ff, text #1a1206), plan buttons only.
+     Dark label 8.4:1 at rest, 9.3:1 on hover. */
+  --plan-cta: #7fb0ff;
+  --plan-cta-strong: #9cc4ff;
+  --plan-cta-text: #1a1206;
 
   --green: #78c878;
   --red: #c0443c;
@@ -295,6 +314,14 @@
   --accent-soft: rgba(173, 138, 99, 0.20);
   --accent-text: #ffffff;
   --acc: 173 138 99;
+  /* PlanButton fill (261027): the accent brightened by the same step the
+     Summon blue sits above ice's (OKLCH L +0.046, chroma x1.08). White on it
+     would be 2.7:1, so the label is the theme's dark ink (6.7:1 at rest), and
+     the strong tone is LIGHTER, like midnight's, so hover gains contrast
+     under a dark label (7.4:1). */
+  --plan-cta: #be976c;
+  --plan-cta-strong: #ceab84;
+  --plan-cta-text: #1d150c;
   --green: #4b9e58;
   --red: #d94f3a;
   --red-strong: #b83f2c;
@@ -343,6 +370,12 @@
   --accent-soft: rgba(87, 180, 124, 0.18);
   --accent-text: #ffffff;
   --acc: 87 180 124;
+  /* PlanButton fill (261027): brightened like acorn's (OKLCH L +0.046,
+     chroma x1.08). White on it would be 2.2:1, so a dark forest-ink label
+     (8.3:1 at rest) and a lighter strong tone for hover (9.1:1). */
+  --plan-cta: #5ec487;
+  --plan-cta-strong: #7cd59d;
+  --plan-cta-text: #0c1a12;
   --green: #18a85c;
   --red: #d94f3a;
   --red-strong: #b83f2c;

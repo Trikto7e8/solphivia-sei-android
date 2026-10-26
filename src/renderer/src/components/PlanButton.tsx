@@ -5,9 +5,10 @@
  *
  * Shawn, 261023: the old buttons were small (Button size sm, ~26px) and hard
  * to aim at, which adds friction right where someone is trying to pay. So the
- * primary is full width, 44-48px tall, a flat accent fill (261027: no top
- * highlight, no dark gradient band, no shadow) with the old Summon button's
- * travelling glint looping across it (261027), and answers the pointer: a
+ * primary is full width, 44-48px tall, a flat fill of its own brighter
+ * --plan-cta tone (261027: no top highlight, no dark gradient band, no
+ * shadow) with the old Summon button's travelling glint looping across it
+ * every 1.8s (261027), and answers the pointer: a
  * step toward --accent-strong and a lift on hover, a press-down on click, an
  * arrow that nudges forward. Reduced motion keeps the colour change and drops
  * the movement and the glint. Sharp corners like every Button (D-28).
@@ -35,6 +36,9 @@ export interface PlanButtonProps {
   /** Leading icon (e.g. the check on "Current plan"). */
   icon?: React.ReactNode;
   disabled?: boolean;
+  /** Run the glint half a loop out of step, for a primary beside another
+   *  primary (the Quest card next to Party), so they never sweep together. */
+  glintOffset?: boolean;
   'aria-label'?: string;
   title?: string;
 }
@@ -47,10 +51,13 @@ export function PlanButton({
   arrow = false,
   icon,
   disabled,
+  glintOffset = false,
   title,
   ...rest
 }: PlanButtonProps): React.ReactElement {
-  const cls = [styles.button, styles[kind], styles[size]].join(' ');
+  const cls = [styles.button, styles[kind], styles[size], glintOffset ? styles.glintOffset : '']
+    .filter(Boolean)
+    .join(' ');
   return (
     <button
       type="button"

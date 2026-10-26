@@ -14,8 +14,11 @@
  *   P.5 — flat and borderless (Shawn, 261027): no top highlight, no gradient
  *         band, no shadow under the primary, no border line on either kind.
  *   P.6 — the primary carries the old Summon glint (ef346069 .deployBtn), on a
- *         3.4s loop scaled by --flux, moved by transform, and not on a
- *         disabled button.
+ *         1.8s loop (261027, was 3.4s) scaled by --flux, moved by transform,
+ *         and not on a disabled button. Quest runs half a loop out of step.
+ *   P.7 — the primary fill is its own --plan-cta token family (the old
+ *         Summon blue), set in every theme and falling back to --accent;
+ *         the global --accent values are unchanged.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -30,6 +33,7 @@ const CSS = read('PlanButton.module.css');
 const CREDITS = read('../screens/CreditsScreen.tsx');
 const TOPUP = read('TopUpModal.tsx');
 const HARDSTOP = read('HardStopModal.tsx');
+const TOKENS = read('../styles/tokens.css');
 const ZH = read('../lib/i18n/zh/screens-b.ts') + read('../lib/i18n/zh/modals.ts');
 
 describe('PlanButton', () => {
@@ -71,11 +75,29 @@ describe('PlanButton', () => {
   });
 
   it('P.6 the old Summon glint loops on the primary', () => {
-    expect(CSS).toMatch(/\.primary::after\s*\{[^}]*animation:\s*plan-glint calc\(3\.4s \/ var\(--flux, 1\)\)/);
+    expect(CSS).toMatch(/\.primary::after\s*\{[^}]*animation:\s*plan-glint calc\(1\.8s \/ var\(--flux, 1\)\)/);
     const keyframes = CSS.slice(CSS.indexOf('@keyframes plan-glint'));
-    expect(keyframes).toMatch(/0%,\s*60%\s*\{\s*transform: translateX\(-115%\)/);
-    expect(keyframes).toMatch(/85%,\s*100%\s*\{\s*transform: translateX\(250%\)/);
+    expect(keyframes).toMatch(/0%,\s*45%\s*\{\s*transform: translateX\(-115%\)/);
+    expect(keyframes).toMatch(/92%,\s*100%\s*\{\s*transform: translateX\(250%\)/);
     expect(keyframes.slice(0, keyframes.indexOf('}\n}'))).not.toMatch(/left:/);
     expect(CSS).toMatch(/\.primary:disabled::after\s*\{\s*display:\s*none/);
+    expect(CSS).toMatch(/\.glintOffset::after\s*\{\s*animation-delay:\s*calc\(-0\.9s \/ var\(--flux, 1\)\)/);
+    expect(CREDITS).toMatch(/glintOffset=\{card\.tier === 'quest'\}/);
+  });
+
+  it('P.7 the primary uses its own --plan-cta fill, per theme', () => {
+    expect(CSS).toMatch(/\.primary\s*\{[^}]*background-color:\s*var\(--plan-cta, var\(--accent\)\)/);
+    expect(CSS).toMatch(/\.primary\s*\{[^}]*color:\s*var\(--plan-cta-text, var\(--accent-text\)\)/);
+    const blocks = TOKENS.split(/(?=:root\[data-theme=")/).slice(1);
+    const themes = blocks.map((b) => /data-theme="(\w+)"/.exec(b)?.[1]);
+    expect(themes).toEqual(['ice', 'midnight', 'acorn', 'mint']);
+    for (const b of blocks) {
+      for (const tok of ['--plan-cta:', '--plan-cta-strong:', '--plan-cta-text:']) expect(b).toContain(tok);
+    }
+    expect(blocks[1]).toMatch(/--plan-cta:\s*#7fb0ff/);
+    expect(blocks[0]).toMatch(/--plan-cta:\s*#3f7fd6/);
+    // The plan buttons get the brighter blue; the global accent does not.
+    expect(blocks[1]).toMatch(/--accent:\s*#6c9ae0/);
+    expect(blocks[0]).toMatch(/--accent:\s*#3f6fc4/);
   });
 });

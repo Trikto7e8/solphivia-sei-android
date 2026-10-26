@@ -1,8 +1,8 @@
 /* PlanButton (261023): the buy / upgrade target on the plan surfaces.
  *
- * Tokens only. The primary is a flat fill of the theme's own accent, so it
- * follows every theme (ice, midnight, acorn, mint) instead of carrying a
- * second palette. Sharp corners (D-28). No visible border line on either
+ * Tokens only. The primary is a flat fill of the theme's --plan-cta (a
+ * brighter take on its accent, 261027), set per theme in tokens.css and
+ * falling back to --accent. Sharp corners (D-28). No visible border line on either
  * kind (Shawn, 261023).
  *
  * 261027: Shawn: "remove the top white line, the shading is really dark, it
@@ -79,15 +79,20 @@
 
 /* ── primary: the one loud button per card ─────────────────────────── */
 .primary {
-  color: var(--accent-text);
-  background-color: var(--accent);
+  /* Its own brighter fill (261027, Shawn): the old Summon CTA's blue on
+     midnight and ice, the same step brighter on acorn and mint (tokens.css
+     --plan-cta*). Plan buttons only; --accent itself is unchanged. */
+  color: var(--plan-cta-text, var(--accent-text));
+  background-color: var(--plan-cta, var(--accent));
 }
 
 /* The glint (261027, Shawn): the travelling light streak of the old Summon
    CTA (CharacterPage .deployBtn::after, ef346069 until f6fef4f0). Same
-   angle (100deg), peak (white at 45%), loop (3.4s, parked for the first
-   60%, swept across in the next 25%, ease-in-out) and travel (left edge
-   from -60% to 130% of the button). Two changes: it sits BEHIND the label
+   angle (100deg), peak (white at 45%), sweep (about 0.85s, ease-in-out) and
+   travel (left edge from -60% to 130% of the button). The old loop was
+   3.4s; Shawn wanted it more often, so it is 1.8s: parked for the first
+   45%, swept across in the next 47% (0.85s, the old speed), and the rest
+   between sweeps is under a second. Other changes: it sits BEHIND the label
    (z-index -1 inside the isolated button), where the old one greyed the
    text it crossed, and the band fades out before the edges of its box (the
    old box was 40% wide with the gradient running corner to corner, so its
@@ -108,19 +113,26 @@
     transparent 85%
   );
   transform: translateX(-115%);
-  animation: plan-glint calc(3.4s / var(--flux, 1)) ease-in-out infinite;
+  animation: plan-glint calc(1.8s / var(--flux, 1)) ease-in-out infinite;
   pointer-events: none;
 }
 
 @keyframes plan-glint {
   0%,
-  60% {
+  45% {
     transform: translateX(-115%);
   }
-  85%,
+  92%,
   100% {
     transform: translateX(250%);
   }
+}
+
+/* Half a loop out of step, for a primary that sits beside another one (the
+   Quest card next to Party), so the two never sweep together. Negative, so
+   it starts mid-loop rather than waiting. */
+.glintOffset::after {
+  animation-delay: calc(-0.9s / var(--flux, 1));
 }
 
 /* A dimmed, unclickable button does not glint. */
@@ -130,10 +142,14 @@
 
 .primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  /* Toward --accent-strong, the theme's own hover tone: darker under white
-     label text on the light themes, lighter under the dark label on
-     midnight, so the label gains contrast on hover in every theme. */
-  background-color: color-mix(in srgb, var(--accent) 55%, var(--accent-strong));
+  /* Toward the strong tone, the theme's own hover colour: darker under the
+     white label on ice, lighter under the dark label on midnight, acorn and
+     mint, so the label gains contrast on hover in every theme. */
+  background-color: color-mix(
+    in srgb,
+    var(--plan-cta, var(--accent)) 55%,
+    var(--plan-cta-strong, var(--accent-strong))
+  );
 }
 
 .primary:hover:not(:disabled) .arrow {
@@ -144,11 +160,15 @@
   transition: transform 180ms var(--ease-pop);
 }
 
-/* Press: settle back down, one more step toward --accent-strong. No inset
+/* Press: settle back down, one more step toward the strong tone. No inset
    shadow. */
 .primary:active:not(:disabled) {
   transform: translateY(0) scale(0.985);
-  background-color: color-mix(in srgb, var(--accent) 20%, var(--accent-strong));
+  background-color: color-mix(
+    in srgb,
+    var(--plan-cta, var(--accent)) 20%,
+    var(--plan-cta-strong, var(--accent-strong))
+  );
 }
 
 .primary:disabled {

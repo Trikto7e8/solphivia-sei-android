@@ -13,6 +13,9 @@
  *   P.4 — new labels have a zh translation.
  *   P.5 — flat and borderless (Shawn, 261027): no top highlight, no gradient
  *         band, no shadow under the primary, no border line on either kind.
+ *   P.6 — the primary carries the old Summon glint (ef346069 .deployBtn), on a
+ *         3.4s loop scaled by --flux, moved by transform, and not on a
+ *         disabled button.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -61,9 +64,18 @@ describe('PlanButton', () => {
     expect(noReducedMotion).not.toMatch(/box-shadow/);
     expect(noReducedMotion).not.toMatch(/border-color/);
     expect(noReducedMotion).not.toMatch(/filter:/);
-    // The only gradient left is the hover sweep inside .primary::after.
+    // The only gradient left is the glint inside .primary::after.
     const gradients = noReducedMotion.match(/linear-gradient/g) ?? [];
     expect(gradients).toHaveLength(1);
     expect(noReducedMotion).toMatch(/\.primary::after\s*\{[^}]*linear-gradient/);
+  });
+
+  it('P.6 the old Summon glint loops on the primary', () => {
+    expect(CSS).toMatch(/\.primary::after\s*\{[^}]*animation:\s*plan-glint calc\(3\.4s \/ var\(--flux, 1\)\)/);
+    const keyframes = CSS.slice(CSS.indexOf('@keyframes plan-glint'));
+    expect(keyframes).toMatch(/0%,\s*60%\s*\{\s*transform: translateX\(-115%\)/);
+    expect(keyframes).toMatch(/85%,\s*100%\s*\{\s*transform: translateX\(250%\)/);
+    expect(keyframes.slice(0, keyframes.indexOf('}\n}'))).not.toMatch(/left:/);
+    expect(CSS).toMatch(/\.primary:disabled::after\s*\{\s*display:\s*none/);
   });
 });

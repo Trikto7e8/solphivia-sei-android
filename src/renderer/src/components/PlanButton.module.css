@@ -11,7 +11,8 @@
  * gradient stop, the accent-strong border and an accent glow under the
  * button. All gone: flat fill at rest, a small step toward --accent-strong
  * and a lift on hover, a further step and a press on click, no shadow in any
- * state.
+ * state. The only light on the fill is the old Summon button's travelling
+ * glint (below).
  */
 
 .button {
@@ -25,7 +26,9 @@
   gap: var(--space-sm);
   padding: 0 var(--space-md-plus);
   border-radius: 0;
-  border: 1px solid transparent;
+  /* No border at all (261027): a transparent one still made a 1px frame
+     the glint below could not cover (overflow clips at the padding box). */
+  border: 0;
   font-family: var(--sans);
   font-weight: 700;
   letter-spacing: 0.02em;
@@ -80,21 +83,49 @@
   background-color: var(--accent);
 }
 
-/* The shine: a soft diagonal highlight parked off the left edge, swept across
-   on hover. Behind the label (z-index -1 inside the isolated button). */
+/* The glint (261027, Shawn): the travelling light streak of the old Summon
+   CTA (CharacterPage .deployBtn::after, ef346069 until f6fef4f0). Same
+   angle (100deg), peak (white at 45%), loop (3.4s, parked for the first
+   60%, swept across in the next 25%, ease-in-out) and travel (left edge
+   from -60% to 130% of the button). Two changes: it sits BEHIND the label
+   (z-index -1 inside the isolated button), where the old one greyed the
+   text it crossed, and the band fades out before the edges of its box (the
+   old box was 40% wide with the gradient running corner to corner, so its
+   left and right edges showed as faint vertical cuts). Moved by transform
+   in own-width units (-115% / 250% = left -60% / 130%), never by left. */
 .primary::after {
   content: '';
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
+  width: 52%;
+  height: 100%;
   z-index: -1;
   background: linear-gradient(
-    105deg,
-    transparent 35%,
-    color-mix(in srgb, white 22%, transparent) 50%,
-    transparent 65%
+    100deg,
+    transparent 15%,
+    color-mix(in srgb, white 45%, transparent) 50%,
+    transparent 85%
   );
-  transform: translateX(-110%);
+  transform: translateX(-115%);
+  animation: plan-glint calc(3.4s / var(--flux, 1)) ease-in-out infinite;
   pointer-events: none;
+}
+
+@keyframes plan-glint {
+  0%,
+  60% {
+    transform: translateX(-115%);
+  }
+  85%,
+  100% {
+    transform: translateX(250%);
+  }
+}
+
+/* A dimmed, unclickable button does not glint. */
+.primary:disabled::after {
+  display: none;
 }
 
 .primary:hover:not(:disabled) {
@@ -103,11 +134,6 @@
      label text on the light themes, lighter under the dark label on
      midnight, so the label gains contrast on hover in every theme. */
   background-color: color-mix(in srgb, var(--accent) 55%, var(--accent-strong));
-}
-
-.primary:hover:not(:disabled)::after {
-  transform: translateX(110%);
-  transition: transform 650ms var(--ease);
 }
 
 .primary:hover:not(:disabled) .arrow {

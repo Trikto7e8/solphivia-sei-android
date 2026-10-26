@@ -6,10 +6,11 @@
  * Shawn, 261023: the old buttons were small (Button size sm, ~26px) and hard
  * to aim at, which adds friction right where someone is trying to pay. So the
  * primary is full width, 44-48px tall, a flat accent fill (261027: no top
- * highlight, no dark gradient band, no shadow), and answers the pointer: a
- * step toward --accent-strong, a light sweep and a lift on hover, a
- * press-down on click, an arrow that nudges forward. Reduced motion keeps the
- * colour change and drops the movement. Sharp corners like every Button (D-28).
+ * highlight, no dark gradient band, no shadow) with the old Summon button's
+ * travelling glint looping across it (261027), and answers the pointer: a
+ * step toward --accent-strong and a lift on hover, a press-down on click, an
+ * arrow that nudges forward. Reduced motion keeps the colour change and drops
+ * the movement and the glint. Sharp corners like every Button (D-28).
  *
  * `secondary` is the quiet sibling at the SAME height (Downgrade, Current
  * plan, Top up beside Upgrade), so the cards' buttons line up and only one

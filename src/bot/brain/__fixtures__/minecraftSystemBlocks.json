@@ -749,7 +749,7 @@
       },
       {
         "name": "give",
-        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory. One call hands over one kind of item, so to hand over two kinds, call give once for each in the same turn.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -1043,7 +1043,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item, then keeps collecting until the input is used up (up to about 45 seconds in all); if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -1803,7 +1803,7 @@
       },
       {
         "name": "give",
-        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory. One call hands over one kind of item, so to hand over two kinds, call give once for each in the same turn.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -2097,7 +2097,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item, then keeps collecting until the input is used up (up to about 45 seconds in all); if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},
@@ -2824,7 +2824,7 @@
       },
       {
         "name": "give",
-        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory.",
+        "description": "Hand items to the player: `{item, count?}` (default: all you have of it). Walks over to them first when they are more than a few blocks away, faces them, and tosses the items at their feet. Giving something to them always takes this call; until it runs, the items stay in your inventory. One call hands over one kind of item, so to hand over two kinds, call give once for each in the same turn.",
         "input_schema": {
           "type": "object",
           "properties": {
@@ -3118,7 +3118,7 @@
       },
       {
         "name": "takeSmelted",
-        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item; if nothing is ready the result says what is in each slot.",
+        "description": "Take the finished output from the OPEN furnace. No args. While the furnace is cooking it waits up to about 10 seconds for the first item, then keeps collecting until the input is used up (up to about 45 seconds in all); if nothing is ready the result says what is in each slot.",
         "input_schema": {
           "type": "object",
           "properties": {},

@@ -1346,13 +1346,22 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   // questions or rediscovering tasks across cold-composed loops).
   // 261011: every line also feeds the process-level session digest, which
   // main reads for the player-end "next time" check (sessionDigest.js).
-  const convoMemory = createConvoMemory({ onLine: (who, text) => sessionDigest.record(who, text) })
+  // 261026 (pass 28): a game that reports its hand-overs gets the session's
+  // hand-over line at the end of the transcript (sessionEvents.js).
+  const convoMemory = createConvoMemory({
+    onLine: (who, text) => sessionDigest.record(who, text),
+    trackHandOvers: typeof caps.handOverDetail === 'function',
+  })
   // 261018 (pass 16): items that arrived without an action of hers, written
   // into the conversation record from the snapshot (see snapshotText).
-  const recordInventoryGains = createInventoryGainRecorder({
+  const recordGainLine = createInventoryGainRecorder({
     record: (text, opts) => convoMemory.recentChat.pushEvent(text, opts),
     spokeBetween: (from, to) => convoMemory.recentChat.spokeBetween(from, to),
   })
+  const recordInventoryGains = (gains) => {
+    recordGainLine(gains)
+    try { convoMemory.recentChat.noteReceived(gains) } catch {}
+  }
   // 261012: the note naming a word her recent lines keep repeating, or null.
   // 261013: it also quotes her last line or two and names a phrase or opener
   // her recent lines share (ownRepeats.js), and rides silent check-ins too,
@@ -4185,7 +4194,20 @@ function maybeWarnByteCap(loop, warned) {
   function noteActionEvent(name, r) {
     try {
       const line = describeActionEvent(name, r)
-      if (line) convoMemory.recentChat.pushEvent(line, { key: actionEventKey(line), windowMs: ACTION_COALESCE_MS })
+      // 261026 (pass 28): a repeat folds only while nobody spoke since the
+      // first one, so the folded line keeps its place in the transcript.
+      if (line) {
+        convoMemory.recentChat.pushEvent(line, {
+          key: actionEventKey(line),
+          windowMs: ACTION_COALESCE_MS,
+          foldIf: (e) => !convoMemory.recentChat.spokeBetween(e.at, Date.now()),
+        })
+      }
+      if (typeof caps.handOverDetail === 'function') {
+        const text = typeof r === 'string' ? r : (typeof r?.text === 'string' ? r.text : '')
+        const h = caps.handOverDetail(name, text)
+        if (h) convoMemory.recentChat.noteGiven(h)
+      }
       if (countsAsGoalWork(name, r)) lastWorkAt = Date.now()
       if (!ACTION_VERB_SKIP.has(name)) lastActionEndAt = Date.now()
     } catch {}

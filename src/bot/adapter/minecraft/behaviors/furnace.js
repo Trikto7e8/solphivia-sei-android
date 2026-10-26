@@ -17,6 +17,9 @@ export const TRANSFER_TIMEOUT_MS = 4000
 // 261011: takeSmelted waits this long for the first item when the furnace is
 // cooking (one item takes 10s in a furnace, 5s in a blast furnace / smoker).
 export const COOK_WAIT_MS = 11000
+// 261026: after the first item, takeSmelted keeps collecting while the input
+// cooks, for up to this long in total (4 items in a furnace).
+export const BATCH_WAIT_MS = 45000
 const COOK_POLL_MS = 250
 const REACH = 4
 
@@ -320,12 +323,49 @@ export async function addFuelAction(args, bot, config) {
   return Promise.race([op, tmo, abrt])
 }
 
+// One take of whatever sits in the output slot. Resolves {n, name} when the
+// item reached the inventory, or {error} with the line to report.
+function takeOnce(bot, furnace, out, signal, timeoutMs) {
+  const fallbackName = out.name ?? 'item'
+  const fallbackCount = out.count ?? 0
+  const beforeOut = liveCount(bot, fallbackName)
+  const op = Promise.resolve()
+    .then(() => furnace.takeOutput())
+    .then(async (taken) => {
+      let n = taken?.count ?? fallbackCount
+      const name = taken?.name ?? fallbackName
+      if (await settled(bot, signal)) {
+        const gained = liveCount(bot, name) - beforeOut
+        if (gained <= 0) {
+          let st = ''
+          try { st = furnaceStatus(furnace) } catch {}
+          return { error: `taking the ${name} did not go through; it is still in the furnace${st ? `: ${st}` : ''}` }
+        }
+        n = gained
+      }
+      return { n, name }
+    })
+    .catch((err) => {
+      const r = reason(err)
+      return { error: r ? `take output failed: ${r}` : `take output failed` }
+    })
+  let timer = null
+  const tmo = new Promise((r) => { timer = setTimeout(() => r({ error: 'timeout' }), timeoutMs) })
+  return Promise.race([op, tmo]).finally(() => clearTimeout(timer))
+}
+
 export async function takeSmeltedAction(args, bot, config) {
   const signal = config?.signal
   if (signal?.aborted) return 'aborted'
   if (!FURNACE_SESSION.furnace) return 'no furnace open'
 
   const furnace = FURNACE_SESSION.furnace
+  const cooking = () => {
+    let input = null, fuel = null
+    try { input = furnace.inputItem() } catch {}
+    try { fuel = furnace.fuelItem() } catch {}
+    return !!input && (isBurning(furnace) || !!fuel)
+  }
   // Read the output slot defensively (server-controlled) before taking.
   let out = null
   try { out = furnace.outputItem() } catch {}
@@ -336,12 +376,6 @@ export async function takeSmeltedAction(args, bot, config) {
   // input slot and fuel burning or loaded.
   if (!out) {
     const cookWaitMs = args?.wait_ms ?? config?.takeSmelted_wait_ms ?? COOK_WAIT_MS
-    const cooking = () => {
-      let input = null, fuel = null
-      try { input = furnace.inputItem() } catch {}
-      try { fuel = furnace.fuelItem() } catch {}
-      return !!input && (isBurning(furnace) || !!fuel)
-    }
     const deadline = Date.now() + cookWaitMs
     while (!out && cooking() && Date.now() < deadline) {
       await sleep(COOK_POLL_MS, signal)
@@ -356,37 +390,48 @@ export async function takeSmeltedAction(args, bot, config) {
     return status ? `nothing smelted yet: ${status}` : 'nothing smelted yet'
   }
 
-  const fallbackName = out.name ?? 'item'
-  const fallbackCount = out.count ?? 0
   const timeoutMs = args?.timeout_ms ?? config?.takeSmelted_timeout_ms ?? TRANSFER_TIMEOUT_MS
+  const first = await takeOnce(bot, furnace, out, signal, timeoutMs)
+  if (signal?.aborted) {
+    if (first.n) noteFurnace(bot, furnace)
+    await closeFurnaceSession()
+    return first.n ? `took ${first.n} ${first.name} before stopping` : 'aborted'
+  }
+  if (first.error) return first.error === 'timeout' ? 'timeout' : first.error
+  let total = first.n
+  const name = first.name
 
-  const beforeOut = liveCount(bot, fallbackName)
-  const op = Promise.resolve()
-    .then(() => furnace.takeOutput())
-    .then(async (taken) => {
-      let n = taken?.count ?? fallbackCount
-      const name = taken?.name ?? fallbackName
-      if (await settled(bot, signal)) {
-        const gained = liveCount(bot, name) - beforeOut
-        if (gained <= 0) {
-          let st = ''
-          try { st = furnaceStatus(furnace) } catch {}
-          return `taking the ${name} did not go through; it is still in the furnace${st ? `: ${st}` : ''}`
-        }
-        n = gained
-      }
-      let left = null
-      try { left = furnace.inputItem() } catch {}
-      noteFurnace(bot, furnace)
-      return left ? `took ${n} ${name} (${slotText(left)} still cooking)` : `took ${n} ${name}`
-    })
-    .catch((err) => {
-      const r = reason(err)
-      return r ? `take output failed: ${r}` : `take output failed`
-    })
+  // 261026 (quality pass 28): keep collecting while the rest of the input
+  // cooks. The smelt_iron benchmark failed 2 of 5 because one item came out,
+  // the result said the rest was "still cooking", and the next turn walked
+  // off to other work and never came back for it.
+  const batchMs = config?.takeSmelted_batch_ms ?? BATCH_WAIT_MS
+  const batchEnd = Date.now() + batchMs
+  let stopped = false
+  while (Date.now() < batchEnd && FURNACE_SESSION.furnace === furnace) {
+    let next = null
+    try { next = furnace.outputItem() } catch {}
+    if (next) {
+      if (next.name && next.name !== name) break
+      const r = await takeOnce(bot, furnace, next, signal, timeoutMs)
+      if (r.n) total += r.n
+      if (signal?.aborted) { stopped = true; break }
+      if (r.error) break
+      // Never spin: a slot that still shows an item right after a take is
+      // re-read on the next poll, not taken again at once.
+      await sleep(COOK_POLL_MS, signal)
+      if (signal?.aborted) { stopped = true; break }
+      continue
+    }
+    if (!cooking()) break
+    await sleep(COOK_POLL_MS, signal)
+    if (signal?.aborted) { stopped = true; break }
+  }
 
-  const tmo = new Promise((r) => setTimeout(() => r('timeout'), timeoutMs))
-  const abrt = attachAbort(signal, closeFurnaceSession)
-
-  return Promise.race([op, tmo, abrt])
+  let left = null
+  try { left = furnace.inputItem() } catch {}
+  noteFurnace(bot, furnace)
+  if (stopped) await closeFurnaceSession()
+  if (stopped) return `took ${total} ${name} before stopping${left ? ` (${slotText(left)} still cooking)` : ''}`
+  return left ? `took ${total} ${name} (${slotText(left)} still cooking)` : `took ${total} ${name}`
 }

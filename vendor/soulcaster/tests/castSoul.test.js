@@ -189,3 +189,34 @@ test('CharacterSheetSchema accepts every valid setting value', () => {
     assert.ok(CharacterSheetSchema.safeParse(sheet).success);
   }
 });
+
+test('castSoul offers random name candidates from the rolled heritage and skips excluded names', async () => {
+  const { NAME_POOL } = await import('../src/index.js');
+  let seenUser = '';
+  const llm = async ({ user, system }) => {
+    seenUser = user;
+    assert.match(system, /name_candidates/);
+    return validSheet();
+  };
+  const excludeNames = ['Akane', 'Chen Wei'];
+  const { rolled, nameCandidates } = await castSoul({ gender: 'female', llm, rng: mulberry32(7), excludeNames });
+  assert.equal(nameCandidates.length, 8);
+  const line = seenUser.split('\n').find((l) => l.startsWith('name_candidates: '));
+  assert.ok(line, 'prompt carries the candidate line');
+  for (const n of nameCandidates) assert.ok(line.includes(n));
+  const pool = NAME_POOL[rolled.heritage];
+  const allowed = new Set([...pool.female, ...pool.unisex]);
+  for (const n of nameCandidates) {
+    assert.ok(allowed.has(n), `${n} from ${rolled.heritage} female/unisex`);
+    assert.notEqual(n, 'Akane');
+    assert.notEqual(n, 'Chen');
+  }
+});
+
+test('castSoul: a seeded roll still gets fresh name candidates', async () => {
+  const llm = async () => validSheet();
+  const a = await castSoul({ gender: 'male', llm, rng: mulberry32(42) });
+  const b = await castSoul({ gender: 'male', llm, rng: mulberry32(42) });
+  assert.equal(a.rolled.heritage, b.rolled.heritage);
+  assert.notDeepEqual(a.nameCandidates, b.nameCandidates);
+});

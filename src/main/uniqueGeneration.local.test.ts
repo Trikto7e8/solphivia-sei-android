@@ -36,6 +36,14 @@ describe('local sheet + persona routing (W6)', () => {
     expect(fn).toContain('buildLlmProvider');
     expect(fn).toContain('castSoul({');
   });
+  it('castSoulLocal excludes public names and avoids library names in the name draw', () => {
+    const fn = src.slice(src.indexOf('async function castSoulLocal'), src.indexOf('async function postSoulcast'));
+    expect(fn).toContain('excludeNames: publicNames');
+    expect(fn).toContain('avoidNames: args.libraryNames');
+    // Public names come from shared rows (anon-readable), best-effort.
+    expect(fn).toContain(".eq('shared', true)");
+    expect(src).toContain('libraryNames,');
+  });
   it('the local persona branch passes the anthropic key explicitly and fetches the server prompt best-effort', () => {
     const persona = src.slice(src.indexOf('const personaBranch'), src.indexOf('Promise.allSettled'));
     expect(persona).toContain('localProviderKind');

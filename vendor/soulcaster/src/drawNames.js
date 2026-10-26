@@ -25,6 +25,9 @@ export const NAME_POOL = Object.fromEntries(
 
 export const DEFAULT_CANDIDATE_COUNT = 8;
 
+/** Below this many unisex names, "other" draws from the heritage's whole list. */
+export const MIN_UNISEX_FOR_OTHER = 24;
+
 /** Comparison key: lowercase, diacritics stripped, letters only. */
 export function normalizeName(name) {
   return String(name)
@@ -37,13 +40,16 @@ export function normalizeName(name) {
     .replace(/[^\p{L}]/gu, '');
 }
 
-/** Keys a stored name blocks: the whole name and its first word. */
+/** Keys a stored name blocks: the whole name and each space-separated word
+ *  ("Tanaka Akane" blocks "Akane"). Hyphen parts are not split. */
 export function nameKeys(name) {
   const keys = new Set();
   const whole = normalizeName(name);
   if (whole) keys.add(whole);
-  const first = normalizeName(String(name).trim().split(/\s+/)[0] ?? '');
-  if (first) keys.add(first);
+  for (const word of String(name).trim().split(/\s+/)) {
+    const k = normalizeName(word);
+    if (k) keys.add(k);
+  }
   return [...keys];
 }
 
@@ -83,22 +89,25 @@ function poolGenderLists(gender) {
   return ['unisex'];
 }
 
+// Always normalize, even a Set (buildExcludeSet is idempotent on its keys).
 function toKeySet(v) {
-  if (!v) return new Set();
-  return v instanceof Set ? v : buildExcludeSet(v);
+  return v ? buildExcludeSet(v) : new Set();
 }
 
 /**
  * Draw candidate names for one character. Same cascade as the proxy:
  *  1. heritage names for this gender (female/male plus unisex; "other" draws
- *     unisex), minus hard and soft excludes
+ *     unisex, or the whole heritage list when it has fewer than
+ *     MIN_UNISEX_FOR_OTHER unisex names), minus hard and soft excludes
  *  2. same, ignoring soft excludes (own library)
  *  3. "other" only: the heritage's female and male names
  *  4. the same gender lists across every heritage
- * Hard excludes (public names) are never relaxed; no name appears twice.
+ * Hard excludes (public names) are never relaxed; no name appears twice (the
+ * fallback lists hold the same name under several heritages, so eligibility
+ * dedupes within each batch too).
  *
  * @param {{ heritage?: string|null, gender?: string|null, count?: number,
- *   exclude?: Iterable<string>|Set<string>, softExclude?: Iterable<string>|Set<string>,
+ *   exclude?: Iterable<string>, softExclude?: Iterable<string>,
  *   rng?: (maxExclusive: number) => number, pool?: typeof NAME_POOL }} opts
  * @returns {string[]}
  */
@@ -115,10 +124,14 @@ export function drawNameCandidates(opts = {}) {
   const seen = new Set();
   const take = (names, useSoft) => {
     if (picked.length >= count) return;
-    const eligible = names.filter((n) => {
+    const batch = new Set();
+    const eligible = [];
+    for (const n of names) {
       const k = normalizeName(n);
-      return !seen.has(k) && !hard.has(k) && !(useSoft && soft.has(k));
-    });
+      if (batch.has(k) || seen.has(k) || hard.has(k) || (useSoft && soft.has(k))) continue;
+      batch.add(k);
+      eligible.push(n);
+    }
     for (const n of sample(eligible, count - picked.length, rng)) {
       seen.add(normalizeName(n));
       picked.push(n);
@@ -128,7 +141,10 @@ export function drawNameCandidates(opts = {}) {
   const lists = poolGenderLists(gender);
   const neutral = gender !== 'female' && gender !== 'male';
   if (heritagePool) {
-    const local = lists.flatMap((g) => heritagePool[g]);
+    const local =
+      neutral && heritagePool.unisex.length < MIN_UNISEX_FOR_OTHER
+        ? [...heritagePool.unisex, ...heritagePool.female, ...heritagePool.male]
+        : lists.flatMap((g) => heritagePool[g]);
     take(local, true);
     take(local, false);
     if (neutral) take([...heritagePool.female, ...heritagePool.male], false);

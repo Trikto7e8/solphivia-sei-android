@@ -220,3 +220,20 @@ test('castSoul: a seeded roll still gets fresh name candidates', async () => {
   assert.equal(a.rolled.heritage, b.rolled.heritage);
   assert.notDeepEqual(a.nameCandidates, b.nameCandidates);
 });
+
+test('castSoul: the validation retry draws fresh name candidates', async () => {
+  const users = [];
+  let calls = 0;
+  const llm = async ({ user }) => {
+    users.push(user);
+    return calls++ === 0 ? 'not json' : validSheet();
+  };
+  // Deterministic nameRng that shifts between attempts proves a fresh draw.
+  let k = 0;
+  const nameRng = (max) => (k++ * 7) % max;
+  const { nameCandidates } = await castSoul({ gender: 'female', llm, rng: mulberry32(3), nameRng });
+  const lineOf = (u) => u.split('\n').find((l) => l.startsWith('name_candidates: '));
+  assert.equal(users.length, 2);
+  assert.notEqual(lineOf(users[0]), lineOf(users[1]));
+  assert.ok(lineOf(users[1]).includes(nameCandidates[0]));
+});

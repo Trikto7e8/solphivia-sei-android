@@ -1122,7 +1122,7 @@ async function castSoulLocal(args: {
   const { castSoul } = await import('soulcaster');
   // Public names are never offered as candidates (the cloud path does the same
   // server-side). Best-effort: signed-out or offline just means no exclusions.
-  const publicNames = await fetchPublicCharacterNames();
+  const publicNames = await fetchPublicCharacterNames(args.signal);
   const { buildLlmProvider } = await import('./llm');
   // Built once per cast, fresh from config (provider + provider_config.model).
   const provider = await buildLlmProvider();
@@ -1154,27 +1154,54 @@ const PUBLIC_NAMES_TIMEOUT_MS = 3000;
  * Names of every publicly shared character, for the BYOK name-candidate draw.
  * Shared rows are readable with the anon key (the Browse listing relies on the
  * same characters_select_own_or_shared policy), so this works signed out too.
- * Returns [] on any error or after a short timeout; it never blocks a cast.
+ *
+ * Uses its own session-less client: the app's shared client would run
+ * auth.getSession() first, and a token refresh there can retry for ~30s. The
+ * read also races a hard timer, so a cast waits at most
+ * PUBLIC_NAMES_TIMEOUT_MS here. Any error, timeout or abort returns [].
  */
-async function fetchPublicCharacterNames(): Promise<string[]> {
+async function fetchPublicCharacterNames(signal?: AbortSignal): Promise<string[]> {
+  if (signal?.aborted) return [];
   const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), PUBLIC_NAMES_TIMEOUT_MS);
+  const onAbort = (): void => ctrl.abort();
+  signal?.addEventListener('abort', onAbort, { once: true });
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<string[]>((resolve) => {
+    timer = setTimeout(() => {
+      ctrl.abort();
+      resolve([]);
+    }, PUBLIC_NAMES_TIMEOUT_MS);
+  });
+  const aborted = new Promise<string[]>((resolve) => {
+    ctrl.signal.addEventListener('abort', () => resolve([]), { once: true });
+  });
+  const read = (async (): Promise<string[]> => {
+    try {
+      const { createClient } = await import('@supabase/supabase-js');
+      const { getSupabaseUrl, getSupabaseAnonKey } = await import('./env');
+      const sb = createClient(getSupabaseUrl(), getSupabaseAnonKey(), {
+        auth: { persistSession: false, autoRefreshToken: false },
+      });
+      const { data, error } = await sb
+        .from('characters')
+        .select('name')
+        .eq('shared', true)
+        .order('name')
+        .limit(1000) // PostgREST max-rows cap; prod has a few dozen shared rows
+        .abortSignal(ctrl.signal);
+      if (error || !Array.isArray(data)) return [];
+      return data
+        .map((r) => (r as { name?: unknown }).name)
+        .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
+    } catch {
+      return [];
+    }
+  })();
   try {
-    const { getClient } = await import('./auth/supabaseClient');
-    const { data, error } = await getClient()
-      .from('characters')
-      .select('name')
-      .eq('shared', true)
-      .limit(10000)
-      .abortSignal(ctrl.signal);
-    if (error || !Array.isArray(data)) return [];
-    return data
-      .map((r) => (r as { name?: unknown }).name)
-      .filter((n): n is string => typeof n === 'string' && n.trim() !== '');
-  } catch {
-    return [];
+    return await Promise.race([read, timeout, aborted]);
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', onAbort);
   }
 }
 

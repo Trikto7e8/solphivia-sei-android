@@ -501,20 +501,24 @@ export async function castSoul({
 
   const rolled = rollFields({ gender, userProfile, dynamic, takenVoiceIds, rng });
   const system = buildSystemPrompt();
-  const nameCandidates = drawNameCandidates({
-    heritage: rolled.heritage,
-    gender,
-    exclude: excludeNames,
-    softExclude: avoidNames,
-    rng: nameRng,
-  });
-  const baseUser = buildUserPrompt({ gender, userProfile, rolled, nameCandidates });
+  // Each attempt draws fresh candidates, matching the cloud /free/soulcast
+  // path (the proxy draws per request, and the retry is a new request).
+  const draw = () =>
+    drawNameCandidates({
+      heritage: rolled.heritage,
+      gender,
+      exclude: excludeNames,
+      softExclude: avoidNames,
+      rng: nameRng,
+    });
 
   let lastError = null;
   let lastRaw = null;
 
   // Attempt 1, then a single retry with the validation error appended.
   for (let attempt = 0; attempt < 2; attempt += 1) {
+    const nameCandidates = draw();
+    const baseUser = buildUserPrompt({ gender, userProfile, rolled, nameCandidates });
     const user = attempt === 0 ? baseUser : baseUser + buildRetrySuffix(lastError);
     let raw;
     try {

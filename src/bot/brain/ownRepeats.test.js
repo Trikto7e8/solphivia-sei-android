@@ -546,7 +546,8 @@ describe('ownRepeatsNote, card signature words', () => {
   it('names a card word she used in her last line', () => {
     const note = ownRepeatsNote(session(['thank you nya!']), [], { now, signature: CARD, common: COMMON })
     expect(note).toContain('You already used "nya" in your last line.')
-    expect(note).toContain('leave it out of this one unless the moment really calls for it')
+    expect(note).toContain('Leave it out of this line.')
+    expect(note).not.toContain('unless the moment')
   })
 
   it('says which of her last two lines, and uses the plural ask for two terms', () => {
@@ -554,7 +555,7 @@ describe('ownRepeatsNote, card signature words', () => {
     expect(one).toContain('You already used "big brother" in one of your last two lines.')
     const two = ownRepeatsNote(session(['big brother!', 'yay nya']), [], { now, signature: CARD, common: COMMON })
     expect(two).toMatch(/"(big brother|nya)" and "(big brother|nya)" in your last two lines\./)
-    expect(two).toContain('leave them out of this one')
+    expect(two).toContain('Leave them out of this line.')
   })
 
   it('adds nothing without the card, and nothing for ordinary words', () => {
@@ -571,7 +572,7 @@ describe('ownRepeatsNote, card signature words', () => {
 
   it('rides the idle note with no quote of her lines, and uses no dashes', () => {
     const note = ownRepeatsNote(session(['yay nya']), [], { now, mode: 'idle', signature: CARD, common: COMMON })
-    expect(note).toBe('You already used "nya" in your last line. A signature word or catchphrase wears thin when it is in every line, so leave it out of this one unless the moment really calls for it. You still sound like yourself without it.')
+    expect(note).toBe('You already used "nya" in your last line. Leave it out of this line. A signature word or catchphrase wears thin when it is in every line, and you still sound like yourself without it.')
     expect(note).not.toMatch(/[—–]/)
   })
 })

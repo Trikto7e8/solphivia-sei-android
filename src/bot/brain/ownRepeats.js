@@ -342,6 +342,9 @@ const TIC_ASK_ONE = 'A signature word or catchphrase wears thin when it is in ev
 const TIC_ASK_TWO = 'A signature word or catchphrase wears thin when it is in every line, so leave them out of this one unless the moment really calls for them. ' +
   'You still sound like yourself without them.'
 
+const SIG_ASK_ONE = 'Leave it out of this line. A signature word or catchphrase wears thin when it is in every line, and you still sound like yourself without it.'
+const SIG_ASK_TWO = 'Leave them out of this line. A signature word or catchphrase wears thin when it is in every line, and you still sound like yourself without them.'
+
 /**
  * The tic half of the note, or null when nothing repeats. `hits` are the
  * repeatedOwnTerms habits (3 of 4 turns), `sigs` the card's signature words
@@ -357,6 +360,13 @@ function ticNote(hits, sigs = []) {
     lead.push(`You already used ${quote(sigs)} in ${where}.`)
   }
   if (!lead.length) return null
+  // Only card words, named after one use: no "unless the moment calls for
+  // it". A card that says when to use its tic ("when emotion runs high") made
+  // every moment one that calls for it, and the escape kept Lyra at 92%.
+  // Without it, 80% (Roger 49% -> 38%), Lyra and Roger, 8 reps each, 261026.
+  // The note only follows a line that used the word, so the tic still comes
+  // back every other line at most.
+  if (!hits.length) return `${lead.join(' ')} ${sigs.length > 1 ? SIG_ASK_TWO : SIG_ASK_ONE}`
   // The ask in the form it was measured with (261012) when one word is named.
   return `${lead.join(' ')} ${hits.length + sigs.length > 1 ? TIC_ASK_TWO : TIC_ASK_ONE}`
 }

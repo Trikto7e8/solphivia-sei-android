@@ -1,6 +1,6 @@
 // src/bot/names.test.js: accent folding for in-game names (261027).
 import { describe, it, expect } from 'vitest'
-import { foldLatin, mcUsernameFromName, legacyMcUsernameFromName, MC_USERNAME_MAX } from './names.js'
+import { foldLatin, mcUsernameFromName, legacyMcUsernameFromName, MC_USERNAME_MAX, stardewNameFromRaw, STARDEW_NAME_MAX } from './names.js'
 
 describe('foldLatin', () => {
   it.each([
@@ -116,5 +116,22 @@ describe('legacyMcUsernameFromName', () => {
     expect(legacyMcUsernameFromName('Lucía')).toBe('Luca')
     expect(legacyMcUsernameFromName('Élodie')).toBe('lodie')
     expect(legacyMcUsernameFromName('诗诗')).toBe('Sei')
+  })
+})
+
+describe('stardewNameFromRaw', () => {
+  it('folds accents, keeps spaces and hyphens, cuts at 24 after folding', () => {
+    expect(STARDEW_NAME_MAX).toBe(24)
+    expect(stardewNameFromRaw('Martín Salazar')).toBe('Martin Salazar')
+    expect(stardewNameFromRaw('Jean-Élodie')).toBe('Jean-Elodie')
+    expect(stardewNameFromRaw('  Zoë!  ')).toBe('Zoe')
+    expect(stardewNameFromRaw('ß'.repeat(13))).toHaveLength(24)
+  })
+
+  it('non-Latin names give exactly what the old rule gave', () => {
+    const old = (raw) => String(raw ?? '').replace(/[^A-Za-z0-9_ \-]/g, '').trim().slice(0, 24) || 'Sei'
+    for (const s of ['诗诗', '민지 (Min-ji)', 'Йордан', 'さくら 2', 'Sui', 'Big Bob-99']) {
+      expect(stardewNameFromRaw(s)).toBe(old(s))
+    }
   })
 })

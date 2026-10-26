@@ -85,3 +85,20 @@ export function legacyMcUsernameFromName(name) {
   const cleaned = String(name ?? '').replace(/[^A-Za-z0-9_]/g, '').slice(0, MC_USERNAME_MAX)
   return cleaned || 'Sei'
 }
+
+/** Stardew companion names are display names: spaces allowed, 24 chars. */
+export const STARDEW_NAME_MAX = 24
+
+/**
+ * The Stardew Valley companion name from a raw name (the explicit username or
+ * the display name): accents folded, filtered to [A-Za-z0-9_ -], trimmed, cut
+ * to 24, 'Sei' when nothing is left. The SMAPI mod (SeiBody.SanitizeName)
+ * applies the same filter again on its side, which is a no-op on this output.
+ *
+ * @param {unknown} raw
+ * @returns {string}
+ */
+export function stardewNameFromRaw(raw) {
+  const cleaned = foldLatin(raw).replace(/[^A-Za-z0-9_ \-]/g, '').trim().slice(0, STARDEW_NAME_MAX)
+  return cleaned || 'Sei'
+}

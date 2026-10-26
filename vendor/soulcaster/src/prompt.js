@@ -19,7 +19,8 @@ RULES:
   - elf: pick a subtype (wood elf / high elf / dark elf) and describe ear shape and complexion.
   - robot: pick a type (android / heavy chassis / porcelain automaton, etc.) and describe the material and finish.
   - human: describe skin tone and any notable human features.
-- heritage below is a pre-rolled naming culture. Echo the heritage string in your JSON EXACTLY as given. The name MUST follow that heritage's naming culture (a japanese heritage character gets a Japanese-style name, a nordic heritage character a Nordic-style name, and so on). This applies to non-humans too: a japanese-heritage elf still gets a Japanese-style name. But heritage flavors the NAME (and, for humans only, general feature framing) — it never claims a real-world ethnicity for an elf, beastkin, or robot. A robot's "name" is really a designation; flavor the designation's naming convention by the heritage instead (e.g. a nordic-heritage robot might carry a Nordic-sounding designation), not an ethnicity claim about the machine.
+- heritage below is a pre-rolled naming culture. Echo the heritage string in your JSON EXACTLY as given. Heritage flavors the name and, for humans only, general feature framing. It never claims a real-world ethnicity for an elf, beastkin, or robot.
+- name: the user prompt lists name_candidates, drawn at random for this character from the heritage's naming culture. Choose the one that best fits the character you are writing and use it exactly as written, as the whole "name". Do not invent a different name and do not add a surname. A robot's name is really a designation, so a robot may carry the chosen name as is or with a short unit suffix such as "-7" or " Mk II". If no name_candidates line is given, choose a name that follows the heritage's naming culture.
 - occupation: specialize the rolled life_context CATEGORY (below) into ONE concrete occupation, consistent with the character's age, heritage, and personality. The category's example specializations are inspiration only, not an exhaustive menu — invent freely within the spirit of the category. For non-human species (elf, beastkin, robot), reinterpret the category rather than ignore it (e.g. a beastkin in the rural-outdoor category could be an orchard keeper who talks to the animals; a robot in the technical-craft category could be a maintenance unit repurposed as an apprentice mechanic). The life_context hints are register-neutral: reinterpret them into your chosen setting (service-retail in a fantasy setting is a tavern server or market-stall keeper, not a convenience-store clerk).
 - The backstory MUST be 150 to 300 words and must explain HOW the appearance and the personality cohere — why this person looks and acts this way. The backstory SHOULD weave in occupation and heritage: unlike combat (see below), these ARE part of the character's identity, not just gameplay, so let them shape formative details, daily life, or worldview.
 - player_dynamic: one or two sentences describing who this character naturally is TO THE PLAYER they accompany in the game — the relationship role they fall into (a co-conspirator, a quiet protector, a rival who keeps score, ...). If the user prompt provides a relationship_dynamic, player_dynamic MUST express that dynamic and the personality (tone, values, quirks) must make it credible; otherwise derive it from the personality. The player is NOT in the backstory — the backstory is who the character is before they meet anyone, so keep the relationship out of it.
@@ -66,7 +67,8 @@ Return STRICT JSON only — a single object, no prose before or after, no markdo
 personality.values: 3 to 5 items. personality.quirks: 2 to 3 items. personality.fears: 1 to 2 items. appearance.distinguishing_features: 1 to 3 items.`;
 }
 
-export function buildUserPrompt({ gender, userProfile, rolled }) {
+// nameCandidates: names drawn at random by drawNames.js; the model picks one.
+export function buildUserPrompt({ gender, userProfile, rolled, nameCandidates = null }) {
   const lines = [];
   lines.push('Create the character sheet. Here are the pre-rolled random fields you must honor:');
   lines.push('');
@@ -76,6 +78,11 @@ export function buildUserPrompt({ gender, userProfile, rolled }) {
   lines.push(
     `heritage: ${rolled.heritage} (drives the naming culture for "name"; for non-humans this flavors the name only, never a real-world ethnicity claim)`,
   );
+  if (Array.isArray(nameCandidates) && nameCandidates.length) {
+    lines.push(
+      `name_candidates: ${nameCandidates.join(', ')} (pick the one that best fits this character and use it exactly as written for "name")`,
+    );
+  }
   const lifeContextHint = LIFE_CONTEXTS[rolled.life_context] ? LIFE_CONTEXTS[rolled.life_context].hint : '';
   lines.push(
     `life_context: ${rolled.life_context} (category — examples for inspiration only: ${lifeContextHint}; invent ONE concrete "occupation" within this category, consistent with age/heritage/personality` +

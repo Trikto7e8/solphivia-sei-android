@@ -11,6 +11,8 @@
  *   P.3 — the recommended badge only shows on an upgrade target, so a Party
  *         subscriber's own card never reads "Recommended".
  *   P.4 — new labels have a zh translation.
+ *   P.5 — flat and borderless (Shawn, 261027): no top highlight, no gradient
+ *         band, no shadow under the primary, no border line on either kind.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -52,5 +54,16 @@ describe('PlanButton', () => {
     for (const key of ['Get {name}', 'Upgrade to {name}', 'Resume {name}', 'Recommended', 'Buy for {price}']) {
       expect(ZH).toContain(`'${key}':`);
     }
+  });
+
+  it('P.5 no top highlight, gradient band, shadow or border line', () => {
+    const noReducedMotion = CSS.slice(0, CSS.indexOf('@media (prefers-reduced-motion: reduce)'));
+    expect(noReducedMotion).not.toMatch(/box-shadow/);
+    expect(noReducedMotion).not.toMatch(/border-color/);
+    expect(noReducedMotion).not.toMatch(/filter:/);
+    // The only gradient left is the hover sweep inside .primary::after.
+    const gradients = noReducedMotion.match(/linear-gradient/g) ?? [];
+    expect(gradients).toHaveLength(1);
+    expect(noReducedMotion).toMatch(/\.primary::after\s*\{[^}]*linear-gradient/);
   });
 });

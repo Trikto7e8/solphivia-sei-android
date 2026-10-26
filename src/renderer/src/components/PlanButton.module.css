@@ -1,8 +1,17 @@
 /* PlanButton (261023): the buy / upgrade target on the plan surfaces.
  *
- * Tokens only. The fill is the theme's own accent with a lighter top edge
- * (color-mix with white), so it follows every theme (ice, midnight, acorn,
- * mint) instead of carrying a second palette. Sharp corners (D-28).
+ * Tokens only. The primary is a flat fill of the theme's own accent, so it
+ * follows every theme (ice, midnight, acorn, mint) instead of carrying a
+ * second palette. Sharp corners (D-28). No visible border line on either
+ * kind (Shawn, 261023).
+ *
+ * 261027: Shawn: "remove the top white line, the shading is really dark, it
+ * looks dirty and old". The top line was an inset 1px white highlight plus a
+ * near-white top gradient stop; the dark shading was the accent-strong
+ * gradient stop, the accent-strong border and an accent glow under the
+ * button. All gone: flat fill at rest, a small step toward --accent-strong
+ * and a lift on hover, a further step and a press on click, no shadow in any
+ * state.
  */
 
 .button {
@@ -30,11 +39,8 @@
   min-width: 0;
   transition:
     transform 140ms var(--ease-pop),
-    box-shadow 180ms var(--ease),
     background-color 180ms var(--ease),
-    border-color 180ms var(--ease),
-    color 180ms var(--ease),
-    filter 180ms var(--ease);
+    color 180ms var(--ease);
 }
 
 .md {
@@ -72,16 +78,6 @@
 .primary {
   color: var(--accent-text);
   background-color: var(--accent);
-  background-image: linear-gradient(
-    180deg,
-    color-mix(in srgb, var(--accent) 78%, white) 0%,
-    var(--accent) 55%,
-    var(--accent-strong) 100%
-  );
-  border-color: var(--accent-strong);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 38%, transparent),
-    0 6px 16px -8px color-mix(in srgb, var(--accent) 80%, transparent);
 }
 
 /* The shine: a soft diagonal highlight parked off the left edge, swept across
@@ -93,9 +89,9 @@
   z-index: -1;
   background: linear-gradient(
     105deg,
-    transparent 30%,
-    color-mix(in srgb, white 42%, transparent) 50%,
-    transparent 70%
+    transparent 35%,
+    color-mix(in srgb, white 22%, transparent) 50%,
+    transparent 65%
   );
   transform: translateX(-110%);
   pointer-events: none;
@@ -103,10 +99,10 @@
 
 .primary:hover:not(:disabled) {
   transform: translateY(-1px);
-  filter: brightness(1.06) saturate(1.05);
-  box-shadow:
-    inset 0 1px 0 color-mix(in srgb, white 45%, transparent),
-    0 10px 22px -10px color-mix(in srgb, var(--accent) 95%, transparent);
+  /* Toward --accent-strong, the theme's own hover tone: darker under white
+     label text on the light themes, lighter under the dark label on
+     midnight, so the label gains contrast on hover in every theme. */
+  background-color: color-mix(in srgb, var(--accent) 55%, var(--accent-strong));
 }
 
 .primary:hover:not(:disabled)::after {
@@ -122,30 +118,27 @@
   transition: transform 180ms var(--ease-pop);
 }
 
-/* Press: sink back down, darken a touch, shadow goes inside. */
+/* Press: settle back down, one more step toward --accent-strong. No inset
+   shadow. */
 .primary:active:not(:disabled) {
-  transform: translateY(1px) scale(0.985);
-  filter: brightness(0.96);
-  box-shadow:
-    inset 0 2px 6px color-mix(in srgb, black 22%, transparent),
-    0 2px 6px -4px color-mix(in srgb, var(--accent) 70%, transparent);
+  transform: translateY(0) scale(0.985);
+  background-color: color-mix(in srgb, var(--accent) 20%, var(--accent-strong));
 }
 
 .primary:disabled {
   opacity: 0.5;
-  box-shadow: none;
 }
 
 /* ── secondary: same size, quiet ───────────────────────────────────── */
+/* A faint wash of the text colour instead of a bordered box, so it reads on
+   the plan cards (--bg4) and on the popups (--bg2) alike. */
 .secondary {
   color: var(--text-2);
-  background: var(--bg2);
-  border-color: var(--border-strong);
+  background: color-mix(in srgb, var(--text) 7%, transparent);
 }
 
 .secondary:hover:not(:disabled) {
   color: var(--accent);
-  border-color: var(--accent);
   background: var(--accent-soft);
 }
 
@@ -158,7 +151,6 @@
 .secondary:disabled {
   color: var(--accent);
   background: var(--accent-soft);
-  border-color: transparent;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -166,9 +158,7 @@
   .arrow {
     transition:
       background-color 180ms var(--ease),
-      border-color 180ms var(--ease),
-      color 180ms var(--ease),
-      filter 180ms var(--ease);
+      color 180ms var(--ease);
   }
   .primary:hover:not(:disabled),
   .primary:active:not(:disabled),

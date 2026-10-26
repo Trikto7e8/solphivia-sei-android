@@ -244,23 +244,28 @@
   --muted: #82807a;
   --muted-2: #56544e;
 
-  /* 260929: a slightly deeper, less saturated periwinkle (was #7fb0ff, hover
-     #9cc4ff), which glared on the dark popups. Still AA everywhere it is
-     used: the dark button text on it is 6.5:1, it on --bg2 6.7:1. */
-  --accent: #6c9ae0;
-  --accent-strong: #86ade8;
-  --accent-soft: rgba(108, 154, 224, 0.16);
+  /* 261027 (Shawn: "making all of the light blue brighter in dark theme"):
+     back to the old Summon periwinkle (ef346069) for the whole accent
+     family. 260929 (811a4312) had dimmed it to #6c9ae0 / #86ade8 because it
+     glared on the dark popups; the middle step tried was #76a6f0 / #91b9f4.
+     Brighter only gains contrast here: the dark label on the fill is 8.4:1
+     (was 6.5), the accent as text 8.7:1 on --bg2 (was 6.7) and 6.9:1 on
+     --bg4 (was 5.3), accent on --accent-soft over --bg4 5.0:1 (was 4.1). */
+  --accent: #7fb0ff;
+  --accent-strong: #9cc4ff;
+  --accent-soft: rgba(127, 176, 255, 0.16);
   /* Text/icon on an accent fill — the mockup hardcodes #1a1206 on the CTA
-     regardless of accent hue; near-black on the periwinkle fill. */
+     regardless of accent hue; near-black on the periwinkle fill (white
+     would be 2.2:1). */
   --accent-text: #1a1206;
-  --acc: 108 154 224;
+  --acc: 127 176 255;
   --acc-c: rgb(var(--acc));
-  /* PlanButton fill (261027): the old Summon CTA's full periwinkle (ef346069
-     dark accent #7fb0ff, strong #9cc4ff, text #1a1206), plan buttons only.
-     Dark label 8.4:1 at rest, 9.3:1 on hover. */
-  --plan-cta: #7fb0ff;
-  --plan-cta-strong: #9cc4ff;
-  --plan-cta-text: #1a1206;
+  /* PlanButton fill: the global accent IS the old Summon blue on midnight
+     now, so the plan buttons follow it (they had their own #7fb0ff while
+     the accent was the dimmer #6c9ae0). */
+  --plan-cta: var(--accent);
+  --plan-cta-strong: var(--accent-strong);
+  --plan-cta-text: var(--accent-text);
 
   --green: #78c878;
   --red: #c0443c;

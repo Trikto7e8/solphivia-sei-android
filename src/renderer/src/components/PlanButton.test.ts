@@ -17,8 +17,9 @@
  *         1.8s loop (261027, was 3.4s) scaled by --flux, moved by transform,
  *         and not on a disabled button. Quest runs half a loop out of step.
  *   P.7 — the primary fill is its own --plan-cta token family (the old
- *         Summon blue), set in every theme and falling back to --accent;
- *         the global --accent values are unchanged.
+ *         Summon blue), set in every theme and falling back to --accent.
+ *         On midnight the global accent is that blue (261027), so the plan
+ *         tokens point at it; ice keeps its calmer global accent.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -94,10 +95,12 @@ describe('PlanButton', () => {
     for (const b of blocks) {
       for (const tok of ['--plan-cta:', '--plan-cta-strong:', '--plan-cta-text:']) expect(b).toContain(tok);
     }
-    expect(blocks[1]).toMatch(/--plan-cta:\s*#7fb0ff/);
+    // Midnight's global accent is the old Summon blue itself (261027), so the
+    // plan buttons follow it there.
+    expect(blocks[1]).toMatch(/--accent:\s*#7fb0ff/);
+    expect(blocks[1]).toMatch(/--plan-cta:\s*var\(--accent\)/);
+    // Ice keeps the calmer global accent; only its plan buttons are brighter.
     expect(blocks[0]).toMatch(/--plan-cta:\s*#3f7fd6/);
-    // The plan buttons get the brighter blue; the global accent does not.
-    expect(blocks[1]).toMatch(/--accent:\s*#6c9ae0/);
     expect(blocks[0]).toMatch(/--accent:\s*#3f6fc4/);
   });
 });

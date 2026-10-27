@@ -10,8 +10,8 @@ import {
   FACE_EXTRA_EXPRESSIONS,
   FACE_ALL_EXPRESSIONS,
   normalizePalette,
-  facePromptFor,
-  faceEnumFor,
+  FACE_OFFERED_NAMES,
+  FACE_EXPRESSION_ENUM,
 } from './faceExpressions.js'
 
 describe('resolveExpression', () => {
@@ -161,19 +161,22 @@ describe('pack palettes', () => {
     }
   })
 
-  it('facePromptFor lists only the pack faces; null is FACE_PROMPT', () => {
-    expect(facePromptFor(null)).toBe(FACE_PROMPT)
-    const p = facePromptFor(LED)
-    for (const n of LED.expressions) expect(p).toContain(`[${n}]`)
-    expect(p).not.toContain('[laugh]')
-    expect(p).not.toContain('[excited]')
-    expect(p).not.toContain('—')
-    expect(p.length).toBeLessThan(FACE_PROMPT.length)
+  it('every character is offered the same full list (no per-pack filter)', () => {
+    expect(FACE_OFFERED_NAMES).toEqual(FACE_ALL_EXPRESSIONS.map((e) => e.name))
+    for (const n of FACE_OFFERED_NAMES) expect(FACE_PROMPT).toContain(`[${n}]`)
+    expect(FACE_EXPRESSION_ENUM).toEqual(FACE_OFFERED_NAMES)
   })
 
-  it('faceEnumFor is the palette or the base 12', () => {
-    expect(faceEnumFor(null)).toEqual([...FACE_EXPRESSION_NAMES])
-    expect(faceEnumFor(LED)).toEqual(LED.expressions)
+  it('the prompt names no character', () => {
+    expect(FACE_PROMPT).not.toMatch(/\b(sui|lyra|marv)\b/i)
+  })
+
+  it('every offered face lands on a face any pack can show', () => {
+    for (const n of FACE_OFFERED_NAMES) {
+      expect(resolveExpression(n)).not.toBeNull()
+      expect(LED.expressions).toContain(resolveExpression(n, LED))
+      expect(THA3.expressions).toContain(resolveExpression(n, THA3))
+    }
   })
 
   it('extra names never collide with base names and each falls back to a base name', () => {

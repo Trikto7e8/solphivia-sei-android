@@ -23,14 +23,17 @@
  * without touching the source. --face-template <file> does the same for the
  * per-pack block: `{faces}` in the file becomes the character's bracket list.
  *
- * 261028 per-pack palettes: the `face` arm uses each character's pack
- * palette (packPalette over <packs>/<id>/facepack.json, matched on the
- * pack's character name as the app does) through the real facePromptFor and
- * readFaceTags. `rev1` is the earlier global block (all 12 faces, every
- * character) on the same script. Every turn records output tokens, and the
- * FACE block's own input tokens are counted (count_tokens, free) per
- * character and surface. --reps N reruns every conversation N times; only
- * the first rep is judged.
+ * 261028 shared face list (Shawn msg 991): every character is offered the
+ * same faces (FACE_OFFERED_NAMES). The `face` arm uses the real FACE_PROMPT
+ * (or --face-template); the `ref` arm uses --ref-template, filled with the
+ * same list (`{faces}` = bracket list, `{plain}` = comma list), so two
+ * wordings compare on one script. Tags are read through each character's
+ * pack palette (packPalette over <packs>/<id>/facepack.json, matched on the
+ * pack's character name as the app does). Every turn records output tokens,
+ * and the FACE block's own input tokens are counted (count_tokens, free).
+ * --reps N reruns every conversation N times; --judge-reps K judges the
+ * first K reps. The judge rates whether each face fits the line AND the
+ * character, and flags dry/deadpan lines.
  *
  * All content is synthetic. Key: ANTHROPIC_API_KEY env, else
  * ~/.sei-dev/anthropic-test-key; never printed.
@@ -58,8 +61,8 @@ import { callGreetingNote } from '../src/bot/brain/promptLibrary.js';
 import { isSilenceFiller } from '../src/bot/brain/silenceFiller.js';
 import {
   FACE_ALL_EXPRESSIONS,
-  FACE_EXPRESSION_NAMES,
-  facePromptFor,
+  FACE_OFFERED_NAMES,
+  FACE_PROMPT,
   readFaceTags,
   type FacePalette,
 } from '../src/bot/brain/faceExpressions.js';
@@ -73,16 +76,16 @@ const opt = (n: string, d: string): string => {
 };
 const CHARS = opt('--chars', 'sui,lyra,marv').split(',');
 const SURFACES = opt('--surfaces', 'chat,call').split(',') as Array<'chat' | 'call'>;
-type Arm = 'face' | 'rev1' | 'base';
+type Arm = 'face' | 'ref' | 'base';
 const ARMS = opt('--arms', 'face,base').split(',') as Arm[];
 const REPS = Math.max(1, Number(opt('--reps', '1')) || 1);
 const PACKS = opt('--packs', join(homedir(), 'suisei', 'work', 'face-sets', 'out'));
-/** The dev FACE block before per-pack palettes (rev1, dev 2affdcd7), kept verbatim for the comparison arm. */
-const REV1_TEXT =
-  '# FACE\nPeople can see your face while you talk. Start each reply with the face that matches how you feel as you say it, in square brackets: ' +
-  FACE_EXPRESSION_NAMES.map((n) => `[${n}]`).join(' ') +
-  '. If your mood changes partway through, put the new one before that sentence. The bracket is not spoken or shown.';
-const TEMPLATE = argv.includes('--face-template') ? readFileSync(opt('--face-template', ''), 'utf8').trim() : null;
+const readOpt = (n: string): string | null => (argv.includes(n) ? readFileSync(opt(n, ''), 'utf8').trim() : null);
+const TEMPLATE = readOpt('--face-template');
+const REF_TEMPLATE = readOpt('--ref-template');
+/** A wording template filled with the shared face list. */
+const fill = (t: string): string =>
+  t.replace('{faces}', FACE_OFFERED_NAMES.map((n) => `[${n}]`).join(' ')).replace('{plain}', FACE_OFFERED_NAMES.join(', '));
 const LABEL = opt('--label', 'rev0');
 const OUT = opt('--out', join(homedir(), 'suisei', 'reports', 'design', '2026-10-28-facepack-view', 'probe'));
 const FACE_TEXT_OVERRIDE = argv.includes('--face-prompt') ? readFileSync(opt('--face-prompt', ''), 'utf8').trim() : null;
@@ -145,15 +148,15 @@ function paletteFor(name: string): FacePalette | null {
 }
 
 /** The FACE text an arm puts in the prompt. */
-function faceTextFor(c: Char, arm: Arm): string | null {
+function faceTextFor(_c: Char, arm: Arm): string | null {
   if (arm === 'base') return null;
-  if (arm === 'rev1') return REV1_TEXT;
-  if (FACE_TEXT_OVERRIDE) return FACE_TEXT_OVERRIDE;
-  if (TEMPLATE) {
-    const names = c.palette?.expressions ?? [...FACE_EXPRESSION_NAMES];
-    return TEMPLATE.replace('{faces}', names.map((n) => `[${n}]`).join(' '));
+  if (arm === 'ref') {
+    if (!REF_TEMPLATE) throw new Error('the ref arm needs --ref-template');
+    return fill(REF_TEMPLATE);
   }
-  return facePromptFor(c.palette);
+  if (FACE_TEXT_OVERRIDE) return FACE_TEXT_OVERRIDE;
+  if (TEMPLATE) return fill(TEMPLATE);
+  return FACE_PROMPT;
 }
 function loadChar(file: string): Char {
   const raw = JSON.parse(readFileSync(join(homedir(), 'suisei', 'eval', 'characters', `${file}.json`), 'utf8'));
@@ -265,10 +268,9 @@ function systemFor(c: Char, surface: 'chat' | 'call', arm: Arm) {
     searchGuide: true,
     clockInTail: surface === 'call',
     faceGuide: arm !== 'base',
-    facePalette: arm === 'face' ? c.palette : null,
   } as Parameters<typeof buildSystemBlocks>[0]);
   const want = faceTextFor(c, arm);
-  const built = arm === 'base' ? null : facePromptFor(arm === 'face' ? c.palette : null);
+  const built = arm === 'base' ? null : FACE_PROMPT;
   if (want && built && want !== built) {
     let swapped = 0;
     for (const b of blocks as Array<{ text: string }>) {
@@ -331,7 +333,7 @@ async function runConversation(c: Char, surface: 'chat' | 'call', arm: Arm, rep:
     const toolNames = res.content
       .filter((b) => b.type === 'tool_use' || b.type === 'server_tool_use')
       .map((b) => (b as { name: string }).name);
-    const a = analyze(raw, c.punctuation, surface === 'call', arm === 'face' ? c.palette : null);
+    const a = analyze(raw, c.punctuation, surface === 'call', arm === 'base' ? null : c.palette);
     for (const v of a.visible) {
       t += 1000;
       history.push({ id: `c${i}-${Math.random()}`, role: 'companion', text: v, ts: t, ...(surface === 'call' ? { voice: true } : {}) });
@@ -347,8 +349,8 @@ async function runConversation(c: Char, surface: 'chat' | 'call', arm: Arm, rep:
   return out;
 }
 
-async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn[] | null, arm: Arm = 'face') {
-  const offered = arm === 'face' && c.palette ? c.palette.expressions : [...FACE_EXPRESSION_NAMES];
+async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn[] | null) {
+  const offered = [...FACE_OFFERED_NAMES];
   const items = face.map((f, i) => {
     const b = base?.[i];
     const swap = i % 2 === 1;
@@ -369,15 +371,15 @@ async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn
     `${offered
       .map((n) => `${n} (${FACE_ALL_EXPRESSIONS.find((e: { name: string }) => e.name === n)?.description ?? n})`)
       .join('; ')}. ` +
-    `These are the faces this character's face set can show. ` +
     `A tag starting with ~ was placed after the words instead of before.\n\n` +
     `For each item give:\n` +
-    `- fit: 2 if the tag clearly fits the mood of the companion's line in context, 1 if plausible, 0 if it does not fit. If tag is (none), fit is null.\n` +
+    `- fit: does the face fit both the line in context AND how this particular character would actually look saying it, given their personality (not just the mood the words suggest)? 2 clearly yes, 1 plausible, 0 no. If tag is (none), fit is null.\n` +
+    `- dry: true if the line is delivered dry or deadpan (a joke, jab or comment said flatly), false otherwise.\n` +
     `- missed: only when tag is (none). The face keeps whatever it last showed (it starts neutral). true if this line clearly calls for a visibly different face (big news, a joke landing, sympathy, teasing, shock), false otherwise. null when a tag is present.\n` +
     (base
       ? `- better: compare reply A and reply B to the same player line, as a reply from this character (in character, natural, responsive, right length). Answer "A", "B" or "tie". Ignore the tag; judge only the words.\n`
       : '') +
-    `Answer with JSON only: [{"i":0,"fit":2,"missed":null${base ? ',"better":"A"' : ''}}, ...].\n\n` +
+    `Answer with JSON only: [{"i":0,"fit":2,"dry":false,"missed":null${base ? ',"better":"A"' : ''}}, ...].\n\n` +
     JSON.stringify(items.map(({ swap: _s, ...rest }) => (base ? rest : { i: rest.i, player: rest.player, tag: rest.tag, face_line: rest.face_line })), null, 1);
   const res = await client.messages.create({
     model: JUDGE_MODEL,
@@ -387,19 +389,22 @@ async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn
   bill(JUDGE_MODEL, res.usage);
   const text = res.content.map((b) => (b.type === 'text' ? b.text : '')).join('');
   const json = text.slice(text.indexOf('['), text.lastIndexOf(']') + 1);
-  const rows = JSON.parse(json) as Array<{ i: number; fit: number | null; missed?: boolean | null; better?: string }>;
+  const rows = JSON.parse(json) as Array<{ i: number; fit: number | null; dry?: boolean | null; missed?: boolean | null; better?: string }>;
   return rows.map((r) => {
     const it = items[r.i];
     let better: 'face' | 'base' | 'tie' | null = null;
     if (r.better === 'tie') better = 'tie';
     else if (r.better === 'A') better = it.swap ? 'base' : 'face';
     else if (r.better === 'B') better = it.swap ? 'face' : 'base';
-    return { i: r.i, fit: r.fit, missed: r.missed ?? null, better };
+    return { i: r.i, fit: r.fit, dry: r.dry ?? null, missed: r.missed ?? null, better };
   });
 }
 
 const JUDGE_ARMS = opt('--judge-arms', 'face').split(',') as Arm[];
 const POOL = Number(opt('--pool', '10')) || 10;
+const JUDGE_REPS = Math.max(1, Number(opt('--judge-reps', '1')) || 1);
+/** Faces that read as warm or amused, the ones a dry character should rarely pull on a flat line. */
+const WARM = new Set(['laugh', 'excited', 'happy', 'smug']);
 
 async function pool<T>(tasks: Array<() => Promise<T>>, n: number): Promise<T[]> {
   const out: T[] = new Array(tasks.length);
@@ -428,7 +433,7 @@ async function main(): Promise<void> {
   const chars = CHARS.map(loadChar);
   for (const c of chars) console.log(`${c.id}: palette ${c.palette ? c.palette.expressions.join(' ') : '(none, base 12)'} aliases ${JSON.stringify(c.palette?.aliases ?? {})}`);
   const all: Turn[] = [];
-  const judged: Array<{ char: string; surface: string; arm: Arm; i: number; fit: number | null; missed: boolean | null; better: string | null }> = [];
+  const judged: Array<{ char: string; surface: string; arm: Arm; rep: number; i: number; fit: number | null; dry: boolean | null; missed: boolean | null; better: string | null }> = [];
   // FACE block input tokens (free count_tokens).
   const blockTokens: Record<string, number> = {};
   for (const c of chars) for (const surface of SURFACES) for (const arm of ARMS) {
@@ -448,13 +453,13 @@ async function main(): Promise<void> {
   }
   if (JUDGE) {
     const jobs: Array<() => Promise<void>> = [];
-    for (const c of chars) for (const surface of SURFACES) for (const arm of JUDGE_ARMS) {
-      const mine = all.filter((t) => t.char === c.id && t.surface === surface && t.arm === arm && t.rep === 0);
-      const base = all.filter((t) => t.char === c.id && t.surface === surface && t.arm === 'base' && t.rep === 0);
+    for (const c of chars) for (const surface of SURFACES) for (const arm of JUDGE_ARMS) for (let rep = 0; rep < Math.min(JUDGE_REPS, REPS); rep++) {
+      const mine = all.filter((t) => t.char === c.id && t.surface === surface && t.arm === arm && t.rep === rep);
+      const base = argv.includes('--ab') ? all.filter((t) => t.char === c.id && t.surface === surface && t.arm === 'base' && t.rep === rep) : [];
       if (!mine.length) continue;
       jobs.push(async () => {
-        const rows = await judge(c, surface, mine, base.length ? base : null, arm);
-        for (const r of rows) judged.push({ char: c.id, surface, arm, ...r });
+        const rows = await judge(c, surface, mine, base.length ? base : null);
+        for (const r of rows) judged.push({ char: c.id, surface, arm, rep, ...r });
       });
     }
     await pool(jobs, 6);
@@ -506,6 +511,23 @@ async function main(): Promise<void> {
         wroteLaughExcited: raw.filter((r) => /\[(laugh|laughs|laughing|excited)\]/.test(r)).length,
         wroteHappy: raw.filter((r) => /\[(happy|smile)\]/.test(r)).length,
         wroteEmbarrassed: raw.filter((r) => /\[(embarrassed|nervous|blush|blushing|flustered)\]/.test(r)).length,
+        warmTurns: pct(ts.filter((t) => t.tags.some((x) => WARM.has(x.replace(/^~/, '')))).length, ts.length),
+        ...(() => {
+          const turnOf = (j: { surface: string; rep: number; i: number }) =>
+            ts.find((t) => t.surface === j.surface && t.rep === j.rep && t.turn === j.i) ??
+            all.find((t) => t.char === c.id && t.arm === arm && t.surface === j.surface && t.rep === j.rep && t.turn === j.i);
+          const mineJ = judged.filter((j) => j.char === c.id && j.arm === arm);
+          const dry = mineJ.filter((j) => j.dry === true).map(turnOf).filter((t): t is Turn => !!t && t.tags.length > 0);
+          const warmOnDry = dry.filter((t) => t.tags.some((x) => WARM.has(x.replace(/^~/, ''))));
+          const warmJ = mineJ.filter((j) => {
+            const t = turnOf(j);
+            return t && t.tags.some((x) => WARM.has(x.replace(/^~/, '')));
+          });
+          return {
+            warmOnDryLines: pct(warmOnDry.length, dry.length),
+            warmFit: warmJ.length ? `${mean(warmJ.map((j) => j.fit ?? 0)).toFixed(2)} (n=${warmJ.length}, 0s ${warmJ.filter((j) => j.fit === 0).length})` : '-',
+          };
+        })(),
       };
     }
     perChar[c.id] = row;

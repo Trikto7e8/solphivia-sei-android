@@ -15,13 +15,12 @@
  * Each baked pack also carries its own per-expression `blink` flag, which is
  * what the player actually reads; the copy here is informational.
  *
- * Per-pack palettes (261028): a pack may declare which expressions its
- * character is offered (`palette`) plus its own aliases (`aliases`, e.g. Marv
- * maps laugh and excited onto smirk). The FACE block then lists only those
- * names and the tag reader maps every tag through that pack. A few names
- * beyond the base 12 exist for such packs (FACE_EXTRA_EXPRESSIONS: deadpan,
- * resigned, smirk, worried). Each has a base fallback, so with no palette
- * every tag still lands on one of the 12, exactly as before.
+ * One shared list (261028, Shawn msg 991): every character is offered the
+ * same faces, the base 12 plus FACE_EXTRA_EXPRESSIONS (deadpan, resigned,
+ * smirk, worried); there is no per-character filter. A pack declares which
+ * faces it draws (`palette`) and may map others onto them (`aliases`); the
+ * tag reader maps a face the pack lacks to its nearest (pack alias, then the
+ * extra's base fallback). With no pack every tag lands on one of the 12.
  *
  * Production safety: nothing here is active unless the facepack dev flag is
  * on (main/facepack/facepackDev.ts). The parser is read-only: it never edits
@@ -200,45 +199,37 @@ export function readFaceTags(line, palette) {
 }
 
 /**
- * The FACE block text for one list of faces (261028). Picked by
- * scripts/facepack-tag-probe.ts (Haiku 5.5, Sui/Lyra/Marv, chat + call, 3-6
- * reps per wording, ~$1.5 total): "then reply as you normally would" brought
- * replies back to the no-face length (output tokens minus the tag itself
- * within noise of the no-face prompt on both surfaces), where the rev1
- * wording added ~9 output tokens per reply. Tag rate ~77% vs rev1 ~82%.
- * @param {ReadonlyArray<string>} names
+ * The faces every character is offered (261028, Shawn msg 991): the same
+ * list for everyone, the base 12 plus the extras. There is no per-character
+ * filter; a pack that does not draw a face maps it to the nearest one it
+ * has (pack aliases, then the extra's fallback, see resolveExpression).
  */
-function faceBlock(names) {
-  return (
-    '# FACE\n' +
-    'People can see your face. Begin each reply with a face tag in square brackets, one of: ' +
-    names.map((n) => `[${n}]`).join(' ') +
-    ', then reply as you normally would. Put a new tag before a later sentence if your mood changes. Tags are not spoken or shown.'
-  );
-}
+export const FACE_OFFERED_NAMES = Object.freeze(FACE_ALL_EXPRESSIONS.map((e) => e.name));
 
 /**
  * The FACE block for the chat and voice-call prompts (persona block), only
- * while the facepack dev flag is on, for a character with no pack palette:
- * the base 12.
+ * while the facepack dev flag is on. One general instruction for every
+ * character; nothing in it names a character or a persona trait.
+ *
+ * Wording (scripts/facepack-tag-probe.ts, 261028, Haiku 5.5, Sui/Lyra/Marv,
+ * chat + call, 3 reps, Opus judge rating fit to the line AND the character):
+ * "then reply as you normally would" keeps replies at the no-face length
+ * (output minus the tag within noise of no-face). With the full shared list
+ * the dry character pulls a warm face (laugh/excited/happy/smug) on 2 of 45
+ * dry lines. Eleven general "stay in character" rewrites (e.g. "your face as
+ * you say it, in your own manner", "how you say it, not how the news feels")
+ * moved that to 0-10% in screening, the best one judged no better on fit
+ * (1.52-1.73 vs 1.56-1.80) and cut the tag rate (Marv 83% -> 63%), so this
+ * wording stays.
  */
-export const FACE_PROMPT = faceBlock(FACE_EXPRESSION_NAMES);
+export const FACE_PROMPT =
+  '# FACE\n' +
+  'People can see your face. Begin each reply with a face tag in square brackets, one of: ' +
+  FACE_OFFERED_NAMES.map((n) => `[${n}]`).join(' ') +
+  ', then reply as you normally would. Put a new tag before a later sentence if your mood changes. Tags are not spoken or shown.';
 
-/**
- * The FACE block for one character (261028): its pack palette's faces, or
- * FACE_PROMPT when there is no palette. Nothing here keys on the character;
- * the list comes from what its pack's bake drew.
- * @param {{ expressions: string[], aliases: Record<string, string> } | null} [palette]
- * @returns {string}
- */
-export function facePromptFor(palette) {
-  return palette ? faceBlock(palette.expressions) : FACE_PROMPT;
-}
-
-/** The say() `expression` enum: the palette's names, or the base 12. */
-export function faceEnumFor(palette) {
-  return palette ? [...palette.expressions] : [...FACE_EXPRESSION_NAMES];
-}
+/** The say() `expression` enum: the shared list. */
+export const FACE_EXPRESSION_ENUM = FACE_OFFERED_NAMES;
 
 /** say() `expression` parameter description (game surface). */
 export const SAY_EXPRESSION_DESCRIPTION = 'Your face while you say this. Omit to keep the current one.';

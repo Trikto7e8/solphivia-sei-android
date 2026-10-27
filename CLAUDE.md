@@ -3561,6 +3561,49 @@ relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
 changelog bullet, `topChangelogLine`) instead of reopening the changelog the
 user already read; mandatory updates keep the full what's-new modal.
 
+### Startup popup (261027, replaced the notices inbox)
+
+One operator page from sei.gg shown once per install, set by the optional
+`popup` field of `https://sei.gg/notices.json`:
+`{ id, url, minVersion?, maxVersion?, until?, width?, height? }`. Clients up to
+0.6.9 read only `notices` and ignore it; new clients no longer show `notices`
+(the Playtime "Inbox" button and `NoticesInboxModal` are gone). How to publish
+one is in the website repo's `README-popup.md`.
+
+- **Rules (main, pure):** `src/main/startupPopup.ts`. `url` must be
+  `https://sei.gg/popup/...` (no credentials, no other host/port/scheme);
+  a bad version, date or url drops the popup (fail closed); `width`/`height`
+  count only as an in-bounds pair, else the page is 70% of the window.
+- **Feed + show-once:** `src/main/notices.ts` refreshes on the updater
+  cadence (startup, focus, resume, 30 min, manual check) and in dev too. An
+  unreachable, unparseable or non-object feed keeps the last state (never
+  takes a popup down). Shown ids live in `popupShownIds` in
+  `<userData>/notices.json`, recorded only when main confirms the frame
+  committed a 2xx page (`app:startup-popup-loaded`). A page that 404s, is
+  offline or never loads shows nothing and stays owed. Dev only
+  (`!app.isPackaged`): `SEI_NOTICES_URL` overrides the feed and its origin is
+  allowed for popup pages.
+- **Rendering:** `components/StartupPopup.tsx`, a sandboxed iframe
+  (`sandbox="allow-popups"` and nothing else: no scripts, opaque origin, no
+  forms, no top navigation; cross-origin so it runs out of process and gets no
+  preload). Loaded hidden, revealed only after main's 2xx check. Waits for a
+  calm screen (`popupUiReady`: home/character/awaken/settings/credits/
+  coming-soon, no modal, tour, first moment, call, game or share). Closes on
+  the X, Esc or a click outside the page.
+- **Main guards** (`src/main/popupFrameGuards.ts`): EVERY subframe of the
+  main window is navigation-locked to the popup allow-list; any other link
+  opens in the default browser through `assertSafeExternalUrl` (only when
+  the navigating frame is showing a popup page, i.e. a link click; a nested
+  `<iframe>` embed's first load is cancelled silently), and
+  `setWindowOpenHandler` denies all child windows the same way. A future
+  feature that embeds another iframe in the main window must extend this
+  allow-list deliberately. sei.gg sends `X-Frame-Options: SAMEORIGIN`, so the
+  header (and CSP `frame-ancestors`) is dropped for allowed popup URLs loaded
+  as a subframe of the main window only. Keys typed inside the frame never
+  reach the renderer, so Esc is relayed from `before-input-event`
+  (`app:startup-popup-escape`); CDP `Input.dispatchKeyEvent` bypasses that
+  hook, so test it with a real key (xdotool).
+
 ---
 
 ## Critical pitfalls

@@ -11,6 +11,12 @@
  *   - readIds — ids the user actually selected in the inbox. Drives the unread
  *     dot. A superset relationship does NOT hold in either direction: a notice
  *     can be announced-but-unread (two arrived, the user read one).
+ *   - popupShownIds (261027) — startup-popup ids this install has shown. A
+ *     popup id is shown at most once (see startupPopup.ts).
+ *
+ * 261027: the inbox UI is gone (replaced by the startup popup), so builds from
+ * v0.6.10 no longer write notices / announcedIds / readIds. They are still
+ * read and written back untouched, so a downgrade sees what it left.
  *
  * Atomic writes via `atomicWrite` + `withFileLock` — same discipline as
  * updateStateStore.ts. Defensive parsing: any structural defect (missing field,
@@ -49,11 +55,13 @@ export interface NoticesState {
   announcedIds: string[];
   /** Ids the user has opened in the inbox (drives the unread dot). */
   readIds: string[];
+  /** Startup-popup ids already shown on this install (261027). */
+  popupShownIds: string[];
 }
 
 /** Canonical defaults for a fresh install (or a corrupted-state recovery). */
 function defaults(): NoticesState {
-  return { version: SCHEMA_VERSION, notices: [], announcedIds: [], readIds: [] };
+  return { version: SCHEMA_VERSION, notices: [], announcedIds: [], readIds: [], popupShownIds: [] };
 }
 
 /** Coerce a raw value into a de-duplicated array of non-empty id strings. */
@@ -107,7 +115,7 @@ export function coerceNotices(raw: unknown): Notice[] {
  * to defaults for any field that isn't strictly typed correctly. Defensive —
  * never throws on malformed input.
  */
-function coerce(raw: unknown): NoticesState {
+export function coerceNoticesState(raw: unknown): NoticesState {
   if (!raw || typeof raw !== 'object') return defaults();
   const o = raw as Record<string, unknown>;
   return {
@@ -115,6 +123,7 @@ function coerce(raw: unknown): NoticesState {
     notices: coerceNotices(o.notices),
     announcedIds: coerceIds(o.announcedIds),
     readIds: coerceIds(o.readIds),
+    popupShownIds: coerceIds(o.popupShownIds),
   };
 }
 
@@ -133,7 +142,7 @@ export async function loadNoticesState(): Promise<NoticesState> {
     return defaults();
   }
   try {
-    return coerce(JSON.parse(raw));
+    return coerceNoticesState(JSON.parse(raw));
   } catch {
     logger.warn('noticesStore: notices.json is not valid JSON; resetting to defaults');
     return defaults();
@@ -146,7 +155,7 @@ export async function loadNoticesState(): Promise<NoticesState> {
  * against the same path (a background refresh can race a mark-read write).
  */
 export async function saveNoticesState(next: NoticesState): Promise<void> {
-  const validated = coerce(next);
+  const validated = coerceNoticesState(next);
   const target = paths.noticesStatePath();
   await mkdir(paths.userData(), { recursive: true });
   await withFileLock(target, async () => {

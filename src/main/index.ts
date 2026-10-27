@@ -62,6 +62,7 @@ import {
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
 import { initNotices } from './notices';
+import { installPopupFrameGuards } from './popupFrameGuards';
 import { createSkinServer, SKIN_SERVER_DEV_PORT } from './skinServer';
 import { runFirstLaunchMigration, runUuidRenameMigration, runDefaultsToWorldMigration } from './migration';
 import { safeStorageBackendKind } from './apiKeyStore';
@@ -1039,6 +1040,10 @@ async function bootstrap(): Promise<void> {
     },
   });
   wireMainWindowEvents(mainWindow);
+  // Startup popup (261027): lock the operator page's iframe to sei.gg/popup/,
+  // send its links (and any window.open) to the default browser, and let it
+  // be framed despite sei.gg's X-Frame-Options. See popupFrameGuards.ts.
+  installPopupFrameGuards(mainWindow);
 
   // Always-on-top call overlay (260706): a second frameless window driven by the
   // renderer's voice:overlay-set pushes. Init with the same preload + renderer
@@ -1525,8 +1530,9 @@ async function bootstrap(): Promise<void> {
   // the manual "Check for updates" + download/install IPC handlers route into
   // the same updater module via ipc.ts. No artificial 8s delay needed —
   // electron-updater's check is already async + non-blocking.
-  // Notices inbox (260725) — wire the push channel BEFORE initUpdater, which
-  // fires the startup notices refresh as the first leg of the shared cadence.
+  // Operator feed (260725; the startup popup since 261027) — wire the push
+  // channel BEFORE initUpdater, which fires the startup refresh as the first
+  // leg of the shared cadence.
   initNotices({ getMainWindow: () => mainWindow });
   initUpdater({ getMainWindow: () => mainWindow });
 

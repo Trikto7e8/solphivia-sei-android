@@ -374,12 +374,6 @@ export const ZH_MODALS: Record<string, string> = {
   'Upload selected': '上传所选',
   'Uploading…': '上传中…',
 
-  // ── NoticesInboxModal ──
-  'Inbox': '收件箱',
-  'No notices yet.': '暂无通知。',
-  'Notices': '通知',
-  'Unread': '未读',
-
   // ── OAuthInterstitialModal ──
   'Continue in your browser': '请在浏览器中继续',
   "We've opened a browser tab to finish signing in with Google. Come back when you're done; this window updates automatically.":

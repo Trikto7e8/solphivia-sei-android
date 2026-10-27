@@ -6,7 +6,7 @@
  * defective entry is dropped rather than crashing the inbox.
  */
 import { describe, it, expect } from 'vitest';
-import { coerceNotice, coerceNotices } from './noticesStore';
+import { coerceNotice, coerceNotices, coerceNoticesState } from './noticesStore';
 
 describe('coerceNotice', () => {
   it('keeps a well-formed entry', () => {
@@ -54,5 +54,24 @@ describe('coerceNotices', () => {
   it('returns empty for a non-array', () => {
     expect(coerceNotices({ notices: [] })).toEqual([]);
     expect(coerceNotices(undefined)).toEqual([]);
+  });
+});
+
+describe('coerceNoticesState (261027 popupShownIds)', () => {
+  it('defaults popupShownIds for a state file written by 0.6.9 or older', () => {
+    const st = coerceNoticesState({ version: 1, notices: [], announcedIds: ['a'], readIds: ['a'] });
+    expect(st.popupShownIds).toEqual([]);
+    expect(st.announcedIds).toEqual(['a']);
+  });
+
+  it('keeps string ids and drops junk', () => {
+    const st = coerceNoticesState({ popupShownIds: ['p1', 7, '', 'p2', null] });
+    expect(st.popupShownIds).toEqual(['p1', 'p2']);
+  });
+
+  it('survives a non-array or non-object value', () => {
+    expect(coerceNoticesState({ popupShownIds: 'p1' }).popupShownIds).toEqual([]);
+    expect(coerceNoticesState(null).popupShownIds).toEqual([]);
+    expect(coerceNoticesState('x').popupShownIds).toEqual([]);
   });
 });

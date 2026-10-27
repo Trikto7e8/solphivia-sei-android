@@ -2,6 +2,7 @@
 export const ZH_COMMON: Record<string, string> = {
   'Cancel': '取消',
   'Close': '关闭',
+  'Announcement': '公告',
   'Confirm': '确认',
   'Continue': '继续',
   'Save': '保存',

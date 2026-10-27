@@ -3944,7 +3944,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   // the renderer treats throws as silent no-ops.
   //
   // 260725: the HOST allowlist (sei.gg / dmca.copyright.gov / polar.sh) was
-  // removed — any https site is linkable now, so the notices inbox can point
+  // removed — any https site is linkable now, so operator content can point
   // anywhere without a client release. See externalUrlValidator.ts for the
   // rationale and for what the surviving protocol gate still buys.
   ipcMain.handle(IpcChannel.app.openExternal, async (_event, urlArg: unknown): Promise<void> => {
@@ -3998,27 +3998,29 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     return app.getVersion();
   });
 
-  // === Notices inbox (260725) ===
+  // === Startup popup (261027) ===
   //
-  // Read-only-ish surface over ./notices: the feed refresh itself is driven by
-  // the updater's cadence (startup / focus / resume / periodic backstop), so the
-  // renderer only ever pulls the cached snapshot and records announced/read
-  // marks. Lazy import for the same reason as the updater handlers above.
+  // The feed refresh is driven by the updater's cadence (startup / focus /
+  // resume / periodic backstop); the renderer only pulls the owed popup and
+  // reports its frame's load. Lazy imports for the same reason as the updater
+  // handlers above.
 
-  ipcMain.handle(IpcChannel.app.noticesGet, async () => {
-    const { getNoticesSnapshot } = await import('./notices');
-    return getNoticesSnapshot();
+  ipcMain.handle(IpcChannel.app.startupPopupGet, async () => {
+    const { getStartupPopup } = await import('./notices');
+    return getStartupPopup();
   });
 
-  ipcMain.handle(IpcChannel.app.noticesAck, async () => {
-    const { ackNoticesAnnounced } = await import('./notices');
-    return ackNoticesAnnounced();
-  });
-
-  ipcMain.handle(IpcChannel.app.noticesRead, async (_e, id: unknown) => {
-    const { getNoticesSnapshot, markNoticeRead } = await import('./notices');
-    if (typeof id !== 'string' || id.length === 0) return getNoticesSnapshot();
-    return markNoticeRead(id);
+  ipcMain.handle(IpcChannel.app.startupPopupLoaded, async (_e, id: unknown): Promise<boolean> => {
+    if (typeof id !== 'string' || id.length === 0) return false;
+    const [{ getStartupPopup, markStartupPopupShown }, { popupFrameLoadedOk }] = await Promise.all([
+      import('./notices'),
+      import('./popupFrameGuards'),
+    ]);
+    const owed = await getStartupPopup();
+    if (!owed || owed.id !== id) return false;
+    if (!(await popupFrameLoadedOk())) return false;
+    await markStartupPopupShown(id);
+    return true;
   });
 
   // === Frameless window controls (custom titlebar on Windows/Linux) ===

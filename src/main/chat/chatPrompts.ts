@@ -33,7 +33,7 @@ import {
 } from '../../bot/brain/promptLibrary.js';
 import type { ChatLanguage } from '../../shared/chatLanguage';
 import { audioTagDirective } from '../voice/audioTags';
-import { facePromptFor, type FacePalette } from '../../bot/brain/faceExpressions.js';
+import { FACE_PROMPT } from '../../bot/brain/faceExpressions.js';
 import { renderGamesDirective, GAME_CATALOG, type GameCatalogEntry } from '../../shared/games';
 
 export interface BuildSystemArgs {
@@ -106,11 +106,6 @@ export interface BuildSystemArgs {
    * (main/facepack/facepackDev.ts), so production prompts are unchanged.
    */
   faceGuide?: boolean;
-  /**
-   * 261028: the character's pack palette. With faceGuide, the FACE block lists
-   * only these faces; null/absent lists the base 12.
-   */
-  facePalette?: FacePalette | null;
   /**
    * 261010: false leaves the voice-call primer's (silence) option out. Backseat
    * always speaks on a look, and Haiku 5.5 took the offer on its first look
@@ -387,7 +382,7 @@ export function buildSystemBlocks(args: BuildSystemArgs): SystemBlock[] {
   }
   // Facepack pilot (261028): static per session, so it rides the cached
   // persona block. Dev flag only.
-  if (args.faceGuide === true) personaParts.push(facePromptFor(args.facePalette ?? null));
+  if (args.faceGuide === true) personaParts.push(FACE_PROMPT);
   blocks.push({ type: 'text', text: personaParts.join('\n\n') });
 
   // 260725 Knowledge — user-uploaded reference material. Sits between persona

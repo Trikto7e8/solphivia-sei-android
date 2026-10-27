@@ -35,7 +35,7 @@ vi.mock('../adapter/minecraft/behaviors/visualize.js', () => ({
 }))
 
 import { buildMinecraftSystemFixture, buildMinecraftFacesCapture } from './systemBlocks.minecraft.build.js'
-import { FACE_EXPRESSION_NAMES } from './faceExpressions.js'
+import { FACE_OFFERED_NAMES } from './faceExpressions.js'
 
 const FIXTURE = path.join(path.dirname(fileURLToPath(import.meta.url)), '__fixtures__', 'minecraftSystemBlocks.json')
 
@@ -88,7 +88,7 @@ describe('facepack dev flag', () => {
     const say = faces.tools.find((t) => t.name === 'say')
     const baseSay = base.tools.find((t) => t.name === 'say')
     expect(baseSay.input_schema.properties.expression).toBeUndefined()
-    expect(say.input_schema.properties.expression.enum).toEqual([...FACE_EXPRESSION_NAMES])
+    expect(say.input_schema.properties.expression.enum).toEqual([...FACE_OFFERED_NAMES])
     expect(say.input_schema.required).toEqual(['text'])
     const strip = (t) => {
       const { expression: _e, ...rest } = t.input_schema.properties

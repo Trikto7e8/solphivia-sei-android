@@ -680,7 +680,9 @@ async function prepareChatTurn(
   // texts with the same register in-app as in-game.
   const punctuation = clampPunctuation(character.metadata?.punctuation);
   // 261028 facepack pilot: the character's pack palette (dev flag only; null
-  // otherwise, and with no pack).
+  // otherwise, and with no pack). The prompt offers every character the same
+  // faces; the palette maps a face the pack lacks to its nearest when the
+  // reply's tags are read.
   const facePalette = facesEnabled() ? await facePaletteForCharacterName(character.name).catch(() => null) : null;
   const system = buildSystemBlocks({
     persona: character.persona,
@@ -713,7 +715,6 @@ async function prepareChatTurn(
     clockInTail: opts.voiceCall === true,
     // 261028 facepack pilot: dev flag only (unpackaged + SEI_FACEPACK_DIR).
     faceGuide: facesEnabled(),
-    facePalette,
   });
   // Voice: only the recent rows go to the model (VOICE_RECENT_CAP, stepped by
   // VOICE_WINDOW_STEP so the cached transcript prefix holds across turns; see

@@ -28,7 +28,7 @@
  * harmonic buzz shaped by vowel formants, syllable by syllable.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { FacepackManifest } from '@shared/facepack';
+import { packPalette, type FacepackManifest } from '@shared/facepack';
 import { FACE_EXPRESSION_NAMES } from '../../../bot/brain/faceExpressions.js';
 import { sei } from '../lib/ipcClient';
 import { FacepackView, type FaceDebugState } from '../lib/facepack/FacepackView';
@@ -239,6 +239,9 @@ export function DevFacepackPreview(): React.ReactElement {
     }
   }, []);
 
+  // The faces this pack offers (its palette), else the base 12.
+  const names = useMemo(() => (manifest ? (packPalette(manifest)?.expressions ?? [...FACE_EXPRESSION_NAMES]) : [...FACE_EXPRESSION_NAMES]), [manifest]);
+
   // The recording script: every expression with a line, then a pose sweep.
   const ranAuto = useRef(false);
   useEffect(() => {
@@ -246,7 +249,7 @@ export function DevFacepackPreview(): React.ReactElement {
     ranAuto.current = true;
     void (async () => {
       await sleep(1_800);
-      for (const name of FACE_EXPRESSION_NAMES) {
+      for (const name of names) {
         pick(name);
         await sleep(350);
         const clip = CLIPS ? await loadClip(`${CLIPS}/${packId}-${name}.wav`) : null;
@@ -263,7 +266,7 @@ export function DevFacepackPreview(): React.ReactElement {
       await sleep(1_200);
       (window as unknown as { __facepackDone?: boolean }).__facepackDone = true;
     })();
-  }, [status, manifest, packId, pick, talk, loadClip]);
+  }, [status, manifest, packId, pick, talk, loadClip, names]);
 
   const poses = useMemo(() => (manifest ? posesOf(manifest, expression) : []), [manifest, expression]);
 
@@ -337,7 +340,7 @@ export function DevFacepackPreview(): React.ReactElement {
         <div>
           <div style={{ opacity: 0.7, marginBottom: 6 }}>Expression</div>
           <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-            {FACE_EXPRESSION_NAMES.map((n) => (
+            {names.map((n) => (
               <button key={n} style={n === expression ? on : btn} onClick={() => pick(n)}>
                 {n}
               </button>

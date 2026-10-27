@@ -7,7 +7,8 @@
 import { readdir, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { FacepackDevInfo, FacepackInfo, FacepackManifest } from '../../shared/facepack';
-import { isSafePackPath } from '../../shared/facepack';
+import { isSafePackPath, packPalette } from '../../shared/facepack';
+import type { FacePalette } from '../../bot/brain/faceExpressions.js';
 import { facepackBaseUrl, facepackDir, facesEnabled } from './facepackDev';
 
 const ID_RE = /^[a-z0-9][a-z0-9_-]{0,40}$/i;
@@ -77,4 +78,17 @@ export async function packIdForCharacterName(name: string): Promise<string | nul
   if (!key) return null;
   const packs = await listPacks();
   return packs.find((p) => p.character.toLowerCase() === key || p.id.toLowerCase() === key)?.id ?? null;
+}
+
+/**
+ * The face palette for a character (261028): its pack's palette, or null when
+ * the flag is off or the character has no pack (the FACE block then offers
+ * the base 12). Read per turn; a pack is a small local JSON file.
+ */
+export async function facePaletteForCharacterName(name: string): Promise<FacePalette | null> {
+  if (!facesEnabled()) return null;
+  const id = await packIdForCharacterName(name);
+  if (!id) return null;
+  const m = await readPackManifest(id);
+  return m ? packPalette(m) : null;
 }

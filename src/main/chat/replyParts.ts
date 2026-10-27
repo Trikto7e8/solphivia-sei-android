@@ -4,7 +4,7 @@
  * (scripts/facepack-tag-probe.ts) run the exact function the app runs.
  * chatService re-exports it; splitReply there maps it to text.
  */
-import { readFaceTags } from '../../bot/brain/faceExpressions.js';
+import { readFaceTags, type FacePalette } from '../../bot/brain/faceExpressions.js';
 import { stripAudioTags, SUPPORTS_AUDIO_TAGS } from '../voice/audioTags';
 
 /** One bubble of a reply plus the face cues read off it (facepack pilot). */
@@ -20,18 +20,21 @@ export interface ReplyPart {
  * already did for every bracket tag of that shape. A tag-only line (the model
  * wrote "[happy]" on its own line) leaves no bubble, so its cue is carried to
  * the next bubble's start, or to the previous bubble's end when it was last.
- * Callers emit the cues only while the facepack dev flag is on.
+ * Callers emit the cues only while the facepack dev flag is on. `palette`
+ * (261028) is the character's pack palette: tags are mapped onto its faces,
+ * and a tag it cannot show is ignored like an unknown one.
  */
 export function splitReplyParts(
   text: string,
   punctuation: 'casual' | 'deliberate' = 'casual',
   spoken = false,
+  palette: FacePalette | null = null,
 ): ReplyPart[] {
   const parts: ReplyPart[] = [];
   let carry: string | null = null;
   for (const raw of text.split(/\n+/)) {
     const line = raw.trim();
-    const tags = readFaceTags(line);
+    const tags = readFaceTags(line, palette);
     // Bracketed stage directions never reach a bubble (260730). They are not a
     // thing the model is offered — the shipped TTS model reads `[laughs]` aloud
     // as a word instead of performing it, so audioTags.ts keeps the vocabulary

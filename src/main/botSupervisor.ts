@@ -65,7 +65,8 @@ import { bootPhaseProps, type SummonFailureInfo, type SummonPhase } from './diag
 import { goodbyeGame, noteCompanionGoodbye } from './sessionGoodbye';
 import { facesEnabled } from './facepack/facepackDev';
 import { emitFaceCue } from './facepack/faceEvents';
-import { resolveExpression } from '../bot/brain/faceExpressions.js';
+import { resolveExpression, type FacePalette } from '../bot/brain/faceExpressions.js';
+import { facePaletteForCharacterName } from './facepack/facepackStore';
 
 /**
  * The READY budget: from the bot reporting "booted" (its init-ack) to
@@ -142,6 +143,9 @@ interface SummonControl {
  * is correct: no supervisor, no bot process.
  */
 let summonProbe: ((characterId: string) => boolean) | null = null;
+
+/** 261028 facepack pilot: each live bot's face palette (set at init, dev flag only). */
+const facePalettes = new Map<string, FacePalette | null>();
 export function isCharacterSummoned(characterId: string): boolean {
   return summonProbe?.(characterId) ?? false;
 }
@@ -1518,7 +1522,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
       // 261028 facepack pilot: say()'s `expression` (dev flag only). Not a
       // BotStatus event.
       if ((data as { type?: string }).type === 'face') {
-        const expression = resolveExpression((data as { expression?: unknown }).expression);
+        // The bot already mapped it through the character's palette; map
+        // again with the same palette so a palette-only name (smirk) is kept.
+        const expression = resolveExpression((data as { expression?: unknown }).expression, facePalettes.get(characterId) ?? null);
         if (expression) emitFaceCue({ characterId, expression, at: 'start', text: null });
         return;
       }
@@ -1761,6 +1767,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
           nextStepPlanP,
           new Promise<undefined>((r) => setTimeout(() => r(undefined), 1_000)),
         ]);
+        // 261028 facepack pilot: the character's pack palette (dev flag only).
+        const facePalette = facesEnabled() ? await facePaletteForCharacterName(character.name).catch(() => null) : null;
+        if (facesEnabled()) facePalettes.set(characterId, facePalette);
         // Ship mc_username, preferred_name, and skinServerBaseUrl so the bot
         // can satisfy ConfigSchema, seed player_username for player-recognition
         // without disk reads, and log the skin server URL for verification.
@@ -1857,7 +1866,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
               voiceCallActive: opts.isVoiceCallActive?.(characterId) ?? false,
               // 261028 facepack pilot: say() `expression` param (dev flag only;
               // omitted otherwise so the init payload is unchanged).
-              ...(facesEnabled() ? { faces: true } : {}),
+              ...(facesEnabled() ? { faces: true, ...(facePalette ? { facePalette } : {}) } : {}),
               // 261014: the open plan for the FIRST CONTACT greeting (null = none).
               nextStepPlan: nextStepPlan === undefined ? undefined : (nextStepPlan?.text ?? null),
               // 261020: true = that plan is not tied to this game (talk, not a task).

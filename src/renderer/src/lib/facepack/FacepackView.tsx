@@ -43,7 +43,7 @@ import {
   nextPose,
   nextPoseDelay,
 } from './animation';
-import { expressionBlinks, filesFor, layersFor, posesOf, resolveExpressionName } from './compose';
+import { cueExpression, expressionBlinks, filesFor, layersFor, posesOf, resolveExpressionName } from './compose';
 import { FaceImageCache, type FacepackSource, ipcPackSource } from './facepackSource';
 
 export interface FaceDebugState {
@@ -314,7 +314,9 @@ export function FacepackView({
           if (L.expression !== seenExpr || L.expressionSeq !== seenSeq) {
             seenExpr = L.expression;
             seenSeq = L.expressionSeq;
-            if (L.expression) timeline.set(resolveExpressionName(m, L.expression), now);
+            // A word this pack cannot show keeps the current face (261028).
+            const next = L.expression ? cueExpression(m, L.expression) : null;
+            if (next) timeline.set(next, now);
           }
           // Speaking: the prop, or a fresh clip sample for this character.
           const clipFresh = clip.sample !== null && now - clip.at < SAMPLE_FRESH_MS;

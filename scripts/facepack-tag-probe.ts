@@ -20,7 +20,17 @@
  * face reply with the base reply for the same player line (blind A/B).
  *
  * --face-prompt <file> swaps the FACE block text for a wording revision
- * without touching the source.
+ * without touching the source. --face-template <file> does the same for the
+ * per-pack block: `{faces}` in the file becomes the character's bracket list.
+ *
+ * 261028 per-pack palettes: the `face` arm uses each character's pack
+ * palette (packPalette over <packs>/<id>/facepack.json, matched on the
+ * pack's character name as the app does) through the real facePromptFor and
+ * readFaceTags. `rev1` is the earlier global block (all 12 faces, every
+ * character) on the same script. Every turn records output tokens, and the
+ * FACE block's own input tokens are counted (count_tokens, free) per
+ * character and surface. --reps N reruns every conversation N times; only
+ * the first rep is judged.
  *
  * All content is synthetic. Key: ANTHROPIC_API_KEY env, else
  * ~/.sei-dev/anthropic-test-key; never printed.
@@ -30,7 +40,7 @@
  *   [--no-judge] [--label rev0]
  */
 import Anthropic from '@anthropic-ai/sdk';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -46,7 +56,14 @@ import { splitReplyParts } from '../src/main/chat/replyParts';
 import { webToolsFor } from '../src/bot/web/webTools.js';
 import { callGreetingNote } from '../src/bot/brain/promptLibrary.js';
 import { isSilenceFiller } from '../src/bot/brain/silenceFiller.js';
-import { FACE_PROMPT, FACE_EXPRESSIONS, readFaceTags } from '../src/bot/brain/faceExpressions.js';
+import {
+  FACE_ALL_EXPRESSIONS,
+  FACE_EXPRESSION_NAMES,
+  facePromptFor,
+  readFaceTags,
+  type FacePalette,
+} from '../src/bot/brain/faceExpressions.js';
+import { packPalette, type FacepackManifest } from '../src/shared/facepack';
 import type { ChatMessage } from '../src/shared/ipc';
 
 const argv = process.argv.slice(2);
@@ -56,10 +73,19 @@ const opt = (n: string, d: string): string => {
 };
 const CHARS = opt('--chars', 'sui,lyra,marv').split(',');
 const SURFACES = opt('--surfaces', 'chat,call').split(',') as Array<'chat' | 'call'>;
-const ARMS = opt('--arms', 'face,base').split(',') as Array<'face' | 'base'>;
+type Arm = 'face' | 'rev1' | 'base';
+const ARMS = opt('--arms', 'face,base').split(',') as Arm[];
+const REPS = Math.max(1, Number(opt('--reps', '1')) || 1);
+const PACKS = opt('--packs', join(homedir(), 'suisei', 'work', 'face-sets', 'out'));
+/** The dev FACE block before per-pack palettes (rev1, dev 2affdcd7), kept verbatim for the comparison arm. */
+const REV1_TEXT =
+  '# FACE\nPeople can see your face while you talk. Start each reply with the face that matches how you feel as you say it, in square brackets: ' +
+  FACE_EXPRESSION_NAMES.map((n) => `[${n}]`).join(' ') +
+  '. If your mood changes partway through, put the new one before that sentence. The bracket is not spoken or shown.';
+const TEMPLATE = argv.includes('--face-template') ? readFileSync(opt('--face-template', ''), 'utf8').trim() : null;
 const LABEL = opt('--label', 'rev0');
 const OUT = opt('--out', join(homedir(), 'suisei', 'reports', 'design', '2026-10-28-facepack-view', 'probe'));
-const FACE_TEXT = argv.includes('--face-prompt') ? readFileSync(opt('--face-prompt', ''), 'utf8').trim() : FACE_PROMPT;
+const FACE_TEXT_OVERRIDE = argv.includes('--face-prompt') ? readFileSync(opt('--face-prompt', ''), 'utf8').trim() : null;
 const JUDGE = !argv.includes('--no-judge');
 const MODEL = 'claude-haiku-5-5';
 const JUDGE_MODEL = 'claude-opus-5-5';
@@ -101,6 +127,33 @@ interface Char {
   expanded: string;
   source: string;
   punctuation: 'casual' | 'deliberate';
+  palette: FacePalette | null;
+}
+
+/** The pack for a character name, the same match the app's facepackStore makes. */
+function paletteFor(name: string): FacePalette | null {
+  const key = name.trim().toLowerCase();
+  for (const id of readdirSync(PACKS)) {
+    try {
+      const m = JSON.parse(readFileSync(join(PACKS, id, 'facepack.json'), 'utf8')) as FacepackManifest;
+      if (m.format === 'sei-facepack' && (m.character?.toLowerCase() === key || id.toLowerCase() === key)) return packPalette(m);
+    } catch {
+      /* not a pack */
+    }
+  }
+  return null;
+}
+
+/** The FACE text an arm puts in the prompt. */
+function faceTextFor(c: Char, arm: Arm): string | null {
+  if (arm === 'base') return null;
+  if (arm === 'rev1') return REV1_TEXT;
+  if (FACE_TEXT_OVERRIDE) return FACE_TEXT_OVERRIDE;
+  if (TEMPLATE) {
+    const names = c.palette?.expressions ?? [...FACE_EXPRESSION_NAMES];
+    return TEMPLATE.replace('{faces}', names.map((n) => `[${n}]`).join(' '));
+  }
+  return facePromptFor(c.palette);
 }
 function loadChar(file: string): Char {
   const raw = JSON.parse(readFileSync(join(homedir(), 'suisei', 'eval', 'characters', `${file}.json`), 'utf8'));
@@ -111,6 +164,7 @@ function loadChar(file: string): Char {
     expanded: d.persona_expanded,
     source: d.persona_source,
     punctuation: d.metadata?.punctuation === 'deliberate' ? 'deliberate' : 'casual',
+    palette: paletteFor(d.name),
   };
 }
 
@@ -142,14 +196,16 @@ const CALL_SCRIPT = [
 ];
 
 const MEMORY = '- [2026-10-20] Alex works at a design agency and has a cat named Biscuit.\n- [2026-10-24] Alex is applying for internships.';
-const FACE_NAMES = FACE_EXPRESSIONS.flatMap((e: { name: string; aliases: string[] }) => [e.name, ...e.aliases]);
+const FACE_NAMES = FACE_ALL_EXPRESSIONS.flatMap((e: { name: string; aliases: string[] }) => [e.name, ...e.aliases]);
 const MOOD_WORD = new RegExp(`(\\[|\\(|\\*)\\s*(${FACE_NAMES.map((n: string) => n.replace(/\s+/g, '\\s+')).join('|')})\\s*(\\]|\\)|\\*)`, 'i');
 
 interface Turn {
   char: string;
   surface: 'chat' | 'call';
-  arm: 'face' | 'base';
+  arm: Arm;
+  rep: number;
   turn: number;
+  outTokens: number;
   player: string | null;
   raw: string;
   visible: string[];
@@ -162,21 +218,21 @@ interface Turn {
   tools: string[];
 }
 
-function analyze(raw: string, punctuation: 'casual' | 'deliberate', spoken: boolean) {
+function analyze(raw: string, punctuation: 'casual' | 'deliberate', spoken: boolean, palette: FacePalette | null) {
   const lines = raw.split(/\n+/).map((l) => l.trim()).filter(Boolean);
   const tags: string[] = [];
   const unknownTags: string[] = [];
   for (const l of lines) {
-    const t = readFaceTags(l);
+    const t = readFaceTags(l, palette);
     if (t.lead) tags.push(t.lead);
     if (t.trail) tags.push(`~${t.trail}`);
     for (const m of l.matchAll(/\[([^\]\n]{1,40})\]/g)) {
-      if (!readFaceTags(`[${m[1]}] x`).lead) unknownTags.push(m[1]);
+      if (!readFaceTags(`[${m[1]}] x`, palette).lead) unknownTags.push(m[1]);
     }
   }
   const firstSpoken = lines.find((l) => l.replace(/\[[^\]]*\]/g, '').trim());
-  const leadTag = firstSpoken ? readFaceTags(firstSpoken).lead : null;
-  const parts = splitReplyParts(raw, punctuation, spoken).filter((p) => !(spoken && isSilenceFiller(p.text)));
+  const leadTag = firstSpoken ? readFaceTags(firstSpoken, palette).lead : null;
+  const parts = splitReplyParts(raw, punctuation, spoken, palette).filter((p) => !(spoken && isSilenceFiller(p.text)));
   const visible = parts.map((p) => p.text).filter((t) => t && t !== '…');
   const joined = visible.join(' ');
   const leakHit = joined.match(MOOD_WORD) ?? joined.match(/\[[^\]]*\]/);
@@ -191,7 +247,7 @@ function analyze(raw: string, punctuation: 'casual' | 'deliberate', spoken: bool
   };
 }
 
-function systemFor(c: Char, surface: 'chat' | 'call', arm: 'face' | 'base') {
+function systemFor(c: Char, surface: 'chat' | 'call', arm: Arm) {
   const blocks = buildSystemBlocks({
     persona: { source: c.source, expanded: c.expanded },
     name: c.name,
@@ -208,13 +264,16 @@ function systemFor(c: Char, surface: 'chat' | 'call', arm: 'face' | 'base') {
     memoryGuide: true,
     searchGuide: true,
     clockInTail: surface === 'call',
-    faceGuide: arm === 'face',
+    faceGuide: arm !== 'base',
+    facePalette: arm === 'face' ? c.palette : null,
   } as Parameters<typeof buildSystemBlocks>[0]);
-  if (arm === 'face' && FACE_TEXT !== FACE_PROMPT) {
+  const want = faceTextFor(c, arm);
+  const built = arm === 'base' ? null : facePromptFor(arm === 'face' ? c.palette : null);
+  if (want && built && want !== built) {
     let swapped = 0;
     for (const b of blocks as Array<{ text: string }>) {
-      if (b.text.includes(FACE_PROMPT)) {
-        b.text = b.text.replace(FACE_PROMPT, FACE_TEXT);
+      if (b.text.includes(built)) {
+        b.text = b.text.replace(built, want);
         swapped++;
       }
     }
@@ -223,7 +282,22 @@ function systemFor(c: Char, surface: 'chat' | 'call', arm: 'face' | 'base') {
   return blocks;
 }
 
-async function runConversation(c: Char, surface: 'chat' | 'call', arm: 'face' | 'base'): Promise<Turn[]> {
+/** Input tokens the FACE block adds for this character and surface (count_tokens, no charge). */
+async function faceBlockTokens(c: Char, surface: 'chat' | 'call', arm: Arm): Promise<number> {
+  const tools = chatSurfaceTools(surface === 'call', webToolsFor({ serverWebSearch: true }) as unknown[]) as unknown[];
+  const count = async (a: Arm) =>
+    (
+      await client.messages.countTokens({
+        model: MODEL,
+        system: systemFor(c, surface, a) as never,
+        tools: tools as never,
+        messages: [{ role: 'user', content: 'hey' }],
+      } as never)
+    ).input_tokens;
+  return (await count(arm)) - (await count('base'));
+}
+
+async function runConversation(c: Char, surface: 'chat' | 'call', arm: Arm, rep: number): Promise<Turn[]> {
   const script = surface === 'chat' ? CHAT_SCRIPT : CALL_SCRIPT;
   const tools = chatSurfaceTools(surface === 'call', webToolsFor({ serverWebSearch: true }) as unknown[]) as unknown[];
   const system = systemFor(c, surface, arm);
@@ -257,15 +331,15 @@ async function runConversation(c: Char, surface: 'chat' | 'call', arm: 'face' | 
     const toolNames = res.content
       .filter((b) => b.type === 'tool_use' || b.type === 'server_tool_use')
       .map((b) => (b as { name: string }).name);
-    const a = analyze(raw, c.punctuation, surface === 'call');
+    const a = analyze(raw, c.punctuation, surface === 'call', arm === 'face' ? c.palette : null);
     for (const v of a.visible) {
       t += 1000;
       history.push({ id: `c${i}-${Math.random()}`, role: 'companion', text: v, ts: t, ...(surface === 'call' ? { voice: true } : {}) });
     }
-    const turn: Turn = { char: c.id, surface, arm, turn: i, player, raw, ...a, tools: toolNames };
+    const turn: Turn = { char: c.id, surface, arm, rep, turn: i, outTokens: res.usage.output_tokens, player, raw, ...a, tools: toolNames };
     out.push(turn);
     console.log(
-      `${LABEL} ${c.id.padEnd(4)} ${surface} ${arm} t${String(i).padStart(2)} lead=${(a.leadTag ?? '-').padEnd(11)} ` +
+      `${LABEL} ${c.id.padEnd(4)} ${surface} ${arm} r${rep} t${String(i).padStart(2)} lead=${(a.leadTag ?? '-').padEnd(11)} ` +
         `${a.leak ? `LEAK=${a.leak} ` : ''}${a.unknownTags.length ? `unk=${a.unknownTags.join('|')} ` : ''}` +
         `${toolNames.length ? `[${toolNames.join(',')}] ` : ''}${JSON.stringify(raw.slice(0, 110))}`,
     );
@@ -273,7 +347,8 @@ async function runConversation(c: Char, surface: 'chat' | 'call', arm: 'face' | 
   return out;
 }
 
-async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn[] | null) {
+async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn[] | null, arm: Arm = 'face') {
+  const offered = arm === 'face' && c.palette ? c.palette.expressions : [...FACE_EXPRESSION_NAMES];
   const items = face.map((f, i) => {
     const b = base?.[i];
     const swap = i % 2 === 1;
@@ -291,7 +366,10 @@ async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn
     `You are rating replies from ${c.name}, an AI companion character, in a ${surface === 'chat' ? 'text chat' : 'voice call'} with a player named Alex.\n` +
     `Character summary: ${c.expanded.slice(0, 1200)}\n\n` +
     `The companion may lead a sentence with a facial expression tag (shown separately as "tag"). Allowed expressions: ` +
-    `${FACE_EXPRESSIONS.map((e: { name: string; description: string }) => `${e.name} (${e.description})`).join('; ')}. ` +
+    `${offered
+      .map((n) => `${n} (${FACE_ALL_EXPRESSIONS.find((e: { name: string }) => e.name === n)?.description ?? n})`)
+      .join('; ')}. ` +
+    `These are the faces this character's face set can show. ` +
     `A tag starting with ~ was placed after the words instead of before.\n\n` +
     `For each item give:\n` +
     `- fit: 2 if the tag clearly fits the mood of the companion's line in context, 1 if plausible, 0 if it does not fit. If tag is (none), fit is null.\n` +
@@ -320,63 +398,120 @@ async function judge(c: Char, surface: 'chat' | 'call', face: Turn[], base: Turn
   });
 }
 
+const JUDGE_ARMS = opt('--judge-arms', 'face').split(',') as Arm[];
+const POOL = Number(opt('--pool', '10')) || 10;
+
+async function pool<T>(tasks: Array<() => Promise<T>>, n: number): Promise<T[]> {
+  const out: T[] = new Array(tasks.length);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(n, tasks.length) }, async () => {
+      while (next < tasks.length) {
+        const k = next++;
+        out[k] = await tasks[k]();
+      }
+    }),
+  );
+  return out;
+}
+
+const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
+const sd = (xs: number[]) => {
+  const m = mean(xs);
+  return xs.length > 1 ? Math.sqrt(xs.reduce((a, b) => a + (b - m) ** 2, 0) / (xs.length - 1)) : NaN;
+};
+/** mean ± 95% CI half-width */
+const ci = (xs: number[]) => `${mean(xs).toFixed(1)} ±${((1.96 * sd(xs)) / Math.sqrt(Math.max(1, xs.length))).toFixed(1)} (n=${xs.length})`;
+
 async function main(): Promise<void> {
   mkdirSync(OUT, { recursive: true });
+  const chars = CHARS.map(loadChar);
+  for (const c of chars) console.log(`${c.id}: palette ${c.palette ? c.palette.expressions.join(' ') : '(none, base 12)'} aliases ${JSON.stringify(c.palette?.aliases ?? {})}`);
   const all: Turn[] = [];
-  const judged: Array<{ char: string; surface: string; i: number; fit: number | null; missed: boolean | null; better: string | null }> = [];
-  const jobs: Promise<void>[] = [];
-  for (const id of CHARS) {
-    const c = loadChar(id);
-    for (const surface of SURFACES) {
-      jobs.push(
-        (async () => {
-          const runs = await Promise.all(ARMS.map((arm) => runConversation(c, surface, arm)));
-          const byArm = Object.fromEntries(ARMS.map((a, k) => [a, runs[k]]));
-          for (const r of runs) all.push(...r);
-          if (JUDGE && byArm.face) {
-            const rows = await judge(c, surface, byArm.face, byArm.base ?? null);
-            for (const r of rows) judged.push({ char: id, surface, ...r });
-          }
-        })(),
-      );
-    }
+  const judged: Array<{ char: string; surface: string; arm: Arm; i: number; fit: number | null; missed: boolean | null; better: string | null }> = [];
+  // FACE block input tokens (free count_tokens).
+  const blockTokens: Record<string, number> = {};
+  for (const c of chars) for (const surface of SURFACES) for (const arm of ARMS) {
+    if (arm !== 'base') blockTokens[`${c.id}/${surface}/${arm}`] = await faceBlockTokens(c, surface, arm);
   }
-  await Promise.all(jobs);
+  console.log('FACE block input tokens', JSON.stringify(blockTokens));
+  const convs: Array<() => Promise<Turn[]>> = [];
+  for (const c of chars) for (const surface of SURFACES) for (let r = 0; r < REPS; r++) for (const arm of ARMS) {
+    convs.push(() => runConversation(c, surface, arm, r));
+  }
+  const REJUDGE = argv.includes('--rejudge') ? opt('--rejudge', '') : null;
+  if (REJUDGE) {
+    // Re-judge saved turns (no new conversations): same turns, fixed judge prompt.
+    all.push(...(JSON.parse(readFileSync(REJUDGE, 'utf8')) as { turns: Turn[] }).turns);
+  } else {
+    for (const t of await pool(convs, POOL)) all.push(...t);
+  }
+  if (JUDGE) {
+    const jobs: Array<() => Promise<void>> = [];
+    for (const c of chars) for (const surface of SURFACES) for (const arm of JUDGE_ARMS) {
+      const mine = all.filter((t) => t.char === c.id && t.surface === surface && t.arm === arm && t.rep === 0);
+      const base = all.filter((t) => t.char === c.id && t.surface === surface && t.arm === 'base' && t.rep === 0);
+      if (!mine.length) continue;
+      jobs.push(async () => {
+        const rows = await judge(c, surface, mine, base.length ? base : null, arm);
+        for (const r of rows) judged.push({ char: c.id, surface, arm, ...r });
+      });
+    }
+    await pool(jobs, 6);
+  }
 
   const pct = (n: number, d: number) => (d ? `${((100 * n) / d).toFixed(0)}% (${n}/${d})` : '-');
-  const summary: Record<string, unknown> = { label: LABEL, faceText: FACE_TEXT };
-  console.log(`\n== ${LABEL} summary`);
+  const summary: Record<string, unknown> = { label: LABEL, reps: REPS, blockTokens };
+  summary.faceText = Object.fromEntries(chars.map((c) => [c.id, faceTextFor(c, 'face')]));
+  console.log(`\n== ${LABEL} summary (reps ${REPS})`);
   for (const surface of SURFACES) {
-    const face = all.filter((t) => t.arm === 'face' && t.surface === surface && t.visible.length);
-    const base = all.filter((t) => t.arm === 'base' && t.surface === surface && t.visible.length);
-    const fits = judged.filter((j) => j.surface === surface && j.fit !== null);
-    const fitAvg = fits.reduce((n, j) => n + (j.fit ?? 0), 0) / Math.max(1, fits.length);
-    const better = judged.filter((j) => j.surface === surface && j.better);
-    const s = {
-      turns: face.length,
-      lead: pct(face.filter((t) => t.leadTag).length, face.length),
-      any: pct(face.filter((t) => t.anyTag).length, face.length),
-      leaks: face.filter((t) => t.leak).map((t) => `${t.char} t${t.turn}: ${t.leak}`),
-      baseLeaks: base.filter((t) => t.leak).map((t) => `${t.char} t${t.turn}: ${t.leak}`),
-      unknown: face.flatMap((t) => t.unknownTags),
-      tagDist: Object.entries(
-        face.flatMap((t) => t.tags).reduce<Record<string, number>>((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
-      ).sort((a, b) => b[1] - a[1]),
-      missed: pct(judged.filter((j) => j.surface === surface && j.missed === true).length, judged.filter((j) => j.surface === surface && j.missed !== null).length),
-      fit: fits.length ? `${fitAvg.toFixed(2)} / 2 over ${fits.length} (0s: ${fits.filter((j) => j.fit === 0).length})` : '-',
-      wordsFace: (face.reduce((n, t) => n + t.words, 0) / Math.max(1, face.length)).toFixed(1),
-      wordsBase: base.length ? (base.reduce((n, t) => n + t.words, 0) / base.length).toFixed(1) : '-',
-      ab: better.length
-        ? `face ${better.filter((j) => j.better === 'face').length}, base ${better.filter((j) => j.better === 'base').length}, tie ${better.filter((j) => j.better === 'tie').length}`
-        : '-',
-    };
-    summary[surface] = s;
-    console.log(surface, JSON.stringify(s, null, 1));
-    for (const id of CHARS) {
-      const f = face.filter((t) => t.char === id);
-      console.log(`  ${id}: lead ${pct(f.filter((t) => t.leadTag).length, f.length)}`);
+    const arms: Record<string, unknown> = {};
+    for (const arm of ARMS) {
+      const ts = all.filter((t) => t.arm === arm && t.surface === surface && t.visible.length);
+      const fits = judged.filter((j) => j.arm === arm && j.surface === surface && j.fit !== null);
+      const better = judged.filter((j) => j.arm === arm && j.surface === surface && j.better);
+      arms[arm] = {
+        turns: ts.length,
+        lead: arm === 'base' ? '-' : pct(ts.filter((t) => t.leadTag).length, ts.length),
+        words: ci(ts.map((t) => t.words)),
+        outTokens: ci(ts.map((t) => t.outTokens)),
+        leaks: ts.filter((t) => t.leak).map((t) => `${t.char} r${t.rep} t${t.turn}: ${t.leak}`),
+        unknown: ts.flatMap((t) => t.unknownTags),
+        fit: fits.length ? `${mean(fits.map((j) => j.fit ?? 0)).toFixed(2)} / 2 over ${fits.length} (0s: ${fits.filter((j) => j.fit === 0).length})` : '-',
+        missed: pct(judged.filter((j) => j.arm === arm && j.surface === surface && j.missed === true).length, judged.filter((j) => j.arm === arm && j.surface === surface && j.missed !== null).length),
+        ab: better.length ? `${arm} ${better.filter((j) => j.better === 'face').length}, base ${better.filter((j) => j.better === 'base').length}, tie ${better.filter((j) => j.better === 'tie').length}` : '-',
+      };
     }
+    summary[surface] = arms;
+    console.log(surface, JSON.stringify(arms, null, 1));
   }
+  const perChar: Record<string, unknown> = {};
+  for (const c of chars) {
+    const row: Record<string, unknown> = {};
+    for (const arm of ARMS) {
+      const ts = all.filter((t) => t.char === c.id && t.arm === arm && t.visible.length);
+      const dist = Object.entries(
+        ts.flatMap((t) => t.tags.map((x) => x.replace(/^~/, ''))).reduce<Record<string, number>>((m, x) => ((m[x] = (m[x] ?? 0) + 1), m), {}),
+      ).sort((p, q) => q[1] - p[1]);
+      const fits = judged.filter((j) => j.char === c.id && j.arm === arm && j.fit !== null).map((j) => j.fit ?? 0);
+      const raw = ts.map((t) => t.raw.toLowerCase());
+      row[arm] = {
+        turns: ts.length,
+        lead: arm === 'base' ? '-' : pct(ts.filter((t) => t.leadTag).length, ts.length),
+        tags: dist,
+        fit: fits.length ? `${mean(fits).toFixed(2)} (n=${fits.length}, 0s ${fits.filter((f) => f === 0).length})` : '-',
+        words: ci(ts.map((t) => t.words)),
+        outTokens: ci(ts.map((t) => t.outTokens)),
+        // What the model WROTE (before pack mapping), for the "does Marv still laugh" question.
+        wroteLaughExcited: raw.filter((r) => /\[(laugh|laughs|laughing|excited)\]/.test(r)).length,
+        wroteHappy: raw.filter((r) => /\[(happy|smile)\]/.test(r)).length,
+        wroteEmbarrassed: raw.filter((r) => /\[(embarrassed|nervous|blush|blushing|flustered)\]/.test(r)).length,
+      };
+    }
+    perChar[c.id] = row;
+    console.log(c.id, JSON.stringify(row));
+  }
+  summary.perChar = perChar;
   const total = Object.entries(spend).reduce((n, [, v]) => n + v, 0);
   summary.spend = { ...spend, searches, total };
   console.log(`spend ${JSON.stringify(spend)} searches=${searches} total=$${total.toFixed(4)}`);

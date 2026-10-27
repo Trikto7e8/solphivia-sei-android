@@ -7,6 +7,11 @@ import {
   FACE_DECAY_MS,
   resolveExpression,
   readFaceTags,
+  FACE_EXTRA_EXPRESSIONS,
+  FACE_ALL_EXPRESSIONS,
+  normalizePalette,
+  facePromptFor,
+  faceEnumFor,
 } from './faceExpressions.js'
 
 describe('resolveExpression', () => {
@@ -74,18 +79,110 @@ describe('readFaceTags', () => {
 })
 
 describe('FACE_PROMPT', () => {
-  it('lists every expression in brackets and says the bracket is not spoken', () => {
+  it('lists every expression in brackets and says the tag is not spoken', () => {
     for (const n of FACE_EXPRESSION_NAMES) expect(FACE_PROMPT).toContain(`[${n}]`)
     expect(FACE_PROMPT).toMatch(/not spoken or shown/)
   })
   it('has no em dash (prompt-writing style)', () => {
     expect(FACE_PROMPT).not.toContain('—')
-    expect(FACE_PROMPT).toMatch(/Start each reply with/)
+    expect(FACE_PROMPT).toMatch(/Begin each reply with a face tag/)
+    // 261028: the line that keeps replies at their normal length.
+    expect(FACE_PROMPT).toMatch(/then reply as you normally would/)
   })
   it('decay holds only on the four strong expressions', () => {
     expect(Object.keys(FACE_DECAY_MS).sort()).toEqual(['embarrassed', 'excited', 'laugh', 'surprised'])
   })
   it('laugh never blinks (eyes already squeezed shut)', () => {
     expect(FACE_EXPRESSIONS.find((e) => e.name === 'laugh').blink).toBe(false)
+  })
+})
+
+// 261028: per-pack palettes. Fixtures are shaped like the baked packs but the
+// code under test never sees a character name.
+describe('pack palettes', () => {
+  const LED = normalizePalette(
+    ['neutral', 'deadpan', 'resigned', 'smirk', 'annoyed', 'sad', 'sleepy', 'thinking', 'surprised'],
+    { happy: 'smirk', laugh: 'smirk', excited: 'smirk', smug: 'smirk', pout: 'annoyed', embarrassed: 'resigned' },
+  )
+  const THA3 = normalizePalette([...FACE_EXPRESSION_NAMES, 'worried'])
+
+  it('normalizePalette cleans names and drops aliases that point nowhere', () => {
+    expect(normalizePalette([' Happy ', 'happy', 'two words', 7, 'sad'], { glad: 'happy', x: 'nope', sad: 'happy' })).toEqual({
+      expressions: ['happy', 'sad'],
+      aliases: { glad: 'happy' },
+    })
+    expect(normalizePalette(['happy', 'laugh'], {}, ['happy'])).toEqual({ expressions: ['happy'], aliases: {} })
+    expect(normalizePalette([])).toBeNull()
+    expect(normalizePalette(undefined)).toBeNull()
+  })
+
+  it('without a palette every word still lands on the base 12 as before', () => {
+    expect(resolveExpression('smirk')).toBe('smug')
+    expect(resolveExpression('worried')).toBe('sad')
+    expect(resolveExpression('sighs')).toBe('sad')
+    expect(resolveExpression('deadpan')).toBe('neutral')
+    expect(resolveExpression('resigned')).toBe('sad')
+    for (const e of FACE_ALL_EXPRESSIONS) {
+      for (const w of [e.name, ...e.aliases]) expect(FACE_EXPRESSION_NAMES).toContain(resolveExpression(w))
+    }
+  })
+
+  it('maps through the pack aliases first', () => {
+    expect(resolveExpression('laugh', LED)).toBe('smirk')
+    expect(resolveExpression('laughs', LED)).toBe('smirk')
+    expect(resolveExpression('excited', LED)).toBe('smirk')
+    expect(resolveExpression('happy', LED)).toBe('smirk')
+    expect(resolveExpression('pout', LED)).toBe('annoyed')
+    expect(resolveExpression('deadpan', LED)).toBe('deadpan')
+    expect(resolveExpression('sighs', LED)).toBe('resigned')
+    expect(resolveExpression('worried', LED)).toBe('sad')
+  })
+
+  it('a pack with worried keeps it; one without falls back to sad', () => {
+    expect(resolveExpression('worried', THA3)).toBe('worried')
+    expect(resolveExpression('concerned', THA3)).toBe('worried')
+    expect(resolveExpression('smirk', THA3)).toBe('smug')
+    expect(resolveExpression('deadpan', THA3)).toBe('neutral')
+  })
+
+  it('a tag the pack cannot show is ignored (the current face stays)', () => {
+    const tiny = normalizePalette(['neutral', 'happy'])
+    expect(resolveExpression('annoyed', tiny)).toBeNull()
+    expect(readFaceTags('[happy] ok [annoyed] fine', tiny)).toEqual({ lead: 'happy', trail: null })
+    expect(readFaceTags('[happy] [annoyed] fine', tiny)).toEqual({ lead: 'happy', trail: null })
+  })
+
+  it('every palette result is one of its names', () => {
+    for (const e of FACE_ALL_EXPRESSIONS) {
+      for (const w of [e.name, ...e.aliases]) {
+        const r = resolveExpression(w, LED)
+        if (r !== null) expect(LED.expressions).toContain(r)
+      }
+    }
+  })
+
+  it('facePromptFor lists only the pack faces; null is FACE_PROMPT', () => {
+    expect(facePromptFor(null)).toBe(FACE_PROMPT)
+    const p = facePromptFor(LED)
+    for (const n of LED.expressions) expect(p).toContain(`[${n}]`)
+    expect(p).not.toContain('[laugh]')
+    expect(p).not.toContain('[excited]')
+    expect(p).not.toContain('—')
+    expect(p.length).toBeLessThan(FACE_PROMPT.length)
+  })
+
+  it('faceEnumFor is the palette or the base 12', () => {
+    expect(faceEnumFor(null)).toEqual([...FACE_EXPRESSION_NAMES])
+    expect(faceEnumFor(LED)).toEqual(LED.expressions)
+  })
+
+  it('extra names never collide with base names and each falls back to a base name', () => {
+    const base = new Set(FACE_EXPRESSION_NAMES)
+    for (const e of FACE_EXTRA_EXPRESSIONS) {
+      expect(base.has(e.name)).toBe(false)
+      expect(base.has(e.fallback)).toBe(true)
+    }
+    const all = new Set(FACE_ALL_EXPRESSIONS.map((e) => e.name))
+    for (const e of FACE_ALL_EXPRESSIONS) for (const a of e.aliases) expect(all.has(a)).toBe(false)
   })
 })

@@ -19,6 +19,8 @@ import type {
   FacepackPose,
   FacepackViseme,
 } from '@shared/facepack';
+import { packPalette } from '@shared/facepack';
+import { resolveExpression } from '../../../../bot/brain/faceExpressions.js';
 
 export interface FaceFrameState {
   expression: string;
@@ -40,6 +42,15 @@ export function resolveExpressionName(m: FacepackManifest, name: string): string
   if (m.default_expression && m.expressions[m.default_expression]) return m.default_expression;
   if (m.expressions.neutral) return 'neutral';
   return Object.keys(m.expressions)[0];
+}
+
+/**
+ * A face cue word for this pack (261028): mapped through the pack's palette
+ * and aliases. null = the pack cannot show it, so the current face stays.
+ */
+export function cueExpression(m: FacepackManifest, word: string): string | null {
+  const name = resolveExpression(word, packPalette(m));
+  return name && m.expressions[name] ? name : null;
 }
 
 export function resolvePoseName(e: FacepackExpression, m: FacepackManifest, pose: string): string {

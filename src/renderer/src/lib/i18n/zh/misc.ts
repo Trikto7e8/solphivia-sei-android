@@ -311,6 +311,7 @@ export const ZH_MISC: Record<string, string> = {
   'Not enough credits to make a skin. The current skin stays.': '额度不足，无法制作皮肤。当前皮肤保持不变。',
   "You've made the most skins allowed today. Try again tomorrow.": '今天制作的皮肤已达上限。请明天再试。',
   'Sign in to make a Minecraft skin.': '登录后才能制作 Minecraft 皮肤。',
+  "Only {name}'s creator can make their skin.": '只有 {name} 的创建者才能制作皮肤。',
   '{name} needs a picture before Sei can make their skin.': '{name} 需要先有一张图片，Sei 才能制作皮肤。',
   "Couldn't make a skin. The current skin stays.": '皮肤制作失败。当前皮肤保持不变。',
   'Drop a 64x64 PNG here, or click to browse': '将 64x64 的 PNG 拖到这里，或点击浏览',

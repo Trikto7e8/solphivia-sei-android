@@ -8,7 +8,7 @@ import type { SkinGenOutcome } from '@shared/ipc';
 
 vi.mock('./ipcClient', () => ({ sei: {} }));
 
-const { skinPrepLine, skinFailureLine } = await import('./skinGeneration');
+const { skinPrepLine, skinFailureLine, canGenerateSkin } = await import('./skinGeneration');
 const { skinButtonResultLine } = await import('../components/SkinGenerateButton');
 const { ZH } = await import('./i18n/zh');
 
@@ -52,12 +52,23 @@ describe('launch panel skin line', () => {
   });
 });
 
+describe('who may make a skin', () => {
+  it('own companions only: not defaults, not other people\'s (World / shared) characters', () => {
+    expect(canGenerateSkin({ is_default: false, owner: 'me' }, 'me')).toBe(true);
+    expect(canGenerateSkin({ is_default: false, owner: null }, 'me')).toBe(true);
+    expect(canGenerateSkin({ is_default: false, owner: null }, null)).toBe(true);
+    expect(canGenerateSkin({ is_default: false, owner: 'someone' }, 'me')).toBe(false);
+    expect(canGenerateSkin({ is_default: false, owner: 'someone' }, null)).toBe(false);
+    expect(canGenerateSkin({ is_default: true, owner: null }, 'me')).toBe(false);
+  });
+});
+
 describe('profile button result line', () => {
   it('a failed regenerate keeps the current skin', () => {
     const { t } = recorder();
     expect(skinButtonResultLine('insufficient_credits', 'Nova', t)).toMatch(/current skin stays/);
     expect(skinButtonResultLine('failed', 'Nova', t)).toMatch(/current skin stays/);
-    expect(skinButtonResultLine('not_allowed', 'Nova', t)).toBeNull();
+    expect(skinButtonResultLine('not_allowed', 'Nova', t)).toBe("Only Nova's creator can make their skin.");
   });
 });
 

@@ -11,6 +11,8 @@
 import React, { useState } from 'react';
 import { sei } from '../lib/ipcClient';
 import { useDataStore } from '../lib/stores/useDataStore';
+import { useAuthStore } from '../lib/stores/useAuthStore';
+import { canGenerateSkin } from '../lib/skinGeneration';
 import { classifyRendererError } from '../lib/errors';
 import { useT } from '../lib/i18n';
 import { skinPendingOf, type Character } from '@shared/characterSchema';
@@ -34,7 +36,7 @@ export function skinButtonResultLine(outcome: SkinGenOutcome, name: string, t: T
     case 'no_portrait':
       return t('{name} needs a picture before Sei can make their skin.', { name });
     case 'not_allowed':
-      return null;
+      return t("Only {name}'s creator can make their skin.", { name });
     default:
       return t("Couldn't make a skin. The current skin stays.");
   }
@@ -51,7 +53,10 @@ export function SkinGenerateButton({
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<{ outcome: SkinGenOutcome } | { error: string } | null>(null);
   const botOnline = useDataStore((s) => s.summons[character.id]?.kind === 'online');
+  const currentUserId = useAuthStore((s) => (s.state.kind === 'signed_in' ? s.state.user.id : null));
   if (!character.portrait_image) return null;
+  // Defaults and other people's characters wear their owner's skin.
+  if (!canGenerateSkin(character, currentUserId)) return null;
 
   // Never made yet (creation placeholder, or no skin): "Make". Otherwise a
   // new one replaces the current skin.

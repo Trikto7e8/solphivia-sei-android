@@ -44,6 +44,8 @@ const PROXY_BASE_URL = process.env.SEI_PROXY_URL ?? 'https://api.sei.gg';
 
 /** Wall clock for the proxy's Gemini call (mirrors the portrait route). */
 const SKIN_PANEL_TIMEOUT_MS = 60_000;
+/** Reading the image body once the proxy has answered (headers in). */
+const BODY_READ_TIMEOUT_MS = 30_000;
 /** The confirm call is a single ledger update. */
 const CONFIRM_TIMEOUT_MS = 10_000;
 
@@ -118,7 +120,8 @@ type PanelResult =
  */
 async function requestPanelAtlas(image: Buffer, jwt: string): Promise<PanelResult> {
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), SKIN_PANEL_TIMEOUT_MS);
+  let timer = setTimeout(() => controller.abort(), SKIN_PANEL_TIMEOUT_MS);
+  let chargeId: string | null = null;
   try {
     const resp = await fetch(`${PROXY_BASE_URL}/generate/skin`, {
       method: 'POST',
@@ -133,7 +136,13 @@ async function requestPanelAtlas(image: Buffer, jwt: string): Promise<PanelResul
     if (resp.status === 402) return { ok: false, outcome: 'insufficient_credits', detail: 'HTTP 402' };
     if (resp.status === 429) return { ok: false, outcome: 'daily_limit', detail: 'HTTP 429' };
     if (!resp.ok) return { ok: false, outcome: 'failed', detail: `HTTP ${resp.status}` };
-    const chargeId = resp.headers.get(CHARGE_ID_HEADER);
+    // Headers are in: Gemini has answered and the charge is held. The call's
+    // 60 s budget no longer applies (an abort now would leave the player
+    // charged with the character still pending, and the next run bills
+    // again); the body gets its own short budget, refunded if it runs out.
+    clearTimeout(timer);
+    timer = setTimeout(() => controller.abort(), BODY_READ_TIMEOUT_MS);
+    chargeId = resp.headers.get(CHARGE_ID_HEADER) || null;
     const json = (await resp.json()) as { png_base64?: unknown };
     const b64 = json?.png_base64;
     if (typeof b64 !== 'string' || b64.length === 0) {
@@ -141,8 +150,10 @@ async function requestPanelAtlas(image: Buffer, jwt: string): Promise<PanelResul
       if (chargeId) await confirmCharge(chargeId, false, jwt);
       return { ok: false, outcome: 'failed', detail: 'response missing png_base64' };
     }
-    return { ok: true, atlas: Buffer.from(b64, 'base64'), chargeId: chargeId || null };
+    return { ok: true, atlas: Buffer.from(b64, 'base64'), chargeId };
   } catch (err) {
+    // The image never reached us after the charge was held: refund it.
+    if (chargeId) await confirmCharge(chargeId, false, jwt);
     return { ok: false, outcome: 'failed', detail: (err as Error).message };
   } finally {
     clearTimeout(timer);

@@ -11,8 +11,22 @@
 import { useEffect, useRef, useState } from 'react';
 import { sei } from './ipcClient';
 import { useDataStore } from './stores/useDataStore';
-import { skinPendingOf } from '@shared/characterSchema';
+import { useAuthStore } from './stores/useAuthStore';
+import { skinPendingOf, type Character } from '@shared/characterSchema';
 import type { SkinGenOutcome } from '@shared/ipc';
+
+/**
+ * Whether this player may make the character's Minecraft skin: their own
+ * companions only (main's rule in skinGeneration.mayGenerate). Defaults and
+ * other people's characters (World / shared) reuse the owner's skin.
+ */
+export function canGenerateSkin(
+  c: Pick<Character, 'is_default' | 'owner'>,
+  currentUserId: string | null,
+): boolean {
+  if (c.is_default) return false;
+  return c.owner == null || c.owner === currentUserId;
+}
 
 export type SkinPrepState =
   | { kind: 'idle' }
@@ -56,9 +70,12 @@ export function skinFailureLine(outcome: SkinGenOutcome, name: string, t: T): st
  * for the same generation in main, bounded.
  */
 export function useMinecraftSkinPrep(characterId: string): SkinPrepState {
+  const currentUserId = useAuthStore((s) => (s.state.kind === 'signed_in' ? s.state.user.id : null));
+  // A shared character can carry its owner's synced marker; only the owner's
+  // device makes the skin, so nobody else shows progress for it.
   const pending = useDataStore((s) => {
     const c = s.characters.find((x) => x.id === characterId);
-    return c ? skinPendingOf(c) : false;
+    return c ? skinPendingOf(c) && canGenerateSkin(c, currentUserId) : false;
   });
   const [prep, setPrep] = useState<{ id: string; state: SkinPrepState }>({ id: characterId, state: { kind: 'idle' } });
   // Started once per character per mount. The marker clears when the skin

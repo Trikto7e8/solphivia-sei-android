@@ -274,6 +274,24 @@ describe('ensureMinecraftSkin (launch panel / launch)', () => {
     expect(confirmCalls()[0].body).toEqual({ charge_id: CHARGE_ID, used: false });
   });
 
+  it('an image body that fails after the charge was held is refunded, marker kept', async () => {
+    h.chars.set(ID, mkChar());
+    skinAnswer = () =>
+      ({
+        status: 200,
+        ok: true,
+        headers: new Headers({ 'x-sei-charge-id': CHARGE_ID }),
+        json: async () => {
+          throw new Error('body stream aborted');
+        },
+      }) as unknown as Response;
+    const res = await ensureMinecraftSkin(ID);
+    expect(res.outcome).toBe('failed');
+    expect(confirmCalls()).toHaveLength(1);
+    expect(confirmCalls()[0].body).toEqual({ charge_id: CHARGE_ID, used: false });
+    expect(stored().metadata.skin_pending).toBe(true);
+  });
+
   it('a proxy without confirm mode (no charge id): no confirm call', async () => {
     h.chars.set(ID, mkChar());
     skinAnswer = () => okPanel(null);

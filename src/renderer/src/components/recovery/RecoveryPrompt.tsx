@@ -1,7 +1,7 @@
 /**
  * RecoveryPrompt — in-app phantom-call recovery (260810).
  *
- * Self-mounting like NoticesInboxModal: renders null until a scan finds a
+ * Self-mounting like StartupPopup: renders null until a scan finds a
  * non-dismissed phantom-call session (a voice call left running while other
  * audio fed the mic — see src/main/recovery/phantomDetect.ts for the cadence
  * signature). Scans run:

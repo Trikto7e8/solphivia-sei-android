@@ -1,0 +1,133 @@
+/**
+ * Main-window guards for the startup popup frame (261027).
+ *
+ * The popup page (an operator page on https://sei.gg/popup/) is shown in a
+ * sandboxed <iframe> inside the main renderer. Why an iframe and not a
+ * WebContentsView or <webview>:
+ *   - the iframe is cross-origin, so Chromium's site isolation runs it in its
+ *     own renderer process, and Electron never injects the preload into
+ *     subframes (nodeIntegrationInSubFrames is off), so the page has no
+ *     window.sei and no Node;
+ *   - the sandbox attribute (see StartupPopup.tsx) gives it an opaque origin
+ *     with no scripts, no storage, no forms and no top navigation;
+ *   - the overlay, backdrop click-out, X and Esc are plain renderer UI, so no
+ *     second native view has to be positioned and resized over the window.
+ * A <webview> would need webviewTag on the main window (a broader door), and
+ * a WebContentsView floats above the DOM, so the X and backdrop would need
+ * their own native view.
+ *
+ * What main adds here, for every SUBFRAME of the main window (the popup is
+ * the app's only iframe):
+ *   - navigation lock: a subframe may only navigate to an allowed popup URL.
+ *     Any other link opens in the default browser through the same
+ *     assertSafeExternalUrl gate as app:open-external (https/mailto only), and
+ *     the frame stays where it is. Redirects off the allow-list are cancelled;
+ *   - window.open / target=_blank: denied for the whole main window (nothing
+ *     in the app opens child windows), the URL goes to the default browser;
+ *   - framing: sei.gg sends X-Frame-Options: SAMEORIGIN on every page, which
+ *     would block the frame inside the app. The header (and a CSP
+ *     frame-ancestors) is dropped for allowed popup URLs loaded as a subframe
+ *     of the main window only;
+ *   - load check: PopupFrameTracker records whether the frame committed a 2xx
+ *     page, so the renderer never reveals an error page or a 404.
+ */
+import { session, shell, type BrowserWindow } from 'electron';
+import { assertSafeExternalUrl } from './lib/externalUrlValidator';
+import { isPopupFrameUrl, popupDevOrigins } from './notices';
+import { POPUP_ORIGIN, POPUP_PATH_PREFIX, PopupFrameTracker } from './startupPopup';
+
+const logger = {
+  info: (m: string) => console.log(`[sei] ${m}`),
+};
+
+const tracker = new PopupFrameTracker(isPopupFrameUrl);
+
+/** Hand a URL to the default browser if it passes the shared gate; else drop it. */
+function openExternally(url: string): void {
+  try {
+    assertSafeExternalUrl(url);
+  } catch {
+    logger.info(`popup: blocked non-https link ${url.slice(0, 80)}`);
+    return;
+  }
+  logger.info(`popup: opening link externally ${url.slice(0, 200)}`);
+  void shell.openExternal(url).catch(() => undefined);
+}
+
+/** Remove frame-ancestors from a CSP value, dropping the header if nothing is left. */
+function stripFrameAncestors(value: string): string | null {
+  const kept = value
+    .split(';')
+    .map((d) => d.trim())
+    .filter((d) => d.length > 0 && !/^frame-ancestors(\s|$)/i.test(d));
+  return kept.length > 0 ? kept.join('; ') : null;
+}
+
+export function installPopupFrameGuards(win: BrowserWindow): void {
+  const wc = win.webContents;
+
+  wc.setWindowOpenHandler(({ url }) => {
+    openExternally(url);
+    return { action: 'deny' };
+  });
+
+  wc.on('will-frame-navigate', (details) => {
+    if (details.isMainFrame) return;
+    if (details.url === 'about:blank' || isPopupFrameUrl(details.url)) return;
+    details.preventDefault();
+    openExternally(details.url);
+  });
+
+  wc.on('will-redirect', (details) => {
+    if (details.isMainFrame) return;
+    if (!isPopupFrameUrl(details.url)) details.preventDefault();
+  });
+
+  wc.on('did-start-navigation', (details) => {
+    if (!details.isMainFrame) tracker.onStart(details.url);
+  });
+  wc.on('did-frame-navigate', (_e, url, httpResponseCode, _text, isMainFrame) => {
+    if (!isMainFrame) tracker.onCommit(url, httpResponseCode);
+  });
+  wc.on('did-fail-provisional-load', (_e, _code, _desc, url, isMainFrame) => {
+    if (!isMainFrame) tracker.onFail(url);
+  });
+
+  const patterns = [POPUP_ORIGIN, ...popupDevOrigins()].map((o) => `${o}${POPUP_PATH_PREFIX}*`);
+  session.defaultSession.webRequest.onHeadersReceived({ urls: patterns }, (details, callback) => {
+    if (
+      details.resourceType !== 'subFrame' ||
+      details.webContentsId !== wc.id ||
+      !isPopupFrameUrl(details.url) ||
+      !details.responseHeaders
+    ) {
+      callback({});
+      return;
+    }
+    const headers: Record<string, string[]> = {};
+    for (const [key, values] of Object.entries(details.responseHeaders)) {
+      const k = key.toLowerCase();
+      if (k === 'x-frame-options') continue;
+      if (k === 'content-security-policy') {
+        const kept = values.map(stripFrameAncestors).filter((v): v is string => v !== null);
+        if (kept.length > 0) headers[key] = kept;
+        continue;
+      }
+      headers[key] = values;
+    }
+    callback({ responseHeaders: headers });
+  });
+}
+
+/**
+ * Whether the popup frame's latest load committed a 2xx page. The frame's
+ * commit normally lands well before the renderer's `load` event; a short wait
+ * covers a still-pending navigation.
+ */
+export async function popupFrameLoadedOk(waitMs = 1500): Promise<boolean> {
+  const deadline = Date.now() + waitMs;
+  while (!tracker.loadedOk() && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, 100));
+  }
+  return tracker.loadedOk();
+}

@@ -1,45 +1,48 @@
 /**
- * Notices inbox (260725) — operator announcements delivered to the app.
+ * Operator feed (260725, reworked 261027) — https://sei.gg/notices.json.
  *
- * A side-channel JSON feed at https://sei.gg/notices.json, hosted next to
- * version.json and NOT linked from the website (it exists for the desktop app;
- * web visitors never see an inbox). Shape:
+ * A side-channel JSON file hosted next to version.json and NOT linked from the
+ * website. Until v0.6.9 it fed the notices inbox (markdown notices that opened
+ * once). From v0.6.10 the inbox UI is gone and the feed's only job in the app
+ * is the startup popup: one operator page, shown once per install. Shape:
  *
  *   {
- *     "notices": [
- *       {
- *         "id": "260725-voice-calls",     // stable, unique, never reused
- *         "title": "Voice calls are here",
- *         "date": "2026-07-25",           // ISO date, shown in the inbox
- *         "body": "Markdown body…"        // see renderNoticeBody in the renderer
- *       }
- *     ]
+ *     "notices": [ ... ],      // still read by 0.6.9 and older; ignored here
+ *     "popup": { "id": "...", "url": "https://sei.gg/popup/<id>", ... }
  *   }
+ *
+ * See startupPopup.ts for the popup fields and rules. Old clients only read
+ * `notices` (and accept a bare array), so `popup` is invisible to them.
  *
  * CADENCE — deliberately not its own clock. The refresh is driven from
  * updater.ts's existing trigger points (startup, window focus, machine
  * resume/unlock, the 30-minute backstop timer, and a manual "Check for
- * updates"), sharing MIN_BACKGROUND_GAP_MS. A notice check is therefore exactly
- * as frequent as an update check, and costs one extra ~1KB GET on the same
+ * updates"), sharing MIN_BACKGROUND_GAP_MS. One extra ~1KB GET on the same
  * wake-ups rather than a second timer.
  *
- * OPEN-ONCE — the auto-open decision is derived from persisted state, never
- * from an in-memory flag, so a push dropped by a renderer that hasn't mounted
- * its listener yet doesn't lose the announcement: the renderer's mount-time
- * pull (`notices:get`) computes the same answer. The renderer acks after
- * opening (`notices:ack`), which records every current id in `announcedIds`,
- * and only then does the inbox stop opening itself.
+ * SHOW-ONCE — the popup is pushed to the renderer when a refresh finds an id
+ * this install has not shown, and the renderer also pulls it on mount (the
+ * startup push can land before its listener exists). The renderer shows it
+ * only on a calm screen, and only after main confirms the page really loaded
+ * (popupFrameGuards.ts). The id is recorded in `popupShownIds` at that moment,
+ * so a popup that failed to load (offline, 404) is tried again next time.
  *
- * Unlike the updater this runs in dev too — there's nothing packaged-only about
- * fetching a JSON file, and it makes the feature testable without a build.
+ * Runs in dev too. In dev only, SEI_NOTICES_URL overrides the feed URL, and
+ * popup pages on that URL's origin are allowed (for local testing).
  *
  * Source:
  *   - src/main/updater.ts (net.request fetch + push helper pattern)
  *   - src/main/noticesStore.ts (persistence + coercion)
  */
-import { net, type BrowserWindow } from 'electron';
-import { IpcChannel, type Notice, type NoticesSnapshot } from '../shared/ipc';
-import { coerceNotices, loadNoticesState, saveNoticesState, type NoticesState } from './noticesStore';
+import { app, net, type BrowserWindow } from 'electron';
+import { IpcChannel, type StartupPopupInfo } from '../shared/ipc';
+import { loadNoticesState, saveNoticesState, type NoticesState } from './noticesStore';
+import {
+  coerceStartupPopup,
+  isAllowedPopupUrl,
+  popupToShow,
+  type StartupPopup,
+} from './startupPopup';
 
 const logger = {
   info: (m: string) => console.log(`[sei] ${m}`),
@@ -49,14 +52,38 @@ const logger = {
 const NOTICES_URL = 'https://sei.gg/notices.json';
 const NOTICES_FETCH_TIMEOUT_MS = 5000;
 
+/** Dev-only feed override (never honoured in a packaged build). */
+function devFeedOverride(): string | null {
+  if (app.isPackaged) return null;
+  const raw = process.env.SEI_NOTICES_URL;
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.protocol === 'http:' || u.protocol === 'https:' ? u.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Origins popup pages may come from besides sei.gg: the dev override's, in dev only. */
+export function popupDevOrigins(): string[] {
+  const o = devFeedOverride();
+  return o ? [new URL(o).origin] : [];
+}
+
+/** Whether a frame URL is an allowed popup page (sei.gg/popup/, or the dev origin). */
+export function isPopupFrameUrl(url: string): boolean {
+  return isAllowedPopupUrl(url, popupDevOrigins());
+}
+
 /** Module singleton — set once by initNotices. */
 let getMainWindow: (() => BrowserWindow | null) | null = null;
 
 /**
  * Serializes every read-modify-write of the notices state. loadNoticesState /
- * saveNoticesState are individually atomic, but a background refresh landing
- * mid mark-read would otherwise write back a stale `readIds`. All mutations
- * queue on this chain; it never rejects (each link swallows its own error).
+ * saveNoticesState are individually atomic, but two writers interleaving
+ * would otherwise write back a stale copy. It never rejects (each link
+ * swallows its own error).
  */
 let stateChain: Promise<void> = Promise.resolve();
 
@@ -75,18 +102,25 @@ function mutate<T>(fn: (state: NoticesState) => Promise<T> | T): Promise<T> {
 /** True while a refresh is in flight — collapses overlapping triggers. */
 let refreshInFlight = false;
 
+/**
+ * The feed's current popup for this client (allowed, in range, not expired),
+ * before the shown-ids filter. Null until a refresh finds one, and after a
+ * refresh finds none (the operator took it down).
+ */
+let feedPopup: StartupPopup | null = null;
+
 /* -------------------------------------------------------------------------- */
 /*  Feed fetch                                                                 */
 /* -------------------------------------------------------------------------- */
 
 /**
- * Best-effort fetch of the notices feed. Returns null on any failure (no
- * network, timeout, bad JSON, non-2xx) so the cached feed simply stays put.
- * Accepts either `{ notices: [...] }` or a bare `[...]` top level.
+ * Best-effort fetch of the feed. Returns the parsed JSON, or null on any
+ * failure (no network, timeout, bad JSON, non-2xx).
  */
-function fetchNoticesFeed(): Promise<Notice[] | null> {
+function fetchFeed(): Promise<unknown | null> {
+  const url = devFeedOverride() ?? NOTICES_URL;
   return new Promise((resolve) => {
-    const req = net.request({ url: NOTICES_URL, method: 'GET', redirect: 'follow' });
+    const req = net.request({ url, method: 'GET', redirect: 'follow' });
     const timer = setTimeout(() => {
       try {
         req.abort();
@@ -109,13 +143,7 @@ function fetchNoticesFeed(): Promise<Notice[] | null> {
       res.on('end', () => {
         clearTimeout(timer);
         try {
-          const json = JSON.parse(body) as unknown;
-          const raw = Array.isArray(json) ? json : (json as { notices?: unknown })?.notices;
-          if (!Array.isArray(raw)) {
-            resolve(null);
-            return;
-          }
-          resolve(sortNewestFirst(coerceNotices(raw)));
+          resolve(JSON.parse(body) as unknown);
         } catch {
           resolve(null);
         }
@@ -129,40 +157,15 @@ function fetchNoticesFeed(): Promise<Notice[] | null> {
   });
 }
 
-/**
- * Order the feed newest-first by `date`. Entries with a missing/unparseable
- * date sink to the bottom keeping their feed order (Array#sort is stable), so a
- * malformed date never reshuffles the rest.
- */
-export function sortNewestFirst(notices: Notice[]): Notice[] {
-  const stamp = (n: Notice): number => {
-    const t = Date.parse(n.date);
-    return Number.isNaN(t) ? -Infinity : t;
-  };
-  return [...notices].sort((a, b) => stamp(b) - stamp(a));
+/** The `popup` key of a parsed feed (a bare-array feed has none). */
+export function feedPopupField(json: unknown): unknown {
+  if (!json || typeof json !== 'object' || Array.isArray(json)) return undefined;
+  return (json as { popup?: unknown }).popup;
 }
 
-/* -------------------------------------------------------------------------- */
-/*  Snapshot                                                                   */
-/* -------------------------------------------------------------------------- */
-
-/**
- * Build the renderer-facing snapshot. `autoOpen` is true when the feed holds at
- * least one notice that has never been announced — the "opens once when
- * received" rule, derived rather than remembered.
- */
-function snapshotOf(state: NoticesState): NoticesSnapshot {
-  const announced = new Set(state.announcedIds);
-  return {
-    notices: state.notices,
-    readIds: state.readIds.filter((id) => state.notices.some((n) => n.id === id)),
-    autoOpen: state.notices.some((n) => !announced.has(n.id)),
-  };
-}
-
-function push(snapshot: NoticesSnapshot): void {
+function push(popup: StartupPopupInfo | null): void {
   const win = getMainWindow?.() ?? null;
-  if (win && !win.isDestroyed()) win.webContents.send(IpcChannel.app.notices, snapshot);
+  if (win && !win.isDestroyed()) win.webContents.send(IpcChannel.app.startupPopup, popup);
 }
 
 /* -------------------------------------------------------------------------- */
@@ -175,32 +178,31 @@ export function initNotices(deps: { getMainWindow: () => BrowserWindow | null })
 }
 
 /**
- * Fetch the feed and merge it into persisted state, then push the new snapshot
- * to the renderer. No-ops while another refresh is in flight. Never throws —
- * an unreachable feed leaves the cached notices untouched.
- *
- * Ids that vanish from the feed have their notices dropped from the cache (the
- * operator retracted them) but keep their announced/read marks, so a
- * re-published id is not re-announced.
+ * Fetch the feed and update the current popup, pushing it to the renderer
+ * when it changed. No-ops while another refresh is in flight. Never throws.
+ * An unreachable feed keeps whatever the last good refresh found.
  */
 export async function refreshNotices(reason: string): Promise<void> {
   if (refreshInFlight) return;
   refreshInFlight = true;
   try {
-    const fetched = await fetchNoticesFeed();
-    if (!fetched) {
+    const json = await fetchFeed();
+    // A feed is an object (or the old bare array). Anything else is broken,
+    // not "no popup", so it must not take a live popup down.
+    if (json === null || typeof json !== 'object') {
       logger.info(`notices: refresh (${reason}) found no usable feed`);
       return;
     }
-    const snapshot = await mutate(async (state) => {
-      const known = new Set(state.notices.map((n) => n.id));
-      const fresh = fetched.filter((n) => !known.has(n.id)).length;
-      const next: NoticesState = { ...state, notices: fetched };
-      await saveNoticesState(next);
-      if (fresh > 0) logger.info(`notices: ${fresh} new notice(s) from refresh (${reason})`);
-      return snapshotOf(next);
+    const before = feedPopup?.id ?? null;
+    feedPopup = coerceStartupPopup(feedPopupField(json), {
+      appVersion: app.getVersion(),
+      now: Date.now(),
+      devOrigins: popupDevOrigins(),
     });
-    push(snapshot);
+    if ((feedPopup?.id ?? null) === before) return;
+    const owed = await getStartupPopup();
+    if (owed) logger.info(`notices: popup ${owed.id} is live (${reason})`);
+    push(owed);
   } catch (err) {
     logger.warn(`notices: refresh failed (${(err as Error).message})`);
   } finally {
@@ -209,41 +211,21 @@ export async function refreshNotices(reason: string): Promise<void> {
 }
 
 /**
- * Renderer pull (`notices:get`). Returns the cached snapshot without touching
- * the network — the refresh cadence owns fetching. Race-proof counterpart to
- * the push: a renderer that mounts after the startup refresh still learns it
- * should auto-open, because `autoOpen` is derived from persisted state.
+ * Renderer pull (`app:startup-popup-get`): the popup this install still owes,
+ * or null. No network; the refresh cadence owns fetching.
  */
-export async function getNoticesSnapshot(): Promise<NoticesSnapshot> {
-  return mutate((state) => snapshotOf(state));
+export async function getStartupPopup(): Promise<StartupPopupInfo | null> {
+  return mutate((state) => popupToShow(feedPopup, state.popupShownIds));
 }
 
 /**
- * Renderer ack (`notices:ack`) — records every currently-cached notice as
- * announced, so the inbox never auto-opens for them again. Sent right after the
- * renderer opens the inbox on its own; harmless to call repeatedly.
+ * Record that popup `id` was shown, so it never shows again on this install.
+ * Called from the `app:startup-popup-loaded` handler once main has confirmed
+ * the page loaded.
  */
-export async function ackNoticesAnnounced(): Promise<NoticesSnapshot> {
-  return mutate(async (state) => {
-    const announced = new Set(state.announcedIds);
-    for (const n of state.notices) announced.add(n.id);
-    const next: NoticesState = { ...state, announcedIds: [...announced] };
-    await saveNoticesState(next);
-    return snapshotOf(next);
-  });
-}
-
-/**
- * Renderer mark-read (`notices:read`) — the user selected a notice in the
- * inbox. Clears its unread dot. Unknown ids are ignored.
- */
-export async function markNoticeRead(id: string): Promise<NoticesSnapshot> {
-  return mutate(async (state) => {
-    if (!state.notices.some((n) => n.id === id) || state.readIds.includes(id)) {
-      return snapshotOf(state);
-    }
-    const next: NoticesState = { ...state, readIds: [...state.readIds, id] };
-    await saveNoticesState(next);
-    return snapshotOf(next);
+export async function markStartupPopupShown(id: string): Promise<void> {
+  await mutate(async (state) => {
+    if (state.popupShownIds.includes(id)) return;
+    await saveNoticesState({ ...state, popupShownIds: [...state.popupShownIds, id] });
   });
 }

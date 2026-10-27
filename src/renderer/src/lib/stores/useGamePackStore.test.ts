@@ -7,7 +7,7 @@
  *   4. ensure() on a ready pack does not call main.
  *   5. ensure() returns the error state (no throw) so the card can retry.
  *
- * Mock strategy mirrors useNoticesStore.test.ts: stub window.sei before the
+ * Mock strategy: stub window.sei before the
  * store module is imported (ipcClient reads window.sei at module init).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';

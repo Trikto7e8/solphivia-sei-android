@@ -22,7 +22,7 @@ import {
   type UpdateProgressEvent,
   type UpdateDownloadedEvent,
   type WhatsNewEvent,
-  type NoticesSnapshot,
+  type StartupPopupInfo,
   type ScopeChangedEvent,
   type AuthState,
   type SyncStatusPushEvent,
@@ -646,15 +646,14 @@ const api: RendererApi = {
   installUpdate: () => ipcRenderer.invoke(IpcChannel.app.updateInstall),
   getVersion: () => ipcRenderer.invoke(IpcChannel.app.version),
 
-  // --- Notices inbox (260725) ---
-  onNotices(cb: (snapshot: NoticesSnapshot) => void) {
-    const handler = (_e: Electron.IpcRendererEvent, snapshot: NoticesSnapshot) => cb(snapshot);
-    ipcRenderer.on(IpcChannel.app.notices, handler);
-    return () => ipcRenderer.off(IpcChannel.app.notices, handler);
+  // --- Startup popup (261027) ---
+  onStartupPopup(cb: (popup: StartupPopupInfo | null) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, popup: StartupPopupInfo | null) => cb(popup);
+    ipcRenderer.on(IpcChannel.app.startupPopup, handler);
+    return () => ipcRenderer.off(IpcChannel.app.startupPopup, handler);
   },
-  getNotices: () => ipcRenderer.invoke(IpcChannel.app.noticesGet),
-  ackNotices: () => ipcRenderer.invoke(IpcChannel.app.noticesAck),
-  markNoticeRead: (id: string) => ipcRenderer.invoke(IpcChannel.app.noticesRead, id),
+  getStartupPopup: () => ipcRenderer.invoke(IpcChannel.app.startupPopupGet),
+  startupPopupLoaded: (id: string) => ipcRenderer.invoke(IpcChannel.app.startupPopupLoaded, id),
 
   // --- Window chrome (frameless custom titlebar on Windows/Linux) ---
   platform: process.platform,

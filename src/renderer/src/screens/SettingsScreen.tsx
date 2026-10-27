@@ -55,6 +55,7 @@ import styles from './SettingsScreen.module.css';
 import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
 import { SearchSettingsSection } from '../components/settings/SearchSettingsSection';
 import { LocalImportRow } from '../components/settings/LocalImportRow';
+import { FacepackDevRow } from '../components/settings/FacepackDevRow';
 import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
 import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
@@ -1899,6 +1900,8 @@ export function SettingsScreen(): React.ReactElement {
             </button>
             {t(', via icefall.')}
           </p>
+          {/* 261028 facepack pilot: renders nothing unless the dev flag is on. */}
+          <FacepackDevRow />
         </div>
 
         {/* ── Danger ──────────────────────────────────────────── */}

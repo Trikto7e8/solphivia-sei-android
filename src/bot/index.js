@@ -107,6 +107,10 @@ export async function start(config, hooks = {}) {
     // Task 4 — a reply to a message that came in over Sei chat (not in-game)
     // is routed back UP to the chat surface instead of spoken in-world.
     onSeiChatReply: (text) => emitLifecycle({ type: 'chat', from: config?.persona?.name ?? 'your companion', text }),
+    // 261028 facepack pilot: say()'s optional `expression`, offered only when
+    // main's init set config._seiFaces (dev flag). Main pushes it to the
+    // renderer as a face cue; game logic never reads it.
+    onFace: (expression) => emitLifecycle({ type: 'face', expression }),
     // Party redesign §2/§5 — the orchestrator dispatched a world-acting tool
     // (name set) or drained back to idle (name null). Emit an `action`
     // lifecycle so main forwards it to the renderer's presence verb line.
@@ -481,6 +485,8 @@ async function bootstrapWithInit(initData) {
     // and the cold FIRST CONTACT greeting is skipped on the first tick (no race
     // with the post-spawn {type:'voice-call'} message). See orchestrator.js.
     voiceCallActive: initVoiceCallActive,   // boolean | undefined
+    // 261028 facepack pilot: true only in dev with SEI_FACEPACK_DIR set.
+    faces: initFaces,                       // boolean | undefined
     // 261014: the saved plan still open for this session's first greeting
     // (main's homeNextStep readPendingPlan, read before the session marks it
     // used). Stashed as config._seiNextStepPlan for FIRST_CONTACT. null = none
@@ -732,6 +738,13 @@ async function bootstrapWithInit(initData) {
   // createOrchestrator. Best-effort.
   try {
     config._seiVoiceCallActive = initVoiceCallActive === true
+  } catch {}
+
+  // 261028 facepack pilot: offer say()'s `expression` parameter only when
+  // main says the dev flag is on. Absent (every packaged build) = the tool
+  // schema is unchanged.
+  try {
+    config._seiFaces = initFaces === true
   } catch {}
 
   // init-ack doubles as "booted": the supervisor switches from its cold-boot

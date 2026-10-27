@@ -8,6 +8,7 @@
 // The orchestrator never imports from src/adapter/ — verify with
 // `grep -r "from '../adapter" src/brain/`.
 
+import { FACE_EXPRESSION_NAMES, SAY_EXPRESSION_DESCRIPTION, resolveExpression } from './faceExpressions.js'
 import { createLlmProvider } from './llm/index.js'
 import { applyLlmSwitch } from '../llmInit.js'
 import { TERMINAL_CHATGPT_CODES } from './llm/responsesWire.js'
@@ -937,7 +938,7 @@ export async function composeSeedBlocks({
  *   priority queue. Required when the brain runs in production; defaults
  *   to a no-op for test harnesses.
  */
-export function createOrchestrator({ adapter, config, logger = console, sessionState = null, playerStore = null, reenqueue = () => {}, onTerminalError = null, onAuthExpired = null, onSeiChatReply = null, onQuitRequested = null, onCallEndRequested = null, onAction = null, _anthropicOverride = null, _webSessionOverride = null }) {
+export function createOrchestrator({ adapter, config, logger = console, sessionState = null, playerStore = null, reenqueue = () => {}, onTerminalError = null, onAuthExpired = null, onSeiChatReply = null, onQuitRequested = null, onCallEndRequested = null, onAction = null, onFace = null, _anthropicOverride = null, _webSessionOverride = null }) {
   if (!adapter) throw new Error('createOrchestrator: adapter required')
   // Game-adapters M0 (260908): contract v2 members with Minecraft defaults.
   // Every game-flavored string or name the brain used to hardcode is read
@@ -1676,6 +1677,13 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         continue
       }
       if (u.name !== 'say') continue
+      // 261028 facepack pilot: the face cue rides before the line. An alias
+      // is accepted, an unknown value is dropped (never a tool error, which
+      // would cost the say()). Ignored entirely unless the flag offered it.
+      if (facesOn && typeof onFace === 'function') {
+        const face = resolveExpression(u.input?.expression)
+        if (face) { try { onFace(face) } catch {} }
+      }
       // 260724 voice latency: this say() was already emitted mid-stream by the
       // callPersonality onSay hook (loop._earlySay) — reuse its result so the
       // line is never spoken twice, but keep the identical tool_result
@@ -1949,6 +1957,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
   //
   // Tool descriptions live in src/bot/brain/prompts.js →
   // PERSONALITY_TOOL_DESCRIPTIONS.
+  const facesOn = config?._seiFaces === true
   const sayTool = {
     name: 'say',
     description: PERSONALITY_TOOL_DESCRIPTIONS.say,
@@ -1956,6 +1965,10 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       type: 'object',
       properties: {
         text: { type: 'string', minLength: 1, description: 'The exact words to speak to the player, in your own voice — one short line.' },
+        // 261028 facepack pilot: offered only when main's init set
+        // config._seiFaces (unpackaged dev with SEI_FACEPACK_DIR). Game logic
+        // never reads it; emitSayCalls forwards it as a face cue.
+        ...(facesOn ? { expression: { type: 'string', enum: [...FACE_EXPRESSION_NAMES], description: SAY_EXPRESSION_DESCRIPTION } } : {}),
       },
       required: ['text'],
     },

@@ -14,6 +14,7 @@
  *   - UI-SPEC §Defaults (channel naming)
  */
 
+import type { FaceCue, FacepackDevInfo, FacepackManifest } from './facepack';
 import { z } from 'zod';
 import type {
   Character,
@@ -2103,6 +2104,13 @@ export interface RendererApi {
    * focusController's frame). Main polls only while a Live2D tile shows; the
    * gaze cursor-follow mode treats a stale feed as "wander instead". */
   onAvatarOverlayCursor(cb: (pt: { x: number; y: number }) => void): Unsubscribe;
+  // ── Facepack pilot (261028, dev flag only; see src/main/facepack/) ──
+  facepackInfo?(): Promise<FacepackDevInfo>;
+  facepackManifest?(id: string): Promise<FacepackManifest | null>;
+  facepackFile?(id: string, path: string): Promise<Uint8Array | null>;
+  facepackForCharacter?(characterId: string): Promise<string | null>;
+  facepackOpenPreview?(): Promise<boolean>;
+  onFaceCue?(cb: (cue: FaceCue) => void): Unsubscribe;
   /**
    * Overlay window only (260806): stream a character's tile camera (zoom +
    * pan within the tile) while edit-mode wheel/drag adjusts it; `commit`
@@ -4034,6 +4042,22 @@ export const IpcChannel = {
     scan: 'recovery:scan',
     repair: 'recovery:repair',
     dismiss: 'recovery:dismiss',
+  },
+  // 261028 — desktop companion facepack pilot (src/main/facepack/). Every
+  // handler answers "disabled" unless unpackaged + SEI_FACEPACK_DIR.
+  facepack: {
+    /** Invoke: FacepackDevInfo (dev flag + the packs in the dev dir). */
+    info: 'facepack:info',
+    /** Invoke: a pack's facepack.json (id) → FacepackManifest | null. */
+    manifest: 'facepack:manifest',
+    /** Invoke: one pack file ({id, path}) → Uint8Array | null. */
+    file: 'facepack:file',
+    /** Invoke: the pack id for a character (by name) → string | null. */
+    forCharacter: 'facepack:for-character',
+    /** Invoke: open the dev preview window → boolean. */
+    openPreview: 'facepack:open-preview',
+    /** Push (main → every window): a FaceCue. */
+    cue: 'facepack:cue',
   },
 } as const;
 

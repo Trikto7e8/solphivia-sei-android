@@ -24,6 +24,7 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { closeSplashWindow, createMainWindow, createSplashWindow } from './windowChrome';
 import { registerIpcHandlers, emitCreditsHardStop } from './ipc';
+import { registerFacepackIpc } from './facepack/facepackIpc';
 import { isAnalyticsActive, shutdownAnalytics, capture, captureAppQuit, noteSurface } from './analytics';
 import { reportOnboardingAbandoned } from './onboardingFunnel';
 import { notePreGateFailure, clearSummonBlock, clearSummonBlocksOfClass } from './summonGuard';
@@ -1293,6 +1294,9 @@ async function bootstrap(): Promise<void> {
       }
     },
   });
+
+  // 261028 facepack pilot (dev flag only; handlers answer "disabled" otherwise).
+  registerFacepackIpc({ preloadPath: preloadPath(), rendererTarget });
 
   // 5. IPC handlers
   registerIpcHandlers({

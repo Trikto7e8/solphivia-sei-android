@@ -63,6 +63,9 @@ import { paths } from './paths';
 import { createLogRouter, type LogRouter } from './logRouter';
 import { bootPhaseProps, type SummonFailureInfo, type SummonPhase } from './diagnostics';
 import { goodbyeGame, noteCompanionGoodbye } from './sessionGoodbye';
+import { facesEnabled } from './facepack/facepackDev';
+import { emitFaceCue } from './facepack/faceEvents';
+import { resolveExpression } from '../bot/brain/faceExpressions.js';
 
 /**
  * The READY budget: from the bot reporting "booted" (its init-ack) to
@@ -1512,6 +1515,13 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
         opts.onBotChat?.(characterId, (data as { text?: string }).text ?? '');
         return;
       }
+      // 261028 facepack pilot: say()'s `expression` (dev flag only). Not a
+      // BotStatus event.
+      if ((data as { type?: string }).type === 'face') {
+        const expression = resolveExpression((data as { expression?: unknown }).expression);
+        if (expression) emitFaceCue({ characterId, expression, at: 'start', text: null });
+        return;
+      }
       // Voice calls (260705): the in-game bot called end_call() — hang up the
       // player's call (the bot stays in the game). Not a BotStatus event.
       if ((data as { type?: string }).type === 'call-end') {
@@ -1845,6 +1855,9 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
               // bot skips its cold FIRST CONTACT greeting (which would otherwise
               // double the standalone launch reply). Deterministic; no race.
               voiceCallActive: opts.isVoiceCallActive?.(characterId) ?? false,
+              // 261028 facepack pilot: say() `expression` param (dev flag only;
+              // omitted otherwise so the init payload is unchanged).
+              ...(facesEnabled() ? { faces: true } : {}),
               // 261014: the open plan for the FIRST CONTACT greeting (null = none).
               nextStepPlan: nextStepPlan === undefined ? undefined : (nextStepPlan?.text ?? null),
               // 261020: true = that plan is not tied to this game (talk, not a task).

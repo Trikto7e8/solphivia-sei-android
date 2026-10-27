@@ -236,6 +236,41 @@ describe('summon(id, "stardew") through a registered GameModule', () => {
     await p;
   });
 
+  it('a stop during a slow prepareJoin cancels at once, never re-announces connecting, and a re-launch starts fresh (261027)', async () => {
+    let release: (() => void) | undefined;
+    const prepareJoin = vi.fn(
+      () => new Promise<Record<string, unknown> | null>((resolve) => { release = () => resolve(null); }),
+    );
+    registerGameModule({ ...stardewModule(true), prepareJoin });
+    const { sup, sendStatus } = makeSupervisor();
+    const p = sup.summon(A, 'stardew');
+    const settled = p.then(() => 'resolved', (e: unknown) => String((e as Error).message));
+    await vi.waitFor(() => expect(prepareJoin).toHaveBeenCalledTimes(1));
+    const t0 = Date.now();
+    await sup.stop(A);
+    // Cancelled now, not after CANCEL_SETTLE_MS or the step's own bound.
+    expect(Date.now() - t0).toBeLessThan(1000);
+    expect(await settled).toMatch(/^SUMMON_CANCELLED/);
+    expect(forkSpy).not.toHaveBeenCalled();
+    const idleAt = sendStatus.mock.calls.findIndex(([s]) => (s as { kind: string }).kind === 'idle');
+    expect(idleAt).toBeGreaterThanOrEqual(0);
+    // The step finishing later must not paint 'connecting' over the idle.
+    release?.();
+    await new Promise((r) => setTimeout(r, 20));
+    const after = sendStatus.mock.calls.slice(idleAt + 1).map(([s]) => (s as { kind: string }).kind);
+    expect(after).not.toContain('connecting');
+    // A new launch is a new attempt (it does not join the cancelled one).
+    const fake = armFakeChild();
+    const p2 = sup.summon(A, 'stardew');
+    await vi.waitFor(() => expect(prepareJoin).toHaveBeenCalledTimes(2));
+    release?.();
+    await vi.waitFor(() => expect(forkSpy).toHaveBeenCalledTimes(1));
+    fake.emitSpawn();
+    await vi.waitFor(() => expect(fake.postMessage).toHaveBeenCalledTimes(1));
+    fake.emitPortMessage({ type: 'summon-ready' });
+    await p2;
+  });
+
   it('refuses an unknown game with no module', async () => {
     const { sup } = makeSupervisor();
     await expect(sup.summon(A, 'dontstarve')).rejects.toThrow(/GAME_NOT_INSTALLED/);

@@ -53,6 +53,7 @@ import { useMcSetupSteps } from './McSteps';
 import { useSeiProfile, useStartMinecraft } from './useStartMinecraft';
 import { useT, uiLanguage } from '../../lib/i18n';
 import { useResetLine } from '../../lib/useResetLine';
+import { skinPrepLine, useMinecraftSkinPrep } from '../../lib/skinGeneration';
 import styles from './McLaunchPanel.module.css';
 
 /** Same renderer-relative art the picker tile uses (public/img). */
@@ -162,6 +163,12 @@ export function McLaunchPanel({ characterId }: McLaunchPanelProps): React.ReactE
   // top summon blocker by people (19 in 30 days, mostly 26.2 / 26.3) and the
   // player only learned the rule after a failed launch.
   const lan = useDataStore((s) => s.lan);
+  // 261027 lazy skins: opening this panel makes the companion's Minecraft
+  // skin if it still has the creation placeholder. Launch stays available;
+  // a launch meanwhile waits for it in main, and any failure keeps the
+  // free painted skin.
+  const characterName = useDataStore((s) => s.characters.find((c) => c.id === characterId)?.name ?? '');
+  const skinLine = skinPrepLine(useMinecraftSkinPrep(characterId), characterName, t);
   const worldVersion = lan.kind === 'open' ? (lan.versionName ?? null) : null;
   const worldTooNew = worldTooNewForSei(worldVersion);
   const setup = useMcSetupSteps(STEP_SKIN);
@@ -240,6 +247,11 @@ export function McLaunchPanel({ characterId }: McLaunchPanelProps): React.ReactE
           <McButton kind="primary" disabled={launcher.busy} onClick={() => void launcher.start(seiProfile.version)}>
             {t('Start Minecraft')}
           </McButton>
+        ) : null}
+        {skinLine ? (
+          <p className={styles.versionLine} role="status" data-slot="mc-skin-prep">
+            {skinLine}
+          </p>
         ) : null}
         {showStart && launcher.note ? (
           <p className={styles.versionLine} role="status">

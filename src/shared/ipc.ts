@@ -1015,6 +1015,33 @@ export interface ChatPreview {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Outcome of a Minecraft skin generation (261027 lazy skins, main/skinGeneration.ts).
+ *  - generated             the Gemini skin came back and is now the character's skin
+ *  - insufficient_credits  the proxy refused (402): not enough allowance or credits
+ *  - daily_limit           the proxy's per-day skin cap (429)
+ *  - failed                anything else (network, Gemini error, unusable image)
+ *  - not_signed_in / no_portrait / not_allowed   nothing was attempted
+ *  - skipped               ensure only: nothing to do (not pending, or already tried this run)
+ * Every outcome but 'generated' leaves the existing skin in place; a character
+ * that had none gets the free painted skin.
+ */
+export type SkinGenOutcome =
+  | 'generated'
+  | 'insufficient_credits'
+  | 'daily_limit'
+  | 'failed'
+  | 'not_signed_in'
+  | 'no_portrait'
+  | 'not_allowed'
+  | 'skipped';
+
+export interface SkinGenResult {
+  outcome: SkinGenOutcome;
+  /** The character's skin after the attempt (null when the character is gone). */
+  skin: Skin | null;
+}
+
+/**
  * A detected Minecraft installation surfaced to the wizard.
  * Source: CONTEXT.md §decisions "Cross-platform paths" + "First-launch wizard scope".
  *
@@ -2600,6 +2627,18 @@ export interface RendererApi {
   searchMojangSkin(username: string): Promise<{ pngBase64: string; sha256: string; resolvedUsername: string }>;
   /** Returns the loopback URL prefix that CustomSkinLoader is configured against (e.g. 'http://127.0.0.1:54321'). */
   getSkinServerUrl(): Promise<{ baseUrl: string }>;
+  /**
+   * 261027: make the character's Minecraft skin from its portrait now (the
+   * profile's skin button). One billed proxy call; joins a generation already
+   * running for this character.
+   */
+  generateSkin(characterId: string): Promise<SkinGenResult>;
+  /**
+   * 261027: make the skin only if the character still has its creation-time
+   * placeholder (metadata.skin_pending) and this app run has not tried yet.
+   * The Minecraft launch panel calls it on open. Joins a running generation.
+   */
+  ensureSkin(characterId: string): Promise<SkinGenResult>;
 
   // --- Setup wizard ---
   /** Scan known Minecraft launcher + CurseForge paths on the current platform. */
@@ -3816,6 +3855,8 @@ export const IpcChannel = {
     uploadPng: 'skin:upload-png',
     searchMojang: 'skin:search-mojang',
     getServerUrl: 'skin:get-server-url',
+    generate: 'skin:generate',
+    ensure: 'skin:ensure',
   },
   // Setup wizard. `cancel` crosses the IPC boundary to abort an in-flight
   // install — a renderer-local AbortController cannot reach the main-process

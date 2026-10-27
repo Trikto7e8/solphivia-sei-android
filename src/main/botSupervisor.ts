@@ -1259,14 +1259,30 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // costs must not come out of the summon deadline. The module bounds its
     // own wait; a failure only means the join target goes out without the
     // extra fields.
+    //
+    // 261027 (review): this wait can be long (Minecraft's first Gemini skin is
+    // bounded at SKIN_PREPARE_WAIT_MS, 75 s), so a stop during it cancels the
+    // summon NOW instead of when the step returns. Before, _stop gave up after
+    // CANCEL_SETTLE_MS and painted idle, the step then returned and re-sent
+    // 'connecting' (the launch button stuck on "Starting companion..."), and a
+    // re-launch inside the wait joined the cancelled attempt and did nothing.
+    // The step itself keeps running in the background.
+    if (ctl.cancelled) throw summonCancelledError();
     if (module.prepareJoin) {
+      let onCancel: (() => void) | undefined;
+      const cancelledP = new Promise<null>((resolve) => { onCancel = () => resolve(null); });
+      ctl.cancel = onCancel;
       try {
-        const extra = await module.prepareJoin({ characterId, character });
+        const extra = await Promise.race([module.prepareJoin({ characterId, character }), cancelledP]);
         if (extra) joinTarget = { ...(joinTarget as Record<string, unknown>), ...extra };
       } catch (err) {
         console.warn(`[sei/supervisor] ${game} prepareJoin failed (continuing): ${errText(err)}`);
+      } finally {
+        if (ctl.cancel === onCancel) ctl.cancel = undefined;
       }
     }
+    // A stop landed during the pre-fork awaits: never re-announce 'connecting'.
+    if (ctl.cancelled) throw summonCancelledError();
 
     const startedAtMs = Date.now();
     // 260926: stage drives the launch button's progress label ("Starting

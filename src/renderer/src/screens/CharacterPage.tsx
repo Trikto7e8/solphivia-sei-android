@@ -759,6 +759,7 @@ export function CharacterPage({ id }: CharacterPageProps): React.ReactElement {
               compact
               previewCaption={t('This is how they appear in your world.')}
               onEditSkin={viewOnly ? undefined : () => openEdit('appearance')}
+              canGenerate={canShare && !isPreview}
             />
           </div>
         )}

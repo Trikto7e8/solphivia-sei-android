@@ -133,6 +133,14 @@ export const ZH_CHATUI: Record<string, string> = {
   'Joining your world...': '正在进入你的世界...',
   'Launch': '启动',
   'How do I set up launch?': '如何设置启动？',
+  // Skin line on the launch panel (lib/skinGeneration, 261027 lazy skins).
+  "Making {name}'s Minecraft skin...": '正在制作 {name} 的 Minecraft 皮肤...',
+  "Not enough credits to make {name}'s Minecraft skin. They will use a simple one for now.":
+    '额度不足，无法制作 {name} 的 Minecraft 皮肤。暂时先用一个简单的皮肤。',
+  "You've made the most skins allowed today. {name} will use a simple one for now.":
+    '今天制作的皮肤已达上限。{name} 暂时先用一个简单的皮肤。',
+  "Couldn't make {name}'s Minecraft skin. They will use a simple one for now.":
+    '{name} 的 Minecraft 皮肤制作失败。暂时先用一个简单的皮肤。',
   'Works with most Minecraft Java versions from {oldest} to {newest}.': '支持 {oldest} 至 {newest} 之间的大多数 Minecraft Java 版本。',
   'Your open world is on Minecraft {version}, which Sei cannot join yet. Sei works with most Minecraft Java versions from {oldest} to {newest}.':
     '你打开的世界是 Minecraft {version}，Sei 暂时无法加入。Sei 支持 {oldest} 至 {newest} 之间的大多数 Minecraft Java 版本。',

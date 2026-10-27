@@ -3562,7 +3562,9 @@ one is in the website repo's `README-popup.md`.
   the X, Esc or a click outside the page.
 - **Main guards** (`src/main/popupFrameGuards.ts`): EVERY subframe of the
   main window is navigation-locked to the popup allow-list; any other link
-  opens in the default browser through `assertSafeExternalUrl`, and
+  opens in the default browser through `assertSafeExternalUrl` (only when
+  the navigating frame is showing a popup page, i.e. a link click; a nested
+  `<iframe>` embed's first load is cancelled silently), and
   `setWindowOpenHandler` denies all child windows the same way. A future
   feature that embeds another iframe in the main window must extend this
   allow-list deliberately. sei.gg sends `X-Frame-Options: SAMEORIGIN`, so the

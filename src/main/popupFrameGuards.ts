@@ -21,7 +21,9 @@
  *   - navigation lock: a subframe may only navigate to an allowed popup URL.
  *     Any other link opens in the default browser through the same
  *     assertSafeExternalUrl gate as app:open-external (https/mailto only), and
- *     the frame stays where it is. Redirects off the allow-list are cancelled;
+ *     the frame stays where it is. A frame with no popup page committed (a
+ *     nested <iframe> embed's first load) is cancelled without opening the
+ *     browser. Redirects off the allow-list are cancelled;
  *   - window.open / target=_blank: denied for the whole main window (nothing
  *     in the app opens child windows), the URL goes to the default browser;
  *   - framing: sei.gg sends X-Frame-Options: SAMEORIGIN on every page, which
@@ -78,7 +80,14 @@ export function installPopupFrameGuards(win: BrowserWindow): void {
     if (details.isMainFrame) return;
     if (details.url === 'about:blank' || isPopupFrameUrl(details.url)) return;
     details.preventDefault();
-    openExternally(details.url);
+    // Only a frame that is showing a popup page is following a link (a
+    // sandboxed page with no scripts navigates only on a click). A frame with
+    // nothing committed yet is a nested <iframe> starting its first load (an
+    // embed on the page): cancel it without opening the browser, or every
+    // load of that popup would pop a browser tab with no click.
+    const from = details.frame?.url ?? '';
+    if (isPopupFrameUrl(from)) openExternally(details.url);
+    else logger.info(`popup: blocked frame load ${details.url.slice(0, 80)}`);
   });
 
   wc.on('will-redirect', (details) => {

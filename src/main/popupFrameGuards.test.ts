@@ -104,10 +104,26 @@ describe('window.open and target=_blank', () => {
 });
 
 describe('subframe navigation lock', () => {
-  const nav = (url: string, isMainFrame = false) => {
-    const d = { url, isMainFrame, preventDefault: vi.fn() };
+  // `from` is the navigating frame's current url: a popup page for a link
+  // click, '' for a nested iframe's first load.
+  const nav = (url: string, isMainFrame = false, from = POPUP) => {
+    const d = { url, isMainFrame, frame: { url: from }, preventDefault: vi.fn() };
     return d;
   };
+
+  it('cancels a nested iframe load without opening the browser', async () => {
+    const { emit } = await setup();
+    for (const from of ['', 'about:blank']) {
+      const d = nav('https://www.youtube.com/embed/x', false, from);
+      emit('will-frame-navigate', d);
+      expect(d.preventDefault).toHaveBeenCalled();
+    }
+    const gone = { url: 'https://example.com/', isMainFrame: false, frame: null, preventDefault: vi.fn() };
+    emit('will-frame-navigate', gone);
+    expect(gone.preventDefault).toHaveBeenCalled();
+    await Promise.resolve();
+    expect(h.opened).toEqual([]);
+  });
 
   it('lets the frame load a popup page or about:blank', async () => {
     const { emit } = await setup();

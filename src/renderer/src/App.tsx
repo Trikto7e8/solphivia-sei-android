@@ -406,9 +406,10 @@ export function App(): React.ReactElement {
       signedIn,
       viewKind: ui.view.kind,
       modalOpen: otherModal || r.tosAccepted !== true,
-      // Same, but counting the ToS gate only while AcceptToSModal is up
-      // (signed in with no current acceptance; a local profile reads false).
-      popupModalOpen: otherModal || (signedIn && r.tosAccepted === false),
+      // Same, but counting the ToS gate only for a signed-in user: until their
+      // ToS status is known to be accepted (null = still checking, and the
+      // AcceptToSModal may still mount). A local profile never has one.
+      popupModalOpen: otherModal || (signedIn && r.tosAccepted !== true),
       tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
       liveSession: live,
     };
@@ -523,9 +524,6 @@ export function App(): React.ReactElement {
         }
         setUpdatePopup({ kind: 'whats-new', version: ev.version, changelog: ev.changelog });
       }),
-      // Notices ride the update check's cadence in main, so their subscription
-      // belongs here too. init() both listens and does the race-proof pull; the
-      // store opens the inbox itself for a notice that has never been announced.
     ];
     // Pull any pending post-update changelog on mount. The onWhatsNew push above
     // fires during early main bootstrap (before this listener exists) and is

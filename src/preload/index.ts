@@ -8,6 +8,7 @@
  * fabric-installer.
  */
 import { contextBridge, ipcRenderer } from 'electron';
+import type { FaceCue } from '../shared/facepack';
 import {
   IpcChannel,
   type RendererApi,
@@ -389,6 +390,17 @@ const api: RendererApi = {
     const handler = (_e: Electron.IpcRendererEvent, pt: { x: number; y: number }) => cb(pt);
     ipcRenderer.on(IpcChannel.avatar.overlayCursorState, handler);
     return () => ipcRenderer.off(IpcChannel.avatar.overlayCursorState, handler);
+  },
+  // Facepack pilot (261028): main answers "disabled" unless the dev flag is on.
+  facepackInfo: () => ipcRenderer.invoke(IpcChannel.facepack.info),
+  facepackManifest: (id) => ipcRenderer.invoke(IpcChannel.facepack.manifest, id),
+  facepackFile: (id, path) => ipcRenderer.invoke(IpcChannel.facepack.file, { id, path }),
+  facepackForCharacter: (characterId) => ipcRenderer.invoke(IpcChannel.facepack.forCharacter, characterId),
+  facepackOpenPreview: () => ipcRenderer.invoke(IpcChannel.facepack.openPreview),
+  onFaceCue(cb) {
+    const handler = (_e: Electron.IpcRendererEvent, cue: FaceCue) => cb(cue);
+    ipcRenderer.on(IpcChannel.facepack.cue, handler);
+    return () => ipcRenderer.off(IpcChannel.facepack.cue, handler);
   },
   avatarOverlayCamera: (args) => ipcRenderer.invoke(IpcChannel.avatar.overlayCamera, args),
   avatarOverlayEditing: (editing) => ipcRenderer.invoke(IpcChannel.avatar.overlayEditing, editing),

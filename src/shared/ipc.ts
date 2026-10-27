@@ -3042,6 +3042,12 @@ export interface RendererApi {
    */
   startupPopupLoaded(id: string): Promise<boolean>;
   /**
+   * Esc pressed while keyboard focus is inside the popup page. A key typed in
+   * a cross-origin frame never reaches this window's listeners, so main
+   * watches the input and relays it.
+   */
+  onStartupPopupEscape(cb: () => void): Unsubscribe;
+  /**
    * Host OS platform (`process.platform`), read once in preload and exposed as
    * a plain value so the renderer can branch its window chrome WITHOUT an async
    * round-trip. Used by MacosWindow to render custom min/max/close controls on
@@ -3774,6 +3780,7 @@ export const IpcChannel = {
     startupPopup: 'app:startup-popup',              // push: owed popup changed (or null)
     startupPopupGet: 'app:startup-popup-get',       // pull owed popup (race-proof)
     startupPopupLoaded: 'app:startup-popup-loaded', // frame loaded: verify + record shown
+    startupPopupEscape: 'app:startup-popup-escape', // push: Esc pressed inside the popup frame
     // 260603 per-profile partitioning: main pushes this AFTER the active
     // account scope has switched (sign-in / sign-out / account swap) and the
     // new profile is initialized + bot stopped. The renderer re-bootstraps

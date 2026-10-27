@@ -76,6 +76,8 @@ describe('StartupPopup frame (source pins)', () => {
     expect(src).toContain('.startupPopupLoaded(popup.id)');
     expect(src).toContain("ok ? { popup, phase: 'shown' } : null");
     expect(src).toContain("e.key === 'Escape'");
+    // Esc with focus inside the page arrives from main's relay.
+    expect(src).toContain('sei.onStartupPopupEscape(close)');
     expect(src).toContain('e.target === e.currentTarget');
     expect(src).toContain("aria-label={t('Close')}");
   });

@@ -20,6 +20,7 @@
   background: rgba(4, 7, 15, 0.72);
   visibility: hidden;
   pointer-events: none;
+  outline: none;
 }
 
 .shown {

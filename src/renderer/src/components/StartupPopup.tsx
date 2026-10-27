@@ -14,8 +14,8 @@
  * window), cannot submit forms or navigate the app. Links still work: main's
  * popupFrameGuards send every link and target=_blank to the default browser.
  *
- * Closing: the X (always visible, focused on open), Esc, or a click anywhere
- * outside the page.
+ * Closing: the X (always visible), Esc (relayed by main when
+ * focus is inside the page), or a click anywhere outside the page.
  *
  * z 1100 (ModalShell's stacked tier): it only ever opens over a calm screen,
  * so nothing modal is under it, and anything raised later sits above base.
@@ -59,7 +59,7 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
   const [active, setActive] = useState<{ popup: StartupPopupInfo; phase: Phase } | null>(null);
   /** Ids tried this app session (shown, failed or timed out): never retried until relaunch. */
   const tried = useRef(new Set<string>());
-  const closeRef = useRef<HTMLButtonElement | null>(null);
+  const scrimRef = useRef<HTMLDivElement | null>(null);
   const isCalmRef = useRef(isCalm);
   isCalmRef.current = isCalm;
 
@@ -129,7 +129,9 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
 
   useEffect(() => {
     if (!shown) return;
-    closeRef.current?.focus();
+    // Focus the dialog itself (not the X, which would draw a focus ring on
+    // open), so Esc works at once and Tab reaches the X.
+    scrimRef.current?.focus();
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') {
         e.stopPropagation();
@@ -137,7 +139,12 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
       }
     };
     window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
+    // Focus inside the page: main relays the Esc (the frame swallows it).
+    const unsubEscape = sei.onStartupPopupEscape(close);
+    return () => {
+      window.removeEventListener('keydown', onKey);
+      unsubEscape();
+    };
   }, [shown, close]);
 
   if (!active) return null;
@@ -145,6 +152,8 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
 
   return (
     <div
+      ref={scrimRef}
+      tabIndex={-1}
       className={shown ? `${styles.scrim} ${styles.shown}` : styles.scrim}
       role={shown ? 'dialog' : undefined}
       aria-modal={shown ? 'true' : undefined}
@@ -166,7 +175,6 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
           onLoad={onFrameLoad}
         />
         <button
-          ref={closeRef}
           type="button"
           className={styles.close}
           onClick={close}

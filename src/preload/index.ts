@@ -654,6 +654,11 @@ const api: RendererApi = {
   },
   getStartupPopup: () => ipcRenderer.invoke(IpcChannel.app.startupPopupGet),
   startupPopupLoaded: (id: string) => ipcRenderer.invoke(IpcChannel.app.startupPopupLoaded, id),
+  onStartupPopupEscape(cb: () => void) {
+    const handler = (): void => cb();
+    ipcRenderer.on(IpcChannel.app.startupPopupEscape, handler);
+    return () => ipcRenderer.off(IpcChannel.app.startupPopupEscape, handler);
+  },
 
   // --- Window chrome (frameless custom titlebar on Windows/Linux) ---
   platform: process.platform,

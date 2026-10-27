@@ -401,19 +401,20 @@ export function App(): React.ReactElement {
       r.updatePopup != null ||
       r.passwordRecovery ||
       (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') != null);
+    const signedIn = useAuthStore.getState().state.kind === 'signed_in';
     return {
-      signedIn: useAuthStore.getState().state.kind === 'signed_in',
+      signedIn,
       viewKind: ui.view.kind,
       modalOpen: otherModal || r.tosAccepted !== true,
-      // Same, but counting the ToS gate only while its modal is up.
-      popupModalOpen: otherModal || r.tosAccepted === false,
+      // Same, but counting the ToS gate only while AcceptToSModal is up
+      // (signed in with no current acceptance; a local profile reads false).
+      popupModalOpen: otherModal || (signedIn && r.tosAccepted === false),
       tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
       liveSession: live,
     };
   }, []);
   // The startup popup (261027) is not account-scoped: signed-out and own-key
-  // installs see it too, so an unknown ToS state (null) does not hold it back,
-  // only the ToS modal being up.
+  // installs see it too, so only the ToS modal being up holds it back.
   const popupCalm = useCallback((): boolean => {
     const ui = readCalmUi();
     return popupUiReady({ ...ui, modalOpen: ui.popupModalOpen });

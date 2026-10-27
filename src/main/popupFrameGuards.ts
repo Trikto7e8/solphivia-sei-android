@@ -29,9 +29,12 @@
  *     frame-ancestors) is dropped for allowed popup URLs loaded as a subframe
  *     of the main window only;
  *   - load check: PopupFrameTracker records whether the frame committed a 2xx
- *     page, so the renderer never reveals an error page or a 404.
+ *     page, so the renderer never reveals an error page or a 404;
+ *   - Esc: a key typed while focus is inside the frame is delivered to the
+ *     frame, not to the renderer, so Esc is relayed from before-input-event.
  */
 import { session, shell, type BrowserWindow } from 'electron';
+import { IpcChannel } from '../shared/ipc';
 import { assertSafeExternalUrl } from './lib/externalUrlValidator';
 import { isPopupFrameUrl, popupDevOrigins } from './notices';
 import { POPUP_ORIGIN, POPUP_PATH_PREFIX, PopupFrameTracker } from './startupPopup';
@@ -81,6 +84,15 @@ export function installPopupFrameGuards(win: BrowserWindow): void {
   wc.on('will-redirect', (details) => {
     if (details.isMainFrame) return;
     if (!isPopupFrameUrl(details.url)) details.preventDefault();
+  });
+
+  // Esc typed with focus inside the popup page goes to that frame's process
+  // and never reaches the renderer's keydown listener, so relay it.
+  wc.on('before-input-event', (_e, input) => {
+    if (input.type !== 'keyDown' || input.key !== 'Escape') return;
+    const frame = wc.focusedFrame;
+    if (!frame || frame === wc.mainFrame || !isPopupFrameUrl(frame.url)) return;
+    wc.send(IpcChannel.app.startupPopupEscape);
   });
 
   wc.on('did-start-navigation', (details) => {

@@ -434,6 +434,8 @@ const api: RendererApi = {
   // --- Skin pipeline ---
   applySkin: (args) => ipcRenderer.invoke(IpcChannel.skin.apply, args),
   removeSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.remove, id),
+  generateSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.generate, id),
+  ensureSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.ensure, id),
   uploadSkinPng: () => ipcRenderer.invoke(IpcChannel.skin.uploadPng),
   searchMojangSkin: (u) => ipcRenderer.invoke(IpcChannel.skin.searchMojang, u),
   getSkinServerUrl: () => ipcRenderer.invoke(IpcChannel.skin.getServerUrl),

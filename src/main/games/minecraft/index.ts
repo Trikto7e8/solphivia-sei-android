@@ -10,6 +10,13 @@ import type { WorldState, MinecraftJoinTarget } from '../../../shared/gameIpc';
 import { watchLan } from '../../lanWatcher';
 import type { GameModule, GameJoinContext } from '../index';
 
+/**
+ * 261027 lazy skins: the longest a launch waits for the character's first
+ * Gemini skin (the proxy's 60 s image timeout plus the local mapping). The
+ * generation keeps running past it and applies for the next join.
+ */
+export const SKIN_PREPARE_WAIT_MS = 75_000;
+
 const tag = (lan: LanState): WorldState => ({ game: 'minecraft', ...lan });
 
 export function createMinecraftGameModule(): GameModule {
@@ -61,6 +68,26 @@ export function createMinecraftGameModule(): GameModule {
     joinTargetMissingError: {
       error: 'LAN_NOT_OPEN',
       message: 'No LAN world detected. Open one to LAN in Minecraft.',
+    },
+    // 261027 lazy skins: a character still on its creation placeholder gets
+    // its Gemini skin before it joins, so CustomSkinLoader fetches the real
+    // one. Every launch path (panel, chat/voice launch() tool) reaches the
+    // supervisor, which awaits this before the summon deadline starts.
+    // Bounded, never throws, adds nothing to the join target; any failure
+    // just means the painted skin.
+    async prepareJoin({ characterId }) {
+      try {
+        const { ensureMinecraftSkin } = await import('../../skinGeneration');
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const timeout = new Promise<void>((resolve) => {
+          timer = setTimeout(resolve, SKIN_PREPARE_WAIT_MS);
+        });
+        await Promise.race([ensureMinecraftSkin(characterId).then(() => undefined), timeout]);
+        clearTimeout(timer);
+      } catch (err) {
+        console.warn(`[sei] minecraft prepareJoin skin step failed: ${(err as Error).message}`);
+      }
+      return null;
     },
     // install: undefined in M0 — the skin-setup wizard stays where it is.
   };

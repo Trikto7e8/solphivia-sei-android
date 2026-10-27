@@ -488,6 +488,36 @@ every version. Only the version on display reaches the cloud.
   button beside the Appearance tab's picker. `bumpPortraitRef()` in
   `portraitSrc.ts` cache-busts the canonical image after a swap.
 
+**Lazy Minecraft skins (261027).** The Gemini skin (proxy `POST
+/generate/skin`, billed $0.134 to the player's allowance or credits) is no
+longer made at creation. `src/main/skinGeneration.ts` is the ONLY caller of
+the route (pinned by `lazySkin.contract.test.ts`).
+- **Creation** paints the free local skin (img2skin's no-LLM painter,
+  `paintFallbackSkin`) and saves the character with
+  `metadata.skin_pending: true` (`SKIN_PENDING_KEY`, `skinPendingOf` in
+  characterSchema; metadata rides the cloud row). `applyPng({skinPending:
+  true})` keeps the marker; any other applyPng (upload, search, a generated
+  skin) and `removePng` clear it.
+- **First trip to Minecraft** (`ensureMinecraftSkin`): opening the launch
+  panel (`skin:ensure`, `useMinecraftSkinPrep` shows "Making {name}'s
+  Minecraft skin...") or any Minecraft launch (the module's `prepareJoin`,
+  which also covers the chat/voice `launch()` tool, bounded by
+  `SKIN_PREPARE_WAIT_MS` 75 s and outside the summon deadline). Owner only
+  (`!is_default && (!owner || owner === userId)`), pending only, once per
+  character per app run, single-flight. Shared characters never generate:
+  the owner's skin syncs and others download it.
+- **The profile button** (`SkinGenerateButton` under the skin preview,
+  `skin:generate`): "Make Minecraft skin (uses credits)" or "Regenerate skin
+  (uses credits)", a new billed call each press.
+- **Billing:** the client sends `x-sei-charge-confirm: 1`; the proxy holds the
+  charge and returns `x-sei-charge-id`; the client confirms `{charge_id,
+  used}` at `/generate/skin/confirm`, `used: false` when img2skin could not map
+  the image (no charge). 402 (`insufficient_credits`), 429 (daily cap) or a
+  network failure keep the painted skin and the marker (retried at the next
+  app run's launch); a character with no skin at all gets the painted one.
+  Nothing here ever blocks a launch. Pre-261027 characters have no marker and
+  keep their skin; only the button regenerates them.
+
 The bot has **one entry path** (`src/bot/index.js`): forked by Electron, it
 waits for an `init` message over the port. (The standalone `sei` CLI was
 removed 260722.)

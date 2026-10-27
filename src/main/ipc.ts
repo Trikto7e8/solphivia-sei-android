@@ -24,6 +24,7 @@ import {
   type GenProgressEvent,
   type GenerateUniqueResult,
   type PortraitRegenResult,
+  type SkinGenResult,
   type PortraitVersionsState,
   type PrefsGetResult,
   type BrowseEntry,
@@ -2919,6 +2920,24 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { removePng } = await import('./skinStore');
     const skin = await removePng(id);
     return { skin };
+  });
+
+  // 261027 lazy skins (main/skinGeneration.ts). generate = the profile's
+  // skin button (billed each press); ensure = the Minecraft launch panel
+  // opening (only for a character still on its creation placeholder). Both
+  // are single-flight per character in skinGeneration and never throw.
+  ipcMain.handle(IpcChannel.skin.generate, async (_event, idArg: unknown): Promise<SkinGenResult> => {
+    const id = IdSchema.parse(idArg);
+    if (deps.supervisor.isActive(id)) {
+      throw new Error('Stop the bot before changing skin. Skin applies on next summon.');
+    }
+    const { generateSkinForCharacter } = await import('./skinGeneration');
+    return await generateSkinForCharacter(id);
+  });
+  ipcMain.handle(IpcChannel.skin.ensure, async (_event, idArg: unknown): Promise<SkinGenResult> => {
+    const id = IdSchema.parse(idArg);
+    const { ensureMinecraftSkin } = await import('./skinGeneration');
+    return await ensureMinecraftSkin(id);
   });
 
   ipcMain.handle(IpcChannel.skin.getServerUrl, async () => {

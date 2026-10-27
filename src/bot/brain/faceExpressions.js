@@ -9,7 +9,9 @@
  * the renderer.
  *
  * Source of truth for names, descriptions, aliases and blink flags is the
- * face-set bake's expressions.json (~/suisei/work/face-sets, 2026-10-27).
+ * face-set bake's expressions.json (~/suisei/work/face-sets, 2026-10-27),
+ * plus four aliases the tag probe saw Haiku invent (261028): worried and
+ * concerned -> sad, relieved -> happy, nervous -> embarrassed.
  * Each baked pack also carries its own per-expression `blink` flag, which is
  * what the player actually reads; the copy here is informational.
  *
@@ -22,14 +24,14 @@
 /** @type {ReadonlyArray<{name: string, description: string, aliases: string[], blink: boolean}>} */
 export const FACE_EXPRESSIONS = Object.freeze([
   { name: 'neutral', description: 'Calm, attentive default. Ordinary talk, listening, explaining.', aliases: ['calm', 'default', 'normal', 'listening'], blink: true },
-  { name: 'happy', description: 'Warm smile. Pleased, friendly, agreeing, glad to see them.', aliases: ['smile', 'glad', 'pleased', 'warm', 'giggles'], blink: true },
+  { name: 'happy', description: 'Warm smile. Pleased, friendly, agreeing, glad to see them.', aliases: ['smile', 'glad', 'pleased', 'warm', 'giggles', 'relieved'], blink: true },
   { name: 'laugh', description: 'Eyes squeezed shut, big open grin. Something is genuinely funny.', aliases: ['laughing', 'lol', 'laughs', 'snorts'], blink: false },
   { name: 'excited', description: "Wide bright eyes, open smile. Hyped, eager, can't wait, big news.", aliases: ['hyped', 'eager', 'thrilled', 'delighted'], blink: true },
   { name: 'smug', description: 'Half-lidded eyes, one-sided smirk. Teasing, told-you-so, playful mischief.', aliases: ['smirk', 'teasing', 'mischievous', 'proud', 'cocky'], blink: true },
   { name: 'pout', description: 'Pursed lips, brows knit. Mock-offended, sulking, playful protest.', aliases: ['sulk', 'hmph', 'huff', 'pouting'], blink: true },
-  { name: 'sad', description: 'Brows tilted up in the middle, mouth down. Disappointed, sympathetic, hurt.', aliases: ['upset', 'disappointed', 'sorry', 'hurt', 'sighs'], blink: true },
+  { name: 'sad', description: 'Brows tilted up in the middle, mouth down. Disappointed, sympathetic, hurt.', aliases: ['upset', 'disappointed', 'sorry', 'hurt', 'sighs', 'worried', 'concerned'], blink: true },
   { name: 'surprised', description: 'Eyes wide, brows high, small open mouth. Caught off guard, shocked, wait what.', aliases: ['shocked', 'shock', 'gasp', 'gasps', 'wow'], blink: true },
-  { name: 'embarrassed', description: 'Blushing, eyes darting away, wobbly mouth. Complimented, flustered, caught out, shy.', aliases: ['blush', 'blushing', 'flustered', 'shy', 'awkward'], blink: true },
+  { name: 'embarrassed', description: 'Blushing, eyes darting away, wobbly mouth. Complimented, flustered, caught out, shy.', aliases: ['blush', 'blushing', 'flustered', 'shy', 'awkward', 'nervous'], blink: true },
   { name: 'thinking', description: 'Glancing up and aside, mouth pressed. Considering, unsure, trying to remember.', aliases: ['hmm', 'pondering', 'unsure', 'curious', 'confused'], blink: true },
   { name: 'sleepy', description: 'Heavy lids, slack calm face. Tired, late at night, winding down, cozy.', aliases: ['tired', 'drowsy', 'yawn', 'exhales'], blink: true },
   { name: 'annoyed', description: 'Brows down, narrowed eyes, flat frown. Irritated, grumpy, mock anger.', aliases: ['angry', 'irritated', 'grumpy', 'mad', 'ugh'], blink: true },
@@ -113,14 +115,17 @@ export function readFaceTags(line) {
 
 /**
  * The FACE block for the chat and voice-call prompts (persona block), only
- * while the facepack dev flag is on. Wording from EXPRESSIONS_SPEC.md; see
- * the probe notes in the commit for adoption numbers.
+ * while the facepack dev flag is on. Picked by scripts/facepack-tag-probe.ts
+ * (Haiku 5.5, Sui/Lyra/Marv, 30 chat + 33 call turns per run, 261028).
+ * The first wording ("only add one when your mood actually shifts") got a
+ * leading tag on 50% of chat and 58% of call replies; this one gets 87% and
+ * 85% at the same judged fit, with no tag ever reaching the visible text.
  */
 export const FACE_PROMPT =
   '# FACE\n' +
-  'People can see your face while you talk. To change it, start a sentence with one of these in square brackets: ' +
+  'People can see your face while you talk. Start each reply with the face that matches how you feel as you say it, in square brackets: ' +
   FACE_EXPRESSION_NAMES.map((n) => `[${n}]`).join(' ') +
-  '. The bracket is not spoken or shown. Your face stays the same until you change it, so only add one when your mood actually shifts.';
+  '. If your mood changes partway through, put the new one before that sentence. The bracket is not spoken or shown.';
 
 /** say() `expression` parameter description (game surface). */
 export const SAY_EXPRESSION_DESCRIPTION = 'Your face while you say this. Omit to keep the current one.';

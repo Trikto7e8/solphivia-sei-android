@@ -22,6 +22,12 @@ describe('resolveExpression', () => {
     expect(resolveExpression('ugh')).toBe('annoyed')
     expect(resolveExpression('gasps')).toBe('surprised')
   })
+  it('maps the tags the probe saw invented (worried, relieved, nervous)', () => {
+    expect(resolveExpression('worried')).toBe('sad')
+    expect(resolveExpression('concerned')).toBe('sad')
+    expect(resolveExpression('relieved')).toBe('happy')
+    expect(resolveExpression('nervous')).toBe('embarrassed')
+  })
   it('no alias collides with another expression name', () => {
     const names = new Set(FACE_EXPRESSION_NAMES)
     for (const e of FACE_EXPRESSIONS) for (const a of e.aliases) expect(names.has(a)).toBe(false)
@@ -74,6 +80,7 @@ describe('FACE_PROMPT', () => {
   })
   it('has no em dash (prompt-writing style)', () => {
     expect(FACE_PROMPT).not.toContain('—')
+    expect(FACE_PROMPT).toMatch(/Start each reply with/)
   })
   it('decay holds only on the four strong expressions', () => {
     expect(Object.keys(FACE_DECAY_MS).sort()).toEqual(['embarrassed', 'excited', 'laugh', 'surprised'])

@@ -33,6 +33,7 @@ import { ConfigSchema, GAME_KINDS } from './config.js'
 import { applyLlmInit } from './llmInit.js'
 import { preparePackLoader } from './packLoader.js'
 import { start as startBrain } from './brain/index.js'
+import { normalizePalette } from './brain/faceExpressions.js'
 import { sessionActionStats, llmMetaFromConfig } from './brain/actionStats.js'
 import { sessionDigest } from './brain/sessionDigest.js'
 import { setChatgptTokenTransport, deliverChatgptToken } from './brain/llm/chatgptTokenBridge.js'
@@ -487,6 +488,9 @@ async function bootstrapWithInit(initData) {
     voiceCallActive: initVoiceCallActive,   // boolean | undefined
     // 261028 facepack pilot: true only in dev with SEI_FACEPACK_DIR set.
     faces: initFaces,                       // boolean | undefined
+    // 261028: the character's pack palette ({expressions, aliases}) when the
+    // flag is on and its pack declares one. Narrows say()'s expression enum.
+    facePalette: initFacePalette,           // object | undefined
     // 261014: the saved plan still open for this session's first greeting
     // (main's homeNextStep readPendingPlan, read before the session marks it
     // used). Stashed as config._seiNextStepPlan for FIRST_CONTACT. null = none
@@ -745,6 +749,9 @@ async function bootstrapWithInit(initData) {
   // schema is unchanged.
   try {
     config._seiFaces = initFaces === true
+    config._seiFacePalette = initFaces === true && initFacePalette
+      ? normalizePalette(initFacePalette.expressions, initFacePalette.aliases)
+      : null
   } catch {}
 
   // init-ack doubles as "booted": the supervisor switches from its cold-boot

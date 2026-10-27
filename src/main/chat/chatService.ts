@@ -43,8 +43,10 @@ import { noteCompanionGoodbye, type NextStepHookResult } from '../sessionGoodbye
 import { isNoteLeak, stripThoughtTags } from './noteLeak';
 import { isCallActive } from '../voice/callState';
 import { splitReplyParts, type ReplyPart } from './replyParts';
+import type { FacePalette } from '../../bot/brain/faceExpressions.js';
 import { emitReplyFaces } from '../facepack/faceEvents';
 import { facesEnabled } from '../facepack/facepackDev';
+import { facePaletteForCharacterName } from '../facepack/facepackStore';
 import { readChatContext, foldIfDue } from './continuity';
 import { toMessages, voiceWindowStart } from './transcript';
 import { scopedTurnCurrent, withScopedTurn } from '../profile/scopeBarrier';
@@ -677,6 +679,9 @@ async function prepareChatTurn(
   // Same source the bot uses (character.metadata.punctuation), so the character
   // texts with the same register in-app as in-game.
   const punctuation = clampPunctuation(character.metadata?.punctuation);
+  // 261028 facepack pilot: the character's pack palette (dev flag only; null
+  // otherwise, and with no pack).
+  const facePalette = facesEnabled() ? await facePaletteForCharacterName(character.name).catch(() => null) : null;
   const system = buildSystemBlocks({
     persona: character.persona,
     name: character.name,
@@ -708,6 +713,7 @@ async function prepareChatTurn(
     clockInTail: opts.voiceCall === true,
     // 261028 facepack pilot: dev flag only (unpackaged + SEI_FACEPACK_DIR).
     faceGuide: facesEnabled(),
+    facePalette,
   });
   // Voice: only the recent rows go to the model (VOICE_RECENT_CAP, stepped by
   // VOICE_WINDOW_STEP so the cached transcript prefix holds across turns; see
@@ -719,7 +725,7 @@ async function prepareChatTurn(
   const messages = toMessages(windowed);
   // Voice calls append this after markLastMessageCached (appendUncachedTail).
   const clockNote = opts.voiceCall === true ? clockTailNote() : '';
-  return { character, config, system, messages, punctuation, clockNote };
+  return { character, config, system, messages, punctuation, clockNote, facePalette };
 }
 
 /**
@@ -770,6 +776,13 @@ export function stripPeerImpersonation(text: string): string {
     .trim();
 }
 
+/** The character's face palette for the tag reader; null unless the facepack dev flag is on. */
+async function facePaletteFor(characterId: string): Promise<FacePalette | null> {
+  if (!facesEnabled()) return null;
+  const c = await getCharacter(characterId).catch(() => null);
+  return c ? facePaletteForCharacterName(c.name).catch(() => null) : null;
+}
+
 async function persistReplies(
   characterId: string,
   replyText: string,
@@ -800,7 +813,7 @@ async function persistReplies(
   // `rememberCalled` (a remember tool_use rode this turn) arms its second tier.
   // 261028: parts carry the face cues read off each bubble (facepack pilot);
   // the text pipeline below is unchanged.
-  const parts = splitReplyParts(replyText, punctuation, opts?.voice === true);
+  const parts = splitReplyParts(replyText, punctuation, opts?.voice === true, await facePaletteFor(characterId));
   const kept = opts?.voice
     ? parts
         .map((p) => ({ ...p, text: stripThoughtTags(stripPeerImpersonation(p.text)) }))
@@ -967,7 +980,7 @@ async function sendChatMessageImpl(
       // convention, so a filler-shaped line there is a real reply. Resolved up
       // front, not inside the loop, because `more` needs to know which of these
       // is genuinely the last one going out.
-      const parts = splitReplyParts(raw, prep.punctuation, isVoice)
+      const parts = splitReplyParts(raw, prep.punctuation, isVoice, prep.facePalette)
         .map((p) => (isVoice ? { ...p, text: stripThoughtTags(stripPeerImpersonation(p.text)) } : p))
         // Note-leak first tier only ("character note:" / "note to self"): a
         // streamed sentence can go out before the turn's tool_use blocks have

@@ -11,6 +11,8 @@
  * source-over. Missing pose falls back to c, missing viseme to rest.
  */
 
+import { FACE_ALL_EXPRESSIONS, normalizePalette, type FacePalette } from '../bot/brain/faceExpressions.js';
+
 export type FacepackBox = [number, number, number, number];
 export type FacepackEyeState = 'open' | 'half' | 'closed';
 export type FacepackViseme = 'rest' | 'aa' | 'ii' | 'uu' | 'ee' | 'oo';
@@ -40,10 +42,39 @@ export interface FacepackManifest {
   default_pose?: string;
   default_expression?: string;
   expressions: Record<string, FacepackExpression>;
+  /**
+   * 261028: the expressions this character is offered, in prompt order (the
+   * FACE block lists only these). Written by the bake: the names it drew.
+   * Absent: every key of `expressions`.
+   */
+  palette?: string[];
+  /**
+   * 261028: this pack's own tag aliases, word -> palette name (an LED face
+   * with no laugh maps laugh and excited onto smirk). Checked before the
+   * shared vocabulary; see resolveExpression in bot/brain/faceExpressions.js.
+   */
+  aliases?: Record<string, string>;
   overlays?: Record<string, Record<string, { src: string; box: FacepackBox }>>;
   bytes?: number;
   attribution?: string[];
   compose?: string;
+}
+
+/**
+ * The palette a pack offers (261028): its declared `palette`, or every
+ * expression it can draw in vocabulary order, limited to names it really
+ * has, plus its own aliases. Same for every pack; nothing keys on the
+ * character.
+ */
+export function packPalette(m: FacepackManifest): FacePalette | null {
+  const drawable = Object.keys(m.expressions ?? {});
+  const order = FACE_ALL_EXPRESSIONS.map((e) => e.name);
+  const rank = (n: string): number => {
+    const i = order.indexOf(n);
+    return i < 0 ? order.length : i;
+  };
+  const list = Array.isArray(m.palette) ? m.palette : [...drawable].sort((a, b) => rank(a) - rank(b));
+  return normalizePalette(list, m.aliases, drawable);
 }
 
 /** One pack the dev pack dir offers (facepack:list). */

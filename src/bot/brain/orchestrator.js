@@ -8,7 +8,7 @@
 // The orchestrator never imports from src/adapter/ — verify with
 // `grep -r "from '../adapter" src/brain/`.
 
-import { FACE_EXPRESSION_NAMES, SAY_EXPRESSION_DESCRIPTION, resolveExpression } from './faceExpressions.js'
+import { SAY_EXPRESSION_DESCRIPTION, faceEnumFor, resolveExpression } from './faceExpressions.js'
 import { createLlmProvider } from './llm/index.js'
 import { applyLlmSwitch } from '../llmInit.js'
 import { TERMINAL_CHATGPT_CODES } from './llm/responsesWire.js'
@@ -1681,7 +1681,7 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
       // is accepted, an unknown value is dropped (never a tool error, which
       // would cost the say()). Ignored entirely unless the flag offered it.
       if (facesOn && typeof onFace === 'function') {
-        const face = resolveExpression(u.input?.expression)
+        const face = resolveExpression(u.input?.expression, config?._seiFacePalette ?? null)
         if (face) { try { onFace(face) } catch {} }
       }
       // 260724 voice latency: this say() was already emitted mid-stream by the
@@ -1968,7 +1968,9 @@ export function createOrchestrator({ adapter, config, logger = console, sessionS
         // 261028 facepack pilot: offered only when main's init set
         // config._seiFaces (unpackaged dev with SEI_FACEPACK_DIR). Game logic
         // never reads it; emitSayCalls forwards it as a face cue.
-        ...(facesOn ? { expression: { type: 'string', enum: [...FACE_EXPRESSION_NAMES], description: SAY_EXPRESSION_DESCRIPTION } } : {}),
+        // 261028: the enum is the character's pack palette when main sent one
+        // (config._seiFacePalette), else the base 12.
+        ...(facesOn ? { expression: { type: 'string', enum: faceEnumFor(config?._seiFacePalette ?? null), description: SAY_EXPRESSION_DESCRIPTION } } : {}),
       },
       required: ['text'],
     },

@@ -56,7 +56,6 @@ import { sei } from '../lib/ipcClient';
 import { TopUpModal } from '../components/TopUpModal';
 import { FeedbackRewardCard } from '../components/FeedbackRewardCard';
 import { FeedbackModal } from '../components/FeedbackModal';
-import { useNoticesStore } from '../lib/stores/useNoticesStore';
 import { formatRenewal } from '../lib/formatRenewal';
 import { useResetLine } from '../lib/useResetLine';
 import { RECOMMENDED_TIER, TIER_ORDER, planCard, planName } from '../lib/planCatalog';
@@ -219,9 +218,6 @@ export function CreditsScreen(): React.ReactElement {
     };
   }, [cloudMode]);
   const usingChatgptPlan = !cloudMode && providerIsChatgpt && chatgptReady(chatgptStatus);
-  // Notices inbox (260725) — the standing re-entry point under Submit feedback.
-  const openInbox = useNoticesStore((s) => s.openInbox);
-  const unreadNotices = useNoticesStore((s) => s.unreadCount());
   // Analytics (260707): pricing/plan surface viewed — top of the monetization
   // funnel (pairs with checkout_opened downstream).
   useEffect(() => {
@@ -638,15 +634,6 @@ export function CreditsScreen(): React.ReactElement {
             </Button>
           </div>
         ) : null}
-
-        {/* Notices inbox (260725). Sits under "Submit feedback" and is shown to
-            everyone, cloud or local: announcements are not a paid surface. The
-            inbox opens itself once per new notice; this is the way back in. */}
-        <div className={styles.footFeedback}>
-          <Button kind="ghost" size="sm" onClick={openInbox}>
-            {unreadNotices > 0 ? t('Inbox ({n})', { n: unreadNotices }) : t('Inbox')}
-          </Button>
-        </div>
       </div>
 
       {showTopUp ? (

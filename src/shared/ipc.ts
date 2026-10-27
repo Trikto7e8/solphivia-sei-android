@@ -1015,6 +1015,33 @@ export interface ChatPreview {
 /* -------------------------------------------------------------------------- */
 
 /**
+ * Outcome of a Minecraft skin generation (261027 lazy skins, main/skinGeneration.ts).
+ *  - generated             the Gemini skin came back and is now the character's skin
+ *  - insufficient_credits  the proxy refused (402): not enough allowance or credits
+ *  - daily_limit           the proxy's per-day skin cap (429)
+ *  - failed                anything else (network, Gemini error, unusable image)
+ *  - not_signed_in / no_portrait / not_allowed   nothing was attempted
+ *  - skipped               ensure only: nothing to do (not pending, or already tried this run)
+ * Every outcome but 'generated' leaves the existing skin in place; a character
+ * that had none gets the free painted skin.
+ */
+export type SkinGenOutcome =
+  | 'generated'
+  | 'insufficient_credits'
+  | 'daily_limit'
+  | 'failed'
+  | 'not_signed_in'
+  | 'no_portrait'
+  | 'not_allowed'
+  | 'skipped';
+
+export interface SkinGenResult {
+  outcome: SkinGenOutcome;
+  /** The character's skin after the attempt (null when the character is gone). */
+  skin: Skin | null;
+}
+
+/**
  * A detected Minecraft installation surfaced to the wizard.
  * Source: CONTEXT.md §decisions "Cross-platform paths" + "First-launch wizard scope".
  *
@@ -2600,6 +2627,18 @@ export interface RendererApi {
   searchMojangSkin(username: string): Promise<{ pngBase64: string; sha256: string; resolvedUsername: string }>;
   /** Returns the loopback URL prefix that CustomSkinLoader is configured against (e.g. 'http://127.0.0.1:54321'). */
   getSkinServerUrl(): Promise<{ baseUrl: string }>;
+  /**
+   * 261027: make the character's Minecraft skin from its portrait now (the
+   * profile's skin button). One billed proxy call; joins a generation already
+   * running for this character.
+   */
+  generateSkin(characterId: string): Promise<SkinGenResult>;
+  /**
+   * 261027: make the skin only if the character still has its creation-time
+   * placeholder (metadata.skin_pending) and this app run has not tried yet.
+   * The Minecraft launch panel calls it on open. Joins a running generation.
+   */
+  ensureSkin(characterId: string): Promise<SkinGenResult>;
 
   // --- Setup wizard ---
   /** Scan known Minecraft launcher + CurseForge paths on the current platform. */
@@ -3021,28 +3060,32 @@ export interface RendererApi {
   /** Current app version string (Settings → current version display). */
   getVersion(): Promise<string>;
 
-  // ── Notices inbox (260725) ────────────────────────────────────────────────
+  // ── Startup popup (261027, replaced the notices inbox) ────────────────────
   /**
-   * Fires whenever main refreshes the notices feed (same cadence as the update
-   * check). Carries the whole snapshot, including `autoOpen` — the renderer
-   * opens the inbox once for an unannounced notice, then calls `ackNotices`.
+   * Fires when a feed refresh changes the popup this install still owes:
+   * a new one (show it once the screen is calm) or null (taken down, or
+   * already shown). Same cadence as the update check.
    */
-  onNotices(cb: (snapshot: NoticesSnapshot) => void): Unsubscribe;
+  onStartupPopup(cb: (popup: StartupPopupInfo | null) => void): Unsubscribe;
   /**
-   * Pull the cached snapshot on mount. Race-proof counterpart to `onNotices`:
-   * the startup refresh can land before the renderer attaches its listener, and
-   * `autoOpen` is derived from persisted state rather than a one-shot flag, so
-   * this returns the same answer the dropped push carried. No network.
+   * Pull the owed popup on mount. Race-proof counterpart to `onStartupPopup`:
+   * the startup refresh can land before the renderer attaches its listener.
+   * No network.
    */
-  getNotices(): Promise<NoticesSnapshot>;
+  getStartupPopup(): Promise<StartupPopupInfo | null>;
   /**
-   * Acknowledge that the inbox auto-opened: marks every currently-cached notice
-   * announced so it never opens itself again for them. Returns the updated
-   * snapshot.
+   * The popup's iframe fired `load`. Main answers whether the frame really
+   * committed a 2xx page (an error page or a 404 also fires `load`) and, when
+   * it did, records the id as shown so it never shows again. Reveal only on
+   * true.
    */
-  ackNotices(): Promise<NoticesSnapshot>;
-  /** Mark one notice read (the user selected it) — clears its unread dot. */
-  markNoticeRead(id: string): Promise<NoticesSnapshot>;
+  startupPopupLoaded(id: string): Promise<boolean>;
+  /**
+   * Esc pressed while keyboard focus is inside the popup page. A key typed in
+   * a cross-origin frame never reaches this window's listeners, so main
+   * watches the input and relays it.
+   */
+  onStartupPopupEscape(cb: () => void): Unsubscribe;
   /**
    * Host OS platform (`process.platform`), read once in preload and exposed as
    * a plain value so the renderer can branch its window chrome WITHOUT an async
@@ -3271,14 +3314,18 @@ export interface Notice {
   body: string;
 }
 
-/** The full notices-inbox state the renderer renders from. */
-export interface NoticesSnapshot {
-  /** Cached feed, newest first. */
-  notices: Notice[];
-  /** Ids the user has already opened (unread = in `notices`, not in here). */
-  readIds: string[];
-  /** True while at least one notice has never triggered its one auto-open. */
-  autoOpen: boolean;
+/**
+ * The operator's startup popup (261027): one https://sei.gg/popup/ page shown
+ * once per install in a sandboxed frame. Rules in src/main/startupPopup.ts.
+ */
+export interface StartupPopupInfo {
+  /** Unique id; shown at most once per install. */
+  id: string;
+  /** Allow-listed page URL. */
+  url: string;
+  /** The page's intended size in CSS px (both or neither); scaled to fit. */
+  width?: number;
+  height?: number;
 }
 
 /* ── Phantom-call recovery (260810) ─────────────────────────────────────── */
@@ -3768,11 +3815,11 @@ export const IpcChannel = {
     updateInstall: 'app:update-install',           // quitAndInstall
     whatsNewGet: 'app:whats-new-get',               // pull pending post-update changelog (race-proof)
     version: 'app:version',                         // app.getVersion()
-    // ── Notices inbox (260725) — refreshed on the update check's cadence ─────
-    notices: 'app:notices',                         // push: snapshot after a feed refresh
-    noticesGet: 'app:notices-get',                  // pull cached snapshot (race-proof)
-    noticesAck: 'app:notices-ack',                  // mark every cached notice announced
-    noticesRead: 'app:notices-read',                // mark one notice read
+    // ── Startup popup (261027) — refreshed on the update check's cadence ─────
+    startupPopup: 'app:startup-popup',              // push: owed popup changed (or null)
+    startupPopupGet: 'app:startup-popup-get',       // pull owed popup (race-proof)
+    startupPopupLoaded: 'app:startup-popup-loaded', // frame loaded: verify + record shown
+    startupPopupEscape: 'app:startup-popup-escape', // push: Esc pressed inside the popup frame
     // 260603 per-profile partitioning: main pushes this AFTER the active
     // account scope has switched (sign-in / sign-out / account swap) and the
     // new profile is initialized + bot stopped. The renderer re-bootstraps
@@ -3816,6 +3863,8 @@ export const IpcChannel = {
     uploadPng: 'skin:upload-png',
     searchMojang: 'skin:search-mojang',
     getServerUrl: 'skin:get-server-url',
+    generate: 'skin:generate',
+    ensure: 'skin:ensure',
   },
   // Setup wizard. `cancel` crosses the IPC boundary to abort an in-flight
   // install — a renderer-local AbortController cannot reach the main-process

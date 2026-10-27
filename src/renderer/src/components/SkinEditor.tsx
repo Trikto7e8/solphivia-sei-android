@@ -51,6 +51,7 @@ import { TextField } from './TextField';
 import { SkinPreview3d } from './SkinPreview3d';
 import { SkinUploadZone } from './SkinUploadZone';
 import { UsernameSearchField } from './UsernameSearchField';
+import { SkinGenerateButton } from './SkinGenerateButton';
 import styles from './SkinEditor.module.css';
 
 export interface SkinEditorProps {
@@ -82,6 +83,13 @@ export interface SkinEditorProps {
    * editor (EditCharacterModal → Appearance). Only used on the viewOnly path.
    */
   onEditSkin?: () => void;
+  /**
+   * 261027: show the "make / regenerate Minecraft skin (uses credits)" button
+   * on the view-only path. For characters the player OWNS, which includes
+   * Awakened ('unique') companions that are otherwise view-only. The
+   * editable path always shows it (only owned characters are editable).
+   */
+  canGenerate?: boolean;
 }
 
 interface StagedPng {
@@ -106,6 +114,7 @@ export function SkinEditor({
   compact = false,
   previewCaption,
   onEditSkin,
+  canGenerate = false,
 }: SkinEditorProps): React.ReactElement {
   const t = useT();
   const sectionClass = compact ? `${styles.section} ${styles.sectionCompact}` : styles.section;
@@ -359,6 +368,9 @@ export function SkinEditor({
               {t('Edit skin')}
             </Button>
           ) : null}
+          {canGenerate && !character.is_default ? (
+            <SkinGenerateButton character={character} onChanged={onChanged} />
+          ) : null}
         </div>
       </section>
     );
@@ -474,6 +486,8 @@ export function SkinEditor({
                   : t('Remove skin')}
             </button>
           </div>
+
+          <SkinGenerateButton character={character} onChanged={onChanged} />
 
           {/* Inline status copy band ───────────────────────────────────── */}
           {botActiveForThisPersona ? (

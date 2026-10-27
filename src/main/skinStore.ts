@@ -36,7 +36,7 @@ import { withFileLock } from '../bot/brain/storage/fileLock.js';
 import { legacyMcUsernameFromName, mcUsernameFromName } from '../bot/names.js';
 import { paths } from './paths';
 import { getCharacter, saveCharacter } from './characterStore';
-import type { Character, Skin, SkinSource } from '../shared/characterSchema';
+import { SKIN_PENDING_KEY, type Character, type Skin, type SkinSource } from '../shared/characterSchema';
 
 /**
  * Read the PNG bytes that should be served for this persona, honoring its
@@ -88,8 +88,15 @@ export async function applyPng(args: {
   source: SkinSource;
   mojangUsername?: string | null;
   username?: string | null;
+  /**
+   * 261027 lazy skins: true keeps `metadata.skin_pending` set (the skin being
+   * applied is the free painted placeholder, the Gemini skin is still to
+   * come). Anything else clears it: an uploaded, searched or generated skin
+   * is final, so a later Minecraft launch must not replace it.
+   */
+  skinPending?: boolean;
 }): Promise<{ skin: Skin; username: string | null }> {
-  const { personaId, pngBytes, source, mojangUsername = null, username = undefined } = args;
+  const { personaId, pngBytes, source, mojangUsername = null, username = undefined, skinPending } = args;
   if (source !== 'upload' && source !== 'username') {
     throw new Error(`applyPng: invalid source '${source}' (must be 'upload' or 'username')`);
   }
@@ -143,7 +150,12 @@ export async function applyPng(args: {
 
   // SINGLE atomic write. Skin descriptor + username
   // land together so the persisted character is never half-applied.
-  await saveCharacter({ ...character, skin: newSkin, username: nextUsername });
+  await saveCharacter({
+    ...character,
+    skin: newSkin,
+    username: nextUsername,
+    metadata: withSkinPending(character.metadata, skinPending === true),
+  });
 
   // Phase 11 — Mirror the updated character + skin bytes to cloud.
   // saveCharacter already enqueues an upsert; we enqueue a second one here
@@ -189,8 +201,24 @@ export async function removePng(personaId: string): Promise<Skin> {
     png_sha256: null,
     applied_at: new Date().toISOString(),
   };
-  await saveCharacter({ ...character, skin: newSkin });
+  // A removed skin is a choice too: no Gemini skin at the next launch.
+  await saveCharacter({ ...character, skin: newSkin, metadata: withSkinPending(character.metadata, false) });
   return newSkin;
+}
+
+/**
+ * `metadata` with the lazy-skin marker set or removed (261027, see
+ * skinGeneration.ts). Removed rather than stored as false so characters that
+ * never had the marker round-trip unchanged.
+ */
+function withSkinPending(
+  metadata: Record<string, unknown> | undefined,
+  pending: boolean,
+): Record<string, unknown> {
+  const next = { ...(metadata ?? {}) };
+  if (pending) next[SKIN_PENDING_KEY] = true;
+  else delete next[SKIN_PENDING_KEY];
+  return next;
 }
 
 /**

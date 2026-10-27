@@ -37,8 +37,6 @@
 
 import { randomUUID } from 'node:crypto';
 import { bundleRequire } from './bundleRequire';
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import type {
   GenerateUniqueInput,
@@ -63,6 +61,7 @@ import {
   PREF_QUESTIONS,
   countsAsHomeSlot,
   portraitRegenCountOf,
+  SKIN_PENDING_KEY,
 } from '../shared/characterSchema';
 import { PORTRAIT_MAX_BYTES, PORTRAIT_MAX_DIM } from './portraitImageUtil';
 import { parsePngIhdr } from './skinImageUtil';
@@ -528,7 +527,7 @@ let _sharp: SharpLike | null | undefined;
  * asar-unpacked packaged builds. Returns null when sharp is unavailable — the
  * caller then only applies an already-compliant portrait.
  */
-function loadSharp(): SharpLike | null {
+export function loadSharp(): SharpLike | null {
   if (_sharp !== undefined) return _sharp;
   const req = bundleRequire();
   const tries: Array<() => string> = [
@@ -817,89 +816,6 @@ async function zoomToCharacter(bytes: Buffer): Promise<Buffer> {
   } catch (err) {
     console.warn(`[sei] zoomToCharacter failed, using uncropped image: ${(err as Error).message}`);
     return bytes;
-  }
-}
-
-/**
- * POST the proxy's img2skin panel endpoint (260705): one Gemini image-to-image
- * call that renders the character as front+back orthographic Minecraft
- * pixel-art views on magenta (img2skin Branch B stage 1). The prompt is
- * server-owned; we only send the portrait bytes. Returns the raw panel-atlas
- * PNG. 60s wall-clock timeout via AbortController, mirrors generatePortraitPng.
- */
-async function generatePanelAtlasPng(rawPng: Buffer, jwt: string): Promise<Buffer> {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), IMAGE_TIMEOUT_MS);
-  try {
-    const resp = await fetch(`${PROXY_BASE_URL}/generate/skin`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${jwt}`,
-      },
-      body: JSON.stringify({ character_png_base64: rawPng.toString('base64') }),
-      signal: controller.signal,
-    });
-    if (!resp.ok) {
-      throw new Error(`skin panel generation failed: HTTP ${resp.status}`);
-    }
-    const json = (await resp.json()) as { png_base64?: unknown };
-    const b64 = json?.png_base64;
-    if (typeof b64 !== 'string' || b64.length === 0) {
-      throw new Error('skin panel generation failed: response missing png_base64');
-    }
-    return Buffer.from(b64, 'base64');
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/**
- * Turn a full-body character PNG into a valid 64×64 Minecraft skin via
- * img2skin. 260705: tries the real Branch-B 'panel' pipeline first — the proxy
- * runs the one Gemini call (POST /generate/skin, skin_daily 4/day), and
- * img2skin maps the returned panel atlas to a skin locally via `mockAtlas`
- * (which skips its own direct-Gemini call — the client has no Google key).
- * Any failure (proxy down, gate 429, invalid panel geometry, validation
- * misses) falls back to the deterministic no-LLM painter branch, so every
- * input still yields a valid skin. Writes the source + reads the skin through
- * a scratch temp dir that is always cleaned up.
- *
- * `variant` selects the Minecraft skin model geometry — 'slim' (Alex, narrow
- * arms) vs 'classic' (Steve, wide arms). The bot serves skins via
- * CustomSkinLoader with model "auto", which detects slim vs classic from the
- * PNG's arm-region geometry, so passing the right variant here is what makes
- * female companions actually render as slim in-game (no schema/server change
- * needed).
- */
-async function rawPngToSkin(
-  rawPng: Buffer,
-  variant: 'slim' | 'classic',
-  jwt: string,
-): Promise<Buffer> {
-  const dir = await mkdtemp(path.join(tmpdir(), 'sei-skin-'));
-  const src = path.join(dir, 'character.png');
-  const out = path.join(dir, 'skin.png');
-  try {
-    await writeFile(src, rawPng);
-    const { characterToSkin } = await import('img2skin/src/pipeline.js');
-    try {
-      const atlas = path.join(dir, 'panel.png');
-      await writeFile(atlas, await generatePanelAtlasPng(rawPng, jwt));
-      const res = await characterToSkin(src, out, { branch: 'panel', mockAtlas: atlas, variant });
-      if (res.valid !== true) {
-        throw new Error('panel-branch skin failed validation');
-      }
-      return await readFile(out);
-    } catch (err) {
-      console.warn(
-        `[sei] img2skin panel branch failed, using fallback painter: ${(err as Error).message}`,
-      );
-    }
-    await characterToSkin(src, out, { branch: 'fallback', variant });
-    return await readFile(out);
-  } finally {
-    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
 }
 
@@ -1678,9 +1594,14 @@ async function runPipeline(args: {
       portraitBytes = null;
       emit('portrait', 'error', err instanceof Error ? err.message : String(err));
     }
+    // 261027 lazy skins: no Gemini skin at creation, only the free painted
+    // one (local, no network). The character is saved skin_pending and the
+    // billed Gemini skin is made when it first goes to Minecraft
+    // (skinGeneration.ts).
     emit('skin', 'start');
     try {
-      skinBytes = await rawPngToSkin(cropped, gender === 'female' ? 'slim' : 'classic', imgJwt);
+      const { paintFallbackSkin } = await import('./skinGeneration');
+      skinBytes = await paintFallbackSkin(cropped, gender === 'female' ? 'slim' : 'classic');
       emit('skin', 'done');
     } catch (err) {
       skinBytes = null;
@@ -1781,6 +1702,10 @@ async function runPipeline(args: {
       // 260730: language pin for every AI surface (see chatLanguage.ts
       // characterLanguage). Stamped only when the cast ran under the zh UI.
       ...(generatedLanguage ? { language: generatedLanguage } : {}),
+      // 261027 lazy skins: the Gemini skin is still to be made (set before
+      // the painted placeholder lands, so a failed paint still gets the real
+      // skin at the first launch).
+      ...(portraitBytes ? { [SKIN_PENDING_KEY]: true } : {}),
     },
     created: now,
     last_launched: null,
@@ -1836,7 +1761,8 @@ async function runPipeline(args: {
   if (skinBytes) {
     try {
       const { applyPng } = await import('./skinStore');
-      await applyPng({ personaId: id, pngBytes: skinBytes, source: 'upload' });
+      // Painted placeholder: keep skin_pending set for the first launch.
+      await applyPng({ personaId: id, pngBytes: skinBytes, source: 'upload', skinPending: true });
     } catch (err) {
       emit('skin', 'error', err instanceof Error ? err.message : String(err));
     }

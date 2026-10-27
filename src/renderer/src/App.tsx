@@ -80,9 +80,9 @@ import { ChatgptPlanHost } from './components/ChatgptPlanHost';
 import { UpdatedToast } from './components/UpdatedToast';
 import { useUpdateStore } from './lib/stores/useUpdateStore';
 import { topChangelogLine } from './lib/changelog';
-import { NoticesInboxModal } from './components/NoticesInboxModal';
+import { StartupPopup } from './components/StartupPopup';
+import { popupUiReady } from './lib/startupPopup';
 import { RecoveryPrompt } from './components/recovery/RecoveryPrompt';
-import { useNoticesStore } from './lib/stores/useNoticesStore';
 import { Banner } from './components/Banner';
 import { FreePlayBackBanner } from './components/FreePlayBackBanner';
 import { ERROR_COPY } from './lib/errors';
@@ -374,45 +374,59 @@ export function App(): React.ReactElement {
   //    false at launch (ToS, update popup, a call started straight away).
   const bootOfferUiRef = useRef({ importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery });
   bootOfferUiRef.current = { importOffer, autoMigrateOpen, updatePopup, tosAccepted, passwordRecovery };
+  // What is on screen right now, read live from the stores. Shared by the
+  // boot import offer and the startup popup; stable identity (refs only).
+  const readCalmUi = useCallback((): BootOfferUi & { popupModalOpen: boolean } => {
+    const r = bootOfferUiRef.current;
+    const ui = useUiStore.getState();
+    const fm = useFirstMomentStore.getState().status;
+    const voice = useVoiceStore.getState();
+    const backseat = useBackseatStore.getState();
+    const live =
+      liveSessionForRestart({
+        callStatus: voice.status,
+        summons: useDataStore.getState().summons,
+        chessGames: useChessStore.getState().games,
+        backseat: backseat.active,
+        drawGames: useDrawStore.getState().games,
+      }) !== null ||
+      voice.participants.length > 0 ||
+      backseat.sharingFor != null ||
+      backseat.starting ||
+      backseat.watch != null;
+    const otherModal =
+      ui.modal != null ||
+      r.importOffer != null ||
+      r.autoMigrateOpen ||
+      r.updatePopup != null ||
+      r.passwordRecovery ||
+      (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') != null);
+    const signedIn = useAuthStore.getState().state.kind === 'signed_in';
+    return {
+      signedIn,
+      viewKind: ui.view.kind,
+      modalOpen: otherModal || r.tosAccepted !== true,
+      // Same, but counting the ToS gate only for a signed-in user: until their
+      // ToS status is known to be accepted (null = still checking, and the
+      // AcceptToSModal may still mount). A local profile never has one.
+      popupModalOpen: otherModal || (signedIn && r.tosAccepted !== true),
+      tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
+      liveSession: live,
+    };
+  }, []);
+  // The startup popup (261027) is not account-scoped: signed-out and own-key
+  // installs see it too, so only the ToS modal being up holds it back.
+  const popupCalm = useCallback((): boolean => {
+    const ui = readCalmUi();
+    return popupUiReady({ ...ui, modalOpen: ui.popupModalOpen });
+  }, [readCalmUi]);
   const bootOfferUserId = authState.kind === 'signed_in' ? authState.user.id : null;
   useEffect(() => {
     if (!bootOfferUserId) return;
     let stopped = false;
     let running = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
-    const ui = (): BootOfferUi => {
-      const r = bootOfferUiRef.current;
-      const ui = useUiStore.getState();
-      const fm = useFirstMomentStore.getState().status;
-      const voice = useVoiceStore.getState();
-      const backseat = useBackseatStore.getState();
-      const live =
-        liveSessionForRestart({
-          callStatus: voice.status,
-          summons: useDataStore.getState().summons,
-          chessGames: useChessStore.getState().games,
-          backseat: backseat.active,
-          drawGames: useDrawStore.getState().games,
-        }) !== null ||
-        voice.participants.length > 0 ||
-        backseat.sharingFor != null ||
-        backseat.starting ||
-        backseat.watch != null;
-      return {
-        signedIn: useAuthStore.getState().state.kind === 'signed_in',
-        viewKind: ui.view.kind,
-        modalOpen:
-          ui.modal != null ||
-          r.importOffer != null ||
-          r.autoMigrateOpen ||
-          r.updatePopup != null ||
-          r.tosAccepted !== true ||
-          r.passwordRecovery ||
-          (typeof document !== 'undefined' && document.querySelector('[aria-modal="true"]') != null),
-        tourActive: useTutorialStore.getState().active || fm === 'armed' || fm === 'greeting' || fm === 'ready',
-        liveSession: live,
-      };
-    };
+    const ui = readCalmUi;
     const tick = async (): Promise<void> => {
       if (stopped || running) return;
       running = true;
@@ -510,10 +524,6 @@ export function App(): React.ReactElement {
         }
         setUpdatePopup({ kind: 'whats-new', version: ev.version, changelog: ev.changelog });
       }),
-      // Notices ride the update check's cadence in main, so their subscription
-      // belongs here too. init() both listens and does the race-proof pull; the
-      // store opens the inbox itself for a notice that has never been announced.
-      useNoticesStore.getState().init(),
     ];
     // Pull any pending post-update changelog on mount. The onWhatsNew push above
     // fires during early main bootstrap (before this listener exists) and is
@@ -1324,10 +1334,10 @@ export function App(): React.ReactElement {
         />
       ) : null}
       <UpdatedToast />
-      {/* Notices inbox (260725). Self-mounting: the store decides visibility, so
-          this renders null until a notice arrives (opens once) or the user
-          reopens it from Playtime → Inbox. */}
-      <NoticesInboxModal />
+      {/* Startup popup (261027, replaced the notices inbox). Self-mounting:
+          renders nothing until main reports an unshown popup, then waits for a
+          calm screen and shows only once the page has really loaded. */}
+      <StartupPopup isCalm={popupCalm} />
       {/* 260810 — phantom-call recovery. Self-mounting: renders null until a
           scan (app mount / after a call or share ends) flags a phantom-call
           session that has not been dismissed. */}

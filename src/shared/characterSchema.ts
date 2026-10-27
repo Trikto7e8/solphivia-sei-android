@@ -384,6 +384,20 @@ export function cloudAvatarOf(c: Pick<Character, 'metadata'>): CloudAvatarRef | 
 }
 
 /**
+ * 261027 lazy skins: `metadata.skin_pending === true` marks a character whose
+ * Minecraft skin is still the free painted placeholder from creation. The
+ * Gemini skin (a billed call) is made the first time the owner opens the
+ * Minecraft launch panel or launches, or when they press the skin button
+ * (main/skinGeneration.ts). Any final skin (generated, uploaded, searched,
+ * removed) clears it. Rides the cloud row with the rest of metadata.
+ */
+export const SKIN_PENDING_KEY = 'skin_pending';
+
+export function skinPendingOf(c: Pick<Character, 'metadata'>): boolean {
+  return (c.metadata as Record<string, unknown> | undefined)?.[SKIN_PENDING_KEY] === true;
+}
+
+/**
  * The SINGLE membership rule for "does this character occupy a Home companion
  * slot". Shared by the renderer's Home/IconRail filter (isHomeCharacter in
  * src/renderer/src/lib/homeLibrary.ts) AND the main-process slot counter

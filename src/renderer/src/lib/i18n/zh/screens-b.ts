@@ -220,8 +220,6 @@ export const ZH_SCREENS_B: Record<string, string> = {
     '你上次的付款未成功。请在「管理账单」中更新你的银行卡。',
   'Manage billing': '管理账单',
   'Submit feedback': '提交反馈',
-  'Inbox': '收件箱',
-  'Inbox ({n})': '收件箱（{n}）',
   'Confirm your plan change': '确认更改套餐',
   'Confirm plan change': '确认套餐更改',
   '{name} is {amount} per month, billed through Polar. It renews automatically until you cancel.':

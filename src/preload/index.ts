@@ -22,7 +22,7 @@ import {
   type UpdateProgressEvent,
   type UpdateDownloadedEvent,
   type WhatsNewEvent,
-  type NoticesSnapshot,
+  type StartupPopupInfo,
   type ScopeChangedEvent,
   type AuthState,
   type SyncStatusPushEvent,
@@ -434,6 +434,8 @@ const api: RendererApi = {
   // --- Skin pipeline ---
   applySkin: (args) => ipcRenderer.invoke(IpcChannel.skin.apply, args),
   removeSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.remove, id),
+  generateSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.generate, id),
+  ensureSkin: (id) => ipcRenderer.invoke(IpcChannel.skin.ensure, id),
   uploadSkinPng: () => ipcRenderer.invoke(IpcChannel.skin.uploadPng),
   searchMojangSkin: (u) => ipcRenderer.invoke(IpcChannel.skin.searchMojang, u),
   getSkinServerUrl: () => ipcRenderer.invoke(IpcChannel.skin.getServerUrl),
@@ -646,15 +648,19 @@ const api: RendererApi = {
   installUpdate: () => ipcRenderer.invoke(IpcChannel.app.updateInstall),
   getVersion: () => ipcRenderer.invoke(IpcChannel.app.version),
 
-  // --- Notices inbox (260725) ---
-  onNotices(cb: (snapshot: NoticesSnapshot) => void) {
-    const handler = (_e: Electron.IpcRendererEvent, snapshot: NoticesSnapshot) => cb(snapshot);
-    ipcRenderer.on(IpcChannel.app.notices, handler);
-    return () => ipcRenderer.off(IpcChannel.app.notices, handler);
+  // --- Startup popup (261027) ---
+  onStartupPopup(cb: (popup: StartupPopupInfo | null) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, popup: StartupPopupInfo | null) => cb(popup);
+    ipcRenderer.on(IpcChannel.app.startupPopup, handler);
+    return () => ipcRenderer.off(IpcChannel.app.startupPopup, handler);
   },
-  getNotices: () => ipcRenderer.invoke(IpcChannel.app.noticesGet),
-  ackNotices: () => ipcRenderer.invoke(IpcChannel.app.noticesAck),
-  markNoticeRead: (id: string) => ipcRenderer.invoke(IpcChannel.app.noticesRead, id),
+  getStartupPopup: () => ipcRenderer.invoke(IpcChannel.app.startupPopupGet),
+  startupPopupLoaded: (id: string) => ipcRenderer.invoke(IpcChannel.app.startupPopupLoaded, id),
+  onStartupPopupEscape(cb: () => void) {
+    const handler = (): void => cb();
+    ipcRenderer.on(IpcChannel.app.startupPopupEscape, handler);
+    return () => ipcRenderer.off(IpcChannel.app.startupPopupEscape, handler);
+  },
 
   // --- Window chrome (frameless custom titlebar on Windows/Linux) ---
   platform: process.platform,

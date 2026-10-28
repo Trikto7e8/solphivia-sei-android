@@ -1,0 +1,11 @@
+PASS draft survives activity restart
+PASS companion configuration persists
+PASS empty message never opens authorization
+PASS malformed identity token rejected
+PASS companion never loses across every reachable player sequence
+PASS credential encryption round-trip
+PASS game UI responds with exactly one companion move
+PASS voice screen never opens the microphone automatically
+PASS Google Italian TTS initializes on the phone
+PASS Google TTS produces a nonempty Italian audio file
+OK: 10 device regressions passed

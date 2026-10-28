@@ -1,0 +1,6 @@
+<resources>
+ <string name="auth_browser_prompt">Completa il consenso nel browser, poi torna qui.</string>
+ <string name="auth_success">ChatGPT collegato. Ora puoi inviare il tuo messaggio.</string>
+ <string name="generation_cancelled">Risposta interrotta. Il messaggio è pronto per riprovare.</string>
+ <string name="auth_pending">Completa l’accesso nel browser, poi torna qui.</string>
+</resources>

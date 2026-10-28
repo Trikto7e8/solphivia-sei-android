@@ -1,0 +1,31 @@
+name: Android preview
+on:
+  push:
+    branches: [android-mobile]
+    paths: ['android-mobile/**', '.github/workflows/android-preview.yml']
+  pull_request:
+    paths: ['android-mobile/**', '.github/workflows/android-preview.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - name: Build APK, test APK, lint and unsigned AAB
+        working-directory: android-mobile
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleDebug assembleDebugAndroidTest lintDebug bundleRelease
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-preview-build
+          path: |
+            android-mobile/app/build/outputs/apk/debug/*.apk
+            android-mobile/app/build/outputs/bundle/release/*.aab
+            android-mobile/app/build/reports/lint-results-debug.*

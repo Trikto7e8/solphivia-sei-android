@@ -1,0 +1,6 @@
+<resources>
+ <item type="id" name="message_input"/><item type="id" name="send_message"/>
+ <item type="id" name="connect_chatgpt"/><item type="id" name="configure_companion"/>
+ <item type="id" name="companion_name"/><item type="id" name="companion_persona"/>
+ <item type="id" name="save_companion"/>
+</resources>

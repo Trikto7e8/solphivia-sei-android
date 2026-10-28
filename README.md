@@ -1,5 +1,79 @@
 <div align="center">
 
+# Solphivia × SEI · Android
+
+### Una companion che parla e gioca con te. O contro di te.
+### A companion to talk, play together, or challenge each other.
+
+[![Android preview](https://img.shields.io/badge/Android-community_preview-9cc5ff?style=for-the-badge&logo=android)](https://github.com/Trikto7e8/solphivia-sei-android/releases/tag/android-v0.3.0-preview)
+[![Collaborate](https://img.shields.io/badge/Contributors-welcome-a4e0bf?style=for-the-badge)](https://github.com/Trikto7e8/solphivia-sei-android/issues)
+
+**[Try the Android APK](https://github.com/Trikto7e8/solphivia-sei-android/releases/download/android-v0.3.0-preview/solphivia-sei-android-0.3.0-debug.apk) · [Build from source](android-mobile/README.md) · [Solphivia Mobile](https://github.com/Trikto7e8/solphivia-avatar-ai) · [Original SEI](https://github.com/sei-studio/sei)**
+
+<img src="docs/android/solphivia-in-sei-desktop.png" width="960" alt="Solphivia's purple-haired character shown in SEI desktop, supplied by the creator as a visual reference" />
+
+*Solphivia in SEI desktop: the visual reference behind this experiment. This image is not an Android screenshot.*
+
+</div>
+
+We want a companion on Android with a recognizable character, a voice and shared play. This independent community fork brings together [SEI's AI gaming companion idea](https://github.com/sei-studio/sei) and the avatar, browser sign-in and Android experience from [Solphivia Mobile](https://github.com/Trikto7e8/solphivia-avatar-ai). It is a starting point for collaboration, not an official SEI mobile release.
+
+Vogliamo portare su Android una companion con cui parlare, giocare insieme e sfidarsi, mantenendo personalità e presenza. Il progetto unisce l'idea di SEI all'esperienza Android di Solphivia Mobile. È una preview aperta ai contributi, da costruire insieme.
+
+## Solphivia is part of the experience
+
+<img src="docs/android/solphivia-banner.png" width="900" alt="Solphivia Mobile's original character and visual identity" />
+
+Her original sprites are already used in the Android app: idle, listening, speaking, thinking and game reactions. They are the same character assets from Solphivia Mobile, not replacement illustrations. The gallery below shows three original sprite looks; the preview currently uses the professor look in its conversation and game surfaces.
+
+<table>
+<tr><td align="center"><img src="docs/android/sprite-prof.png" width="210" alt="Original Solphivia professor sprite" /></td><td align="center"><img src="docs/android/sprite-vj.png" width="210" alt="Original Solphivia VJ sprite" /></td><td align="center"><img src="docs/android/sprite-codex.png" width="210" alt="Original Solphivia Codex sprite" /></td></tr>
+<tr><td align="center">Prof · presence & conversation</td><td align="center">VJ · Solphivia's visual identity</td><td align="center">Codex · making things together</td></tr>
+</table>
+
+## A real Android starting point
+
+<table>
+<tr><td align="center"><img src="docs/android/android-game.png" width="310" alt="Actual Android tic-tac-toe game on a Motorola phone, with Solphivia's animated sprite and a synthetic test companion" /></td></tr>
+</table>
+
+**Available in the 0.3.0 preview**
+
+- Native Android UI with an animated Solphivia companion.
+- Configurable personality, written chat and ChatGPT browser sign-in.
+- Streaming replies, Stop, retry drafts, local history, export and deletion.
+- A first offline game: tic-tac-toe against a local opponent.
+- Foreground, turn-based voice with Android speech recognition and Google Italian TTS.
+
+The board shown here is a real phone screenshot from a synthetic device test. The companion's game moves use local minimax logic; they are not LLM-controlled moves.
+
+**Verified:** APK build, installation, launch, Android Lint with no errors, release AAB generation and [10 device regressions](docs/android/device-tests.txt). Written ChatGPT replies were observed on the phone after the user signed in.
+
+**Still to validate:** a full spoken live exchange, microphone interruptions, broader device coverage and production account/release handling. The voice screen is turn-based, not a full-duplex realtime call.
+
+The original SEI desktop app remains available in this fork. Android implementation and build instructions are in **[`android-mobile/`](android-mobile/README.md)**. Desktop screenshots and character visuals are references, not claims that all SEI desktop features have already been ported.
+
+## Join us / Collaboriamo
+
+We would love help from Android developers, game-integration contributors, voice/audio developers, artists and testers. Useful first contributions include accessibility and localization, Android lifecycle fixes, companion/game interfaces, speech and latency testing, and reviewing privacy, token/session handling and packaging.
+
+Try the preview, share a reproducible bug, propose a small feature, or open an issue telling us what you would like to work on. Keep contributions focused and testable. We welcome guidance and collaboration from the SEI maintainers, especially on the right boundaries between this Android experiment and their shared companion code.
+
+**[Open an issue / Proponi un contributo](https://github.com/Trikto7e8/solphivia-sei-android/issues/new)** · **[Solphivia Mobile project](https://github.com/Trikto7e8/solphivia-avatar-ai)**
+
+## Preview, privacy and licensing
+
+The downloadable APK is **debug-signed and experimental**, for testing rather than a public store launch. Android 7+ is the build minimum; device testing so far is on a Motorola moto g35 5G with Android 16. A future Play Store release is a direction to evaluate after validation and maintainer feedback, not a release commitment.
+
+Read the [Android documentation](android-mobile/README.md) and [privacy notes](android-mobile/PRIVACY.md) before connecting an account. No credentials or private conversations are shipped. Source derives from SEI under [AGPL-3.0](LICENSE), with Solphivia source attribution in [LICENSE-SOLPHIVIA](android-mobile/LICENSE-SOLPHIVIA). Solphivia character art has [separate reserved rights](android-mobile/ASSETS-SOLPHIVIA.md), retained by its creators and authorized here by the project creator. The existing SEI names and visuals identify the source project; this fork is independent and does not imply endorsement.
+
+---
+
+<details>
+<summary>Original SEI desktop README and credits</summary>
+
+<div align="center">
+
 [<img src="docs/sei-logo-blue.png" alt="Sei" width="240" />](https://sei.gg)
 
 AI gaming companions. Call, livestream, and game with unique characters.
@@ -182,3 +256,5 @@ Sei is not affiliated with Mojang, Microsoft, ConcernedApe, Klei Entertainment, 
 - [Character.AI](https://character.ai): demonstrated personalized AI characters
 - [Neuro-sama](https://vedal.ai/): showed that AI can make people happy
 - Hoshimachi Suisei: the GOAT
+
+</details>

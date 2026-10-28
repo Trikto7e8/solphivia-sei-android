@@ -14,6 +14,7 @@ import path from 'node:path'
 import Anthropic from '@anthropic-ai/sdk'
 import { judgeSystem, JUDGE_MODEL } from './judge.mjs'
 import { loadCharacters } from './persona/characters.mjs'
+import { PRICES } from './report.mjs'
 
 const args = process.argv.slice(2)
 const ri = args.indexOf('--requests')
@@ -76,4 +77,6 @@ for (const dir of args) {
   }
   fs.writeFileSync(path.join(dir, 'judged.json'), JSON.stringify(out, null, 1))
 }
-console.log('usage', JSON.stringify(usage))
+const P = PRICES[JUDGE_MODEL]
+const usd = ((usage.input_tokens || 0) * P.in + (usage.output_tokens || 0) * P.out + (usage.cache_creation_input_tokens || 0) * P.cw + (usage.cache_read_input_tokens || 0) * P.cr) / 1e6
+console.log('usage', JSON.stringify(usage), `judge $${usd.toFixed(2)}`)

@@ -42,6 +42,7 @@ import os from 'node:os'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { loadCharacters } from './persona/characters.mjs'
+import { PRICES } from './report.mjs'
 
 function arg(name, def) {
   const i = process.argv.indexOf(`--${name}`)
@@ -68,7 +69,8 @@ const { getInFlightLineForSnapshot } = await imp('src/bot/brain/inflight.js')
 _setTickIntervalForTests?.(10_000_000)
 
 const KEY = (process.env.ANTHROPIC_API_KEY || fs.readFileSync(path.join(os.homedir(), '.sei-dev/anthropic-test-key'), 'utf8')).trim()
-const PRICE = { in: 1, cw: 1.25, cr: 0.1, out: 5 }
+// Haiku 5.5 list prices, the same table the scorecard report uses.
+const PRICE = PRICES['claude-haiku-5-5']
 const costOf = (u = {}) => ((u.input_tokens ?? 0) * PRICE.in + (u.cache_creation_input_tokens ?? 0) * PRICE.cw
   + (u.cache_read_input_tokens ?? 0) * PRICE.cr + (u.output_tokens ?? 0) * PRICE.out) / 1e6
 

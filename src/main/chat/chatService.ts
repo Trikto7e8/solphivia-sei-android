@@ -2106,7 +2106,7 @@ function blockedReason(errorClass: string): string {
     case 'CHATGPT_AUTH_REJECTED':
       return 'the ChatGPT sign-in needs attention; the player needs to sign in with ChatGPT again in Settings';
     case 'CHATGPT_NOT_ELIGIBLE':
-      return "this ChatGPT account can't be used here; the player needs another account or AI option in Settings";
+      return "this ChatGPT account can't be used here (ChatGPT plan use needs Plus or Pro); the player needs another account or AI option in Settings";
     case 'CHATGPT_FORBIDDEN':
       return "ChatGPT plan use isn't available here right now, likely a region or plan restriction; the player needs another AI option in Settings";
     case 'CHATGPT_REQUEST_REJECTED':

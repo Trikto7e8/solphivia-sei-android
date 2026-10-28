@@ -582,7 +582,7 @@ export function CreditsScreen(): React.ReactElement {
                 <InfoTip label={t('About the ChatGPT plan')} text={chatgptPlanDisclosure(t)} />
               </span>
               <span className={styles.planBlurb}>
-                {t('Works with your ChatGPT Free, Go, Plus or Pro account.')}{' '}
+                {t('Works with your ChatGPT Plus or Pro account.')}{' '}
                 <button
                   type="button"
                   className={styles.planFeatureLink}

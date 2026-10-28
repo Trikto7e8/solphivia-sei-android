@@ -1667,6 +1667,17 @@ export interface CreditsStatus {
   subscription_status_raw: 'active' | 'cancelled' | 'expired' | 'past_due' | null;
   ai_backend_kind: 'local' | 'cloud-proxy';
   /**
+   * 261028: this period's weekly allowance and the usage counted against it,
+   * in µ$ (my_plan.allowance_micro / allowance_used_micro, the exact figures
+   * behind usage_pct). The allowance is the account's EFFECTIVE one: a change
+   * to plan_config applies from each account's next weekly period, so on the
+   * 261027 free cut ($0.50 -> $0.15) an account mid-week keeps 500000 until
+   * its reset while the pricing catalog already says $0.15. Absent when
+   * signed out or when the view predates the columns.
+   */
+  allowance_micro?: number;
+  allowance_used_micro?: number;
+  /**
    * Whether the once-per-account feedback reward is still claimable, read from
    * `usage_periods.feedback_reset_at` (null there = unclaimed). `null` here
    * means UNKNOWN: signed out, or the read failed.

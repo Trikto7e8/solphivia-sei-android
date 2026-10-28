@@ -428,7 +428,15 @@ export function repeatedOpener(selfLines, {
 //           second hello after a dig came back out of range, "you're
 //           welcome" twice around one hand-over. The same short form as a
 //           check-in.
-const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
+// 261028 (pass 29): the ask is about what she said, not the words. It was
+// "do not reuse a joke, comeback, greeting, offer or plan from your recent
+// lines", and with those lines quoted right above she kept the bit and
+// changed the wording ("excuse you i punched a tree with my BARE HANDS",
+// then "useless?? i punched a tree bare handed and got you a crafting
+// table") or asked the same check-in again ("you good or still spooked"
+// twice in a row). About three in four repetitive labels in the 10-20 to
+// 10-27 scorecards were a line from inside this quote.
+const REUSE_ASK = 'Sound like yourself as always, but reuse nothing from those lines, in the same words or new ones: no joke, comeback, check-in, greeting, offer or plan. Say something new, or say less.'
 
 /** The line half of the note: her last lines, quoted, and what they share. */
 // 261017 (pass 13): the end of the reply ask. It used to be "If something
@@ -441,7 +449,14 @@ const REUSE_ASK = 'Sound like yourself as always, but do not reuse a joke, comeb
 // biggest kind of repetitive label left on dev.
 // Review: a question like "hows it going" still gets a real answer about
 // where things stand, only not her last line again.
-const REPITCH_ASK = 'Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If they ask how it is going, tell them where things stand, just not in the same words as before. If their line only acknowledges yours, a short reaction is enough.'
+// 261028 (pass 29): "just not in the same words as before" let her answer
+// "how are you doing" with her hello again in new words (pass 29 probe:
+// "night, iron sword, 4 bread, zero plan" right after "it's night and i have
+// an iron sword and 4 bread. zero plan"). Now the answer has to carry
+// something they have not heard from her. "an offer" moved out of this sentence into
+// the list above, which keeps the note the same length (192 tokens either
+// way on the test note in ownRepeats.test.js).
+const REPITCH_ASK = 'Do not bring up your plan or a count again unless they ask or it has changed. If they ask how it is going, tell them something they have not heard from you yet. If their line only acknowledges yours, a short reaction is enough.'
 
 function linesNote(selfLines, playerLines, opts = {}) {
   const mode = ['idle', 'checkin', 'greeted', 'result'].includes(opts.mode) ? opts.mode : 'reply'

@@ -73,7 +73,7 @@ const blockText = (call, name) => call.blocks
   .filter((b) => b?.name === name).map((b) => b.text).join('\n')
 const lastTurnText = (call) => call.blocks.at(-1).content.filter((b) => b.type === 'text').map((b) => b.text).join('\n')
 
-const REPLY_ASK = 'do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less.'
+const REPLY_ASK = 'reuse nothing from those lines, in the same words or new ones: no joke, comeback, check-in, greeting, offer or plan. Say something new, or say less.'
 
 afterEach(() => { vi.restoreAllMocks() })
 

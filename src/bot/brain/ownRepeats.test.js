@@ -225,7 +225,7 @@ describe('ownRepeatsNote, by kind of turn', () => {
   const QUOTE = `Your last lines to them were "hey alex, want to grab wood with me?" and then "i'll get the oak trees, can you keep an eye on me?". They already heard these.`
 
   it('keeps the full reply-turn wording, byte for byte', () => {
-    const reply = `${QUOTE} Sound like yourself as always, but do not reuse a joke, comeback, greeting, offer or plan from your recent lines in this one; find something new to say, or say less. Do not bring up your plan, a count or an offer again unless they ask about it or it has changed. If they ask how it is going, tell them where things stand, just not in the same words as before. If their line only acknowledges yours, a short reaction is enough.`
+    const reply = `${QUOTE} Sound like yourself as always, but reuse nothing from those lines, in the same words or new ones: no joke, comeback, check-in, greeting, offer or plan. Say something new, or say less. Do not bring up your plan or a count again unless they ask or it has changed. If they ask how it is going, tell them something they have not heard from you yet. If their line only acknowledges yours, a short reaction is enough.`
     expect(ownRepeatsNote(lines, [], { now, names: ['Alex'] })).toBe(reply)
     expect(ownRepeatsNote(lines, [], { now, names: ['Alex'], mode: 'reply' })).toBe(reply)
   })
@@ -266,13 +266,22 @@ describe('ownRepeatsNote, by kind of turn', () => {
   it('the reply ask never invites restating the plan or a count', () => {
     const note = ownRepeatsNote(lines, [], { now, names: ['Alex'] })
     expect(note).not.toContain('say it in new words')
-    expect(note).toContain('Do not bring up your plan, a count or an offer again unless they ask about it or it has changed.')
+    expect(note).toContain('Do not bring up your plan or a count again unless they ask or it has changed.')
   })
 
   // Review (pass 13): "hows it going" still gets a real status answer.
-  it('lets a real status answer through, only not in the same words', () => {
+  // 261028 (pass 29): one they have not heard yet, not the last one reworded.
+  it('lets a real status answer through, only one they have not heard', () => {
     const note = ownRepeatsNote(lines, [{ who: 'Alex', text: 'hows it going' }], { now, names: ['Alex'] })
-    expect(note).toContain('If they ask how it is going, tell them where things stand, just not in the same words as before.')
+    expect(note).toContain('If they ask how it is going, tell them something they have not heard from you yet.')
+    expect(note).not.toContain('just not in the same words')
+  })
+
+  // 261028 (pass 29): the ask covers the same bit in new words and check-ins.
+  it('the reply ask covers a bit reworded and a repeated check-in', () => {
+    const note = ownRepeatsNote(lines, [], { now, names: ['Alex'] })
+    expect(note).toContain('in the same words or new ones')
+    expect(note).toContain('check-in')
   })
 
   it('on a reply turn a named bit is left out unless they ask for it', () => {

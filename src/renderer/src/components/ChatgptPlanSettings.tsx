@@ -68,7 +68,7 @@ export function signInFailureText(reason: ChatgptSignInFailure, t: (s: string) =
  */
 export function chatgptPlanDisclosure(t: (s: string) => string): string {
   return `${t('Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.')} ${t(
-    "Works with your ChatGPT Free, Go, Plus or Pro account. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.",
+    "Works with your ChatGPT Plus or Pro account. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.",
   )}`;
 }
 
@@ -285,7 +285,7 @@ export function ChatgptPlanSettings({
         ? t("ChatGPT didn't accept Sei's last request, so ChatGPT requests are paused.")
         : code === 'CHATGPT_FORBIDDEN'
           ? t("ChatGPT plan use isn't available here right now. It may be limited in your region or by your plan.")
-          : t("This ChatGPT account can't use its plan in Sei right now. Try another account, or pick another provider.");
+          : t("This ChatGPT account can't use its plan in Sei right now. Plan use needs ChatGPT Plus or Pro. Try another account, or pick another provider.");
     return (
       <div className={settings.row}>
         <span className={`${settings.label} ${settings.statusWarn}`} role="alert">

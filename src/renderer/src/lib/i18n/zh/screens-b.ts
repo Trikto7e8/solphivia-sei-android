@@ -359,14 +359,14 @@ export const ZH_SCREENS_B: Record<string, string> = {
   'Learn more': '了解更多',
   'Complete eligible AI requests in this app with usage included in your ChatGPT plan or credits balance.':
     '在此应用中完成符合条件的 AI 请求，用量计入你的 ChatGPT 套餐或额度余额。',
-  "Works with your ChatGPT Free, Go, Plus or Pro account. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.":
-    '适用于你的 ChatGPT Free、Go、Plus 或 Pro 账户。用量计入你的 ChatGPT 套餐，不占用 Sei 的订阅或额度。',
+  "Works with your ChatGPT Plus or Pro account. Usage counts toward your ChatGPT plan, not Sei's subscription or credits.":
+    '适用于你的 ChatGPT Plus 或 Pro 账户。用量计入你的 ChatGPT 套餐，不占用 Sei 的订阅或额度。',
   'Use your ChatGPT plan?': '使用你的 ChatGPT 套餐？',
   "Sei will stop using managed cloud credits and run your companions on your ChatGPT plan instead. ChatGPT plan usage is OpenAI's, separate from Sei's own subscription and credits. This applies to a running bot right away. Your Sei subscription, if you have one, keeps renewing until you cancel it.":
     'Sei 将停止使用云端托管额度，改用你的 ChatGPT 套餐运行伙伴。ChatGPT 套餐用量由 OpenAI 提供，与 Sei 自己的订阅和额度分开。此更改会立即应用到正在运行的机器人。如果你有 Sei 订阅，它会继续续订，直到你取消。',
   'ChatGPT account': 'ChatGPT 账户',
   'About the ChatGPT plan': '关于 ChatGPT 套餐',
-  'Works with your ChatGPT Free, Go, Plus or Pro account.': '适用于你的 ChatGPT Free、Go、Plus 或 Pro 账户。',
+  'Works with your ChatGPT Plus or Pro account.': '适用于你的 ChatGPT Plus 或 Pro 账户。',
   'ChatGPT accounts': 'ChatGPT 账户列表',
   'Add account': '添加账户',
   'Switch': '切换',
@@ -381,8 +381,8 @@ export const ZH_SCREENS_B: Record<string, string> = {
     '登录时没有开启 ChatGPT 套餐使用权限，所以 Sei 暂时无法使用你的套餐。',
   'Turn on ChatGPT plan': '开启 ChatGPT 套餐',
   'Usage limit reached. Requests are paused.': '已达到用量上限，请求已暂停。',
-  "This ChatGPT account can't use its plan in Sei right now. Try another account, or pick another provider.":
-    '这个 ChatGPT 账户目前无法在 Sei 中使用其套餐。请换一个账户，或选择其他服务商。',
+  "This ChatGPT account can't use its plan in Sei right now. Plan use needs ChatGPT Plus or Pro. Try another account, or pick another provider.":
+    '这个 ChatGPT 账户目前无法在 Sei 中使用其套餐。套餐用量需要 ChatGPT Plus 或 Pro。请换一个账户，或选择其他服务商。',
   'Signed out on this device, but Sei could not confirm the sign-out with ChatGPT. To be sure, disconnect Sei in your ChatGPT settings.':
     '已在此设备上退出登录，但 Sei 无法向 ChatGPT 确认退出。为确保安全，请在 ChatGPT 设置中断开 Sei 的连接。',
   'Sign-in was cancelled in ChatGPT.': '已在 ChatGPT 中取消登录。',

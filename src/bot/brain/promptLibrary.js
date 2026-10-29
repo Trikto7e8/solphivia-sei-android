@@ -990,6 +990,11 @@ export const NUDGES = {
     return `${who || 'the player'}'s task "${clipNote(task)}" is still in your heartbeat. Since they asked for it, they said ${list.join(' and then ')}. If that calls it off or changes it, call clearGoal on it, and in this same turn still do what they asked for now, such as going to them if they asked you to come over.`
   },
 
+  // 261029: added to the say() output when a talk-only turn gets its next
+  // step on a step-wise provider (orchestrator talkOnlyNextStepFor, ChatGPT
+  // plan only). Without it the model read the plain "said" as a cue to keep
+  // talking and sent a second line on plain replies.
+  talkOnlyNextStep: `They heard it. If your line promised to do something, call that action now. If not, your turn is done, so call nothing.`,
   // 261015 (quality pass 8): the one extra call after a turn whose only work
   // was a new setGoal (orchestrator goalNotStartedNudgeFor). setGoal is a
   // memory write, so that turn started nothing while her say() often said

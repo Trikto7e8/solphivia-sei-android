@@ -5165,6 +5165,31 @@ function maybeWarnByteCap(loop, warned) {
     return replyOwed ? NUDGES.goalNotStartedReplyOwed : NUDGES.goalNotStarted
   }
 
+  // 261029: one more call after a turn that only talked, on a provider whose
+  // model treats each tool call as one step of its turn (capabilities
+  // .toolSteps, the ChatGPT-plan Responses provider). To that model a say()
+  // call is a step that waits for its output, and the action comes in the
+  // next response. Sei ends the loop on a say()-only turn, so "follow me"
+  // answered with say("on your six") never followed: measured in the quality
+  // eval (261029, gpt-6-luna), 8 of 9 off order lines were exactly that.
+  // Here the outputs of that turn go back once, with no added text, and the
+  // model either starts the action or ends its turn by calling nothing.
+  // Only on a loop that answers the player, when every call was a speech or
+  // memory call, nothing ended the turn, no foreground action is running
+  // (its completion turn comes next anyway) and the call before was not
+  // already this extra step. Providers without the flag (Anthropic, the
+  // default) never get it, so their calls and tokens are unchanged.
+  const TALK_ONLY_TOOLS = new Set(['say', 'remember', 'forget', 'setGoal', 'clearGoal'])
+  function talkOnlyNextStepFor(loop, { toolUses, continueLoop, hasEndLoop, hasStop, afterNextStep }) {
+    if (anthropic?.capabilities?.toolSteps !== true) return false
+    if (afterNextStep || continueLoop || hasEndLoop || hasStop || loop.isTerminal) return false
+    if (!loop._playerDirected || loop._groupVoiceLine) return false
+    if (toolUses.length === 0 || !toolUses.every(u => TALK_ONLY_TOOLS.has(u.name))) return false
+    if (loop.inFlight && !caps.backgroundActions[loop.inFlight.name]) return false
+    if (loopAwaitsSettle(loop)) return false
+    return true
+  }
+
   async function runIterations(loop, byteWarn) {
     const cap = config.memory.iteration_cap
     // 260909: the web budget is per LOOP, not per iteration: a fresh
@@ -5354,6 +5379,10 @@ function maybeWarnByteCap(loop, warned) {
       // tool predicates below (no tool calls at all) does not keep the value
       // of the turn before it. Set for real at newSuspendingTools.
       loop._lastTurnTalkOnly = false
+      // Whether THIS call was the extra step talkOnlyNextStepFor gave the
+      // turn before (never two in a row). Read once, then cleared.
+      const afterNextStep = loop._talkOnlyNextStep === true
+      loop._talkOnlyNextStep = false
 
       // Speech via the say() tool. The assistant's `text` output is a PRIVATE
       // scratchpad and never reaches chat (chat_mode 'full' surfaces it as
@@ -6071,6 +6100,16 @@ function maybeWarnByteCap(loop, warned) {
       // 261024 (pass 26): the call after a stop that did not end the loop.
       const stopNudge = loop._stopContinue?.pending && !loop.isTerminal ? NUDGES.stopThenNext(loop._stopContinue) : null
       const finalNudgeText = stopNudge ?? goalOnlyNudge ?? cantReachNudge ?? silenceNudgeText
+      const nextStep = !stopNudge && !goalOnlyNudge &&
+        talkOnlyNextStepFor(loop, { toolUses, continueLoop, hasEndLoop, hasStop, afterNextStep })
+      if (nextStep) {
+        for (let i = 0; i < toolUses.length; i++) {
+          const r = results[i]
+          if (toolUses[i].name === 'say' && r && typeof r.content === 'string' && sayResults.has(toolUses[i].id)) {
+            results[i] = { ...r, content: `${r.content}. ${NUDGES.talkOnlyNextStep}` }
+          }
+        }
+      }
 
       loop.appendToolResults(results, {
         snapshot: snapshotText(),
@@ -6091,6 +6130,11 @@ function maybeWarnByteCap(loop, warned) {
       if (goalOnlyNudge) {
         loop._goalStartNudged = true
         logger.info?.(`[sei/orch] goal set with no action started — one more call to start it or end the turn (loop=${loop.id})`)
+        continue
+      }
+      if (nextStep) {
+        loop._talkOnlyNextStep = true
+        logger.info?.(`[sei/orch] talk-only turn on a step-wise provider — one more call for its next step (loop=${loop.id})`)
         continue
       }
       if (!continueLoop) return
@@ -6176,6 +6220,9 @@ function maybeWarnByteCap(loop, warned) {
   }
 
   async function repairAfterAbort(loop) {
+    // A folded player line is new input: the call answering it is not the
+    // extra step of the turn before (talkOnlyNextStepFor).
+    loop._talkOnlyNextStep = false
     const messages = loop._internal.messages
     let lastAssistantIdx = -1
     for (let i = messages.length - 1; i >= 0; i--) {

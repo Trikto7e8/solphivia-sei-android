@@ -26,9 +26,12 @@
  *     browser. Redirects off the allow-list are cancelled;
  *   - actions (261029): a link to https://sei.gg/popup/_action/<name> is a
  *     button that does something in the app (src/shared/popupActions.ts).
- *     Clicked in the committed popup frame, the navigation is cancelled (no
- *     request is made) and the name goes to the renderer over
- *     `app:startup-popup-action`; the renderer closes the popup and runs it.
+ *     Followed from the committed popup frame, the navigation is cancelled
+ *     (no request is made) and the name goes to the renderer over
+ *     `app:startup-popup-action`; the renderer closes the popup and runs it,
+ *     unless the popup is not shown yet or was revealed under
+ *     POPUP_ACTION_ARM_MS ago (a meta refresh or Refresh header can reach an
+ *     action URL with no click).
  *     An unknown name, or an action URL from any other frame, is dropped:
  *     nothing runs and no browser tab opens. Routing is the pure
  *     routeSubframeNavigation in startupPopup.ts;
@@ -110,8 +113,10 @@ export function installPopupFrameGuards(win: BrowserWindow): void {
 
   wc.on('will-frame-navigate', (details) => {
     if (details.isMainFrame) return;
-    // Only a frame that is showing a popup page is following a link (a
-    // sandboxed page with no scripts navigates only on a click). A frame with
+    // Only a frame that is showing a popup page is following a link. That is
+    // a click, or a meta refresh / Refresh header (the page runs no scripts,
+    // but those still navigate it with no click), which is why the renderer
+    // ignores an action that lands right after the reveal. A frame with
     // nothing committed yet is a nested <iframe> starting its first load (an
     // embed on the page): it is cancelled without opening the browser, or
     // every load of that popup would pop a browser tab with no click.

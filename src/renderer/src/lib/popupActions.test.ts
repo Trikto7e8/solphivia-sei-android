@@ -23,7 +23,9 @@ vi.mock('./ipcClient', () => ({
   },
 }));
 
-const { planChatgptPlanAction, runPopupAction } = await import('./popupActions');
+const { planChatgptPlanAction, runPopupAction, _resetPopupActionLatch, POPUP_ACTION_LATCH_MS } = await import(
+  './popupActions'
+);
 const { useChatgptStore } = await import('./stores/useChatgptStore');
 const { useUiStore } = await import('./stores/useUiStore');
 
@@ -61,6 +63,16 @@ describe('planChatgptPlanAction', () => {
     expect(planChatgptPlanAction(ready, 'chatgpt')).toEqual({ kind: 'show' });
   });
 
+  it('signed in with plan use declined, plan not picked: sign in again ASKING for plan use', () => {
+    // A plain sign-in re-approves the same scopes and leaves the plan off.
+    const declined = status({ accounts: [acct(true, false)], activeId: 'a1' });
+    expect(planChatgptPlanAction(declined, null)).toEqual({ kind: 'sign-in', opts: { accountId: 'a1', enablePlan: true } });
+    expect(planChatgptPlanAction(declined, 'anthropic')).toEqual({
+      kind: 'sign-in',
+      opts: { accountId: 'a1', enablePlan: true },
+    });
+  });
+
   it('a sign-in already running: only show the row', () => {
     expect(planChatgptPlanAction(status({ signingIn: true }), null)).toEqual({ kind: 'show' });
   });
@@ -78,6 +90,7 @@ describe('planChatgptPlanAction', () => {
 
 describe('runPopupAction', () => {
   beforeEach(() => {
+    _resetPopupActionLatch();
     h.status = null;
     h.signInCalls = [];
     h.signInResult = null;
@@ -122,6 +135,73 @@ describe('runPopupAction', () => {
     await runPopupAction('chatgpt-plan');
     expect(h.signInCalls).toEqual([]);
     expect(useUiStore.getState().view).toEqual({ kind: 'settings', focus: 'chatgpt-plan' });
+  });
+
+  it('chatgpt-plan, plan use declined again: no switch intent is left behind', async () => {
+    const declined = status({ accounts: [acct(true, false)], activeId: 'a1' });
+    h.status = declined;
+    h.signInResult = { ok: true, status: declined, planEnabled: false };
+    await runPopupAction('chatgpt-plan');
+    expect(h.signInCalls).toEqual([{ accountId: 'a1', enablePlan: true }]);
+    expect(useUiStore.getState().view).toEqual({ kind: 'settings', focus: 'chatgpt-plan' });
+  });
+
+  it('a double click starts ONE sign-in: the second action is ignored while the first runs', async () => {
+    h.status = status();
+    let finish: (r: ChatgptSignInResult) => void = () => undefined;
+    const origSignIn = useChatgptStore.getState().signIn;
+    let calls = 0;
+    useChatgptStore.setState({
+      signIn: () => {
+        calls += 1;
+        return new Promise((r) => (finish = r));
+      },
+    });
+    try {
+      const first = runPopupAction('chatgpt-plan');
+      // The second click lands before main has pushed signingIn: true.
+      expect(await runPopupAction('chatgpt-plan')).toBe(true);
+      await Promise.resolve();
+      await Promise.resolve();
+      finish({ ok: false, reason: 'cancelled' });
+      await first;
+      expect(calls).toBe(1);
+      // Settled: the latch is free again.
+      const again = runPopupAction('chatgpt-plan');
+      await new Promise((r) => setTimeout(r, 0));
+      finish({ ok: false, reason: 'cancelled' });
+      await again;
+      expect(calls).toBe(2);
+    } finally {
+      useChatgptStore.setState({ signIn: origSignIn });
+    }
+  });
+
+  it('a sign-in that never settles frees the latch after POPUP_ACTION_LATCH_MS', async () => {
+    vi.useFakeTimers();
+    h.status = status();
+    const origSignIn = useChatgptStore.getState().signIn;
+    let calls = 0;
+    useChatgptStore.setState({
+      signIn: () => {
+        calls += 1;
+        return new Promise(() => undefined);
+      },
+    });
+    try {
+      void runPopupAction('chatgpt-plan');
+      await vi.advanceTimersByTimeAsync(0);
+      void runPopupAction('chatgpt-plan');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(1);
+      await vi.advanceTimersByTimeAsync(POPUP_ACTION_LATCH_MS);
+      void runPopupAction('chatgpt-plan');
+      await vi.advanceTimersByTimeAsync(0);
+      expect(calls).toBe(2);
+    } finally {
+      useChatgptStore.setState({ signIn: origSignIn });
+      vi.useRealTimers();
+    }
   });
 
   it('does not switch a player who left Settings during the browser step', async () => {

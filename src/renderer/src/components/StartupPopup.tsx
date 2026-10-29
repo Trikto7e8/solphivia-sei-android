@@ -21,7 +21,8 @@
  * except an action link (https://sei.gg/popup/_action/<name>, 261029), which
  * main turns into `onStartupPopupAction`: the popup closes and the named
  * in-app action runs (lib/popupActions.ts). Actions are only taken while the
- * popup is shown.
+ * popup is shown, and not in its first POPUP_ACTION_ARM_MS: a page can reach
+ * an action URL without a click through a meta refresh or a Refresh header.
  *
  * Closing: the X (always visible, layered over the page's top-right corner on
  * a translucent dark disc so it reads on any picture), Esc (relayed by main
@@ -29,10 +30,11 @@
  * is left alone while another dialog is open on top.
  *
  * z 1000 (ModalShell's base tier, 261029; was 1100): it only ever opens over
- * a calm screen, so nothing modal is under it, and every dialog that can
- * appear after it (ToS, import offer, migrate, hard stop, update, recovery)
- * is base and later in the DOM, or stacked, so it lands ON TOP of the popup
- * rather than hidden under it.
+ * a calm screen, so nothing modal is under it, and App.tsx mounts it BEFORE
+ * every other dialog (the modal group, the setup wizard, ToS, import offer,
+ * migrate, hard stop, update, recovery), so a dialog that appears after it
+ * sits at the same tier later in the DOM, or stacked above, and lands ON TOP
+ * of the popup rather than hidden under it.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { StartupPopupInfo } from '@shared/ipc';
@@ -41,6 +43,7 @@ import { useT } from '../lib/i18n';
 import { isFirstRunSession, markFirstRunSession } from '../lib/firstRunSession';
 import { runPopupAction } from '../lib/popupActions';
 import {
+  armShownPopup,
   POPUP_FIRST_LOOK_MS,
   POPUP_LOAD_TIMEOUT_MS,
   POPUP_POLL_MS,
@@ -179,31 +182,20 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
     // Focus the dialog itself (not the X, which would draw a focus ring on
     // open), so Esc works at once and Tab reaches the X.
     scrimRef.current?.focus();
-    // A dialog raised over the popup owns Esc.
-    const closeUnlessCovered = (): void => {
-      if (!otherModalOpen(scrimRef.current)) close();
-    };
-    const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape' && !otherModalOpen(scrimRef.current)) {
-        e.stopPropagation();
-        close();
-      }
-    };
-    window.addEventListener('keydown', onKey);
-    // Focus inside the page: main relays the Esc (the frame swallows it).
-    const unsubEscape = sei.onStartupPopupEscape(closeUnlessCovered);
-    // An action link on the page: close, then run the in-app action. Main
-    // already checked it came from the popup frame and is allow-listed;
-    // runPopupAction checks the name again and ignores unknown ones.
-    const unsubAction = sei.onStartupPopupAction((action) => {
-      close();
-      void runPopupAction(action);
+    // Esc (in the app, or relayed by main when focus is inside the page)
+    // closes it unless a dialog raised over it owns Esc. An action link on
+    // the page closes it, then runs the in-app action: main already checked
+    // it came from the popup frame and is allow-listed, runPopupAction checks
+    // the name again, and one that lands right after the reveal (a refresh,
+    // not a click) is ignored.
+    return armShownPopup({
+      close,
+      runAction: (name) => void runPopupAction(name),
+      covered: () => otherModalOpen(scrimRef.current),
+      keys: window,
+      onEscape: (cb) => sei.onStartupPopupEscape(cb),
+      onAction: (cb) => sei.onStartupPopupAction(cb),
     });
-    return () => {
-      window.removeEventListener('keydown', onKey);
-      unsubEscape();
-      unsubAction();
-    };
   }, [shown, close]);
 
   if (!active) return null;

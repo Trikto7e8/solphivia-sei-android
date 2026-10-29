@@ -3588,9 +3588,15 @@ one is in the website repo's `README-popup.md`.
   (today only `"chatgpt-connected"`: the active ChatGPT account is signed in
   with plan usage, checked in `notices.ts` `skipConditionHolds`) under which
   the install does not need the popup; it is re-checked at every hand-out and
-  in the loaded handler, and a skipped popup is not recorded. An unknown
-  `skipIf` drops the popup (fail closed: an older client must not show an
-  announcement it cannot target).
+  in the loaded handler, and a skipped popup is not recorded. A `skipIf`
+  this build does not know drops the popup (fail closed). That does NOT
+  cover older builds: v0.6.10 (the first with the popup) ignores unknown
+  keys, so it shows the popup without the skip and opens action links in
+  the browser. **A popup that uses `skipIf` or an action link must set
+  `minVersion` to the first release that ships them (0.7.0, or
+  `0.7.0-beta.0` to include betas: semver ranks `0.7.0-beta.N` below
+  `0.7.0`), and the fallback page at each action URL must be live on sei.gg
+  before the feed entry is.**
 - **Feed + show-once:** `src/main/notices.ts` refreshes on the updater
   cadence (startup, focus, resume, 30 min, manual check) and in dev too. An
   unreachable, unparseable or non-object feed keeps the last state (never
@@ -3609,8 +3615,10 @@ one is in the website repo's `README-popup.md`.
   the X (inside the page's top-right corner on a translucent dark disc since
   261029, fixed colours because it sits on the page's art), Esc (ignored
   while another dialog is open on top) or a click outside the page. z 1000
-  (ModalShell base, was 1100): every dialog that can appear after it (ToS,
-  import offer, migrate, hard stop, update, recovery) lands on top of it.
+  (ModalShell base, was 1100), and App.tsx mounts it BEFORE every dialog
+  (the `modal?.kind` group, the setup wizard, ToS, import offer, migrate,
+  hard stop, update, recovery), so a dialog that appears after it lands on
+  top of it. Keep it first if you add dialogs.
 - **Never in a first-run session (261029, `lib/firstRunSession.ts`).** A
   session that shows the Sui onboarding scene, the tour or the first moment,
   or boots with a saved unfinished tour (`tutorial_state`, read before the
@@ -3631,19 +3639,30 @@ one is in the website repo's `README-popup.md`.
   (`lib/popupActions.ts`), which checks the name again. Unknown names and
   action URLs from any other frame are dropped (no browser tab either); an
   action URL is never an allowed popup page. Actions take NO parameters from
-  the URL. `chatgpt-plan` opens Settings scrolled to the ChatGPT plan row
-  (`view.focus: 'chatgpt-plan'`, a short highlight) and does what the row's
-  own button would: start "Continue with ChatGPT" (then the "Use ChatGPT
-  plan" switch with its cloud -> local confirm), run the switch for an
-  account already signed in, or only show the row when the plan is in use or
-  a sign-in is running. Clients older than the action open the URL in the
+  the URL. A followed link is not proof of a click (a meta refresh or a
+  `Refresh` header navigates the script-less page too), so the renderer
+  takes actions only while the popup is shown and not in its first
+  `POPUP_ACTION_ARM_MS` (500 ms, `armShownPopup` in
+  `lib/startupPopup.ts`); popup pages must not use a refresh. One action
+  runs at a time (`runPopupAction`'s in-flight latch), so a double click
+  starts one browser sign-in. `chatgpt-plan` opens Settings scrolled to the
+  ChatGPT plan row (`view.focus: 'chatgpt-plan'`, a short highlight) and
+  does what the row's own button would: start "Continue with ChatGPT" (then
+  the "Use ChatGPT plan" switch with its cloud -> local confirm, only if
+  plan use really came back on), sign in again with `enablePlan` for an
+  account signed in with plan use declined (a plain sign-in re-approves
+  without the plan scope), run the switch for an account already signed in,
+  or only show the row when the plan is in use or a sign-in is running. The
+  `view.useChatgptPlan` switch intent is one-shot
+  (`lib/chatgptPlanIntent.ts`): Settings drops it when the plan is not
+  ready rather than waiting, so it cannot fire later. Clients older than the action open the URL in the
   browser, so sei.gg must serve a fallback page at each action URL saying
   where the feature is in the app. Adding an action = the name, a renderer
   case, a test, and that fallback page.
 - **Main guards** (`src/main/popupFrameGuards.ts`): EVERY subframe of the
   main window is navigation-locked to the popup allow-list; any other link
   opens in the default browser through `assertSafeExternalUrl` (only when
-  the navigating frame is showing a popup page, i.e. a link click; a nested
+  the navigating frame is showing a popup page, i.e. following a link; a nested
   `<iframe>` embed's first load is cancelled silently), and
   `setWindowOpenHandler` denies all child windows the same way (action links
   excepted, above). A future

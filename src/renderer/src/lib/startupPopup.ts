@@ -67,3 +67,63 @@ export function popupCardSize(
   const scale = Math.min(1, maxW / width, maxH / height);
   return { width: Math.round(width * scale), height: Math.round(height * scale) };
 }
+
+/**
+ * Actions that arrive this soon after the reveal are ignored (261029 review).
+ * A sandboxed page runs no scripts, but a meta refresh or a `Refresh` response
+ * header can still navigate the frame to an action URL with no click; a
+ * person cannot see and click the button this fast. Before the reveal nothing
+ * listens at all.
+ */
+export const POPUP_ACTION_ARM_MS = 500;
+
+/** What armShownPopup wires up; StartupPopup passes the real ones. */
+export interface ShownPopupDeps {
+  /** Close the popup. */
+  close: () => void;
+  /** Run a popup action by name (lib/popupActions.ts runPopupAction). */
+  runAction: (name: unknown) => void;
+  /** Whether another dialog is open on top of the popup (it owns Esc then). */
+  covered: () => boolean;
+  /** Where keydown is heard (window). */
+  keys: Pick<Window, 'addEventListener' | 'removeEventListener'>;
+  /** Main's relay of an Esc typed inside the page. */
+  onEscape: (cb: () => void) => () => void;
+  /** Main's push of an action link clicked in the page. */
+  onAction: (cb: (name: unknown) => void) => () => void;
+  now?: () => number;
+}
+
+/**
+ * Wire the popup's keys and actions for as long as it is SHOWN: call at the
+ * reveal, call the returned function when it closes. Esc (typed in the app or
+ * relayed from the page) closes it unless another dialog covers it; an action
+ * closes it and then runs, unless it came within POPUP_ACTION_ARM_MS of the
+ * reveal. Once disarmed, nothing reaches `close` or `runAction`.
+ */
+export function armShownPopup(deps: ShownPopupDeps): () => void {
+  const now = deps.now ?? Date.now;
+  const shownAt = now();
+  let live = true;
+  const onKey = (e: Event): void => {
+    const k = e as KeyboardEvent;
+    if (!live || k.key !== 'Escape' || deps.covered()) return;
+    k.stopPropagation();
+    deps.close();
+  };
+  deps.keys.addEventListener('keydown', onKey);
+  const unsubEscape = deps.onEscape(() => {
+    if (live && !deps.covered()) deps.close();
+  });
+  const unsubAction = deps.onAction((name) => {
+    if (!live || now() - shownAt < POPUP_ACTION_ARM_MS) return;
+    deps.close();
+    deps.runAction(name);
+  });
+  return () => {
+    live = false;
+    deps.keys.removeEventListener('keydown', onKey);
+    unsubEscape();
+    unsubAction();
+  };
+}

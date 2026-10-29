@@ -29,16 +29,23 @@
  * Buttons that do something IN the app (261029) are links to
  * https://sei.gg/popup/_action/<name>; see src/shared/popupActions.ts for the
  * allow-list and routeSubframeNavigation below for how main tells an action
- * click from a page load or an outside link. Action URLs are never popup
+ * link from a page load or an outside link. Action URLs are never popup
  * pages: the feed cannot point the popup at one and the frame never loads one.
  *
  * `skipIf` (261029) names a condition under which this install does not need
  * the popup at all (for "Sign in with ChatGPT": already connected). Main
  * checks it when it hands the popup out and again just before it records the
  * popup as shown; a skipped popup is not recorded, so it is owed again if the
- * condition stops holding. An unknown condition drops the popup (fail closed,
- * like a bad version), so a client never shows a popup meant to be skipped by
- * a rule it does not understand.
+ * condition stops holding. A condition this build does not know drops the
+ * popup (fail closed, like a bad version).
+ *
+ * That only protects builds that know the field. v0.6.10 (the first build
+ * with the popup, before skipIf and actions) ignores unknown keys: it shows
+ * the popup WITHOUT the skip, and opens an action link in the browser like
+ * any other link. So a popup that names `skipIf` or uses an action link must
+ * set `minVersion` to the first release that ships them, and sei.gg must
+ * serve the fallback page at every action URL it links (README-popup.md in
+ * the website repo) BEFORE the feed entry goes live.
  *
  * This module is electron-free so the rules are unit-testable.
  */
@@ -138,18 +145,24 @@ export function popupActionFromUrl(
 export type SubframeRoute =
   /** A popup page (or about:blank) loading: let it. */
   | { kind: 'allow' }
-  /** A click on an action link in the popup page: cancel, run the action. */
+  /** The popup page following an action link: cancel, send the action on. */
   | { kind: 'action'; action: PopupAction }
-  /** A click on an ordinary link in the popup page: cancel, open the browser. */
+  /** The popup page following an ordinary link: cancel, open the browser. */
   | { kind: 'external' }
   /** Anything else (a nested embed, an unknown action, a stray frame): cancel. */
   | { kind: 'block' };
 
 /**
  * Route a navigation of a subframe of the main window. `fromUrl` is the URL
- * the navigating frame has committed right now: a popup page when the user
- * clicked a link in it (the sandboxed page runs no scripts, so it navigates
- * only on a click), '' or about:blank for a nested iframe's first load.
+ * the navigating frame has committed right now: a popup page when it is
+ * following a link, '' or about:blank for a nested iframe's first load.
+ *
+ * "Following a link" is usually a click, but not always: the sandboxed page
+ * runs no scripts, yet a meta refresh or a `Refresh` response header still
+ * navigates it with no click. So an action routed here is not proof of a
+ * click; the renderer only takes actions once the popup has been shown for
+ * POPUP_ACTION_ARM_MS (renderer lib/startupPopup.ts armShownPopup), and popup
+ * pages must not use a refresh.
  *
  * Only a frame showing a popup page can trigger an action or open the
  * browser. An action URL never loads as a page, whoever navigates to it.

@@ -59,6 +59,7 @@ import { FacepackDevRow } from '../components/settings/FacepackDevRow';
 import { ChatgptPlanSettings, revealChatgptPlanRows } from '../components/ChatgptPlanSettings';
 import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
+import { chatgptPlanIntentStep } from '../lib/chatgptPlanIntent';
 import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 import { elevenKeySettingMode } from '../lib/voicePicker';
 
@@ -754,12 +755,16 @@ export function SettingsScreen(): React.ReactElement {
   // this screen's own button: the cloud -> local confirm (billing changes), or
   // just the provider pick when already on the local backend. Handled once;
   // the flag is cleared so a re-render or a later visit does not re-open it.
+  // 261029: cleared too when the plan turns out not to be ready (plan use
+  // declined at sign-in), so it can never wait around and fire later.
   const chatgptPlanIntent = useUiStore((s) => s.view.kind === 'settings' && s.view.useChatgptPlan === true);
   useEffect(() => {
-    if (!chatgptPlanIntent || !cfg || !chatgptReady(chatgptStatus)) return;
-    if (aiBackendKind !== 'cloud-proxy' && aiBackendKind !== 'local') return;
+    if (!chatgptPlanIntent) return;
+    const step = chatgptPlanIntentStep(!!cfg, chatgptStatus, aiBackendKind);
+    if (step === 'wait') return;
     useUiStore.setState({ view: { kind: 'settings' } });
-    if (aiBackendKind === 'cloud-proxy') {
+    if (step === 'drop') return;
+    if (step === 'confirm-cloud') {
       setSwitchVia('chatgpt');
       setPendingSwitch('local');
     } else {

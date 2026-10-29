@@ -3674,6 +3674,25 @@ one is in the website repo's `README-popup.md`.
   strand the panel. Pinned by `loginLockOnRestart.test.ts` on the real
   supabase-js client. Anything that decides routing from auth must not
   assume it saw every push.
+  Review follow-up (261029): offline, `getSession()` takes ~51 s (startup
+  refresh backoff, then a second refresh in `__loadSession`), so
+  initAuthState no longer awaits it at all. Its first state comes from the
+  stored session (`readPersistedSession`, `applyBootScope` in
+  `auth/bootScope.ts` for step 0a), it subscribes before any network, and
+  supabase-js's own load corrects it through the subscription. An
+  INITIAL_SESSION with no session while the stored one is still there means
+  the load failed for a network reason: the session is kept (a refused one
+  is removed by supabase-js and arrives as SIGNED_OUT). A "real" sign-in is a
+  SIGNED_IN with an access token this process has not seen; only it owes the
+  sign-in steps (`signInStepsOwed`), which run once even when the scope
+  already matched; follow-ups of a superseded or failed move are skipped
+  (`scopeRequestSeq`). The renderer never routes on a `loaded:false`
+  snapshot (`lib/bootRoute.ts`, polls up to 90 s behind `BootSplash`), and
+  the onboarding panel only accepts a scope push or snapshot naming ITS
+  account (`lib/signInScopeGate.ts`). `signOut()` returns `{error}` offline
+  and keeps the session in storage even with `scope:'local'`, so sign-out
+  paths call `dropSessionLocally`. Auth requests have a 15 s fetch timeout
+  (`withAuthRequestTimeout`), the profile move's network steps 15 s each.
 - **Renderer caches outlive an account switch** → main re-points every
   per-profile store on `app:scope-changed`, but a Zustand store keeps what it
   already read, and the bundled defaults (Sui, Lyra, ...) share their UUIDs

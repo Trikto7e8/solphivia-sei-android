@@ -1360,6 +1360,12 @@ export interface AuthSnapshot {
   scopeReady: boolean;
   /** Main has finished loading the persisted session (false = answered on its time bound). */
   loaded: boolean;
+  /**
+   * The active profile scope: the account's lowercased user id, or 'local'.
+   * Lets a caller check the profile is the account it expects, not just that
+   * the scope agrees with whatever main's state is right now.
+   */
+  scope: string;
 }
 
 /**

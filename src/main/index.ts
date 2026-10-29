@@ -781,15 +781,8 @@ async function bootstrap(): Promise<void> {
   //     here set 'local' under a session initAuthState then restored, which
   //     locked the user on the sign-in panel (see persistedSessionUserId).
   {
-    const { setActiveScope } = await import('./paths');
-    let bootScope: string | null = null;
-    try {
-      const { persistedSessionUserId } = await import('./auth/supabaseClient');
-      bootScope = await persistedSessionUserId();
-    } catch (err) {
-      logger.warn(`boot scope detection failed, defaulting to local: ${(err as Error).message}`);
-    }
-    setActiveScope(bootScope);
+    const { applyBootScope } = await import('./auth/bootScope');
+    const bootScope = await applyBootScope({ warn: (m) => logger.warn(m) });
     logger.info(`active profile scope: ${bootScope ?? 'local'}`);
   }
 

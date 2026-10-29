@@ -24,8 +24,8 @@
  *   - src/main/index.ts line 214–219 (renderer-reload replay pattern)
  */
 import type { BrowserWindow } from 'electron';
-import type { Session, User } from '@supabase/supabase-js';
-import { getClient } from './supabaseClient';
+import type { AuthChangeEvent, Session, User } from '@supabase/supabase-js';
+import { dropSessionLocally, getClient, readPersistedSession } from './supabaseClient';
 import { getTosAcceptance } from './tosGate';
 import { getActiveScope, SCOPE_LOCAL } from '../paths';
 import { isScopeSwitchPending } from '../profile/scopeBarrier';
@@ -41,6 +41,27 @@ let subscription: { unsubscribe: () => void } | null = null;
  */
 let requestedScope: string | null = null;
 let scopeSwitchInFlight: Promise<void> | null = null;
+/**
+ * Number of the latest followAuthScope request. A request's follow-up steps
+ * run only while it is still the latest one, so sign-in A, sign-out, sign-in A
+ * in quick succession runs them once, for the last request, and never for a
+ * request whose profile move another one has since replaced.
+ */
+let scopeRequestSeq = 0;
+/** Follow-up passes still running (tests wait on these). */
+const followUps = new Set<Promise<void>>();
+/**
+ * The account a real sign-in (a new session, not the stored one coming back)
+ * still owes its sign-in steps to: cloud default, profile backfill, the
+ * `signed_in` event, the roster sync. Consumed by the first follow-up pass
+ * that runs on that account's profile, whether or not the profile had to move.
+ */
+let signInStepsOwed: string | null = null;
+/** The stored session's access token at init, and the newest one seen since. */
+let restoredAccessToken: string | null = null;
+let lastAccessToken: string | null = null;
+/** Bumped on every auth event, so an async check can tell a newer event landed. */
+let authEventSeq = 0;
 
 /** Resolves once initAuthState has loaded the persisted session (or failed to). */
 let authLoaded = false;
@@ -141,7 +162,7 @@ function syncEmailVerificationPolling(): void {
 /**
  * 260606 — cold-start session validation (auto sign-out of a dead session).
  *
- * `initAuthState`'s `getSession()` reads ONLY the local storage adapter
+ * `initAuthState`'s first state is read from the local storage adapter alone
  * (session.bin), so a session whose user was deleted or revoked server-side
  * still resolves as `signed_in`. Without a proactive check the user is trapped
  * on a blocking gate (notably the ToS modal, which has no escape hatch) until
@@ -194,9 +215,12 @@ export async function validateSessionOrSignOut(): Promise<void> {
   }
   console.warn('[sei] persisted session invalid (user deleted/revoked) — signing out');
   try {
-    await supabase.auth.signOut();
+    const { error: signOutError } = await supabase.auth.signOut();
+    // 261029: signOut() reports a failed logout request in its result, it
+    // does not throw, and then it keeps the stored session. Drop it here.
+    if (signOutError) await dropSessionLocally({ client: supabase });
   } catch {
-    // Ignore — the forced local transition below is the real sign-out.
+    await dropSessionLocally({ client: supabase });
   }
   transitionToLocal();
 }
@@ -228,42 +252,86 @@ function activeScopeUser(): string | null {
  * switch. Never throws; a failed switch is retried by the next auth event,
  * since the scope still disagrees with the state then.
  *
- * `restored` marks a session that was already signed in (cold start, a token
- * refresh that brought back a session the boot read missed): the scope still
- * moves, but none of the first-sign-in side effects (profile backfill,
- * `signed_in` analytics, roster sync) run for it.
+ * `restored` marks a move that is not someone signing in or out (cold start, a
+ * token refresh that brought back a session the boot read missed): the push
+ * says so, so the renderer offers no local import, and a move to 'local' sends
+ * no `signed_out`. Sign-in steps run only when a real sign-in owes them
+ * (signInStepsOwed), wherever the move came from.
  */
 function followAuthScope(opts: { restored: boolean }): boolean {
   const target = scopeFor(currentState);
   const current = scopeSwitchInFlight ? requestedScope : activeScopeUser();
   if (current === target) return false;
+  const seq = ++scopeRequestSeq;
   requestedScope = target;
-  const switched = (async () => {
+  const restoredMove = target ? signInStepsOwed !== target : opts.restored;
+  const switched = (async (): Promise<boolean> => {
     try {
       const { switchScopeForAuth } = await import('../profile/profileScope');
-      await switchScopeForAuth(target, { restored: opts.restored });
+      await switchScopeForAuth(target, { restored: restoredMove });
+      return true;
     } catch (err) {
       console.warn(`[sei] scope switch failed: ${(err as Error).message}`);
+      return false;
     }
   })();
-  const tracked: Promise<void> = switched.finally(() => {
+  const tracked: Promise<void> = switched.then(
+    () => {},
+    () => {},
+  );
+  scopeSwitchInFlight = tracked;
+  void tracked.finally(() => {
     if (scopeSwitchInFlight === tracked) scopeSwitchInFlight = null;
   });
-  scopeSwitchInFlight = tracked;
-  void tracked.then(() => afterScopeSwitch(target, opts));
+  trackFollowUp(
+    switched.then(async (ok) => {
+      // The move threw (the next auth event retries it), a later request
+      // replaced this one (its own pass runs), or the scope is not where this
+      // request asked for: nothing to follow up here.
+      if (!ok || seq !== scopeRequestSeq || activeScopeUser() !== target) return;
+      await afterScopeSwitch(target, opts);
+    }),
+  );
   return true;
+}
+
+function trackFollowUp(p: Promise<void>): void {
+  const t = p.catch((err) => console.warn(`[sei] auth follow-up failed: ${(err as Error).message}`));
+  followUps.add(t);
+  void t.finally(() => followUps.delete(t));
+}
+
+/**
+ * A real sign-in landed on an account whose profile is already active (or
+ * already on its way there): no move will run its steps, so run them here.
+ * When a move to it is in flight, that move's pass consumes them instead.
+ */
+function runOwedSignInSteps(): void {
+  const target = scopeFor(currentState);
+  if (!target || signInStepsOwed !== target) return;
+  if (scopeSwitchInFlight || activeScopeUser() !== target) return;
+  const seq = scopeRequestSeq;
+  trackFollowUp(
+    (async () => {
+      if (seq !== scopeRequestSeq || activeScopeUser() !== target) return;
+      await afterScopeSwitch(target, { restored: false });
+    })(),
+  );
 }
 
 /** What a sign-in or sign-out does once the data scope points at the new account. */
 async function afterScopeSwitch(target: string | null, opts: { restored: boolean }): Promise<void> {
-  // A later auth event already asked for another scope: its own pass runs.
-  if (requestedScope !== target) return;
   if (target) {
+    // Sign-in steps once per real sign-in (signInStepsOwed); a restored
+    // session only gets the reconcile passes.
+    const signIn = signInStepsOwed === target;
+    if (signIn) signInStepsOwed = null;
     // 260606: default the freshly signed-in user to cloud billing, after the
     // switch (config.json is per-profile). An explicit BYOK choice survives
     // (applyCloudDefaultForSignIn, 260703). profileScope's switch runs the same
-    // call before its push; this one is the backstop. Best-effort.
-    if (!opts.restored) {
+    // call before its push; this one is the backstop (and the only one when
+    // the profile did not have to move). Best-effort.
+    if (signIn) {
       try {
         const { applyCloudDefaultForSignIn } = await import('../apiKeyStore');
         await applyCloudDefaultForSignIn();
@@ -289,7 +357,7 @@ async function afterScopeSwitch(target: string | null, opts: { restored: boolean
     } catch (err) {
       console.warn(`[sei] sign-in remoderate-on-reset failed: ${(err as Error).message}`);
     }
-    if (opts.restored) return;
+    if (!signIn) return;
     // Item 7: backfill the public profiles row from the account's local
     // preferred_name on sign-in, so users who onboarded before the
     // profiles table existed still show "by <name>" on Browse. Best-effort.
@@ -336,10 +404,10 @@ async function afterScopeSwitch(target: string | null, opts: { restored: boolean
  * 261029: what the renderer needs to route at boot without racing main's
  * pushes. `scopeReady` is true once the data scope matches the auth state and
  * no switch is pending, i.e. the app:scope-changed push for this state (if one
- * was needed) has already gone out. Waits for initAuthState's session load
- * (`loaded`), bounded so a hung init never holds the renderer's boot. The
- * default covers supabase-js's retry window for a refresh that fails offline
- * (about 25 s), which the window used to spend not yet created at all.
+ * was needed) has already gone out. `scope` is the active profile scope, so a
+ * caller can check it is the account it expects. Waits for initAuthState's
+ * first state (`loaded`), which comes from storage and needs no network, so
+ * the bound only matters when bootstrap has not reached initAuthState yet.
  */
 export async function getAuthSnapshot(waitMs = 30_000): Promise<AuthSnapshot> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -355,7 +423,7 @@ export async function getAuthSnapshot(waitMs = 30_000): Promise<AuthSnapshot> {
     scopeSwitchInFlight === null &&
     !isScopeSwitchPending() &&
     activeScopeUser() === scopeFor(currentState);
-  return { state: currentState, scopeReady, loaded: authLoaded };
+  return { state: currentState, scopeReady, loaded: authLoaded, scope: getActiveScope() };
 }
 
 /**
@@ -387,18 +455,40 @@ async function initAuthStateInner(window: BrowserWindow): Promise<void> {
 
   const supabase = getClient();
 
-  // Load the initial session so currentState is correct before the first
-  // auth event arrives. getSession() reads from the storage adapter
-  // (sessionStore — already wired by bootstrap).
-  const { data: { session } } = await supabase.auth.getSession();
-  applySession(session);
+  // 261029 review: the first state comes from the STORED session, with no
+  // network. `auth.getSession()` refreshes an expired access token (the usual
+  // state after a restart) and waits for supabase-js's own startup refresh
+  // first: offline that measured ~51 s (two full ~25 s retry windows), during
+  // which the renderer had nothing to route on and the subscription below did
+  // not exist yet, so a sign-in made then was lost. Offline users must keep
+  // working (validateSessionOrSignOut's rule), so a stored session is signed
+  // in until the auth server says otherwise; supabase-js's session load
+  // reports that through the subscription (SIGNED_OUT, or the INITIAL_SESSION
+  // handled in onAuthEvent).
+  let stored: Awaited<ReturnType<typeof readPersistedSession>> = null;
+  try {
+    stored = await readPersistedSession({ client: supabase });
+  } catch (err) {
+    console.warn(`[sei] reading the stored session failed: ${(err as Error).message}`);
+  }
+  restoredAccessToken = stored?.accessToken ?? null;
+  lastAccessToken = restoredAccessToken;
+  currentState = stored ? { kind: 'signed_in', user: toAuthUser(stored.user) } : { kind: 'local' };
+
+  // Subscribe before anything waits on the network.
+  const { data: sub } = supabase.auth.onAuthStateChange(onAuthEvent);
+  subscription = sub.subscription;
+
+  // Replay on renderer reload (same pattern as latestLanState in src/main/index.ts).
+  // Use a named handler so we can removeListener() on re-bootstrap (BL-02).
+  window.webContents.on('did-finish-load', broadcastOnDidFinishLoad);
+
+  // Initial broadcast so renderer's first onAuthState subscription receives state immediately.
+  broadcastAuthState(window);
+
   // Item 3: begin polling for a cross-device email confirmation if this cold
   // start restored a signed-in-but-unverified session.
   syncEmailVerificationPolling();
-  // Fire-and-forget reconciliation on cold-start sign-in. The subscription
-  // below detects user-swaps mid-session; this branch handles app-launch
-  // with a persisted session, which the onAuthStateChange transition guard
-  // would otherwise treat as a no-op.
   if (currentState.kind === 'signed_in') {
     const userId = currentState.user.id;
     // Analytics (260707): attribute this restored session to the account so
@@ -408,16 +498,14 @@ async function initAuthStateInner(window: BrowserWindow): Promise<void> {
     // If the account was deleted/revoked, this auto-signs-out so the user can't
     // get trapped on a blocking gate (e.g. the ToS modal). Fire-and-forget so
     // launch isn't blocked; the renderer briefly shows signed_in then drops to
-    // AuthChoice on the broadcast from transitionToLocal().
+    // the sign-in panel on the broadcast from transitionToLocal().
     void validateSessionOrSignOut();
   }
-  // 261029: the boot scope (main/index.ts step 0a) can disagree with the
-  // session this load ends on: step 0a reads the stored session without a
-  // refresh, so a session the server rejects (or one this refresh could not
-  // reach the server for) is 'local' here. Builds before 261029 also read it
-  // with a refresh of its own that could fail where this one succeeded. Move
-  // the scope now; the switch pushes app:scope-changed and runs the reconcile
-  // below itself.
+  // 261029: the boot scope (main/index.ts step 0a) reads the same stored
+  // session, so normally this is a no-op. Builds before 261029 picked it with
+  // a refresh of their own that could fail; anything else that left the scope
+  // off the state is corrected here. The switch pushes app:scope-changed and
+  // runs the reconcile below itself.
   const switching = followAuthScope({ restored: true });
   if (currentState.kind === 'signed_in' && !switching) {
     const userId = currentState.user.id;
@@ -442,46 +530,81 @@ async function initAuthStateInner(window: BrowserWindow): Promise<void> {
       }
     })();
   }
+}
 
-  // Subscribe.
-  const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-    // Events we care about: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED, INITIAL_SESSION.
-    // PASSWORD_RECOVERY: a reset link landed a recovery session. The normal path
-    // is the loopback callback's recovery-flag detection (→ auth:password-recovery
-    // push); this event is a belt-and-suspenders fallback for the case where the
-    // app restarted between requesting the reset and clicking the link, dropping
-    // the in-memory flag. Idempotent with the loopback push (renderer just sets a
-    // boolean). It does NOT fire on ordinary launches — only when supabase-js
-    // detects a fresh recovery — so there are no false positives.
-    if (event === 'PASSWORD_RECOVERY' && mainWindowRef && !mainWindowRef.isDestroyed()) {
-      mainWindowRef.webContents.send(IpcChannel.auth.passwordRecovery);
-    }
-    applySession(session);
-    broadcastAuthState(mainWindowRef);
-    // Item 3: (re)evaluate the cross-device verification poll on every auth
-    // event — start it on a fresh unverified sign-in, stop it once verified or
-    // signed out.
-    syncEmailVerificationPolling();
-    // 261029: the data scope follows the auth state itself, not the change
-    // between two auth events. The old test (previous user !== next user)
-    // missed every case where the scope was already wrong when the event
-    // arrived, e.g. main/index.ts step 0a set 'local' because its token
-    // refresh failed while initAuthState's succeeded, which left the app
-    // signed in with no app:scope-changed push and the sign-in panel waiting
-    // for one forever. A TOKEN_REFRESHED / USER_UPDATED for the same user with
-    // the scope already on that user is still a no-op. Only SIGNED_IN and
-    // SIGNED_OUT are someone signing in or out; any other event that moves
-    // the scope is a session coming back (a refresh after an offline launch).
-    void followAuthScope({ restored: event !== 'SIGNED_IN' && event !== 'SIGNED_OUT' });
-  });
-  subscription = sub.subscription;
+function onAuthEvent(event: AuthChangeEvent, session: Session | null): void {
+  // Events we care about: SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED, USER_UPDATED, INITIAL_SESSION.
+  // PASSWORD_RECOVERY: a reset link landed a recovery session. The normal path
+  // is the loopback callback's recovery-flag detection (→ auth:password-recovery
+  // push); this event is a belt-and-suspenders fallback for the case where the
+  // app restarted between requesting the reset and clicking the link, dropping
+  // the in-memory flag. Idempotent with the loopback push (renderer just sets a
+  // boolean). It does NOT fire on ordinary launches — only when supabase-js
+  // detects a fresh recovery — so there are no false positives.
+  if (event === 'PASSWORD_RECOVERY' && mainWindowRef && !mainWindowRef.isDestroyed()) {
+    mainWindowRef.webContents.send(IpcChannel.auth.passwordRecovery);
+  }
+  const seq = ++authEventSeq;
+  // 261029 review: supabase-js answers INITIAL_SESSION with null when its
+  // session load FAILED, too (an offline refresh), not only when there is no
+  // session. A refresh that failed for a network reason keeps the session in
+  // storage; one the server refused removes it (and emits SIGNED_OUT). So the
+  // storage says which: still there means offline, and the user stays signed
+  // in on their own profile until a later refresh gets through.
+  if (event === 'INITIAL_SESSION' && !session && currentState.kind === 'signed_in') {
+    void (async () => {
+      let still: Awaited<ReturnType<typeof readPersistedSession>> = null;
+      try {
+        still = await readPersistedSession({ client: getClient() });
+      } catch {
+        still = null;
+      }
+      if (seq !== authEventSeq) return; // a newer event already decided
+      if (still && currentState.kind === 'signed_in' && still.userId === currentState.user.id.toLowerCase()) {
+        console.warn('[sei] session load failed (offline?); keeping the stored session');
+        return;
+      }
+      applyAuthEvent(event, null);
+    })();
+    return;
+  }
+  applyAuthEvent(event, session);
+}
 
-  // Replay on renderer reload (same pattern as latestLanState in src/main/index.ts).
-  // Use a named handler so we can removeListener() on re-bootstrap (BL-02).
-  window.webContents.on('did-finish-load', broadcastOnDidFinishLoad);
-
-  // Initial broadcast so renderer's first onAuthState subscription receives state immediately.
-  broadcastAuthState(window);
+function applyAuthEvent(event: AuthChangeEvent, session: Session | null): void {
+  const token = session?.access_token ?? null;
+  // A real sign-in brings a session this process has not seen. supabase-js
+  // also emits SIGNED_IN for the stored session coming back (its startup
+  // recovery), which is not someone signing in.
+  const realSignIn =
+    event === 'SIGNED_IN' && token !== null && token !== restoredAccessToken && token !== lastAccessToken;
+  if (token) lastAccessToken = token;
+  applySession(session);
+  if (currentState.kind !== 'signed_in') {
+    signInStepsOwed = null;
+    lastAccessToken = null;
+  } else if (realSignIn) {
+    signInStepsOwed = currentState.user.id.toLowerCase();
+  }
+  broadcastAuthState(mainWindowRef);
+  // Item 3: (re)evaluate the cross-device verification poll on every auth
+  // event — start it on a fresh unverified sign-in, stop it once verified or
+  // signed out.
+  syncEmailVerificationPolling();
+  // 261029: the data scope follows the auth state itself, not the change
+  // between two auth events. The old test (previous user !== next user)
+  // missed every case where the scope was already wrong when the event
+  // arrived, e.g. main/index.ts step 0a set 'local' because its token
+  // refresh failed while initAuthState's succeeded, which left the app
+  // signed in with no app:scope-changed push and the sign-in panel waiting
+  // for one forever. A TOKEN_REFRESHED / USER_UPDATED for the same user with
+  // the scope already on that user is still a no-op. Only SIGNED_IN and
+  // SIGNED_OUT are someone signing in or out; any other event that moves
+  // the scope is a session coming back (a refresh after an offline launch).
+  const moved = followAuthScope({ restored: !realSignIn && event !== 'SIGNED_OUT' });
+  // A real sign-in onto the profile that is already active still runs its
+  // sign-in steps (cloud default, backfill, signed_in, roster sync) once.
+  if (!moved && realSignIn) runOwedSignInSteps();
 }
 
 /**
@@ -491,6 +614,8 @@ async function initAuthStateInner(window: BrowserWindow): Promise<void> {
  */
 export function transitionToLocal(): void {
   currentState = { kind: 'local' };
+  signInStepsOwed = null;
+  lastAccessToken = null;
   broadcastAuthState(mainWindowRef);
   syncEmailVerificationPolling();
   // 261029: a forced sign-out must move the scope too. Normally signOut()'s
@@ -614,13 +739,22 @@ export function _disposeForTests(): void {
   stopEmailVerificationPoll();
   requestedScope = null;
   scopeSwitchInFlight = null;
+  followUps.clear();
+  scopeRequestSeq = 0;
+  signInStepsOwed = null;
+  restoredAccessToken = null;
+  lastAccessToken = null;
+  authEventSeq = 0;
   authLoaded = false;
   authInit = new Promise<void>((r) => {
     resolveAuthInit = r;
   });
 }
 
-/** TEST-ONLY: resolves once the scope switch in flight (if any) has finished. */
-export function _scopeSwitchSettledForTests(): Promise<void> {
-  return scopeSwitchInFlight ?? Promise.resolve();
+/** TEST-ONLY: resolves once the scope switch in flight (if any) and its follow-up steps have finished. */
+export async function _scopeSwitchSettledForTests(): Promise<void> {
+  for (let i = 0; i < 10 && (scopeSwitchInFlight || followUps.size > 0); i++) {
+    await scopeSwitchInFlight;
+    await Promise.all([...followUps]);
+  }
 }

@@ -36,6 +36,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sei } from '../lib/ipcClient';
 import { readAuthSnapshot } from '../lib/authBoot';
+import { createSignInScopeGate, type SignInScopeGate } from '../lib/signInScopeGate';
 import { useAuthStore } from '../lib/stores/useAuthStore';
 import { t, useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
@@ -303,39 +304,26 @@ export function OnboardApp({
    * no panel interaction (e.g. a session restored at boot mid-onboarding). */
   const authIntentRef = useRef<'signup' | 'signin' | 'oauth' | null>(null);
   const [authTick, setAuthTick] = useState(0); // re-render on auth pushes
+  // 261029: the scope-changed push is not the only way to learn the account's
+  // profile is live. When the scope already matched (a same-account sign-in
+  // after a restart, or the switch finished before this mounted) no push is
+  // coming, and the panel used to wait for it forever, so the gate also asks
+  // main. Either signal must name THIS account (lib/signInScopeGate.ts).
+  const scopeGateRef = useRef<SignInScopeGate | null>(null);
   useEffect(() => {
-    let alive = true;
-    // 261029: the scope-changed push below is not the only way to learn the
-    // account's profile is live. When the scope already matched (a same-account
-    // sign-in after a restart, or the switch finished before this mounted) no
-    // push is coming, and the panel used to wait for it forever. Ask main.
-    const confirmScope = (): void => {
-      if (scopeReadyRef.current || authRef.current.kind !== 'signed_in') return;
-      void readAuthSnapshot().then((snap) => {
-        if (!alive || !snap || scopeReadyRef.current) return;
-        if (snap.state.kind === 'signed_in' && snap.scopeReady) {
-          authRef.current = snap.state;
-          scopeReadyRef.current = true;
-          setAuthTick((t) => t + 1);
-        }
-      });
-    };
-    const offAuth = sei.onAuthState((s) => {
-      authRef.current = s;
-      if (s.kind !== 'signed_in') scopeReadyRef.current = false;
-      setAuthTick((t) => t + 1);
-      confirmScope();
+    const gate = createSignInScopeGate({
+      auth: authRef,
+      ready: scopeReadyRef,
+      readSnapshot: readAuthSnapshot,
+      onChange: () => setAuthTick((t) => t + 1),
     });
-    const offScope = sei.onScopeChanged((ev) => {
-      // Any move onto an account (sign-in, or a switch from a stale scope).
-      if (ev.reason !== 'sign-out') {
-        scopeReadyRef.current = true;
-        setAuthTick((t) => t + 1);
-      }
-    });
-    confirmScope();
+    scopeGateRef.current = gate;
+    const offAuth = sei.onAuthState((s) => gate.onAuth(s));
+    const offScope = sei.onScopeChanged((ev) => gate.onScopeChanged(ev));
+    gate.confirm();
     return () => {
-      alive = false;
+      gate.dispose();
+      if (scopeGateRef.current === gate) scopeGateRef.current = null;
       offAuth();
       offScope();
     };
@@ -914,9 +902,11 @@ export function OnboardApp({
   useEffect(() => {
     if (phase.k !== 'auth') return;
     if (authRef.current.kind === 'signed_in' && phase.mode === 'new') {
-      // Session restored at boot — no scope switch will fire; treat as ready.
-      scopeReadyRef.current = true;
-      void proceedAfterAuth(phase.mode);
+      // Session restored at boot: no scope switch may fire. 261029 review:
+      // not "treat as ready" on the auth state alone; the gate confirms with
+      // main that the active profile is this account's, and the sign-in watch
+      // below proceeds once it is.
+      scopeGateRef.current?.confirm();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase.k]);

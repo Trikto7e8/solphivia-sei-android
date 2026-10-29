@@ -9,7 +9,7 @@ import type { AuthSnapshot } from '@shared/ipc';
 const bridge = vi.hoisted((): { authSnapshot?: () => Promise<unknown> } => ({}));
 vi.mock('./ipcClient', () => ({ sei: bridge }));
 
-import { readAuthSnapshot, waitForAuthScope } from './authBoot';
+import { AUTH_LOAD_WAIT_MS, readAuthSnapshot, waitForAuthScope } from './authBoot';
 
 const signedIn = (scopeReady: boolean): AuthSnapshot => ({
   state: {
@@ -18,8 +18,21 @@ const signedIn = (scopeReady: boolean): AuthSnapshot => ({
   },
   scopeReady,
   loaded: true,
+  scope: scopeReady ? 'u1' : 'local',
 });
+const notLoaded: AuthSnapshot = { state: { kind: 'local' }, scopeReady: false, loaded: false, scope: 'local' };
 const noSleep = (): Promise<void> => Promise.resolve();
+
+/** A fake clock: `sleep` advances `now`. */
+function fakeClock() {
+  let t = 0;
+  return {
+    now: (): number => t,
+    sleep: vi.fn(async (ms: number): Promise<void> => {
+      t += ms;
+    }),
+  };
+}
 
 beforeEach(() => {
   delete bridge.authSnapshot;
@@ -55,17 +68,32 @@ describe('waitForAuthScope', () => {
   });
   it('gives up after the bound with the last answer', async () => {
     bridge.authSnapshot = () => Promise.resolve(signedIn(false));
-    const sleep = vi.fn(noSleep);
-    const res = await waitForAuthScope({ sleep, timeoutMs: 900 });
+    const clock = fakeClock();
+    const res = await waitForAuthScope({ ...clock, timeoutMs: 900 });
     expect(res).toEqual({ snapshot: signedIn(false), waited: true });
-    expect(sleep).toHaveBeenCalledTimes(3);
+    expect(clock.sleep).toHaveBeenCalledTimes(3);
   });
-  it("does not poll when main answered before its own session load finished", async () => {
-    const early: AuthSnapshot = { state: { kind: 'local' }, scopeReady: false, loaded: false };
-    bridge.authSnapshot = () => Promise.resolve(early);
-    const sleep = vi.fn(noSleep);
-    expect(await waitForAuthScope({ sleep })).toEqual({ snapshot: early, waited: false });
-    expect(sleep).not.toHaveBeenCalled();
+  it('polls while main has not loaded its auth state, then waits for the scope', async () => {
+    // Review 261029: the old check returned at once on loaded === false and
+    // the boot routed on main's default `local`.
+    const answers = [notLoaded, notLoaded, notLoaded, signedIn(false), signedIn(true)];
+    bridge.authSnapshot = () => Promise.resolve(answers.shift() ?? signedIn(true));
+    const clock = fakeClock();
+    expect(await waitForAuthScope(clock)).toEqual({ snapshot: signedIn(true), waited: true });
+    expect(clock.sleep).toHaveBeenCalledTimes(4);
+  });
+  it('keeps polling an unloaded main for about 90 s, past the 10 s scope bound', async () => {
+    bridge.authSnapshot = () => Promise.resolve(notLoaded);
+    const clock = fakeClock();
+    const res = await waitForAuthScope(clock);
+    expect(res).toEqual({ snapshot: notLoaded, waited: true });
+    expect(clock.now()).toBeGreaterThanOrEqual(AUTH_LOAD_WAIT_MS);
+    expect(clock.now()).toBeLessThan(AUTH_LOAD_WAIT_MS + 1_000);
+  });
+  it('a main that loads after 51 s (an offline session refresh) is still waited for', async () => {
+    const clock = fakeClock();
+    bridge.authSnapshot = () => Promise.resolve(clock.now() < 51_000 ? notLoaded : signedIn(true));
+    expect(await waitForAuthScope(clock)).toEqual({ snapshot: signedIn(true), waited: true });
   });
   it('stops when cancelled, and passes through a missing bridge', async () => {
     bridge.authSnapshot = () => Promise.resolve(signedIn(false));

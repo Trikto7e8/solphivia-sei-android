@@ -14,12 +14,23 @@ import type { AuthSnapshot } from '@shared/ipc';
 
 /** How long the boot routing waits for a scope switch already under way. */
 export const SCOPE_READY_WAIT_MS = 10_000;
-const SCOPE_READY_POLL_MS = 300;
+/**
+ * How long the boot routing waits for main's first auth state (261029
+ * review). Main answers from the stored session, so this is normally instant;
+ * the bound only keeps a broken main from holding the loading screen forever.
+ */
+export const AUTH_LOAD_WAIT_MS = 90_000;
+const POLL_MS = 300;
 
 function isSnapshot(v: unknown): v is AuthSnapshot {
   if (!v || typeof v !== 'object') return false;
   const s = (v as { state?: { kind?: unknown } }).state;
-  return !!s && (s.kind === 'local' || s.kind === 'signed_in') && typeof (v as { scopeReady?: unknown }).scopeReady === 'boolean';
+  return (
+    !!s &&
+    (s.kind === 'local' || s.kind === 'signed_in') &&
+    typeof (v as { scopeReady?: unknown }).scopeReady === 'boolean' &&
+    typeof (v as { loaded?: unknown }).loaded === 'boolean'
+  );
 }
 
 /** Main's snapshot, or null when the bridge lacks it (tests, stubs) or the call failed. */
@@ -35,24 +46,44 @@ export async function readAuthSnapshot(): Promise<AuthSnapshot | null> {
 }
 
 /**
- * The snapshot once the data scope follows the auth state, polling while a
- * switch is under way (bounded). `waited` says a switch was in flight when the
- * first read came back, so anything read from the profile before it is stale.
+ * The snapshot once main has loaded its auth state and the data scope follows
+ * it, polling while either is still under way (each bounded). `waited` says
+ * the first answer was not final, so anything read from the profile before it
+ * may be stale.
+ *
+ * 261029 review: a snapshot with `loaded: false` is main's DEFAULT state, not
+ * an answer. Routing on it sent a signed-in user to the sign-in panel over
+ * their own account's profile, so it is polled until main has loaded. If the
+ * bound passes first, the result still has `loaded: false` and the caller must
+ * not apply its state (see resolveBootRoute).
  */
 export async function waitForAuthScope(
-  opts: { timeoutMs?: number; isCancelled?: () => boolean; sleep?: (ms: number) => Promise<void> } = {},
+  opts: {
+    timeoutMs?: number;
+    loadTimeoutMs?: number;
+    isCancelled?: () => boolean;
+    sleep?: (ms: number) => Promise<void>;
+    now?: () => number;
+  } = {},
 ): Promise<{ snapshot: AuthSnapshot | null; waited: boolean }> {
   const timeoutMs = opts.timeoutMs ?? SCOPE_READY_WAIT_MS;
+  const loadTimeoutMs = opts.loadTimeoutMs ?? AUTH_LOAD_WAIT_MS;
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = opts.now ?? Date.now;
+  const cancelled = (): boolean => opts.isCancelled?.() === true;
   let snapshot = await readAuthSnapshot();
   let waited = false;
-  // Main gave up waiting for its own session load: nothing to wait for here,
-  // route on what there is (the pushes correct it later).
-  if (snapshot && snapshot.loaded === false) return { snapshot, waited };
-  let polls = Math.ceil(timeoutMs / SCOPE_READY_POLL_MS);
-  while (snapshot && !snapshot.scopeReady && polls-- > 0 && !opts.isCancelled?.()) {
+  const loadStart = now();
+  while (snapshot && !snapshot.loaded && now() - loadStart < loadTimeoutMs && !cancelled()) {
     waited = true;
-    await sleep(SCOPE_READY_POLL_MS);
+    await sleep(POLL_MS);
+    snapshot = (await readAuthSnapshot()) ?? snapshot;
+  }
+  if (!snapshot || !snapshot.loaded) return { snapshot, waited };
+  const readyStart = now();
+  while (!snapshot.scopeReady && now() - readyStart < timeoutMs && !cancelled()) {
+    waited = true;
+    await sleep(POLL_MS);
     snapshot = (await readAuthSnapshot()) ?? snapshot;
   }
   return { snapshot, waited };

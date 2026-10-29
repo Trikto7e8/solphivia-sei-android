@@ -94,6 +94,8 @@ import { useCloudCharactersStore } from './lib/stores/useCloudCharactersStore';
 import { useLibraryStateStore } from './lib/stores/useLibraryStateStore';
 import { handleScopeEnding, resetAccountScopedState } from './lib/scopeReset';
 import { waitForAuthScope } from './lib/authBoot';
+import { resolveBootRoute } from './lib/bootRoute';
+import { BootSplash } from './components/BootSplash';
 import { AuthChoiceScreen } from './screens/AuthChoiceScreen';
 import { AcceptToSModal } from './components/AcceptToSModal';
 import { OfflineRetryModal } from './components/OfflineRetryModal';
@@ -198,6 +200,9 @@ export function App(): React.ReactElement {
   // A sign-in landed while the first-run scene was up: offer the import when
   // the scene hands off (handleOnboardComplete).
   const importAfterOnboardRef = useRef(false);
+  // 261029: app:scope-changed pushes seen. The boot routing reads the profile
+  // again when one landed while it was deciding.
+  const scopeChangesRef = useRef(0);
   // RESEARCH §Pitfall 3 — Linux-only basic_text safeStorage warning. Main
   // computes this from `apiKeyStore.safeStorageBackendKind()` and exposes it via the
   // app:warnings IPC. The keychain banner (api_key.bin) is dismissed for the
@@ -560,6 +565,7 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     return sei.onScopeChanged((ev) => {
+      scopeChangesRef.current += 1;
       // Drop the previous account's in-memory data first (transcripts are
       // keyed by character id, and the defaults share ids across profiles).
       resetAccountScopedState();
@@ -607,6 +613,19 @@ export function App(): React.ReactElement {
         // Replace the previous profile's character list + library state.
         try { await useDataStore.getState().loadCharacters(); } catch { /* empty-state */ }
         try { await useLibraryStateStore.getState().refresh(); } catch { /* no hidden defaults */ }
+        // 261029 review: the boot routing has not picked the first view yet.
+        // It owns that choice (it reads the profile again when a scope change
+        // landed under it), so this handler only reloads data; routing here
+        // too raced it (sign-in panel vs home).
+        if (useUiStore.getState().view.kind === 'loading') {
+          if (ev.reason !== 'sign-out') {
+            try {
+              useCreditsStore.getState().reset();
+              await useCreditsStore.getState().init();
+            } catch { /* keep last */ }
+          }
+          return;
+        }
         // Sign-out (account → local): straight to the scene's sign-in panel
         // (260729; replaced AuthChoice here). Same signin variant as the boot
         // route below — a signing-out user usually just wants to switch
@@ -765,6 +784,7 @@ export function App(): React.ReactElement {
 
   useEffect(() => {
     let cancelled = false;
+    const scopeChangesAtStart = scopeChangesRef.current;
     void (async () => {
       // Tracks whether the active profile has completed onboarding (has a
       // preferred_name). Drives the signed-in routing decision below so a
@@ -868,47 +888,45 @@ export function App(): React.ReactElement {
       //
       // The auth state comes from main's snapshot below (261029). The store's
       // mirror alone was not enough: it defaults to `local` and main's first
-      // push can land after this point (initAuthState's token refresh can take
-      // seconds), which routed a signed-in user to the sign-in panel.
+      // push can land after this point, which routed a signed-in user to the
+      // sign-in panel.
       //
       // B5: the LoadingScreen wallclock floor was removed. The renderer routes
       // straight to the initial view; the boot pulse is gone.
       if (cancelled) return;
-      // 261029: route on MAIN's auth state, not on the store's `local`
-      // default plus whatever pushes happened to land by now. When main is
-      // signed in but the data scope is still moving to that account (its
-      // boot read missed the session), wait for the switch and read the
-      // profile again, or the route is decided on the wrong profile.
-      const { snapshot, waited } = await waitForAuthScope({ isCancelled: () => cancelled });
-      if (cancelled) return;
-      if (snapshot) authStore.applyAuthState(snapshot.state);
-      if (waited && !(await hydrate())) return;
-      const currentAuth = useAuthStore.getState().state;
-      if (currentAuth.kind === 'signed_in') {
-        // 260603: a signed-in account that hasn't onboarded yet (no
-        // preferred_name in its profile) is a fresh account → the Sui
-        // onboarding scene (260728; it skips its sign-in step when a session
-        // is already live). Onboarded-but-skin-pending → resume the dedicated
-        // skin-setup step. Otherwise home, on the Home tab.
-        if (!onboardedName) {
-          navigate({ kind: 'onboard' });
-        } else if (skinPending) {
-          navigate({ kind: 'skin-setup' });
-        } else if (await resumeSavedTutorial()) {
-          // Quit mid-tutorial last time: back to the same step and screen.
-        } else {
+      // 261029: route on MAIN's auth state (lib/bootRoute.ts). It waits for
+      // main's first state (never routing on its unloaded `local` default)
+      // and for a scope switch already under way, then reads the profile
+      // again if it may have moved. The splash stays up meanwhile.
+      const dest = await resolveBootRoute({
+        waitForScope: () => waitForAuthScope({ isCancelled: () => cancelled }),
+        applyAuthState: authStore.applyAuthState,
+        currentAuth: () => useAuthStore.getState().state,
+        rehydrate: hydrate,
+        scopeChangedSinceHydrate: () => scopeChangesRef.current !== scopeChangesAtStart,
+        profile: () => ({ onboardedName, skinPending }),
+        isCancelled: () => cancelled,
+      });
+      if (dest === null) return;
+      if (dest === 'home') {
+        // Signed in and onboarded: a tour quit mid-way resumes at its step,
+        // else home on the Home tab.
+        if (!(await resumeSavedTutorial())) {
           useUiStore.getState().setHomeTab('home');
           navigate({ kind: 'home' });
         }
-      } else if (!onboardedName) {
-        // Fresh install (nothing configured on the local profile) → the Sui
-        // onboarding scene, which owns sign-in/sign-up/continue-locally.
-        navigate({ kind: 'onboard' });
-      } else {
+      } else if (dest === 'skin-setup') {
+        navigate({ kind: 'skin-setup' });
+      } else if (dest === 'signin') {
         // Signed-out profile that HAS onboarded: the scene mounted directly
         // at its sign-in panel (260729; replaced AuthChoice). No cutscene —
         // a local BYOK launch stays one "Continue locally" click.
         navigate({ kind: 'onboard', signin: true });
+      } else {
+        // A fresh install, or a signed-in account that has not onboarded yet
+        // (260603): the Sui onboarding scene (260728), which skips its
+        // sign-in step when a session is already live.
+        navigate({ kind: 'onboard' });
       }
     })();
     return () => {
@@ -949,7 +967,10 @@ export function App(): React.ReactElement {
     if (authState.kind === 'signed_in' && prev !== null && prev !== 'signed_in') {
       setHomeTab('home');
     }
-    if (authState.kind === 'signed_in' && (view.kind === 'auth-choice' || view.kind === 'loading')) {
+    // 261029 review: not from 'loading'. The boot routing picks the first
+    // view (it waits for main's state), and jumping home from here raced it:
+    // a signed-in account with no profile yet belongs in onboarding.
+    if (authState.kind === 'signed_in' && view.kind === 'auth-choice') {
       navigate({ kind: 'home' });
     } else if (
       authState.kind === 'local' &&
@@ -1026,10 +1047,10 @@ export function App(): React.ReactElement {
   );
 
   // B5: LoadingScreen is gone — the renderer routes directly to the initial
-  // view in the bootstrap effect above. The 'loading' view variant is a
-  // transient state before that effect resolves; render nothing for a frame
-  // rather than mounting the prior boot pulse.
-  if (view.kind === 'loading') return <></>;
+  // view in the bootstrap effect above. 261029 review: 'loading' can last
+  // (the boot waits for main's auth state), and an empty fragment was a blank
+  // window once the startup splash had closed, so it shows the splash's look.
+  if (view.kind === 'loading') return <BootSplash />;
 
   // 260603 / 261023: the own-key (local) import offer. Rendered on the
   // first-run scene too, because a sign-in made there is offered when the

@@ -26,7 +26,7 @@ import { mkdir } from 'node:fs/promises';
 import { paths, setActiveScope, getActiveScope, SCOPE_LOCAL } from '../paths';
 import { IpcChannel, type ScopeChangedEvent } from '../../shared/ipc';
 import type { BotSupervisorType } from '../botSupervisor';
-import { beginScopeSwitch, noteScopeChanged } from './scopeBarrier';
+import { beginScopeSwitch, noteScopeChanged, trackScopedWrite } from './scopeBarrier';
 
 let supervisorRef: BotSupervisorType | null = null;
 let getMainWindowRef: () => BrowserWindow | null = () => null;
@@ -41,6 +41,8 @@ export function initProfileScope(deps: {
   endVoiceCalls?: (reason: string) => Promise<void>;
   /** Bound on ending the old account's sessions (tests; default 10s). */
   teardownCeilingMs?: number;
+  /** Bound on each network step of the move (tests; default 15s). */
+  stepTimeoutMs?: number;
   /**
    * 261013 (T120): the new scope is live (after the renderer push). Runs the
    * new account's pending app-quit "next time" checks. Fire and forget.
@@ -51,6 +53,7 @@ export function initProfileScope(deps: {
   getMainWindowRef = deps.getMainWindow;
   endVoiceCallsRef = deps.endVoiceCalls;
   teardownCeilingMs = deps.teardownCeilingMs;
+  stepTimeoutMs = deps.stepTimeoutMs ?? PROFILE_MOVE_STEP_TIMEOUT_MS;
   onScopeSwitchedRef = deps.onScopeSwitched;
 }
 
@@ -91,6 +94,31 @@ export function switchScopeForAuth(
 }
 
 let switchChain: Promise<void> = Promise.resolve();
+
+/** Bound on each network step of a profile move (step 3.5). */
+export const PROFILE_MOVE_STEP_TIMEOUT_MS = 15_000;
+let stepTimeoutMs = PROFILE_MOVE_STEP_TIMEOUT_MS;
+
+/**
+ * 261029: `p`, or `fallback` once `stepTimeoutMs` passes. Fails soft: the step
+ * is best-effort, and the renderer is waiting on this move's push.
+ */
+async function withinStepTimeout<T>(label: string, p: Promise<T>, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      p,
+      new Promise<T>((resolve) => {
+        timer = setTimeout(() => {
+          console.warn(`[sei] profileScope: ${label} still running after ${stepTimeoutMs}ms, moving on`);
+          resolve(fallback);
+        }, stepTimeoutMs);
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 async function runScopeSwitch(userId: string | null, restored: boolean): Promise<void> {
   const prevScope = getActiveScope();
@@ -166,7 +194,9 @@ async function runScopeSwitch(userId: string | null, restored: boolean): Promise
       const cfg = await loadConfig();
       if (!(cfg.preferred_name ?? '').trim()) {
         const { fetchMyProfileName } = await import('../cloud/cloudCharacterClient');
-        const cloudName = await fetchMyProfileName();
+        // 261029: bounded. It reads the session first (a token refresh
+        // offline), and a hung move holds every switch queued behind it.
+        const cloudName = await withinStepTimeout('cloud name backfill', fetchMyProfileName(), null);
         if (cloudName) {
           await updateConfig((cur) =>
             (cur.preferred_name ?? '').trim() ? cur : { ...cur, preferred_name: cloudName },
@@ -202,7 +232,14 @@ async function runScopeSwitch(userId: string | null, restored: boolean): Promise
     //     after being opened from the World/Summons list).
     try {
       const { cacheMyCloudCharacters } = await import('../cloud/cacheOnDemand');
-      await cacheMyCloudCharacters(nextScope);
+      // 261029: bounded like the name backfill. Past the bound the pull keeps
+      // going in the background, registered as a scoped write so a later
+      // switch waits for it before the scope moves again.
+      await withinStepTimeout(
+        'own-character hydration',
+        trackScopedWrite(cacheMyCloudCharacters(nextScope)),
+        undefined,
+      );
     } catch (err) {
       console.warn(`[sei] profileScope: own-character hydration failed: ${(err as Error).message}`);
     }
@@ -283,5 +320,6 @@ export function _resetForTests(): void {
   getMainWindowRef = () => null;
   endVoiceCallsRef = undefined;
   teardownCeilingMs = undefined;
+  stepTimeoutMs = PROFILE_MOVE_STEP_TIMEOUT_MS;
   onScopeSwitchedRef = undefined;
 }

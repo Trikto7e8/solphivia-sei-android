@@ -3358,7 +3358,13 @@ function maybeWarnByteCap(loop, warned) {
           : NUDGES.playerInterruptHint
         // 261014: say whether anything is running, rather than tell every reply
         // that its say() keeps "the current action" going.
-        eventAddendum += ' ' + (inflight.current() ? NUDGES.replyWhileRunning : NUDGES.replyWhileIdle)
+        const plainReply = !groupVoice && !teammateVoice && !crossed
+        const idleNow = !inflight.current()
+        // 261029 (pass 30): on a plain reply the idle sentence moves to the
+        // end of the turn, right after "Answer it with say()." Up in the
+        // event hints it was far from where she decides, and her replies said
+        // "gonna go dig stone" with no action called (pass30-probe howru).
+        if (!(plainReply && idleNow)) eventAddendum += ' ' + (idleNow ? NUDGES.replyWhileIdle : NUDGES.replyWhileRunning)
         const opener = (fromTeammate && speakerName)
           ? (isVoiceLine
             ? `your teammate ${speakerName} just said this on the voice call`
@@ -3400,7 +3406,7 @@ function maybeWarnByteCap(loop, warned) {
           // alone read as a transcript to continue: she wrote say("...") in
           // her text instead of calling the tool (persona eval 261017, 20 of
           // 150 player-line samples silent that way, 0 with this sentence).
-          (!groupVoice && !teammateVoice && !crossed ? '\nAnswer it with say().' : '')
+          (plainReply ? `\nAnswer it with say().${idleNow ? ` ${NUDGES.replyWhileIdle}` : ''}` : '')
         eventText = `Event: ${event}${eventAddendum}`
       } else {
         eventText = `Event: ${event}\nData: ${formatEventData(event, data)}${eventAddendum}`

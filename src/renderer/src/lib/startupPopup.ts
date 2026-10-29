@@ -36,11 +36,15 @@ export const POPUP_LOAD_TIMEOUT_MS = 20_000;
 
 /** Default page size when the feed names none, as a fraction of the window. */
 const DEFAULT_FRACTION = 0.7;
-/** The page never covers more of the window than this (the X sits outside it). */
+/** The page never covers more of the window than this. */
 const MAX_FRACTION_W = 0.9;
 const MAX_FRACTION_H = 0.86;
-/** Room kept clear around the page for the X and the click-out margin. */
-const GUTTER_PX = 96;
+/**
+ * Room kept clear around the page (24 px a side at least) so there is always
+ * somewhere to click out. The X sits inside the page's corner since 261029,
+ * so it needs no gutter of its own (was 96 for the outside X).
+ */
+const GUTTER_PX = 48;
 
 /**
  * The page's on-screen size. A declared size keeps its aspect ratio and is

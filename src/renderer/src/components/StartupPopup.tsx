@@ -9,21 +9,37 @@
  * and main records the id as shown at that moment. So a page that is offline,
  * 404s or never loads shows nothing, and is tried again next launch.
  *
+ * Never in a first-run session (261029, lib/firstRunSession.ts): a session
+ * that shows the onboarding scene, the tour or the first moment, or that boots
+ * with an unfinished tour saved in config, holds the popup until the next
+ * launch. The config read happens before the first look.
+ *
  * The frame: `sandbox="allow-popups"` and nothing else, so the page runs no
  * scripts, gets an opaque origin (no cookies, no storage, no access to this
  * window), cannot submit forms or navigate the app. Links still work: main's
- * popupFrameGuards send every link and target=_blank to the default browser.
+ * popupFrameGuards send every link and target=_blank to the default browser,
+ * except an action link (https://sei.gg/popup/_action/<name>, 261029), which
+ * main turns into `onStartupPopupAction`: the popup closes and the named
+ * in-app action runs (lib/popupActions.ts). Actions are only taken while the
+ * popup is shown.
  *
- * Closing: the X (always visible), Esc (relayed by main when
- * focus is inside the page), or a click anywhere outside the page.
+ * Closing: the X (always visible, layered over the page's top-right corner on
+ * a translucent dark disc so it reads on any picture), Esc (relayed by main
+ * when focus is inside the page), or a click anywhere outside the page. Esc
+ * is left alone while another dialog is open on top.
  *
- * z 1100 (ModalShell's stacked tier): it only ever opens over a calm screen,
- * so nothing modal is under it, and anything raised later sits above base.
+ * z 1000 (ModalShell's base tier, 261029; was 1100): it only ever opens over
+ * a calm screen, so nothing modal is under it, and every dialog that can
+ * appear after it (ToS, import offer, migrate, hard stop, update, recovery)
+ * is base and later in the DOM, or stacked, so it lands ON TOP of the popup
+ * rather than hidden under it.
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { StartupPopupInfo } from '@shared/ipc';
 import { sei } from '../lib/ipcClient';
 import { useT } from '../lib/i18n';
+import { isFirstRunSession, markFirstRunSession } from '../lib/firstRunSession';
+import { runPopupAction } from '../lib/popupActions';
 import {
   POPUP_FIRST_LOOK_MS,
   POPUP_LOAD_TIMEOUT_MS,
@@ -39,6 +55,11 @@ interface StartupPopupProps {
 }
 
 type Phase = 'loading' | 'shown';
+
+/** Whether a dialog other than `self` is open (it sits above the popup). */
+function otherModalOpen(self: Element | null): boolean {
+  return Array.from(document.querySelectorAll('[aria-modal="true"]')).some((el) => el !== self);
+}
 
 function useViewport(): { w: number; h: number } {
   const [vp, setVp] = useState(() => ({ w: window.innerWidth, h: window.innerHeight }));
@@ -62,6 +83,10 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
   const scrimRef = useRef<HTMLDivElement | null>(null);
   const isCalmRef = useRef(isCalm);
   isCalmRef.current = isCalm;
+  /** The saved-tour check has run (it must before the first look). */
+  const [bootChecked, setBootChecked] = useState(false);
+  /** Never show in a first-run session, whatever the screen looks like. */
+  const mayShow = useCallback(() => !isFirstRunSession() && isCalmRef.current(), []);
 
   // Subscribe + race-proof pull.
   useEffect(() => {
@@ -78,12 +103,33 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
     if (active && active.phase === 'loading' && owed?.id !== active.popup.id) setActive(null);
   }, [owed, active]);
 
-  // Wait for a calm screen, then start loading the owed popup.
+  // A tour saved mid-way is resumed by boot routing, which can put Home up
+  // before it re-arms the tour: read the config first so that session counts
+  // as first-run before the popup's first look.
   useEffect(() => {
-    if (!owed || active || tried.current.has(owed.id)) return;
+    if (!owed || bootChecked) return;
+    let live = true;
+    void sei
+      .getConfig()
+      .then((cfg) => {
+        if (cfg.tutorial_state) markFirstRunSession();
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (live) setBootChecked(true);
+      });
+    return () => {
+      live = false;
+    };
+  }, [owed, bootChecked]);
+
+  // Wait for a calm screen, then start loading the owed popup. In a first-run
+  // session it never starts: the popup stays owed for the next launch.
+  useEffect(() => {
+    if (!owed || !bootChecked || active || tried.current.has(owed.id)) return;
     let timer: ReturnType<typeof setTimeout> | null = null;
     const look = (): void => {
-      if (isCalmRef.current()) {
+      if (mayShow()) {
         tried.current.add(owed.id);
         setActive({ popup: owed, phase: 'loading' });
         return;
@@ -94,7 +140,7 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [owed, active]);
+  }, [owed, bootChecked, active, mayShow]);
 
   // A page that never loads is dropped silently.
   useEffect(() => {
@@ -106,9 +152,10 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
   const onFrameLoad = useCallback(() => {
     if (!active || active.phase !== 'loading') return;
     const { popup } = active;
-    // The screen may have got busy while the page loaded: then this popup is
-    // not shown (and not recorded), and the next launch tries again.
-    if (!isCalmRef.current()) {
+    // The screen may have got busy (or a tour started) while the page
+    // loaded: then this popup is not shown (and not recorded), and the next
+    // launch tries again.
+    if (!mayShow()) {
       setActive(null);
       return;
     }
@@ -121,7 +168,7 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
         });
       })
       .catch(() => setActive(null));
-  }, [active]);
+  }, [active, mayShow]);
 
   const close = useCallback(() => setActive(null), []);
 
@@ -132,18 +179,30 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
     // Focus the dialog itself (not the X, which would draw a focus ring on
     // open), so Esc works at once and Tab reaches the X.
     scrimRef.current?.focus();
+    // A dialog raised over the popup owns Esc.
+    const closeUnlessCovered = (): void => {
+      if (!otherModalOpen(scrimRef.current)) close();
+    };
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') {
+      if (e.key === 'Escape' && !otherModalOpen(scrimRef.current)) {
         e.stopPropagation();
         close();
       }
     };
     window.addEventListener('keydown', onKey);
     // Focus inside the page: main relays the Esc (the frame swallows it).
-    const unsubEscape = sei.onStartupPopupEscape(close);
+    const unsubEscape = sei.onStartupPopupEscape(closeUnlessCovered);
+    // An action link on the page: close, then run the in-app action. Main
+    // already checked it came from the popup frame and is allow-listed;
+    // runPopupAction checks the name again and ignores unknown ones.
+    const unsubAction = sei.onStartupPopupAction((action) => {
+      close();
+      void runPopupAction(action);
+    });
     return () => {
       window.removeEventListener('keydown', onKey);
       unsubEscape();
+      unsubAction();
     };
   }, [shown, close]);
 
@@ -181,7 +240,7 @@ export function StartupPopup({ isCalm }: StartupPopupProps): React.ReactElement 
           aria-label={t('Close')}
           tabIndex={shown ? 0 : -1}
         >
-          <CloseIcon size={18} />
+          <CloseIcon size={16} />
         </button>
       </div>
     </div>

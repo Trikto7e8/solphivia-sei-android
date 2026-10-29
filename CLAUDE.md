@@ -3575,7 +3575,7 @@ user already read; mandatory updates keep the full what's-new modal.
 
 One operator page from sei.gg shown once per install, set by the optional
 `popup` field of `https://sei.gg/notices.json`:
-`{ id, url, minVersion?, maxVersion?, until?, width?, height? }`. Clients up to
+`{ id, url, minVersion?, maxVersion?, until?, width?, height?, skipIf? }`. Clients up to
 0.6.9 read only `notices` and ignore it; new clients no longer show `notices`
 (the Playtime "Inbox" button and `NoticesInboxModal` are gone). How to publish
 one is in the website repo's `README-popup.md`.
@@ -3584,6 +3584,13 @@ one is in the website repo's `README-popup.md`.
   `https://sei.gg/popup/...` (no credentials, no other host/port/scheme);
   a bad version, date or url drops the popup (fail closed); `width`/`height`
   count only as an in-bounds pair, else the page is 70% of the window.
+  `skipIf` (261029) names a condition from `POPUP_SKIP_CONDITIONS`
+  (today only `"chatgpt-connected"`: the active ChatGPT account is signed in
+  with plan usage, checked in `notices.ts` `skipConditionHolds`) under which
+  the install does not need the popup; it is re-checked at every hand-out and
+  in the loaded handler, and a skipped popup is not recorded. An unknown
+  `skipIf` drops the popup (fail closed: an older client must not show an
+  announcement it cannot target).
 - **Feed + show-once:** `src/main/notices.ts` refreshes on the updater
   cadence (startup, focus, resume, 30 min, manual check) and in dev too. An
   unreachable, unparseable or non-object feed keeps the last state (never
@@ -3599,13 +3606,47 @@ one is in the website repo's `README-popup.md`.
   preload). Loaded hidden, revealed only after main's 2xx check. Waits for a
   calm screen (`popupUiReady`: home/character/awaken/settings/credits/
   coming-soon, no modal, tour, first moment, call, game or share). Closes on
-  the X, Esc or a click outside the page.
+  the X (inside the page's top-right corner on a translucent dark disc since
+  261029, fixed colours because it sits on the page's art), Esc (ignored
+  while another dialog is open on top) or a click outside the page. z 1000
+  (ModalShell base, was 1100): every dialog that can appear after it (ToS,
+  import offer, migrate, hard stop, update, recovery) lands on top of it.
+- **Never in a first-run session (261029, `lib/firstRunSession.ts`).** A
+  session that shows the Sui onboarding scene, the tour or the first moment,
+  or boots with a saved unfinished tour (`tutorial_state`, read before the
+  first look because boot routing can put Home up before it resumes the
+  tour), holds the popup until the next launch. The calm-screen check alone
+  had gaps: a tour ending without a first moment lands on a calm Home, so
+  does the first Home visit after the first-moment card. The popup stays
+  owed (never recorded), so nothing is lost.
+- **Action links (261029, `src/shared/popupActions.ts`).** A popup button
+  that does something in the app is a plain link to
+  `https://sei.gg/popup/_action/<name>` (a page with `<base target="_blank">`
+  routes it through `setWindowOpenHandler`, otherwise `will-frame-navigate`).
+  Main cancels it (nothing is fetched), checks the name against
+  `POPUP_ACTIONS` and that it came from the committed popup frame (the
+  navigating frame shows a popup page, or, for window.open, a popup page is
+  committed in some subframe), and pushes it on `app:startup-popup-action`.
+  The renderer closes the popup and runs `runPopupAction`
+  (`lib/popupActions.ts`), which checks the name again. Unknown names and
+  action URLs from any other frame are dropped (no browser tab either); an
+  action URL is never an allowed popup page. Actions take NO parameters from
+  the URL. `chatgpt-plan` opens Settings scrolled to the ChatGPT plan row
+  (`view.focus: 'chatgpt-plan'`, a short highlight) and does what the row's
+  own button would: start "Continue with ChatGPT" (then the "Use ChatGPT
+  plan" switch with its cloud -> local confirm), run the switch for an
+  account already signed in, or only show the row when the plan is in use or
+  a sign-in is running. Clients older than the action open the URL in the
+  browser, so sei.gg must serve a fallback page at each action URL saying
+  where the feature is in the app. Adding an action = the name, a renderer
+  case, a test, and that fallback page.
 - **Main guards** (`src/main/popupFrameGuards.ts`): EVERY subframe of the
   main window is navigation-locked to the popup allow-list; any other link
   opens in the default browser through `assertSafeExternalUrl` (only when
   the navigating frame is showing a popup page, i.e. a link click; a nested
   `<iframe>` embed's first load is cancelled silently), and
-  `setWindowOpenHandler` denies all child windows the same way. A future
+  `setWindowOpenHandler` denies all child windows the same way (action links
+  excepted, above). A future
   feature that embeds another iframe in the main window must extend this
   allow-list deliberately. sei.gg sends `X-Frame-Options: SAMEORIGIN`, so the
   header (and CSP `frame-ancestors`) is dropped for allowed popup URLs loaded

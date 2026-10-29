@@ -39,7 +39,7 @@ describe('popupCardSize', () => {
 
   it('scales a too-big page down, keeping its aspect ratio', () => {
     const s = popupCardSize(1280, 800, 1920, 1080);
-    // max box: min(0.9*1280, 1280-96)=1152 x min(0.86*800, 800-96)=688
+    // max box: min(0.9*1280, 1280-48)=1152 x min(0.86*800, 800-48)=688
     expect(s.width).toBeLessThanOrEqual(1152);
     expect(s.height).toBeLessThanOrEqual(688);
     expect(s.width / s.height).toBeCloseTo(1920 / 1080, 2);
@@ -50,10 +50,10 @@ describe('popupCardSize', () => {
     expect(popupCardSize(2560, 1440, 400, 300)).toEqual({ width: 400, height: 300 });
   });
 
-  it('leaves room for the X on a tiny window', () => {
+  it('keeps a click-out margin on a tiny window', () => {
     const s = popupCardSize(400, 300);
-    expect(s.width).toBeLessThanOrEqual(400 - 96);
-    expect(s.height).toBeLessThanOrEqual(300 - 96);
+    expect(s.width).toBeLessThanOrEqual(400 - 48);
+    expect(s.height).toBeLessThanOrEqual(300 - 48);
     expect(s.width).toBeGreaterThan(0);
   });
 
@@ -77,8 +77,46 @@ describe('StartupPopup frame (source pins)', () => {
     expect(src).toContain("ok ? { popup, phase: 'shown' } : null");
     expect(src).toContain("e.key === 'Escape'");
     // Esc with focus inside the page arrives from main's relay.
-    expect(src).toContain('sei.onStartupPopupEscape(close)');
+    expect(src).toContain('sei.onStartupPopupEscape(closeUnlessCovered)');
     expect(src).toContain('e.target === e.currentTarget');
     expect(src).toContain("aria-label={t('Close')}");
+  });
+
+  it('runs a popup action only while shown, closing first', () => {
+    expect(src).toContain('sei.onStartupPopupAction((action) => {');
+    expect(src).toMatch(/onStartupPopupAction\(\(action\) => \{\s*close\(\);\s*void runPopupAction\(action\);/);
+  });
+
+  it('never looks in a first-run session, and reads the saved tour first', () => {
+    expect(src).toContain('!isFirstRunSession() && isCalmRef.current()');
+    expect(src).toContain('if (cfg.tutorial_state) markFirstRunSession();');
+    expect(src).toContain('if (!owed || !bootChecked || active || tried.current.has(owed.id)) return;');
+  });
+
+  it('leaves Esc to a dialog raised over the popup', () => {
+    expect(src).toContain("e.key === 'Escape' && !otherModalOpen(scrimRef.current)");
+  });
+});
+
+describe('StartupPopup styles (source pins)', () => {
+  const css = readFileSync(resolve(__dirname, '../components/StartupPopup.module.css'), 'utf-8');
+  const block = (sel: string): string => {
+    const m = css.match(new RegExp(`\\n${sel.replace('.', '\\.')} \\{([^}]*)\\}`));
+    return m ? m[1] : '';
+  };
+
+  it('sits on the base modal tier so later dialogs land above it', () => {
+    expect(block('.scrim')).toMatch(/z-index:\s*1000;/);
+  });
+
+  it('puts the X inside the page corner, 28-32 px, with no border', () => {
+    const close = block('.close');
+    expect(close).toMatch(/top:\s*14px;/);
+    expect(close).toMatch(/right:\s*14px;/);
+    const size = Number(close.match(/width:\s*(\d+)px;/)?.[1]);
+    expect(size).toBeGreaterThanOrEqual(28);
+    expect(size).toBeLessThanOrEqual(32);
+    expect(close).toMatch(/border:\s*none;/);
+    expect(css).toContain('.close:hover');
   });
 });

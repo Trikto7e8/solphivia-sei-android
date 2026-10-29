@@ -39,6 +39,7 @@ import {
 } from '../shared/ipc';
 import type { ChatgptStatus } from '../shared/chatgptPlan';
 import type { OverlayPointerSample } from '../shared/overlayPointer';
+import type { PopupAction } from '../shared/popupActions';
 
 const api: RendererApi = {
   // Game adapters (M0): {characterId, game} (main also still accepts a bare id).
@@ -678,6 +679,11 @@ const api: RendererApi = {
     const handler = (): void => cb();
     ipcRenderer.on(IpcChannel.app.startupPopupEscape, handler);
     return () => ipcRenderer.off(IpcChannel.app.startupPopupEscape, handler);
+  },
+  onStartupPopupAction(cb: (action: PopupAction) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, action: PopupAction) => cb(action);
+    ipcRenderer.on(IpcChannel.app.startupPopupAction, handler);
+    return () => ipcRenderer.off(IpcChannel.app.startupPopupAction, handler);
   },
 
   // --- Window chrome (frameless custom titlebar on Windows/Linux) ---

@@ -493,7 +493,7 @@ describe('261023 settings tidy: web search tab + compact ChatGPT plan row', () =
     expect(credits).not.toContain('ChatGPT plan, separate from Sei plans');
     expect(credits).not.toContain('Have ChatGPT Plus or Pro?');
     expect(credits).toContain("navigate({ kind: 'settings', useChatgptPlan: true })");
-    expect(readFileSync(USE_UI_STORE_TS, 'utf8')).toContain("{ kind: 'settings'; useChatgptPlan?: boolean }");
+    expect(readFileSync(USE_UI_STORE_TS, 'utf8')).toContain("{ kind: 'settings'; useChatgptPlan?: boolean; focus?: 'chatgpt-plan' }");
   });
 
   it('Settings runs the intent once through the normal switch paths, then clears it', () => {

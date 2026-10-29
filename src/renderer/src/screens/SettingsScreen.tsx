@@ -56,7 +56,7 @@ import { GamesSettingsGroup } from '../components/settings/GamesSettingsGroup';
 import { SearchSettingsSection } from '../components/settings/SearchSettingsSection';
 import { LocalImportRow } from '../components/settings/LocalImportRow';
 import { FacepackDevRow } from '../components/settings/FacepackDevRow';
-import { ChatgptPlanSettings } from '../components/ChatgptPlanSettings';
+import { ChatgptPlanSettings, revealChatgptPlanRows } from '../components/ChatgptPlanSettings';
 import { ChatgptLinkRow } from '../components/settings/ChatgptLinkRow';
 import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
@@ -768,6 +768,17 @@ export function SettingsScreen(): React.ReactElement {
     // onChangeProvider closes over cfg, which is a dependency already.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [chatgptPlanIntent, cfg, chatgptStatus, aiBackendKind]);
+
+  // 261029: view.focus (the startup popup's chatgpt-plan action) scrolls to
+  // the ChatGPT plan rows and flashes them. Cleared at once, keeping any
+  // useChatgptPlan intent, so a later visit does not scroll again.
+  const focusTarget = useUiStore((s) => (s.view.kind === 'settings' ? s.view.focus ?? null : null));
+  useEffect(() => {
+    if (!focusTarget) return;
+    const v = useUiStore.getState().view;
+    if (v.kind === 'settings') useUiStore.setState({ view: { ...v, focus: undefined } });
+    if (focusTarget === 'chatgpt-plan') revealChatgptPlanRows();
+  }, [focusTarget]);
 
   // ui-A7: persist developer-console toggle. Update zustand FIRST so the UI
   // reacts immediately, then write through (roll back on failure).

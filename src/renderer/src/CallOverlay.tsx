@@ -16,11 +16,16 @@
  *    Live2D companion keeps a clean silhouette until edit mode) and the
  *    chrome buttons: the pencil with the hold-to-drag move button above it,
  *    plus mute + captions while a call/backseat is live. The window is
- *    click-through by default with pointer events still FORWARDED (main sets
- *    ignoreMouseEvents {forward: true}) so hover works; real clicks
- *    (avatarOverlayInteractive) are requested only while the pointer is over
- *    the BUTTON COLUMN, with a short leave-delay so the flag cannot flap at
- *    the column's edge.
+ *    click-through by default with pointer events still FORWARDED where the
+ *    OS can (main sets ignoreMouseEvents {forward: true}), and hover has a
+ *    second, OS-independent source (261029): main's cursor poll pushes the
+ *    pointer in window-local coordinates (onAvatarOverlayPointer). Without
+ *    it the pencil never appeared wherever forwarding did not reach the
+ *    page (Linux always; a user's Live2D setup on 261028), and the pencil is
+ *    the only way into edit mode. Real clicks (avatarOverlayInteractive) are
+ *    requested only while the pointer is over the BUTTON COLUMN (DOM hover,
+ *    with a short leave-delay so the flag cannot flap at the column's edge,
+ *    or the polled pointer inside the column's rect).
  *  - EDIT: the pencil becomes a tick (click to leave) and the corner handles
  *    (the only way to RESIZE the window) come up; the whole window stays
  *    interactive for the whole mode, hover or not. The wheel and drag act on
@@ -37,6 +42,11 @@
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { AvatarCamera, AvatarEmotion, CallOverlayState } from '@shared/ipc';
+import {
+  overlayChromeVisible,
+  pointerOverRect,
+  type OverlayPointerSample,
+} from '@shared/overlayPointer';
 import { sei } from './lib/ipcClient';
 import { portraitSrc } from './lib/portraitSrc';
 import { pickPalette } from './lib/portraitPalettes';
@@ -90,6 +100,10 @@ export function CallOverlay(): React.ReactElement | null {
   stateRef.current = state;
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
+  /** Main's polled pointer (window-local), the hover source that does not
+   * depend on OS mouse forwarding. Null until the first push. */
+  const [polled, setPolled] = useState<OverlayPointerSample | null>(null);
+  const polledRef = useRef<OverlayPointerSample | null>(null);
   /** Live2D tiles that failed to load — they fall back to the static tile. */
   const [live2dFailed, setLive2dFailed] = useState<Record<string, boolean>>({});
   const { w: winW, h: winH } = useWindowSize();
@@ -109,6 +123,14 @@ export function CallOverlay(): React.ReactElement | null {
     const offLevel = sei.onAvatarOverlayLevel?.(({ id, level }) => {
       levelRefFor(id).current = level;
     });
+    const offPointer = sei.onAvatarOverlayPointer?.((sample) => {
+      // The poll saw the pointer LEAVE: drop a DOM hover too. A leave event
+      // is not guaranteed once the window flips back to click-through, and
+      // a stuck hover would pin the chrome on screen.
+      if (polledRef.current?.inside && !sample.inside) setHovered(false);
+      polledRef.current = sample;
+      setPolled(sample);
+    });
     // Main seeds the state with a push at window-reveal, but that push can land
     // BEFORE this subscription exists (React effects run after first paint) —
     // when it did, the overlay stayed blank until the next speaking change. Pull
@@ -122,6 +144,7 @@ export function CallOverlay(): React.ReactElement | null {
     return () => {
       offState?.();
       offLevel?.();
+      offPointer?.();
     };
   }, []);
 
@@ -152,9 +175,19 @@ export function CallOverlay(): React.ReactElement | null {
     },
     [],
   );
+  // The same question answered from the polled pointer: is it inside the
+  // button column's rect? Re-measured per sample and when the column mounts.
+  const btnColRef = useRef<HTMLDivElement | null>(null);
+  const chromeShown = overlayChromeVisible({ domHovered: hovered, polled, editing });
+  const [polledOverChrome, setPolledOverChrome] = useState(false);
   useEffect(() => {
-    void sei.avatarOverlayInteractive?.(overChrome || editing).catch(() => {});
-  }, [overChrome, editing]);
+    const r = btnColRef.current?.getBoundingClientRect() ?? null;
+    setPolledOverChrome(pointerOverRect(polled, r));
+  }, [polled, chromeShown]);
+  const interactive = overChrome || polledOverChrome || editing;
+  useEffect(() => {
+    void sei.avatarOverlayInteractive?.(interactive).catch(() => {});
+  }, [interactive]);
   const onEnter = useCallback((): void => setHovered(true), []);
   const onLeave = useCallback((): void => setHovered(false), []);
 
@@ -346,7 +379,7 @@ export function CallOverlay(): React.ReactElement | null {
           for static tiles — a Live2D companion stays frameless in view mode
           (the box around a transparent character reads as a bug, 260806). */}
       <div
-        className={`${styles.outline} ${editing || (hovered && !hasLive2d) ? styles.outlineOn : ''}`}
+        className={`${styles.outline} ${editing || (chromeShown && !hasLive2d) ? styles.outlineOn : ''}`}
       />
 
       <div className={styles.row}>
@@ -423,9 +456,12 @@ export function CallOverlay(): React.ReactElement | null {
           button directly above it (the only way to MOVE the window, both
           modes since 260806), then mute + captions while a call/backseat is
           live. The column is the overlay's only interactive region in view
-          mode — its enter/leave drive the click-through flip. */}
-      {(hovered || editing) && (
+          mode — its enter/leave (or the polled pointer inside its rect)
+          drive the click-through flip. Shown by overlayChromeVisible: the
+          same rule for a Live2D, rig or static tile. */}
+      {chromeShown && (
         <div
+          ref={btnColRef}
           className={styles.btnCol}
           onPointerDown={(e) => e.stopPropagation()}
           onPointerEnter={onChromeEnter}

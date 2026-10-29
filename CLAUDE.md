@@ -1269,7 +1269,15 @@ GONE; the overlay is AI-only. Design doc: `.planning/avatar-v06-260804.md`.
 
 - **Window** (`src/main/callOverlay.ts`): click-through by default with
   `setIgnoreMouseEvents(true, {forward: true})` so hover still reaches the
-  page (forward is Win/mac only; Linux stays display-only). Interaction is
+  page where the OS forwards (Win/mac only). Hover ALSO comes from main's
+  cursor poll (261029): it pushes the pointer in window-local DIPs over
+  `avatar:overlay-pointer-state` (every sample while inside, one on leave),
+  and the renderer ORs it with DOM hover (`overlayChromeVisible`) and
+  hit-tests the button column (`pointerOverRect`) to request clicks, all in
+  `src/shared/overlayPointer.ts`. Never gate the chrome on DOM hover alone:
+  the 261028 report (Live2D user, pencil never appeared) was forwarding not
+  reaching the page, and the pencil is the only way into edit mode; Linux
+  had no pencil at all before this. Interaction is
   split into VIEW and EDIT modes (260805; camera rework + per-region
   interactivity 260806): view cannot resize — hover shows the chrome buttons
   bottom-right, raised one button height off the bottom edge (pencil with
@@ -1435,8 +1443,10 @@ GONE; the overlay is AI-only. Design doc: `.planning/avatar-v06-260804.md`.
   wander keeps the 2.6-7.5 s saccade cadence with correlated small steps +
   rare larger glances (full-range jumps every few hundred ms read as
   TWITCHING, the 260805 report); cursor-follow rides main's cheap
-  `screen.getCursorScreenPoint()` poll (120 ms, armed only while a Live2D
-  tile shows), pushed normalized around the window center over
+  `screen.getCursorScreenPoint()` poll (120 ms, armed whenever the overlay
+  window is up since 261029 because it also feeds hover; the gaze push
+  below is still sent only while a Live2D tile shows), pushed normalized
+  around the window center over
   `avatar:overlay-cursor-state` — only the overlay window receives it, so
   the profile preview just wanders. **The focusController is fed a per-frame
   GLIDING target with `instant=true`, never a stepped one** — the SDK's

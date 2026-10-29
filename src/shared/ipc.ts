@@ -1351,6 +1351,26 @@ export type AuthState =
   | { kind: 'signed_in'; user: AuthUser };
 
 /**
+ * 261029 (login lock on restart): main's auth state read on demand, for a
+ * renderer that must route before main's first `auth:state` push can be relied
+ * on. `scopeReady` is true when the data scope already matches `state` and no
+ * switch is pending, so no `app:scope-changed` push is still owed for it.
+ * Main answers only after it has loaded the persisted session.
+ */
+export interface AuthSnapshot {
+  state: AuthState;
+  scopeReady: boolean;
+  /** Main has finished loading the persisted session (false = answered on its time bound). */
+  loaded: boolean;
+  /**
+   * The active profile scope: the account's lowercased user id, or 'local'.
+   * Lets a caller check the profile is the account it expects, not just that
+   * the scope agrees with whatever main's state is right now.
+   */
+  scope: string;
+}
+
+/**
  * `needsVerification` (260804, PIN migration): Supabase refused the sign-in with
  * `email_not_confirmed`. Per D-04 this is NOT an error — the account exists and
  * the password was right — so it stays on the `ok: true` side. But under the
@@ -2803,6 +2823,12 @@ export interface RendererApi {
    */
   setCaptchaToken(token: string | null): Promise<void>;
   onAuthState(cb: (state: AuthState) => void): Unsubscribe;
+  /**
+   * 261029: main's current auth state and whether the data scope already
+   * follows it. Resolves once main has loaded the persisted session (bounded).
+   * The boot routing reads this instead of trusting the store's default.
+   */
+  authSnapshot(): Promise<AuthSnapshot>;
 
   // --- ToS / Privacy gate (Phase 11 plan 12) ---
   /** Whether the signed-in user has accepted the current TOS_VERSION + PRIVACY_VERSION. */
@@ -3236,6 +3262,13 @@ export interface ScopeChangedEvent {
   scope: string;
   /** Why the scope changed — drives renderer copy/telemetry only. */
   reason: 'sign-in' | 'sign-out' | 'switch';
+  /**
+   * 261029: the session was already signed in (restored at launch, or brought
+   * back by a token refresh after the boot read missed it). The scope still
+   * moves and the renderer still reloads, but nobody just signed in, so no
+   * sign-in prompts (the local-import offer) follow it.
+   */
+  restored?: boolean;
 }
 
 /** Result of inspecting the `local` profile for importable data (260603). */
@@ -3926,6 +3959,8 @@ export const IpcChannel = {
   },
   auth: {
     state: 'auth:state',
+    // 261029: request/response read of the auth state + scope readiness.
+    snapshot: 'auth:snapshot',
     signinPassword: 'auth:signin-password',
     signupPassword: 'auth:signup-password',
     signinGoogle: 'auth:signin-google',

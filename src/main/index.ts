@@ -770,22 +770,19 @@ async function bootstrap(): Promise<void> {
 
   // 0a. Per-profile partitioning (260603) — determine the active scope from
   //     the persisted Supabase session BEFORE any per-account store is read or
-  //     written. getSession() reads the storage adapter wired above and makes
-  //     no network call in supabase-js v2. Signed in at boot → the account's
-  //     UUID profile owns the existing data; signed out → the anonymous
-  //     'local' profile. The auth-event subscription (step 5b) re-points the
-  //     scope on any later sign-in/out/swap.
+  //     written. Signed in at boot → the account's UUID profile owns the
+  //     existing data; signed out → the anonymous 'local' profile. The
+  //     auth-event subscription (step 5b) re-points the scope on any later
+  //     sign-in/out/swap, and initAuthState moves it when its own session
+  //     load disagrees with this one.
+  //     261029: read the stored session directly. getSession() is NOT a
+  //     storage-only read: it refreshes an expired access token over the
+  //     network (the usual state after a restart), and a refresh that failed
+  //     here set 'local' under a session initAuthState then restored, which
+  //     locked the user on the sign-in panel (see persistedSessionUserId).
   {
-    const { setActiveScope } = await import('./paths');
-    let bootScope: string | null = null;
-    try {
-      const { getClient } = await import('./auth/supabaseClient');
-      const { data: { session } } = await getClient().auth.getSession();
-      bootScope = session?.user?.id ?? null;
-    } catch (err) {
-      logger.warn(`boot scope detection failed, defaulting to local: ${(err as Error).message}`);
-    }
-    setActiveScope(bootScope);
+    const { applyBootScope } = await import('./auth/bootScope');
+    const bootScope = await applyBootScope({ warn: (m) => logger.warn(m) });
     logger.info(`active profile scope: ${bootScope ?? 'local'}`);
   }
 

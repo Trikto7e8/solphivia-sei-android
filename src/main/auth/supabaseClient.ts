@@ -236,18 +236,38 @@ export async function persistedSessionUserId(
  * Clears the stored session first, then lets supabase-js sign out locally: with
  * nothing stored it has no logout request to make, so it clears its state and
  * emits SIGNED_OUT to every subscriber (authState moves the scope, jwtBridge
- * drops the bot's JWT). Never throws.
+ * drops the bot's JWT).
+ *
+ * If that local sign-out fails anyway (the clear failed, or a refresh wrote
+ * the session back in between, and its reload then failed offline), no
+ * SIGNED_OUT is sent: the session is cleared again and the auto-refresh
+ * ticker stopped explicitly, or the next tick would bring the session back
+ * (TOKEN_REFRESHED) once the network returns. Never throws.
  */
 export async function dropSessionLocally(deps: { client?: SupabaseClient } = {}): Promise<void> {
+  const client = deps.client ?? getClient();
+  const clear = async (): Promise<void> => {
+    try {
+      await clearPersistedSession({ client });
+    } catch (err) {
+      console.warn(`[sei] clearing the stored session failed: ${(err as Error).message}`);
+    }
+  };
+  await clear();
+  let failed = false;
   try {
-    await clearPersistedSession({ client: deps.client });
-  } catch (err) {
-    console.warn(`[sei] clearing the stored session failed: ${(err as Error).message}`);
-  }
-  try {
-    await (deps.client ?? getClient()).auth.signOut({ scope: 'local' });
+    const { error } = await client.auth.signOut({ scope: 'local' });
+    failed = !!error;
   } catch {
-    /* the storage is already clear; authState's transitionToLocal covers the rest */
+    failed = true;
+  }
+  if (!failed) return;
+  console.warn('[sei] local sign-out failed; clearing the stored session again');
+  await clear();
+  try {
+    await client.auth.stopAutoRefresh();
+  } catch {
+    /* nothing to stop */
   }
 }
 

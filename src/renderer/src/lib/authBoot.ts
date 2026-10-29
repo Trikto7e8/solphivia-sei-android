@@ -45,6 +45,13 @@ export async function readAuthSnapshot(): Promise<AuthSnapshot | null> {
   }
 }
 
+function hasSnapshotBridge(): boolean {
+  return typeof (sei as Partial<typeof sei> | undefined)?.authSnapshot === 'function';
+}
+
+/** Tries of the first read when the bridge exists but the call failed. */
+const FIRST_READ_TRIES = 4;
+
 /**
  * The snapshot once main has loaded its auth state and the data scope follows
  * it, polling while either is still under way (each bounded). `waited` says
@@ -56,6 +63,11 @@ export async function readAuthSnapshot(): Promise<AuthSnapshot | null> {
  * their own account's profile, so it is polled until main has loaded. If the
  * bound passes first, the result still has `loaded: false` and the caller must
  * not apply its state (see resolveBootRoute).
+ *
+ * The load bound is one deadline from the start of the first call: each
+ * auth:snapshot can itself wait on main (up to 30 s), so a per-poll clock
+ * stretched the splash well past it. A first read that failed (IPC threw) is
+ * retried a few times before the caller falls back to the store.
  */
 export async function waitForAuthScope(
   opts: {
@@ -71,20 +83,41 @@ export async function waitForAuthScope(
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const now = opts.now ?? Date.now;
   const cancelled = (): boolean => opts.isCancelled?.() === true;
-  let snapshot = await readAuthSnapshot();
+  const loadDeadline = now() + loadTimeoutMs;
+  // One read, given up on (null) at `deadline` even if main has not answered.
+  const readBy = async (deadline: number): Promise<AuthSnapshot | null> => {
+    const left = deadline - now();
+    if (left <= 0) return null;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        readAuthSnapshot(),
+        new Promise<null>((r) => {
+          timer = setTimeout(() => r(null), left);
+        }),
+      ]);
+    } finally {
+      clearTimeout(timer);
+    }
+  };
   let waited = false;
-  const loadStart = now();
-  while (snapshot && !snapshot.loaded && now() - loadStart < loadTimeoutMs && !cancelled()) {
+  let snapshot = await readBy(loadDeadline);
+  for (let i = 1; !snapshot && i < FIRST_READ_TRIES && hasSnapshotBridge() && now() < loadDeadline && !cancelled(); i++) {
     waited = true;
     await sleep(POLL_MS);
-    snapshot = (await readAuthSnapshot()) ?? snapshot;
+    snapshot = await readBy(loadDeadline);
+  }
+  while (snapshot && !snapshot.loaded && now() < loadDeadline && !cancelled()) {
+    waited = true;
+    await sleep(POLL_MS);
+    snapshot = (await readBy(loadDeadline)) ?? snapshot;
   }
   if (!snapshot || !snapshot.loaded) return { snapshot, waited };
-  const readyStart = now();
-  while (!snapshot.scopeReady && now() - readyStart < timeoutMs && !cancelled()) {
+  const readyDeadline = now() + timeoutMs;
+  while (!snapshot.scopeReady && now() < readyDeadline && !cancelled()) {
     waited = true;
     await sleep(POLL_MS);
-    snapshot = (await readAuthSnapshot()) ?? snapshot;
+    snapshot = (await readBy(readyDeadline)) ?? snapshot;
   }
   return { snapshot, waited };
 }

@@ -138,6 +138,10 @@ function fakeServer(): FakeServer {
         signInCount += 1;
         return json(sessionBody(now, 900 + signInCount, body.email === 'other@example.com' ? other : user));
       }
+      if (url.endsWith('/auth/v1/verify')) {
+        signInCount += 1;
+        return json(sessionBody(now, 950 + signInCount));
+      }
       if (url.includes('/logout')) {
         s.logoutCalls += 1;
         return new Response(null, { status: 204 });
@@ -157,13 +161,24 @@ function memoryStorage(seed: Record<string, string>): {
   setItem(k: string, v: string): Promise<void>;
   removeItem(k: string): Promise<void>;
   has(k: string): boolean;
+  /** The next `n` removes of `k` throw (a locked or failing disk). */
+  failRemoves(k: string, n: number): void;
 } {
   const m = new Map(Object.entries(seed));
+  const failing = new Map<string, number>();
   return {
     getItem: async (k) => m.get(k) ?? null,
     setItem: async (k, v) => void m.set(k, v),
-    removeItem: async (k) => void m.delete(k),
+    removeItem: async (k) => {
+      const n = failing.get(k) ?? 0;
+      if (n > 0) {
+        failing.set(k, n - 1);
+        throw new Error('EBUSY: remove failed');
+      }
+      m.delete(k);
+    },
     has: (k) => m.has(k),
+    failRemoves: (k, n) => void failing.set(k, n),
   };
 }
 
@@ -276,8 +291,12 @@ describe('restart with an expired access token', () => {
     const { error } = await client.auth.refreshSession();
     expect(error).toBeNull();
     await flush();
+    await _scopeSwitchSettledForTests();
     expect(getCurrentAuthState().kind).toBe('signed_in');
     expect(switchScopeMock).not.toHaveBeenCalled();
+    // The session coming back online is not a sign-in.
+    expect(capture).not.toHaveBeenCalledWith('signed_in');
+    expect(applyCloudDefaultForSignIn).not.toHaveBeenCalled();
   });
 
   it('a session the server rejects at launch moves the scope to local', async () => {
@@ -540,6 +559,24 @@ describe('sign-in follow-up steps', () => {
     expect(capture).not.toHaveBeenCalledWith('signed_in');
     expect(applyCloudDefaultForSignIn).not.toHaveBeenCalled();
   });
+
+  it('a password-reset session (PASSWORD_RECOVERY, not SIGNED_IN) is a sign-in', async () => {
+    const server = fakeServer();
+    await boot(server, {}); // signed out
+    const events: string[] = [];
+    client.auth.onAuthStateChange((e) => void events.push(e));
+    // authHandlers' reset-code path: verifyOtp type 'recovery'.
+    const { error } = await client.auth.verifyOtp({ email: 'player@example.com', token: '123456', type: 'recovery' });
+    expect(error).toBeNull();
+    await flush();
+    await _scopeSwitchSettledForTests();
+    expect(events).toContain('PASSWORD_RECOVERY');
+    expect(events).not.toContain('SIGNED_IN');
+    expect(getActiveScope()).toBe(USER_ID);
+    expect(switchScopeMock).toHaveBeenCalledWith(USER_ID, { restored: false });
+    expect(vi.mocked(capture).mock.calls.filter(([e]) => e === 'signed_in')).toHaveLength(1);
+    expect(applyCloudDefaultForSignIn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('auth snapshot before the session load', () => {
@@ -563,7 +600,7 @@ describe('sign-out', () => {
     expect((await getAuthSnapshot()).scopeReady).toBe(true);
   });
 
-  it('a SIGNED_OUT moves the scope and counts as a sign-out', async () => {
+  it('a SIGNED_OUT nobody asked for moves the scope and is tagged session_rejected', async () => {
     const server = fakeServer();
     await boot(server);
     await flush();
@@ -572,7 +609,7 @@ describe('sign-out', () => {
     await _scopeSwitchSettledForTests();
     expect(switchScopeMock).toHaveBeenCalledWith(null, { restored: false });
     expect(getActiveScope()).toBe('local');
-    expect(capture).toHaveBeenCalledWith('signed_out');
+    expect(capture).toHaveBeenCalledWith('signed_out', { reason: 'session_rejected' });
   });
 
   it('offline: signing out clears the stored session, so the next launch is signed out', async () => {
@@ -605,5 +642,31 @@ describe('sign-out', () => {
     expect(server.logoutCalls).toBe(1);
     expect(storage.has(STORAGE_KEY)).toBe(false);
     expect(getActiveScope()).toBe('local');
+    // The user's own sign-out carries no rejection tag.
+    expect(capture).toHaveBeenCalledWith('signed_out', undefined);
+    expect(capture).not.toHaveBeenCalledWith('signed_out', { reason: 'session_rejected' });
+  });
+
+  it('offline, when the local sign-out fails too: clears again and stops the refresh ticker', async () => {
+    const server = fakeServer();
+    server.networkDown = true;
+    await boot(server); // the stored session stays expired: any load must refresh
+    await flush();
+    await _scopeSwitchSettledForTests();
+    const stopTicker = vi.spyOn(client.auth, 'stopAutoRefresh');
+    storage.failRemoves(STORAGE_KEY, 1); // the first clear fails
+    await signOut();
+    await flush();
+    await _scopeSwitchSettledForTests();
+    expect(stopTicker).toHaveBeenCalled();
+    expect(storage.has(STORAGE_KEY)).toBe(false);
+    expect(getCurrentAuthState().kind).toBe('local');
+    expect(getActiveScope()).toBe('local');
+    // Network back: nothing left to refresh back into a session.
+    server.networkDown = false;
+    const { data } = await client.auth.getSession();
+    expect(data.session).toBeNull();
+    await flush();
+    expect(getCurrentAuthState().kind).toBe('local');
   });
 });

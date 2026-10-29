@@ -62,6 +62,17 @@ let restoredAccessToken: string | null = null;
 let lastAccessToken: string | null = null;
 /** Bumped on every auth event, so an async check can tell a newer event landed. */
 let authEventSeq = 0;
+/** The next sign-out is one the user asked for (noteUserSignOut). */
+let userSignOutRequested = false;
+
+/**
+ * 261029: the user asked to sign out (the sign-out button, account deletion).
+ * Call before supabase signOut(); every other sign-out is tagged
+ * `reason: 'session_rejected'` in analytics.
+ */
+export function noteUserSignOut(): void {
+  userSignOutRequested = true;
+}
 
 /** Resolves once initAuthState has loaded the persisted session (or failed to). */
 let authLoaded = false;
@@ -394,7 +405,14 @@ async function afterScopeSwitch(target: string | null, opts: { restored: boolean
     // subsequent events revert to the anonymous install id.
     try {
       const { capture, resetUser } = await import('../analytics');
-      if (!opts.restored) capture('signed_out');
+      // A sign-out nobody asked for (the auth server refused the session at
+      // launch or on a refresh, or the account was revoked) is tagged, so it
+      // does not read as a user signing out.
+      if (!opts.restored) {
+        const byUser = userSignOutRequested;
+        userSignOutRequested = false;
+        capture('signed_out', byUser ? undefined : { reason: 'session_rejected' });
+      }
       resetUser();
     } catch { /* best-effort */ }
   }
@@ -575,9 +593,14 @@ function applyAuthEvent(event: AuthChangeEvent, session: Session | null): void {
   const token = session?.access_token ?? null;
   // A real sign-in brings a session this process has not seen. supabase-js
   // also emits SIGNED_IN for the stored session coming back (its startup
-  // recovery), which is not someone signing in.
+  // recovery), which is not someone signing in. A password-reset session
+  // arrives as PASSWORD_RECOVERY instead of SIGNED_IN (verifyOtp type
+  // 'recovery', and a PKCE recovery link), and it is a sign-in too.
   const realSignIn =
-    event === 'SIGNED_IN' && token !== null && token !== restoredAccessToken && token !== lastAccessToken;
+    (event === 'SIGNED_IN' || event === 'PASSWORD_RECOVERY') &&
+    token !== null &&
+    token !== restoredAccessToken &&
+    token !== lastAccessToken;
   if (token) lastAccessToken = token;
   applySession(session);
   if (currentState.kind !== 'signed_in') {
@@ -585,6 +608,7 @@ function applyAuthEvent(event: AuthChangeEvent, session: Session | null): void {
     lastAccessToken = null;
   } else if (realSignIn) {
     signInStepsOwed = currentState.user.id.toLowerCase();
+    userSignOutRequested = false;
   }
   broadcastAuthState(mainWindowRef);
   // Item 3: (re)evaluate the cross-device verification poll on every auth
@@ -598,9 +622,10 @@ function applyAuthEvent(event: AuthChangeEvent, session: Session | null): void {
   // refresh failed while initAuthState's succeeded, which left the app
   // signed in with no app:scope-changed push and the sign-in panel waiting
   // for one forever. A TOKEN_REFRESHED / USER_UPDATED for the same user with
-  // the scope already on that user is still a no-op. Only SIGNED_IN and
-  // SIGNED_OUT are someone signing in or out; any other event that moves
-  // the scope is a session coming back (a refresh after an offline launch).
+  // the scope already on that user is still a no-op. Only a real sign-in
+  // (SIGNED_IN or PASSWORD_RECOVERY with a new token) and SIGNED_OUT are
+  // someone signing in or out; any other event that moves the scope is a
+  // session coming back (a refresh after an offline launch).
   const moved = followAuthScope({ restored: !realSignIn && event !== 'SIGNED_OUT' });
   // A real sign-in onto the profile that is already active still runs its
   // sign-in steps (cloud default, backfill, signed_in, roster sync) once.
@@ -745,6 +770,7 @@ export function _disposeForTests(): void {
   restoredAccessToken = null;
   lastAccessToken = null;
   authEventSeq = 0;
+  userSignOutRequested = false;
   authLoaded = false;
   authInit = new Promise<void>((r) => {
     resolveAuthInit = r;

@@ -95,6 +95,40 @@ describe('waitForAuthScope', () => {
     bridge.authSnapshot = () => Promise.resolve(clock.now() < 51_000 ? notLoaded : signedIn(true));
     expect(await waitForAuthScope(clock)).toEqual({ snapshot: signedIn(true), waited: true });
   });
+  it('the 90 s load bound is one deadline, even when each read itself waits on main', async () => {
+    // Main's auth:snapshot handler can hold each call up to 30 s; the old
+    // per-poll clock started after the first read and ran to ~150 s.
+    let t = 0;
+    const now = (): number => t;
+    const sleep = vi.fn(async (ms: number) => {
+      t += ms;
+    });
+    bridge.authSnapshot = async () => {
+      t += 30_000;
+      return notLoaded;
+    };
+    const res = await waitForAuthScope({ now, sleep });
+    expect(res.snapshot).toEqual(notLoaded);
+    expect(t).toBeLessThanOrEqual(AUTH_LOAD_WAIT_MS + 1_000);
+  });
+  it('retries a first read that failed (IPC threw) before giving up', async () => {
+    const answers: Array<() => Promise<unknown>> = [
+      () => Promise.reject(new Error('no handler yet')),
+      () => Promise.reject(new Error('no handler yet')),
+      () => Promise.resolve(signedIn(true)),
+    ];
+    bridge.authSnapshot = () => (answers.shift() ?? (() => Promise.resolve(signedIn(true))))();
+    const clock = fakeClock();
+    expect(await waitForAuthScope(clock)).toEqual({ snapshot: signedIn(true), waited: true });
+    expect(clock.sleep).toHaveBeenCalledTimes(2);
+  });
+  it('falls back (null) after a few failed first reads', async () => {
+    bridge.authSnapshot = () => Promise.reject(new Error('broken'));
+    const clock = fakeClock();
+    const res = await waitForAuthScope(clock);
+    expect(res.snapshot).toBeNull();
+    expect(clock.sleep).toHaveBeenCalledTimes(3);
+  });
   it('stops when cancelled, and passes through a missing bridge', async () => {
     bridge.authSnapshot = () => Promise.resolve(signedIn(false));
     const sleep = vi.fn(noSleep);

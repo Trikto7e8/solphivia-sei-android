@@ -27,11 +27,27 @@ import type { BrowserWindow } from 'electron';
 import type { Session, User } from '@supabase/supabase-js';
 import { getClient } from './supabaseClient';
 import { getTosAcceptance } from './tosGate';
-import { IpcChannel, type AuthState, type AuthUser } from '../../shared/ipc';
+import { getActiveScope, SCOPE_LOCAL } from '../paths';
+import { isScopeSwitchPending } from '../profile/scopeBarrier';
+import { IpcChannel, type AuthSnapshot, type AuthState, type AuthUser } from '../../shared/ipc';
 
 let currentState: AuthState = { kind: 'local' };
 let mainWindowRef: BrowserWindow | null = null;
 let subscription: { unsubscribe: () => void } | null = null;
+
+/**
+ * 261029 (login lock on restart). The profile scope the auth layer last asked
+ * for, and the switch moving the data scope there. See followAuthScope.
+ */
+let requestedScope: string | null = null;
+let scopeSwitchInFlight: Promise<void> | null = null;
+
+/** Resolves once initAuthState has loaded the persisted session (or failed to). */
+let authLoaded = false;
+let resolveAuthInit: () => void = () => {};
+let authInit: Promise<void> = new Promise<void>((r) => {
+  resolveAuthInit = r;
+});
 
 function toAuthUser(user: User): AuthUser {
   return {
@@ -196,12 +212,168 @@ function broadcastOnDidFinishLoad(): void {
   broadcastAuthState(mainWindowRef);
 }
 
+/** The profile scope an auth state belongs in: the user's id, or null for 'local'. */
+function scopeFor(state: AuthState): string | null {
+  return state.kind === 'signed_in' ? state.user.id.toLowerCase() : null;
+}
+
+function activeScopeUser(): string | null {
+  const scope = getActiveScope();
+  return scope === SCOPE_LOCAL ? null : scope;
+}
+
+/**
+ * Move the data scope to where the current auth state says it belongs, when it
+ * is not there already (or on its way there). Returns true when it started a
+ * switch. Never throws; a failed switch is retried by the next auth event,
+ * since the scope still disagrees with the state then.
+ *
+ * `restored` marks a session that was already signed in (cold start, a token
+ * refresh that brought back a session the boot read missed): the scope still
+ * moves, but none of the first-sign-in side effects (profile backfill,
+ * `signed_in` analytics, roster sync) run for it.
+ */
+function followAuthScope(opts: { restored: boolean }): boolean {
+  const target = scopeFor(currentState);
+  const current = scopeSwitchInFlight ? requestedScope : activeScopeUser();
+  if (current === target) return false;
+  requestedScope = target;
+  const switched = (async () => {
+    try {
+      const { switchScopeForAuth } = await import('../profile/profileScope');
+      await switchScopeForAuth(target, { restored: opts.restored });
+    } catch (err) {
+      console.warn(`[sei] scope switch failed: ${(err as Error).message}`);
+    }
+  })();
+  const tracked: Promise<void> = switched.finally(() => {
+    if (scopeSwitchInFlight === tracked) scopeSwitchInFlight = null;
+  });
+  scopeSwitchInFlight = tracked;
+  void tracked.then(() => afterScopeSwitch(target, opts));
+  return true;
+}
+
+/** What a sign-in or sign-out does once the data scope points at the new account. */
+async function afterScopeSwitch(target: string | null, opts: { restored: boolean }): Promise<void> {
+  // A later auth event already asked for another scope: its own pass runs.
+  if (requestedScope !== target) return;
+  if (target) {
+    // 260606: default the freshly signed-in user to cloud billing, after the
+    // switch (config.json is per-profile). An explicit BYOK choice survives
+    // (applyCloudDefaultForSignIn, 260703). profileScope's switch runs the same
+    // call before its push; this one is the backstop. Best-effort.
+    if (!opts.restored) {
+      try {
+        const { applyCloudDefaultForSignIn } = await import('../apiKeyStore');
+        await applyCloudDefaultForSignIn();
+      } catch (err) {
+        console.warn(`[sei] sign-in cloud-default failed: ${(err as Error).message}`);
+      }
+    }
+    // Reconcile within the new scope's dir (also the cold-start reconcile for
+    // a restored session, which initAuthState leaves to this pass when the
+    // scope had to move first).
+    try {
+      const { reconcileLocalOwnershipOnSignIn } = await import('../cloud/reconcileLocalOwnership');
+      await reconcileLocalOwnershipOnSignIn(target);
+    } catch (err) {
+      console.warn(`[sei] sign-in reconcile failed: ${(err as Error).message}`);
+    }
+    // Auto-remoderate-on-reset: restore any shared characters whose
+    // moderation_status was reset to null. Fire-and-forget, no-op while
+    // moderation is off. Never blocks the sign-in transition.
+    try {
+      const { remoderateResetSharedCharactersOnSignIn } = await import('../ipc');
+      void remoderateResetSharedCharactersOnSignIn(target);
+    } catch (err) {
+      console.warn(`[sei] sign-in remoderate-on-reset failed: ${(err as Error).message}`);
+    }
+    if (opts.restored) return;
+    // Item 7: backfill the public profiles row from the account's local
+    // preferred_name on sign-in, so users who onboarded before the
+    // profiles table existed still show "by <name>" on Browse. Best-effort.
+    try {
+      const { loadConfig } = await import('../configStore');
+      const cfg = await loadConfig();
+      const name = (cfg.preferred_name ?? '').trim();
+      if (name) {
+        const { upsertMyProfile } = await import('../cloud/cloudCharacterClient');
+        await upsertMyProfile(name);
+      }
+    } catch (err) {
+      console.warn(`[sei] sign-in profile backfill failed: ${(err as Error).message}`);
+    }
+    // Analytics (260707): identify the account (aliases the prior
+    // anonymous install id into it) and mark a genuine sign-in.
+    try {
+      const { identifyUser, capture } = await import('../analytics');
+      identifyUser(target);
+      capture('signed_in');
+    } catch { /* best-effort */ }
+    // Roster mirror (260801): reconcile the whole Home roster, not just
+    // the deltas the four library IPC handlers report. This is the pass
+    // that backfills an install whose roster predates the
+    // character_library table, and the safety net for every other writer
+    // (the one-shot config migrations, onboarding's Sui seed, the
+    // unpublish reconcile sweep), none of which has to know this
+    // mirror exists.
+    try {
+      void (await import('../cloud/librarySync')).syncLibraryRoster('sign-in');
+    } catch { /* best-effort */ }
+  } else {
+    // Sign-out transition: mark it, then detach from the account so
+    // subsequent events revert to the anonymous install id.
+    try {
+      const { capture, resetUser } = await import('../analytics');
+      if (!opts.restored) capture('signed_out');
+      resetUser();
+    } catch { /* best-effort */ }
+  }
+}
+
+/**
+ * 261029: what the renderer needs to route at boot without racing main's
+ * pushes. `scopeReady` is true once the data scope matches the auth state and
+ * no switch is pending, i.e. the app:scope-changed push for this state (if one
+ * was needed) has already gone out. Waits for initAuthState's session load
+ * (`loaded`), bounded so a hung init never holds the renderer's boot. The
+ * default covers supabase-js's retry window for a refresh that fails offline
+ * (about 25 s), which the window used to spend not yet created at all.
+ */
+export async function getAuthSnapshot(waitMs = 30_000): Promise<AuthSnapshot> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([
+    authInit,
+    new Promise<void>((r) => {
+      timer = setTimeout(r, waitMs);
+    }),
+  ]);
+  if (timer !== undefined) clearTimeout(timer);
+  const scopeReady =
+    authLoaded &&
+    scopeSwitchInFlight === null &&
+    !isScopeSwitchPending() &&
+    activeScopeUser() === scopeFor(currentState);
+  return { state: currentState, scopeReady, loaded: authLoaded };
+}
+
 /**
  * Wire up the Supabase auth-event subscription and replay current state on
  * window refresh. Called ONCE from main/index.ts bootstrap, after the
  * BrowserWindow exists.
  */
 export async function initAuthState(window: BrowserWindow): Promise<void> {
+  try {
+    await initAuthStateInner(window);
+  } finally {
+    // getAuthSnapshot callers wait for this, success or not.
+    authLoaded = true;
+    resolveAuthInit();
+  }
+}
+
+async function initAuthStateInner(window: BrowserWindow): Promise<void> {
   // BL-02: bootstrap() can run more than once on macOS — app.on('activate')
   // calls it again when all windows have been closed and the dock icon is
   // clicked. Drop any prior subscription + did-finish-load listener before
@@ -238,6 +410,17 @@ export async function initAuthState(window: BrowserWindow): Promise<void> {
     // launch isn't blocked; the renderer briefly shows signed_in then drops to
     // AuthChoice on the broadcast from transitionToLocal().
     void validateSessionOrSignOut();
+  }
+  // 261029: the boot scope (main/index.ts step 0a) can disagree with the
+  // session this load ends on: step 0a reads the stored session without a
+  // refresh, so a session the server rejects (or one this refresh could not
+  // reach the server for) is 'local' here. Builds before 261029 also read it
+  // with a refresh of its own that could fail where this one succeeded. Move
+  // the scope now; the switch pushes app:scope-changed and runs the reconcile
+  // below itself.
+  const switching = followAuthScope({ restored: true });
+  if (currentState.kind === 'signed_in' && !switching) {
+    const userId = currentState.user.id;
     void (async () => {
       try {
         const { reconcileLocalOwnershipOnSignIn } = await import(
@@ -273,109 +456,23 @@ export async function initAuthState(window: BrowserWindow): Promise<void> {
     if (event === 'PASSWORD_RECOVERY' && mainWindowRef && !mainWindowRef.isDestroyed()) {
       mainWindowRef.webContents.send(IpcChannel.auth.passwordRecovery);
     }
-    const prevUserId = currentState.kind === 'signed_in' ? currentState.user.id : null;
     applySession(session);
     broadcastAuthState(mainWindowRef);
     // Item 3: (re)evaluate the cross-device verification poll on every auth
     // event — start it on a fresh unverified sign-in, stop it once verified or
     // signed out.
     syncEmailVerificationPolling();
-    const nextKind = currentState.kind;
-    const nextUserId = currentState.kind === 'signed_in' ? currentState.user.id : null;
-    // The effective profile scope is the user id (or 'local' when null). A
-    // TOKEN_REFRESHED / USER_UPDATED for the SAME user leaves it unchanged.
-    const scopeChanged = (prevUserId ?? null) !== (nextUserId ?? null);
-    if (scopeChanged) {
-      void (async () => {
-        // 260603: re-point the local data scope FIRST (tears down the bot,
-        // switches paths, seeds a brand-new profile, pushes app:scope-changed)
-        // so the reconcile below — and the renderer's re-bootstrap — operate on
-        // the new account's bucket, not the previous one.
-        try {
-          const { switchScopeForAuth } = await import('../profile/profileScope');
-          await switchScopeForAuth(nextUserId);
-        } catch (err) {
-          console.warn(`[sei] scope switch failed: ${(err as Error).message}`);
-        }
-        // Reconcile only on a genuine sign-in (now within the new scope's dir).
-        if (nextKind === 'signed_in' && nextUserId) {
-          // 260606 — default the freshly signed-in user to cloud billing. This
-          // MUST run here, after switchScopeForAuth, not in the auth handlers:
-          // config.json is per-profile (paths.configPath → profileRootDir), and
-          // at sign-in/up time the active scope is still 'local', so a write
-          // there lands in the wrong profile and is shadowed when the user's
-          // profile is seeded with its default ('local'). Gated on scopeChanged
-          // so it fires on a genuine sign-in transition — NOT on launch
-          // session-restore (same user → scopeChanged false), so a user who
-          // deliberately switched to BYOK isn't re-flipped on every reopen.
-          // Best-effort: a config write failure must never block sign-in.
-          // 260703: routed through applyCloudDefaultForSignIn — an explicit
-          // BYOK choice (ai_backend_kind_source === 'user', or a legacy
-          // 'local' with a stored key) survives re-login instead of being
-          // force-flipped back to cloud billing.
-          try {
-            const { applyCloudDefaultForSignIn } = await import('../apiKeyStore');
-            await applyCloudDefaultForSignIn();
-          } catch (err) {
-            console.warn(`[sei] sign-in cloud-default failed: ${(err as Error).message}`);
-          }
-          try {
-            const { reconcileLocalOwnershipOnSignIn } = await import(
-              '../cloud/reconcileLocalOwnership'
-            );
-            await reconcileLocalOwnershipOnSignIn(nextUserId);
-          } catch (err) {
-            console.warn(`[sei] sign-in reconcile failed: ${(err as Error).message}`);
-          }
-          // Auto-remoderate-on-reset: restore any shared characters whose
-          // moderation_status was reset to null. Fire-and-forget, no-op while
-          // moderation is off. Never blocks the sign-in transition.
-          try {
-            const { remoderateResetSharedCharactersOnSignIn } = await import('../ipc');
-            void remoderateResetSharedCharactersOnSignIn(nextUserId);
-          } catch (err) {
-            console.warn(`[sei] sign-in remoderate-on-reset failed: ${(err as Error).message}`);
-          }
-          // Item 7: backfill the public profiles row from the account's local
-          // preferred_name on sign-in, so users who onboarded before the
-          // profiles table existed still show "by <name>" on Browse. Best-effort.
-          try {
-            const { loadConfig } = await import('../configStore');
-            const cfg = await loadConfig();
-            const name = (cfg.preferred_name ?? '').trim();
-            if (name) {
-              const { upsertMyProfile } = await import('../cloud/cloudCharacterClient');
-              await upsertMyProfile(name);
-            }
-          } catch (err) {
-            console.warn(`[sei] sign-in profile backfill failed: ${(err as Error).message}`);
-          }
-          // Analytics (260707): identify the account (aliases the prior
-          // anonymous install id into it) and mark a genuine sign-in.
-          try {
-            const { identifyUser, capture } = await import('../analytics');
-            identifyUser(nextUserId);
-            capture('signed_in');
-          } catch { /* best-effort */ }
-          // Roster mirror (260801): reconcile the whole Home roster, not just
-          // the deltas the four library IPC handlers report. This is the pass
-          // that backfills an install whose roster predates the
-          // character_library table, and the safety net for every other writer
-          // (the one-shot config migrations, onboarding's Sui seed, the
-          // unpublish reconcile sweep) — none of which has to know this
-          // mirror exists.
-          void (await import('../cloud/librarySync')).syncLibraryRoster('sign-in');
-        } else {
-          // Sign-out transition: mark it, then detach from the account so
-          // subsequent events revert to the anonymous install id.
-          try {
-            const { capture, resetUser } = await import('../analytics');
-            capture('signed_out');
-            resetUser();
-          } catch { /* best-effort */ }
-        }
-      })();
-    }
+    // 261029: the data scope follows the auth state itself, not the change
+    // between two auth events. The old test (previous user !== next user)
+    // missed every case where the scope was already wrong when the event
+    // arrived, e.g. main/index.ts step 0a set 'local' because its token
+    // refresh failed while initAuthState's succeeded, which left the app
+    // signed in with no app:scope-changed push and the sign-in panel waiting
+    // for one forever. A TOKEN_REFRESHED / USER_UPDATED for the same user with
+    // the scope already on that user is still a no-op. Only SIGNED_IN and
+    // SIGNED_OUT are someone signing in or out; any other event that moves
+    // the scope is a session coming back (a refresh after an offline launch).
+    void followAuthScope({ restored: event !== 'SIGNED_IN' && event !== 'SIGNED_OUT' });
   });
   subscription = sub.subscription;
 
@@ -395,6 +492,12 @@ export async function initAuthState(window: BrowserWindow): Promise<void> {
 export function transitionToLocal(): void {
   currentState = { kind: 'local' };
   broadcastAuthState(mainWindowRef);
+  syncEmailVerificationPolling();
+  // 261029: a forced sign-out must move the scope too. Normally signOut()'s
+  // SIGNED_OUT event already did (then this is a no-op); when signOut() failed
+  // before emitting it, the scope stayed on the old account, and a later
+  // sign-in as that same account found nothing to switch.
+  followAuthScope({ restored: false });
 }
 
 /**
@@ -508,4 +611,16 @@ export function _disposeForTests(): void {
   currentState = { kind: 'local' };
   // Drop any cached TOS state so the next test starts from a known empty cache.
   tosCache = null;
+  stopEmailVerificationPoll();
+  requestedScope = null;
+  scopeSwitchInFlight = null;
+  authLoaded = false;
+  authInit = new Promise<void>((r) => {
+    resolveAuthInit = r;
+  });
+}
+
+/** TEST-ONLY: resolves once the scope switch in flight (if any) has finished. */
+export function _scopeSwitchSettledForTests(): Promise<void> {
+  return scopeSwitchInFlight ?? Promise.resolve();
 }

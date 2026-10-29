@@ -3445,6 +3445,10 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { chatgptAccountLogin } = await import('./auth/chatgptAccountLogin');
     return chatgptAccountLogin().takePlanOffer();
   });
+  ipcMain.handle(IpcChannel.auth.snapshot, async () => {
+    const { getAuthSnapshot } = await import('./auth/authState');
+    return await getAuthSnapshot();
+  });
   ipcMain.handle(IpcChannel.auth.signout, async () => {
     const { signOut } = await import('./auth/authHandlers');
     return await signOut();

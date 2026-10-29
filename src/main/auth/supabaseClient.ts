@@ -82,6 +82,44 @@ export function getClient(): SupabaseClient {
   return client;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The user id inside a persisted supabase-js session blob, or null. Pure. */
+export function userIdFromPersistedSession(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as { user?: { id?: unknown }; currentSession?: { user?: { id?: unknown } } };
+    // `currentSession` is the pre-v2 wrapper; supabase-js still reads it.
+    const id = parsed?.user?.id ?? parsed?.currentSession?.user?.id;
+    return typeof id === 'string' && UUID_RE.test(id) ? id.toLowerCase() : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 261029: the account the PERSISTED session belongs to, read straight from the
+ * storage adapter: no token refresh, no network.
+ *
+ * main/index.ts step 0a picks the boot profile scope with this. It used to call
+ * `auth.getSession()`, which REFRESHES an expired access token over the
+ * network (supabase-js v2 refreshes inside getSession when the token expires
+ * within 90 s, so on most restarts). A failed refresh there (offline for a
+ * moment, a 5xx) returned no session, the boot scope fell to 'local', and the
+ * window waited out the refresh retries (~25 s) before it was even created.
+ * A dead session still resolves here; initAuthState's own getSession() finds
+ * it dead and moves the scope back to 'local'.
+ */
+export async function persistedSessionUserId(
+  deps: { client?: SupabaseClient; storage?: StorageAdapter | null } = {},
+): Promise<string | null> {
+  const storage = deps.storage !== undefined ? deps.storage : storageAdapter;
+  if (!storage) return null;
+  const auth = (deps.client ?? getClient()).auth as unknown as { storageKey?: unknown };
+  if (typeof auth.storageKey !== 'string') return null;
+  return userIdFromPersistedSession(await storage.getItem(auth.storageKey));
+}
+
 /**
  * Build a short-lived, request-scoped client that authenticates as the given
  * user by sending their JWT in the Authorization header on EVERY PostgREST

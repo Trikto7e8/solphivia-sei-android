@@ -35,6 +35,8 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { sei } from '../lib/ipcClient';
+import { readAuthSnapshot } from '../lib/authBoot';
+import { useAuthStore } from '../lib/stores/useAuthStore';
 import { t, useT, uiLanguage } from '../lib/i18n';
 import { useEmailCode } from '../lib/useEmailCode';
 import { useChatgptLogin, chatgptCodeReasonCopy } from '../lib/useChatgptLogin';
@@ -291,7 +293,9 @@ export function OnboardApp({
   });
 
   // ── Auth plumbing ──────────────────────────────────────────────────────
-  const authRef = useRef<AuthState>({ kind: 'local' });
+  // 261029: start from the store (App applied main's snapshot before routing
+  // here), not from `local`: a push that landed before this mount is gone.
+  const authRef = useRef<AuthState>(useAuthStore.getState().state);
   const scopeReadyRef = useRef(false);
   /** How the session that's about to land was initiated, set by AuthPanel at
    * each attempt. Distinguishes an existing-account sign-in from a fresh
@@ -300,17 +304,38 @@ export function OnboardApp({
   const authIntentRef = useRef<'signup' | 'signin' | 'oauth' | null>(null);
   const [authTick, setAuthTick] = useState(0); // re-render on auth pushes
   useEffect(() => {
+    let alive = true;
+    // 261029: the scope-changed push below is not the only way to learn the
+    // account's profile is live. When the scope already matched (a same-account
+    // sign-in after a restart, or the switch finished before this mounted) no
+    // push is coming, and the panel used to wait for it forever. Ask main.
+    const confirmScope = (): void => {
+      if (scopeReadyRef.current || authRef.current.kind !== 'signed_in') return;
+      void readAuthSnapshot().then((snap) => {
+        if (!alive || !snap || scopeReadyRef.current) return;
+        if (snap.state.kind === 'signed_in' && snap.scopeReady) {
+          authRef.current = snap.state;
+          scopeReadyRef.current = true;
+          setAuthTick((t) => t + 1);
+        }
+      });
+    };
     const offAuth = sei.onAuthState((s) => {
       authRef.current = s;
+      if (s.kind !== 'signed_in') scopeReadyRef.current = false;
       setAuthTick((t) => t + 1);
+      confirmScope();
     });
     const offScope = sei.onScopeChanged((ev) => {
-      if (ev.reason === 'sign-in') {
+      // Any move onto an account (sign-in, or a switch from a stale scope).
+      if (ev.reason !== 'sign-out') {
         scopeReadyRef.current = true;
         setAuthTick((t) => t + 1);
       }
     });
+    confirmScope();
     return () => {
+      alive = false;
       offAuth();
       offScope();
     };

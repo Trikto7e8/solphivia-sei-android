@@ -71,7 +71,10 @@ async function ensureProfileInitialized(): Promise<void> {
  * when signed out). No-op when the scope is unchanged (token refresh, the
  * INITIAL_SESSION replay at boot — boot already set + seeded the scope).
  */
-export function switchScopeForAuth(userId: string | null): Promise<void> {
+export function switchScopeForAuth(
+  userId: string | null,
+  opts: { restored?: boolean } = {},
+): Promise<void> {
   // Serialized (260926). authState fires each switch detached, and one switch
   // spends seconds ending sessions before it moves the scope, so a second
   // auth event (sign-out, then straight into another sign-in) used to run
@@ -82,14 +85,14 @@ export function switchScopeForAuth(userId: string | null): Promise<void> {
   // The pending flag goes up at once, so session starts are refused from the
   // moment the auth event lands (scopeBarrier.beginSessionStart).
   const release = beginScopeSwitch();
-  const run = switchChain.then(() => runScopeSwitch(userId)).finally(release);
+  const run = switchChain.then(() => runScopeSwitch(userId, opts.restored === true)).finally(release);
   switchChain = run.catch(() => {});
   return run;
 }
 
 let switchChain: Promise<void> = Promise.resolve();
 
-async function runScopeSwitch(userId: string | null): Promise<void> {
+async function runScopeSwitch(userId: string | null, restored: boolean): Promise<void> {
   const prevScope = getActiveScope();
   const nextScope = userId ?? SCOPE_LOCAL;
   if (prevScope === nextScope) return;
@@ -263,7 +266,7 @@ async function runScopeSwitch(userId: string | null): Promise<void> {
   // 4. Tell the renderer to re-bootstrap onto the new profile.
   const win = getMainWindowRef();
   if (win && !win.isDestroyed()) {
-    const payload: ScopeChangedEvent = { scope: nextScope, reason };
+    const payload: ScopeChangedEvent = { scope: nextScope, reason, ...(restored ? { restored: true } : {}) };
     win.webContents.send(IpcChannel.app.scopeChanged, payload);
   }
   try {

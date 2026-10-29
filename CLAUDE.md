@@ -3655,6 +3655,25 @@ one is in the website repo's `README-popup.md`.
   A failed load is final for the session (a failed ESM import stays cached);
   `look()` says so once in full. Keep heavy or native modules out of the
   runtime's static import graph.
+- **The data scope follows the auth STATE, not the auth event (261029)** →
+  "restarting locks me on the login page". After a restart the stored access
+  token has usually expired, and `auth.getSession()` is NOT a storage-only
+  read: it refreshes over the network. Step 0a of `main/index.ts` used it to
+  pick the boot scope, so a refresh that failed there (offline for a moment,
+  a 5xx) set `'local'` while initAuthState's own getSession() succeeded, and
+  the subscription only switched scopes when the user CHANGED between two
+  events. Result: signed in, scope `local`, no `app:scope-changed` push, and
+  the onboarding sign-in panel (which waits for one) stuck for good; signing
+  in again was a same-user SIGNED_IN, a no-op. Now step 0a reads the stored
+  session without a refresh (`persistedSessionUserId`), `followAuthScope` in
+  authState.ts moves the scope whenever it disagrees with the state (init,
+  every event, `transitionToLocal`; `restored` = no sign-in side effects and
+  no import offer), and the renderer routes on `sei.authSnapshot()` (state +
+  `scopeReady`, `lib/authBoot.ts`) instead of the store's `local` default;
+  OnboardApp also confirms readiness through it, so a missed push cannot
+  strand the panel. Pinned by `loginLockOnRestart.test.ts` on the real
+  supabase-js client. Anything that decides routing from auth must not
+  assume it saw every push.
 - **Renderer caches outlive an account switch** → main re-points every
   per-profile store on `app:scope-changed`, but a Zustand store keeps what it
   already read, and the bundled defaults (Sui, Lyra, ...) share their UUIDs

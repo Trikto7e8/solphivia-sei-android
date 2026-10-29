@@ -274,3 +274,21 @@ describe('OnboardApp: the scene never waits on transitionend alone (261012)', ()
     expect(src).not.toMatch(/sei\.track\('onboarding_intro/);
   });
 });
+
+describe('OnboardApp 261029: the sign-in panel never waits on a push it missed', () => {
+  it('starts from the store, not from a hard-coded local', () => {
+    expect(src).toContain('useRef<AuthState>(useAuthStore.getState().state)');
+    expect(src).not.toContain("useRef<AuthState>({ kind: 'local' })");
+  });
+  it("confirms the account's profile with main's snapshot on mount and on each signed-in push", () => {
+    const plumbing = src.slice(src.indexOf('const confirmScope = ()'), src.indexOf('// ── Scene choreography'));
+    expect(plumbing).toContain('readAuthSnapshot()');
+    expect(plumbing).toContain("snap.state.kind === 'signed_in' && snap.scopeReady");
+    expect(plumbing).toContain('scopeReadyRef.current = true');
+    // Called from the auth push and once at mount.
+    expect((plumbing.match(/confirmScope\(\);/g) ?? []).length).toBe(2);
+  });
+  it('any scope move onto an account counts, not only a sign-in from local', () => {
+    expect(src).toContain("if (ev.reason !== 'sign-out') {");
+  });
+});

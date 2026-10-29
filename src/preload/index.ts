@@ -485,6 +485,8 @@ const api: RendererApi = {
   setCaptchaToken: (token: string | null) =>
     ipcRenderer.invoke(IpcChannel.auth.setCaptchaToken, token),
 
+  authSnapshot: () => ipcRenderer.invoke(IpcChannel.auth.snapshot),
+
   onAuthState(cb: (state: AuthState) => void) {
     const handler = (_e: Electron.IpcRendererEvent, state: AuthState) => cb(state);
     ipcRenderer.on(IpcChannel.auth.state, handler);

@@ -27,6 +27,7 @@ import type {
   UserPreferencesPatch,
 } from './characterSchema';
 import type { ErrorClass } from './errorClasses';
+import type { OverlayPointerSample } from './overlayPointer';
 import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from './chatgptPlan';
 import type { RegionStatus } from './regionGate';
 import type { BackseatEndReasonArg, BackseatStartTrigger, CallEndReason } from './callEndReasons';
@@ -2115,6 +2116,13 @@ export interface RendererApi {
    * focusController's frame). Main polls only while a Live2D tile shows; the
    * gaze cursor-follow mode treats a stale feed as "wander instead". */
   onAvatarOverlayCursor(cb: (pt: { x: number; y: number }) => void): Unsubscribe;
+  /** Overlay window only (261029): subscribe to the polled pointer in
+   * window-local DIPs ({inside, x, y}; see shared/overlayPointer.ts). Main
+   * polls whenever the overlay is up, for every tile kind, so hover chrome
+   * (the edit pencil) works even where the OS does not forward mouse moves
+   * into the click-through window. Pushed every tick while inside, once on
+   * leaving. */
+  onAvatarOverlayPointer?(cb: (sample: OverlayPointerSample) => void): Unsubscribe;
   // ── Facepack pilot (261028, dev flag only; see src/main/facepack/) ──
   facepackInfo?(): Promise<FacepackDevInfo>;
   facepackManifest?(id: string): Promise<FacepackManifest | null>;
@@ -3782,6 +3790,9 @@ export const IpcChannel = {
     /** Push (main → overlay window): polled cursor position normalized to
      * [-1, 1] around the window center, for gaze cursor-follow. */
     overlayCursorState: 'avatar:overlay-cursor-state',
+    /** Push (main → overlay window): polled pointer in window-local DIPs
+     * ({inside, x, y}), the OS-independent hover source for the chrome. */
+    overlayPointerState: 'avatar:overlay-pointer-state',
     /** Invoke (overlay window → main): per-character camera (character zoom +
      * pan WITHIN the tile) stream/commit ({id, zoom, x, y, commit?}). */
     overlayCamera: 'avatar:overlay-camera',

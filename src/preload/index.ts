@@ -38,6 +38,7 @@ import {
   type GameDashboardSnapshot,
 } from '../shared/ipc';
 import type { ChatgptStatus } from '../shared/chatgptPlan';
+import type { OverlayPointerSample } from '../shared/overlayPointer';
 
 const api: RendererApi = {
   // Game adapters (M0): {characterId, game} (main also still accepts a bare id).
@@ -390,6 +391,11 @@ const api: RendererApi = {
     const handler = (_e: Electron.IpcRendererEvent, pt: { x: number; y: number }) => cb(pt);
     ipcRenderer.on(IpcChannel.avatar.overlayCursorState, handler);
     return () => ipcRenderer.off(IpcChannel.avatar.overlayCursorState, handler);
+  },
+  onAvatarOverlayPointer(cb: (sample: OverlayPointerSample) => void) {
+    const handler = (_e: Electron.IpcRendererEvent, sample: OverlayPointerSample) => cb(sample);
+    ipcRenderer.on(IpcChannel.avatar.overlayPointerState, handler);
+    return () => ipcRenderer.off(IpcChannel.avatar.overlayPointerState, handler);
   },
   // Facepack pilot (261028): main answers "disabled" unless the dev flag is on.
   facepackInfo: () => ipcRenderer.invoke(IpcChannel.facepack.info),

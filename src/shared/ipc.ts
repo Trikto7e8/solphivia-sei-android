@@ -30,6 +30,7 @@ import type { ErrorClass } from './errorClasses';
 import type { OverlayPointerSample } from './overlayPointer';
 import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from './chatgptPlan';
 import type { RegionStatus } from './regionGate';
+import type { PopupAction } from './popupActions';
 import type { BackseatEndReasonArg, BackseatStartTrigger, CallEndReason } from './callEndReasons';
 export type { ErrorClass } from './errorClasses';
 import type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
@@ -3114,6 +3115,13 @@ export interface RendererApi {
    */
   onStartupPopupEscape(cb: () => void): Unsubscribe;
   /**
+   * An action link (https://sei.gg/popup/_action/<name>) was clicked in the
+   * popup page (261029). Main has already cancelled the navigation and
+   * checked the name against POPUP_ACTIONS (src/shared/popupActions.ts); the
+   * renderer re-checks it, closes the popup and runs the action.
+   */
+  onStartupPopupAction(cb: (action: PopupAction) => void): Unsubscribe;
+  /**
    * Host OS platform (`process.platform`), read once in preload and exposed as
    * a plain value so the renderer can branch its window chrome WITHOUT an async
    * round-trip. Used by MacosWindow to render custom min/max/close controls on
@@ -3850,6 +3858,7 @@ export const IpcChannel = {
     startupPopupGet: 'app:startup-popup-get',       // pull owed popup (race-proof)
     startupPopupLoaded: 'app:startup-popup-loaded', // frame loaded: verify + record shown
     startupPopupEscape: 'app:startup-popup-escape', // push: Esc pressed inside the popup frame
+    startupPopupAction: 'app:startup-popup-action', // push: an allow-listed action link was clicked
     // 260603 per-profile partitioning: main pushes this AFTER the active
     // account scope has switched (sign-in / sign-out / account swap) and the
     // new profile is initialized + bot stopped. The renderer re-bootstraps

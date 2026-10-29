@@ -1252,6 +1252,12 @@ export function App(): React.ReactElement {
       {/* Task 4 — drives the always-on-top call overlay window (renders nothing;
           pushes call state to main, which owns the overlay window). */}
       <CallOverlayPusher />
+      {/* Startup popup (261027, replaced the notices inbox). Self-mounting:
+          renders nothing until main reports an unshown popup, then waits for a
+          calm screen and shows only once the page has really loaded. Mounted
+          before every dialog (261029): same z tier, so a dialog opened over it
+          comes later in the DOM and lands on top. */}
+      <StartupPopup isCalm={popupCalm} />
       {modal?.kind === 'mc-setup' ? (
         <McSetupModal tab={modal.tab} searching={modal.searching} />
       ) : null}
@@ -1334,10 +1340,6 @@ export function App(): React.ReactElement {
         />
       ) : null}
       <UpdatedToast />
-      {/* Startup popup (261027, replaced the notices inbox). Self-mounting:
-          renders nothing until main reports an unshown popup, then waits for a
-          calm screen and shows only once the page has really loaded. */}
-      <StartupPopup isCalm={popupCalm} />
       {/* 260810 — phantom-call recovery. Self-mounting: renders null until a
           scan (app mount / after a call or share ends) flags a phantom-call
           session that has not been dismissed. */}

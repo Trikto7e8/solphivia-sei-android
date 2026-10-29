@@ -113,6 +113,22 @@ describe('jwtBridge', () => {
     expect(startAutoRefreshMock).toHaveBeenCalled();
   });
 
+  it('a password-reset session (PASSWORD_RECOVERY) re-arms the ticker and pushes its JWT', async () => {
+    getSessionMock.mockResolvedValue({ data: { session: null } });
+    let cb: ((event: string, session: { access_token: string } | null) => void) | undefined;
+    onAuthStateChangeMock.mockImplementation((fn) => {
+      cb = fn as typeof cb;
+      return { data: { subscription: { unsubscribe: vi.fn() } } };
+    });
+    const sup = makeSupervisorStub();
+    await initJwtBridge(sup);
+    cb?.('SIGNED_OUT', null);
+    startAutoRefreshMock.mockClear();
+    cb?.('PASSWORD_RECOVERY', { access_token: 'jwt-recovery' });
+    expect(startAutoRefreshMock).toHaveBeenCalled();
+    expect(sup.updateJwt).toHaveBeenLastCalledWith('jwt-recovery');
+  });
+
   it('pushes null on SIGNED_OUT', async () => {
     getSessionMock.mockResolvedValue({ data: { session: null } });
     let cb: ((event: string, session: { access_token: string } | null) => void) | undefined;

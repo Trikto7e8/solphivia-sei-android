@@ -92,6 +92,9 @@ export async function initJwtBridge(supervisor: BotSupervisor): Promise<void> {
     if (!supervisorRef) return;
     switch (event) {
       case 'SIGNED_IN':
+      // A password-reset session arrives as PASSWORD_RECOVERY with no
+      // SIGNED_IN (verifyOtp type 'recovery'), and it is a sign-in too (261029).
+      case 'PASSWORD_RECOVERY':
         // A fresh sign-in (re)arms the refresh ticker — a prior SIGNED_OUT may
         // have stopped it.
         startAutoRefreshSafely();
@@ -105,9 +108,6 @@ export async function initJwtBridge(supervisor: BotSupervisor): Promise<void> {
       case 'SIGNED_OUT':
         void supabase_stopAutoRefresh();
         supervisorRef.updateJwt(null);
-        break;
-      case 'PASSWORD_RECOVERY':
-        // No-op in Phase 10 (no recovery flow shipped).
         break;
     }
   });

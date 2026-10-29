@@ -35,10 +35,12 @@
 ;   (autoInstallOnAppQuit), and a UAC prompt after the user closed Sei would
 ;   come out of nowhere. That run leaves the marker unset, so the one attempt
 ;   happens on the next run the user started on purpose:
-;     - the in-app "Update Sei" restart. Since 261023 it is silent too
-;       (quitAndInstall(true, true) = `--updated /S --force-run`, see
-;       src/main/updateInstall.ts), so `--force-run` is what tells it apart
-;       from the quit run: the user just clicked, and Sei reopens after.
+;     - the in-app "Update Sei" restart. Since 261030 it is NOT silent
+;       (quitAndInstall(false, true) = `--updated --force-run`, see
+;       src/main/updateInstall.ts): the one-click progress window is up, and
+;       the admin prompt appears over it. From 261023 to 261030 it was silent
+;       (`--updated /S --force-run`), which is why `--force-run` also counts:
+;       the user just clicked, and Sei reopens after.
 ;     - a manual install from sei.gg (not silent).
 ;   So: silent AND no --force-run means skip.
 ;

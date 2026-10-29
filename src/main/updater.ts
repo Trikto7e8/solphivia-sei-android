@@ -111,6 +111,13 @@ let wired = false;
 type AutoUpdater = {
   autoDownload: boolean;
   autoInstallOnAppQuit: boolean;
+  /**
+   * Relaunch after a NON-silent quitAndInstall. electron-updater ignores the
+   * isForceRunAfter argument unless isSilent is true and passes this instead
+   * (BaseUpdater.quitAndInstall), so the Windows "Update Sei" restart
+   * (restartInstallArgs = [false, true]) reopens Sei only while it is true.
+   */
+  autoRunAppAfterInstall: boolean;
   /** When true, GitHub pre-releases are eligible (the beta channel). */
   allowPrerelease: boolean;
   /**
@@ -386,6 +393,10 @@ function ensureAutoUpdater(): AutoUpdater | null {
   // updates on the next quit by default (mandatory on-restart timing).
   autoUpdater.autoDownload = false;
   autoUpdater.autoInstallOnAppQuit = true;
+  // The library default, pinned (261030): the Windows in-app restart is a
+  // non-silent install, which relaunches Sei only through this flag (see
+  // updateInstall.ts). The update-on-quit run never relaunches either way.
+  autoUpdater.autoRunAppAfterInstall = true;
   // Channel: stable-only unless the user opted into advanced updates. Seeded
   // from config by initUpdater before this runs; setUpdateChannel flips it live.
   autoUpdater.allowPrerelease = allowPrerelease;
@@ -909,8 +920,9 @@ export async function downloadAcceptedUpdate(): Promise<void> {
 
 /**
  * Quit and install a downloaded update (the sidebar "Update Sei" button). On
- * Windows this runs the installer silently and relaunches Sei when it is done
- * (see updateInstall.ts for the exact installer arguments). No-op in dev.
+ * Windows the one-click installer shows its small "Installing, please wait"
+ * progress window (no clicks) and relaunches Sei when it is done (see
+ * updateInstall.ts for the exact installer arguments). No-op in dev.
  */
 export function installDownloadedUpdate(): void {
   const au = ensureAutoUpdater();

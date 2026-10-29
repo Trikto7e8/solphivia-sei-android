@@ -9,16 +9,22 @@ name: NSIS Upgrade Check
 # starts. It also prints the Authenticode signature of the stable installer and
 # app (SmartScreen evidence).
 #
-# The two update paths and their arguments (261023, src/main/updateInstall.ts):
-#   in-app "Update Sei"  quitAndInstall(true, true) = --updated /S --force-run
-#                        no installer window, Sei must REOPEN by itself
-#   update on quit       autoInstallOnAppQuit       = --updated /S
+# The two update paths and their arguments (src/main/updateInstall.ts):
+#   in-app "Update Sei"  quitAndInstall(false, true) = --updated --force-run
+#                        (261030; it was --updated /S --force-run from 261023)
+#                        the one-click "Installing, please wait" progress
+#                        window MUST show, with nothing to click, and Sei must
+#                        REOPEN by itself
+#   update on quit       autoInstallOnAppQuit        = --updated /S
 #                        no installer window, Sei must NOT reopen
-# Every upgrade run watches for visible windows from anything but Sei itself
-# (the old one-click banner, a wizard page, an error box) and fails on one,
-# and times how long the user waits from the installer starting to Sei
-# being back ("relaunched after Ns"), which is the blank gap a real user sits
-# through after clicking Update Sei.
+# Every upgrade run watches for visible windows. On the in-app path the
+# installer's own window is expected (time to first window = how long the user
+# sees nothing), but a window from any other process fails the run, and so
+# does any enabled button inside the installer's windows (UI Automation): the
+# progress banner has none, so a button means an error box, a "close Sei" box
+# or a wizard page. On the update-on-quit path any window fails. Each run also
+# times the installer start to Sei being back ("relaunched after Ns").
+# peruser-default uploads screenshots of the in-app path (oneclick-upgrade-shots).
 #
 # Scenarios (the old ASSISTED installer's reachable choices):
 #   peruser-default  per-user, default folder (%LOCALAPPDATA%\Programs\Sei),
@@ -32,8 +38,8 @@ name: NSIS Upgrade Check
 #   peruser-quit     per-user, update on quit: must not reopen Sei
 #   permachine       "Anyone who uses this computer": HKLM + Program Files,
 #                    removed by build/installer.nsh customInstall on the in-app
-#                    restart (silent, but --force-run marks it as user-started).
-#                    Asserts the HKCU try-once marker is set afterwards.
+#                    restart (not silent, so user-started; --force-run would
+#                    also count). Asserts the HKCU try-once marker is set.
 #   permachine-silent  same install, update on quit (--updated /S, no
 #                    --force-run): the per-machine copy must be LEFT alone and
 #                    the marker left unset, so the attempt waits for an
@@ -242,14 +248,56 @@ jobs:
           $keepsLegacy = $env:SCENARIO -in @('permachine-silent', 'permachine-tried')
 
           $new = (Resolve-Path new\Sei-win-x64.exe).Path
-          # in-app "Update Sei" = --updated /S --force-run; update on quit = --updated /S
+          # in-app "Update Sei" = --updated --force-run (progress window); update on quit = --updated /S
           $newArgs = switch -Wildcard ($env:SCENARIO) {
             'fresh'             { @('/S') }
             'peruser-quit'      { @('--updated', '/S') }
             'permachine-silent' { @('--updated', '/S') }
-            default             { @('--updated', '/S', '--force-run') }
+            default             { @('--updated', '--force-run') }
           }
           $expectRelaunch = $newArgs -contains '--force-run'
+          $expectWindow = $newArgs -notcontains '/S'
+
+          # Enabled, on-screen buttons in the installer's top-level windows,
+          # title-bar buttons excluded. The one-click progress banner has no
+          # buttons; an NSIS message box or wizard page does.
+          Add-Type -AssemblyName UIAutomationClient, UIAutomationTypes
+          $uia = [System.Windows.Automation.AutomationElement]
+          $btnCond = New-Object System.Windows.Automation.PropertyCondition($uia::ControlTypeProperty, [System.Windows.Automation.ControlType]::Button)
+          $walker = [System.Windows.Automation.TreeWalker]::ControlViewWalker
+          $script:uiaWindowsSeen = 0
+          function Get-InstallerButtons([int]$procId) {
+            $found = @()
+            try {
+              $pc = New-Object System.Windows.Automation.PropertyCondition($uia::ProcessIdProperty, $procId)
+              $wins = $uia::RootElement.FindAll([System.Windows.Automation.TreeScope]::Children, $pc)
+              $script:uiaWindowsSeen = [math]::Max($script:uiaWindowsSeen, $wins.Count)
+              foreach ($w in $wins) {
+                foreach ($b in $w.FindAll([System.Windows.Automation.TreeScope]::Descendants, $btnCond)) {
+                  $parent = $walker.GetParent($b)
+                  if ($parent -and $parent.Current.ControlType -eq [System.Windows.Automation.ControlType]::TitleBar) { continue }
+                  if (-not $b.Current.IsOffscreen -and $b.Current.IsEnabled) { $found += "'$($w.Current.Name)' button '$($b.Current.Name)'" }
+                }
+              }
+            } catch { }
+            return $found
+          }
+          $shotDir = Join-Path $env:GITHUB_WORKSPACE 'shots'
+          $takeShots = $env:SCENARIO -eq 'peruser-default'
+          if ($takeShots) {
+            Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+            New-Item -ItemType Directory -Force -Path $shotDir | Out-Null
+          }
+          function Shot([string]$name) {
+            try {
+              $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
+              $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height
+              $g = [System.Drawing.Graphics]::FromImage($bmp)
+              $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size)
+              $bmp.Save((Join-Path $shotDir "$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
+              $g.Dispose(); $bmp.Dispose()
+            } catch { "screenshot failed: $_" }
+          }
 
           if ($env:SCENARIO -eq 'peruser-running') {
             # Leave the old Sei running into the install, as the in-app restart
@@ -267,18 +315,38 @@ jobs:
           $sw = [Diagnostics.Stopwatch]::StartNew()
           $p = Start-Process -FilePath $new -ArgumentList $newArgs -PassThru
           $null = $p.Handle  # cache the handle, or ExitCode reads empty without -Wait
-          # Watch for (1) any visible window that is not Sei itself, and (2) Sei
-          # coming back, until the installer is done and the relaunch window
-          # (60s after it exits) has passed.
+          # Watch for (1) any visible window that is not Sei itself (split into
+          # the installer's own and everything else), (2) buttons in the
+          # installer's windows, and (3) Sei coming back, until the installer
+          # is done and the relaunch window (60s after it exits) has passed.
           $windows = @{}
+          $installerWindowAt = $null
+          $buttons = @{}
           $relaunchAt = $null
           $exitedAt = $null
+          $nextShot = 0
+          $shotIndex = 0
           while ($true) {
             Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.MainWindowHandle -ne 0 -and $_.ProcessName -ne 'Sei' } | ForEach-Object {
               $title = $_.MainWindowTitle
-              if ($title -match 'Sei|Setup|Install|Uninstall' -and -not $windows.ContainsKey("$($_.ProcessName): $title")) {
+              if ($_.Id -eq $p.Id) {
+                if ($null -eq $installerWindowAt) {
+                  $installerWindowAt = $sw.Elapsed.TotalSeconds
+                  "installer window after $([math]::Round($installerWindowAt, 1))s: '$title'"
+                }
+              } elseif ($title -match 'Sei|Setup|Install|Uninstall' -and -not $windows.ContainsKey("$($_.ProcessName): $title")) {
                 $windows["$($_.ProcessName): $title"] = [math]::Round($sw.Elapsed.TotalSeconds, 1)
               }
+            }
+            if (-not $p.HasExited) {
+              foreach ($b in (Get-InstallerButtons $p.Id)) {
+                if (-not $buttons.ContainsKey($b)) { $buttons[$b] = [math]::Round($sw.Elapsed.TotalSeconds, 1) }
+              }
+            }
+            if ($takeShots -and $null -eq $exitedAt -and $sw.Elapsed.TotalSeconds -ge $nextShot -and $shotIndex -lt 60) {
+              Shot ('{0:d3}-{1:n1}s' -f $shotIndex, $sw.Elapsed.TotalSeconds)
+              $shotIndex++
+              $nextShot = $sw.Elapsed.TotalSeconds + 3
             }
             if ($null -eq $relaunchAt) {
               $back = Get-Process -Name 'Sei' -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -gt $installStart } catch { $false } }
@@ -294,11 +362,22 @@ jobs:
           if ($null -ne $relaunchAt) { "Sei relaunched after $([int]$relaunchAt)s (installer start to new Sei process)" } else { 'Sei did not relaunch' }
           if ($expectRelaunch -and $null -eq $relaunchAt) { $failures += 'Sei did not reopen after an in-app restart (--force-run)' }
           if (-not $expectRelaunch -and $env:SCENARIO -ne 'fresh' -and $null -ne $relaunchAt) { $failures += 'Sei reopened after an update-on-quit install' }
+          if ($takeShots) { Shot 'zz-after-relaunch' }
           if ($windows.Count -gt 0) {
-            'Visible windows during the install:'
+            'Visible windows from other processes during the install:'
             $windows.GetEnumerator() | ForEach-Object { "  $($_.Key) at $($_.Value)s" }
-            if ($env:SCENARIO -ne 'fresh') { $failures += "a window showed during a silent update: $($windows.Keys -join '; ')" }
-          } else { 'No installer window during the install.' }
+            if ($env:SCENARIO -ne 'fresh') { $failures += "a window from another process showed during the update: $($windows.Keys -join '; ')" }
+          } else { 'No window from another process during the install.' }
+          "UI Automation saw up to $script:uiaWindowsSeen installer top-level window(s)"
+          if ($buttons.Count -gt 0) {
+            'Buttons in the installer windows:'
+            $buttons.GetEnumerator() | ForEach-Object { "  $($_.Key) at $($_.Value)s" }
+            $failures += "the installer showed something to click: $($buttons.Keys -join '; ')"
+          } else { 'No buttons in the installer windows.' }
+          if ($null -ne $installerWindowAt) {
+            if ($expectWindow) { "progress window up after $([math]::Round($installerWindowAt, 1))s (the gap with nothing on screen)" }
+            elseif ($env:SCENARIO -ne 'fresh') { $failures += "the installer showed a window during a silent update-on-quit run" }
+          } elseif ($expectWindow) { $failures += 'no installer progress window during the in-app update' }
           if ($env:SCENARIO -eq 'peruser-running' -and -not $running.HasExited) { $failures += 'the old Sei was still running after the install' }
           Start-Sleep -Seconds 3
           Stop-Sei
@@ -379,6 +458,15 @@ jobs:
             exit 1
           }
           "PASS: $env:SCENARIO"
+
+      - name: Upload in-app update screenshots
+        if: always() && matrix.scenario == 'peruser-default'
+        uses: actions/upload-artifact@v4
+        with:
+          name: oneclick-upgrade-shots
+          path: shots
+          if-no-files-found: ignore
+          retention-days: 3
 
   # What a person sees: the one-click installer run NON-silently on a clean
   # runner, with a screenshot about every 1.5 s until it exits, and the time to

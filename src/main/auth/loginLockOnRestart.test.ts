@@ -46,6 +46,7 @@ vi.mock('./supabaseClient', async (importOriginal) => ({
 import { setActiveScope, getActiveScope } from '../paths';
 import { capture } from '../analytics';
 import { applyCloudDefaultForSignIn } from '../apiKeyStore';
+import { reconcileLocalOwnershipOnSignIn } from '../cloud/reconcileLocalOwnership';
 import {
   initAuthState,
   getCurrentAuthState,
@@ -198,6 +199,7 @@ beforeEach(() => {
   switchScopeMock.mockReset().mockImplementation(async (id: string | null) => setActiveScope(id));
   vi.mocked(capture).mockClear();
   vi.mocked(applyCloudDefaultForSignIn).mockClear();
+  vi.mocked(reconcileLocalOwnershipOnSignIn).mockClear();
   setActiveScope('local');
 });
 
@@ -460,6 +462,34 @@ describe('sign-in follow-up steps', () => {
     expect(getActiveScope()).toBe(USER_ID);
     expect(vi.mocked(capture).mock.calls.filter(([e]) => e === 'signed_in')).toHaveLength(1);
     expect(vi.mocked(applyCloudDefaultForSignIn)).toHaveBeenCalledTimes(1);
+  });
+
+  it('a sign-in undone before its move finished runs none of them (superseded request)', async () => {
+    const server = fakeServer();
+    await boot(server, {});
+    // Serialized like the real switchScopeForAuth; each move waits for release.
+    const gates: Array<() => void> = [];
+    let chain: Promise<void> = Promise.resolve();
+    switchScopeMock.mockImplementation((id: string | null) => {
+      const run = chain.then(() => new Promise<void>((r) => gates.push(() => { setActiveScope(id); r(); })));
+      chain = run;
+      return run;
+    });
+    await client.auth.signInWithPassword({ email: 'player@example.com', password: 'pw' });
+    await client.auth.signOut({ scope: 'local' });
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    gates.shift()!(); // the move onto the account lands, with the sign-out queued behind it
+    await vi.waitFor(() => expect(gates).toHaveLength(1));
+    await flush();
+    // Nothing runs for the account while its sign-out is still to come.
+    expect(applyCloudDefaultForSignIn).not.toHaveBeenCalled();
+    expect(reconcileLocalOwnershipOnSignIn).not.toHaveBeenCalled();
+    gates.shift()!();
+    await _scopeSwitchSettledForTests();
+    expect(getActiveScope()).toBe('local');
+    expect(capture).not.toHaveBeenCalledWith('signed_in');
+    expect(applyCloudDefaultForSignIn).not.toHaveBeenCalled();
+    expect(vi.mocked(capture).mock.calls.filter(([e]) => e === 'signed_out')).toHaveLength(1);
   });
 
   it('a move that threw runs none of them', async () => {

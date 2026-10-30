@@ -26,8 +26,8 @@
  * window has drawn its first frame (the script writes `ready` into its folder
  * from ContentRendered). Anything else (spawn error, the script exiting
  * nonzero, the window process writing `failed`, a Group Policy or
- * Constrained Language Mode block, no `ready` within READY_TIMEOUT_MS) writes
- * `cancel`, kills both stages and resolves `ready: false`, and updater.ts
+ * Constrained Language Mode block, no `ready` within READY_TIMEOUT_MS, or
+ * READY_LOADED_CAP_MS once the window process has loaded WPF) writes `cancel`, kills both stages and resolves `ready: false`, and updater.ts
  * runs the visible stock installer instead, exactly as before.
  *
  * Two stages: the script Sei starts only re-launches itself with -Detached
@@ -53,11 +53,18 @@ export const MIN_ESTIMATE_SECONDS = 45;
 export const MAX_ESTIMATE_SECONDS = 300;
 /**
  * How long the app waits for the window's first frame before falling back.
- * Measured on windows-latest (a cold 2-4 vCPU VM): 4.8-6.6 s from spawn to
- * first frame (two PowerShell starts, WPF load and XAML parse); 7 s timed out
- * on 2 of 5 runs. Real failures end sooner (nonzero exit, `failed`).
+ * Measured on windows-latest (a cold 2-4 vCPU VM): 4.5-6.4 s from spawn to
+ * first frame (two PowerShell starts, WPF load and XAML parse), 10.8-12.2 s
+ * while a freshly installed Sei was running and being scanned. Real failures
+ * end sooner (nonzero exit, `failed`).
  */
 export const READY_TIMEOUT_MS = 12_000;
+/**
+ * Hard cap when the window process has already loaded WPF (`loaded`) by
+ * READY_TIMEOUT_MS: it is past every policy block and only building the
+ * window (about 3-4 s on the runner), so it gets this long in total.
+ */
+export const READY_LOADED_CAP_MS = 20_000;
 /** Helper folders older than this are swept on the next launch. */
 const STALE_DIR_MS = 60 * 60 * 1000;
 const DIR_PREFIX = 'sei-update-progress-';
@@ -274,6 +281,8 @@ export interface LaunchOptions {
   tmpRoot: string;
   config: HelperConfig;
   readyTimeoutMs?: number;
+  /** Total budget when `loaded` exists at readyTimeoutMs (READY_LOADED_CAP_MS). */
+  readyCapMs?: number;
   /** Test seams. The defaults start Windows PowerShell. */
   command?: string;
   args?: (scriptPath: string, configPath: string) => string[];
@@ -347,6 +356,7 @@ function copyHelperFiles(resourcesDir: string, dir: string): void {
  */
 export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<HelperHandle> {
   const timeoutMs = opts.readyTimeoutMs ?? READY_TIMEOUT_MS;
+  const capMs = Math.max(timeoutMs, opts.readyCapMs ?? READY_LOADED_CAP_MS);
   let dir = '';
   let child: ChildProcess | null = null;
   const kill = (): void => {
@@ -400,6 +410,7 @@ export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<H
   const proc = child;
   const readyFile = path.join(dir, 'ready');
   const failedFile = path.join(dir, 'failed');
+  const loadedFile = path.join(dir, 'loaded');
   const outcome = await new Promise<string>((resolve) => {
     let settled = false;
     const finish = (why: string): void => {
@@ -428,7 +439,15 @@ export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<H
         finish(`window failed: ${why || 'unknown'}`);
       }
     }, 100);
-    const timer = setTimeout(() => finish(`no first frame within ${timeoutMs} ms`), timeoutMs);
+    // A window process that has loaded WPF by the base budget is only slow
+    // (a busy or freshly scanned machine), not blocked: give it up to the cap.
+    let timer = setTimeout(() => {
+      if (capMs > timeoutMs && existsSync(loadedFile)) {
+        timer = setTimeout(() => finish(`no first frame within ${capMs} ms (WPF loaded)`), capMs - timeoutMs);
+      } else {
+        finish(`no first frame within ${timeoutMs} ms`);
+      }
+    }, timeoutMs);
   });
   if (outcome) return fail(outcome);
   proc.unref();

@@ -110,6 +110,9 @@ try {
 } catch {
   Quit 2 "init failed: $($_.Exception.Message)"
 }
+# Tells the app this process is past any policy block and only building the
+# window, so a slow machine gets a longer wait instead of the fallback.
+try { [IO.File]::WriteAllText((Join-Path $dir 'loaded'), 'loaded') } catch { }
 Log "start lang=$($cfg.lang) theme=$($cfg.theme) estimate=$($cfg.plan.estimateSec)s"
 
 # ---- plan --------------------------------------------------------------------

@@ -357,6 +357,31 @@ describe('launchUpdateProgressHelper (fail safe)', () => {
     expect(existsSync(path.join(h.dir, 'cancel'))).toBe(true);
   });
 
+  it('waits up to the cap for a window process that has loaded WPF', async () => {
+    const script = fake(
+      'slow.js',
+      `const fs=require('fs'),p=require('path');const d=p.dirname(process.argv[2]);
+       fs.writeFileSync(p.join(d,'loaded'),'loaded');
+       setTimeout(()=>fs.writeFileSync(p.join(d,'ready'),'ready'),900);setInterval(()=>{},1000);`,
+    );
+    const h = await launch(script, { readyTimeoutMs: 400, readyCapMs: 2_000 });
+    expect(h.ready).toBe(true);
+  });
+
+  it('gives up at the cap when a loaded window still never draws', async () => {
+    const script = fake(
+      'slowhang.js',
+      `const fs=require('fs'),p=require('path');const d=p.dirname(process.argv[2]);
+       fs.writeFileSync(p.join(d,'loaded'),'loaded');setInterval(()=>{},1000);`,
+    );
+    const t0 = Date.now();
+    const h = await launch(script, { readyTimeoutMs: 300, readyCapMs: 900 });
+    expect(h.ready).toBe(false);
+    expect(h.reason).toBe('no first frame within 900 ms (WPF loaded)');
+    expect(Date.now() - t0).toBeGreaterThanOrEqual(850);
+    expect(Date.now() - t0).toBeLessThan(2_500);
+  });
+
   it('is not ready when the command cannot start', async () => {
     const h = await launch('x', { command: path.join(scripts, 'no-such-powershell') });
     expect(h.ready).toBe(false);

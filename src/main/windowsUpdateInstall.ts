@@ -5,7 +5,7 @@
  * sidebar "Update Sei" button and the forced apply:'now' restart:
  *
  *   1. Start the progress window (updateProgressHelper.ts) and wait for its
- *      first frame, at most READY_TIMEOUT_MS.
+ *      first frame, at most READY_TIMEOUT_MS (READY_LOADED_CAP_MS once WPF loaded).
  *   2. Ready: record the start time, then quitAndInstall(true, true), the
  *      SILENT installer with a relaunch, so only Sei's window is on screen.
  *      Not ready (or no installer path to watch): hold the renderer's note up

@@ -352,6 +352,10 @@ mac:
     # (same situation as cce-1's arm64-only darwin prebuild).
     - "!node_modules/sherpa-onnx-linux-*/**"
     - "!node_modules/sherpa-onnx-win-*/**"
+    # Velopack (261030) is Windows-only (velopackBoot.ts loads it behind
+    # win32): its six native addons (~21MB) would otherwise ship unpacked and
+    # be code-signed on every mac build.
+    - "!node_modules/velopack/**"
     # 260908: the prismarine-viewer texture prune (and the 1.16.4 entity-texture
     # exception, 260806) moved to packs/minecraft/prune.mjs with the Minecraft
     # game pack. prismarine-viewer is not in the app tree any more.

@@ -366,8 +366,10 @@ jobs:
       - name: Verify Velopack signatures (Windows)
         # Signed release: every Setup and the Sei.exe / Update.exe inside each
         # Full package must be Valid and carry WIN_PUBLISHER_NAME. Unsigned
-        # (dry run, or signing not configured): report what is there.
+        # (dry run, or signing not configured): report what is there. A failure
+        # here keeps the Velopack files out of the release (collect step).
         if: runner.os == 'Windows' && steps.velopack.outcome == 'success'
+        id: velopack_verify
         continue-on-error: ${{ !inputs.dry_run }}
         shell: pwsh
         env:
@@ -405,6 +407,10 @@ jobs:
       - name: Collect release assets (installers + auto-update feed)
         env:
           VELOPACK_UPLOAD: ${{ steps.velopack.outputs.upload }}
+          # outcome, not conclusion: both steps are continue-on-error on a real
+          # release, so conclusion is 'success' even when they failed.
+          VELOPACK_PACK: ${{ steps.velopack.outcome }}
+          VELOPACK_VERIFY: ${{ steps.velopack_verify.outcome }}
         # CRITICAL: electron-updater needs the *.yml feed files, the macOS *.zip
         # (the mac auto-update payload — the dmg is download-only), and *.blockmap
         # files. Uploading only the dmg/exe silently breaks auto-update. Grab
@@ -433,10 +439,15 @@ jobs:
           rm -f dist-release/builder-debug.yml
           # 261030 Velopack: packages, Setup(s), releases.<channel>.json and
           # setup.<channel>.json, flat beside the NSIS installer.
-          if [ -n "$VELOPACK_UPLOAD" ] && [ -d "$VELOPACK_UPLOAD" ]; then
+          # Only a pack whose signature check passed ships: a failed check must
+          # never put unsigned or wrongly signed Velopack files in the feed.
+          if [ "$VELOPACK_PACK" = success ] && [ "$VELOPACK_VERIFY" = success ] \
+             && [ -n "$VELOPACK_UPLOAD" ] && [ -d "$VELOPACK_UPLOAD" ]; then
             cp "$VELOPACK_UPLOAD"/* dist-release/
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            echo "::warning::no Velopack output: this release ships without Velopack files, so no Windows install can migrate to it"
+            msg="Velopack pack=${VELOPACK_PACK:-skipped} verify=${VELOPACK_VERIFY:-skipped}: this release ships WITHOUT Velopack files (no Velopack update, no migration to it)"
+            echo "::warning::$msg"
+            echo "### :warning: $msg" >> "$GITHUB_STEP_SUMMARY"
           fi
           echo "Collected for ${{ matrix.artifact_name }}:"
           ls -1 dist-release/

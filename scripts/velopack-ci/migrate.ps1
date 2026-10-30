@@ -237,6 +237,16 @@ switch ($Case) {
     $p = Launch $nsisExe 'restart'
     $null = Need 'migration-check' 60
     $null = Need 'migration-installing' 300
+    # The process can appear seconds after the mark: Defender scans the 300 MB
+    # Setup before it starts (measured 3 s). Wait for it, then let it get into
+    # the install (it takes about 30 s) before killing it.
+    $killed = @()
+    for ($i = 0; $i -lt 120 -and $killed.Count -eq 0; $i++) {
+      if (Mark 'migration-installed') { break }
+      $killed = @(Get-Process -Name 'sei-velopack-setup' -ErrorAction SilentlyContinue)
+      if ($killed.Count -eq 0) { Start-Sleep -Milliseconds 250 }
+    }
+    if ($killed.Count -eq 0) { Fail 'the Setup never showed up, or finished before it could be killed' }
     Start-Sleep -Seconds 3
     $killed = @(Get-Process -Name 'sei-velopack-setup', 'Update' -ErrorAction SilentlyContinue)
     if ($killed.Count -eq 0) { Fail 'the Setup was already gone 3s into the install' }

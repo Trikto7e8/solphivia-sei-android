@@ -468,22 +468,22 @@ $frame.Add_Tick({
   try {
     if ($null -eq $S.t0) { return }
     $now = $clock.Elapsed.TotalSeconds
-    $dt = [math]::Min(0.25, [math]::Max(0, $now - $S.lastTick)); $S.lastTick = $now
+    $dt = [math]::Min(0.25, [math]::Max(0.0, $now - $S.lastTick)); $S.lastTick = $now
     $t = $now - $S.t0
     $target = CurveAt $t
     switch ($S.phase) {
       'opening' { $target = [math]::Max($target, $S.p + (0.93 - $S.p) * (1 - [math]::Exp(-$dt / 0.6))) }
       'done' {
         # The real finish: accelerate to 100% (ease-in), then fade.
-        $u = [math]::Min(1, ($now - $S.doneAt) / 0.45)
+        $u = [math]::Min(1.0, ($now - $S.doneAt) / 0.45)
         $target = $S.doneFrom + (1 - $S.doneFrom) * $u * $u
         if ($u -ge 1 -and ($now - $S.doneAt) -ge 0.75) { Close-Window 'reopened' }
       }
     }
-    if ($target -gt $S.p) { $S.p = [math]::Min(1, $target) }
+    if ($target -gt $S.p) { $S.p = [math]::Min(1.0, $target) }
     $w = $Track.ActualWidth
     if ($w -gt 0) {
-      $fw = [math]::Max(8, $S.p * $w)
+      $fw = [math]::Max(8.0, $S.p * $w)
       $Fill.Width = $fw; $Ribs.Width = $fw
       $Tip.Margin = New-Object Windows.Thickness(($fw - 18), -10, 0, -10)
     }
@@ -501,7 +501,7 @@ $frame.Add_Tick({
       'failed' { $line = [string]$cfg.copy.failed }
     }
     if ($line -and $line -ne $S.status) { $S.status = $line; $Status.Text = $line; Log "status: $line" }
-    if ($now - $S.lastProbe -ge 10) {
+    if ($now - $S.lastProbe -ge 30) {
       $S.lastProbe = $now
       Log ("bar: t={0:n1} target={1:n3} p={2:n3} track={3:n0} fill={4:n0}" -f $t, $target, $S.p, $w, $Fill.ActualWidth)
     }

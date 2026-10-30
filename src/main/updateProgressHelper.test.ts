@@ -218,6 +218,17 @@ describe('shipped resources', () => {
     for (const k of copyUsed) expect(Object.keys(cfg.copy), k).toContain(k);
   });
 
+  it('never passes a bare integer literal to [math]::Min/Max', () => {
+    // [math]::Min(1, $x) with $x a function's return value resolves to the
+    // Int32 overload and rounds $x: the bar sat at 0% then jumped to 100% the
+    // moment the curve passed 0.5, on a real Windows runner.
+    const ps1 = readFileSync(path.join(RESOURCES, 'update-progress.ps1'), 'utf8');
+    const bad = [...ps1.matchAll(/\[math\]::(?:Min|Max)\(([^()]*(?:\([^()]*\))?[^()]*)\)/gi)]
+      .map((m) => m[0])
+      .filter((call) => /\(\s*-?\d+\s*,|,\s*-?\d+\s*\)/.test(call));
+    expect(bad).toEqual([]);
+  });
+
   it('never spells one variable two ways (PowerShell names ignore case)', () => {
     // $logo (a BitmapImage) once overwrote $Logo (the XAML element), and the
     // script died before its first frame on a real Windows runner.

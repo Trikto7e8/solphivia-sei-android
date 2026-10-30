@@ -606,6 +606,9 @@ switch -Regex ($Scenario) {
     if (-not $sig) { Fail 'no signature check within 8 min'; Finish }
     $results.signature = $sig
     if ($sig.ok) { Fail 'a package not signed by the expected publisher passed' }
+    # Rejected for the right reason: the CI package is unsigned. A check that
+    # could not run (PowerShell failing to load its modules) rejects too.
+    elseif ($sig.reason -notmatch 'NotSigned') { Fail "rejected for another reason: $($sig.reason)" }
     Start-Sleep -Seconds 5
     if (Mark 'downloaded' $From) { Fail 'the rejected update was offered' }
     $leftPkg = @(Get-ChildItem "$root\packages" -Filter "*$Target*.nupkg" -ErrorAction SilentlyContinue)

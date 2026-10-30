@@ -46,7 +46,55 @@ $marks = Join-Path $userData 'velopack-ci.jsonl'
 $stateFile = Join-Path $userData 'velopack-migration.json'
 $failures = [System.Collections.Generic.List[string]]::new()
 $results = [ordered]@{ case = $Case }
-$wsh = New-Object -ComObject WScript.Shell
+# Shortcuts through IShellLinkW, the Unicode shell API Explorer and Electron's
+# shell.readShortcutLink use. WScript.Shell goes through the ANSI code page and
+# throws "Value does not fall within the expected range" on C:\游戏\Sei 测试.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+using System.Runtime.InteropServices.ComTypes;
+using System.Text;
+public static class SeiCiLnk {
+  [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  interface IShellLinkW {
+    void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+    void GetIDList(out IntPtr ppidl);
+    void SetIDList(IntPtr pidl);
+    void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
+    void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+    void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszDir, int cch);
+    void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+    void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszArgs, int cch);
+    void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+    void GetHotkey(out short pwHotkey);
+    void SetHotkey(short wHotkey);
+    void GetShowCmd(out int piShowCmd);
+    void SetShowCmd(int iShowCmd);
+    void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int piIcon);
+    void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+    void SetRelativePath([MarshalAs(UnmanagedType.LPWStr)] string pszPathRel, uint dwReserved);
+    void Resolve(IntPtr hwnd, uint fFlags);
+    void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+  }
+  [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+  class ShellLink { }
+  public static void Write(string lnk, string target, string wd) {
+    var l = (IShellLinkW)new ShellLink();
+    l.SetPath(target);
+    l.SetWorkingDirectory(wd);
+    ((IPersistFile)l).Save(lnk, true);
+  }
+  // "" for a missing or unreadable shortcut, as WScript.Shell's TargetPath was.
+  public static string Target(string lnk) {
+    if (!System.IO.File.Exists(lnk)) return "";
+    var l = (IShellLinkW)new ShellLink();
+    ((IPersistFile)l).Load(lnk, 0);
+    var sb = new StringBuilder(32768);
+    l.GetPath(sb, sb.Capacity, IntPtr.Zero, 0);
+    return sb.ToString();
+  }
+}
+'@
 $pinDir = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
 # C:\游戏\Sei 测试, spelled with char codes so the file's encoding cannot matter
 $unicodeDir = 'C:\' + [char]0x6E38 + [char]0x620F + '\Sei ' + [char]0x6D4B + [char]0x8BD5
@@ -74,7 +122,7 @@ $userLinkDirs = @([Environment]::GetFolderPath('Desktop'), (Join-Path $env:APPDA
 $commonLinkDirs = @([Environment]::GetFolderPath('CommonDesktopDirectory'), (Join-Path $env:ProgramData 'Microsoft\Windows\Start Menu\Programs'))
 function Links([string[]]$dirs) {
   foreach ($d in $dirs) {
-    Get-ChildItem -Path $d -Filter 'Sei*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Target = $wsh.CreateShortcut($_.FullName).TargetPath } }
+    Get-ChildItem -Path $d -Filter 'Sei*.lnk' -Recurse -ErrorAction SilentlyContinue | ForEach-Object { [pscustomobject]@{ Path = $_.FullName; Target = [SeiCiLnk]::Target($_.FullName) } }
   }
 }
 function State([string]$label) {
@@ -173,7 +221,7 @@ if ($Case -eq 'peruser-custom' -and $nsisDir -ne 'C:\Games\My Sei') { Fail "cust
 if ($Case -eq 'peruser-unicode' -and $nsisDir -ne $unicodeDir) { Fail "Chinese folder not kept: $nsisDir" }
 # A taskbar pin, as the file Explorer writes for one.
 New-Item -ItemType Directory -Force -Path $pinDir | Out-Null
-$pin = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')); $pin.TargetPath = $nsisExe; $pin.WorkingDirectory = $nsisDir; $pin.Save()
+[SeiCiLnk]::Write((Join-Path $pinDir 'Sei.lnk'), $nsisExe, $nsisDir)
 State "NSIS $From installed"
 
 # ------------------------------------------------------------------ 2. the feed
@@ -231,7 +279,7 @@ switch ($Case) {
     State 'installed, no restart'
     if ($p.HasExited) { Fail 'the NSIS copy exited after installing the Velopack copy' }
     if (@(SeiProcs | Where-Object { Under (ProcPath $_) $root }).Count -gt 0) { Fail 'a Velopack copy started without a restart' }
-    $pinNow = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')).TargetPath
+    $pinNow = [SeiCiLnk]::Target((Join-Path $pinDir 'Sei.lnk'))
     if (-not (Under $pinNow $root)) { Fail "the pin still points at $pinNow after the install" }
     # The user closes Sei.
     $null = $p.CloseMainWindow()
@@ -289,6 +337,7 @@ switch ($Case) {
     $results.signature = $sig
     if ($sig.ok) { Fail 'a Setup not signed by the expected publisher passed the check' }
     if ($sig.skipped) { Fail 'the signature check was skipped' }
+    if (-not $sig.ok -and $sig.reason -notmatch 'NotSigned') { Fail "rejected for another reason: $($sig.reason)" }
     $f = Need 'migration-failed' 30
     $results.failed_error = $f.error
     if ($f.error -notlike 'setup signature:*') { Fail "failed for another reason: $($f.error)" }
@@ -298,7 +347,7 @@ switch ($Case) {
     if (Test-Path "$root\current\Sei.exe") { Fail 'a Velopack copy was installed' }
     if ($p.HasExited) { Fail 'the NSIS copy exited after the rejection' }
     if ((MigState).phase -ne 'failed') { Fail "state after the rejection is $((MigState).phase)" }
-    $pinNow = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')).TargetPath
+    $pinNow = [SeiCiLnk]::Target((Join-Path $pinDir 'Sei.lnk'))
     if ($pinNow -ne $nsisExe) { Fail "the pin was moved to $pinNow" }
     State 'after the rejected Setup'
     Finish
@@ -376,7 +425,7 @@ if ($Case -eq 'nsis-newer') {
   if (Mark 'migration-redirect' ([scriptblock]::Create("param(`$e) `$e.t -gt $tNew"))) { Fail 'the newer NSIS copy handed off to the older Velopack copy' }
   if (Mark 'migration-installing' ([scriptblock]::Create("param(`$e) `$e.t -gt $tNew"))) { Fail 'the newer NSIS copy started a migration again' }
   if ((MigState).phase -ne 'failed') { Fail "state after nsis-newer is $((MigState).phase)" }
-  $pinNow = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')).TargetPath
+  $pinNow = [SeiCiLnk]::Target((Join-Path $pinDir 'Sei.lnk'))
   if ($pinNow -ne $nsisExe2) { Fail "the pin points at $pinNow, not the newer NSIS copy" }
   State 'newer NSIS copy running'
   Stop-Sei

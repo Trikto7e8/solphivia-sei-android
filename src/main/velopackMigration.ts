@@ -28,6 +28,7 @@ import {
   statfsSync,
   writeFileSync,
 } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { ciMark, pidAlive, userDataInstallId, velopackInstalled, velopackLog } from './velopackBoot';
@@ -468,9 +469,10 @@ async function readRules(): Promise<{ rule: MigrationRule | null; manifest: Setu
  * throw here used to escape installVelopack before the state left
  * 'installing' (velopack-update.yml migrate/setup-killed, 261031).
  */
-function removeTemp(dir: string): void {
+async function removeTemp(dir: string): Promise<void> {
   try {
-    rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
+    // Async: the retries must not block the main process.
+    await rm(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   } catch (err) {
     log(`could not remove ${dir}: ${(err as Error).message}`);
   }
@@ -502,7 +504,7 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
   if (!enoughDiskForMigration(freeBytes(tmp), m.size) || !enoughDiskForMigration(freeBytes(local), m.size)) {
     log('not migrating: low disk');
     ciMark('migration-check', { decision: { ok: false, reason: 'low-disk' } });
-    removeTemp(tmp);
+    await removeTemp(tmp);
     return;
   }
 
@@ -538,7 +540,7 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
   }
   if (!fetched) {
     fail('download failed');
-    removeTemp(tmp);
+    await removeTemp(tmp);
     return;
   }
   // The sha256 above comes from the same bucket as the Setup, so it only
@@ -548,7 +550,7 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
   ciMark('migration-signature', { ok: sig.ok, skipped: 'skipped' in sig, reason: sig.ok ? undefined : sig.reason });
   if (!sig.ok) {
     fail(`setup signature: ${sig.reason}`);
-    removeTemp(tmp);
+    await removeTemp(tmp);
     return;
   }
   if ('skipped' in sig) log('signature check off: this build is unsigned');
@@ -564,7 +566,7 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
   }
   const r = await waitForExit(child, SETUP_TIMEOUT_MS);
   if (r.code === 0) await new Promise((res) => setTimeout(res, SETUP_APP_START_GRACE_MS));
-  removeTemp(tmp);
+  await removeTemp(tmp);
   const root = velopackRootFor(local);
   const ok =
     r.code === 0 &&

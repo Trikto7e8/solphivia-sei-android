@@ -1,6 +1,6 @@
 /* tokens.css — design tokens (CSS custom properties).
  *
- * Source of truth: .planning/UI-DESIGN-SYSTEM.md (the "Summoning Terminal"
+ * Source of truth: docs/design/UI-DESIGN-SYSTEM.md (the "Summoning Terminal"
  * aesthetic). Ported from the sei-gui-improved mockup (hud.jsx :root + ui.jsx).
  *
  * Four themes share ONE structure (260724):

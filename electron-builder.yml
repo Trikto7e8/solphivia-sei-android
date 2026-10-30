@@ -1,6 +1,4 @@
 # electron-builder.yml — Phase 4 final.
-# Source: .planning/phases/04-electron-gui-packaging/04-RESEARCH.md §"Code Examples §3 + §4"
-#         + §"Resolved During Plan-Phase" Q1, Q2, Q3.
 #
 # appId is LOCKED for v1. Any future change strands every existing user's
 # safeStorage Keychain entry on macOS and Windows DPAPI scope on Windows —
@@ -68,7 +66,6 @@ files:
   # the cleanest evidence that these two matchers are genuinely separate.
   - "!demo/**"
   - "!ARCHITECTURE.md"
-  - "!RELEASE-NOTES.md"
   - "!README.md"
   - "!CLAUDE.md"
   # tooling / CI / git
@@ -331,7 +328,6 @@ mac:
     - "!logs/**"
     - "!memory/**"
     - "!ARCHITECTURE.md"
-    - "!RELEASE-NOTES.md"
     - "!README.md"
     - "!CLAUDE.md"
     - "!tsconfig*.json"
@@ -452,7 +448,6 @@ win:
     - "!logs/**"
     - "!memory/**"
     - "!ARCHITECTURE.md"
-    - "!RELEASE-NOTES.md"
     - "!README.md"
     - "!CLAUDE.md"
     - "!tsconfig*.json"
@@ -539,4 +534,4 @@ nsis:
 # The notify-and-redirect-to-website updater (updateChecker.ts + UpdateToast.tsx)
 # was replaced by a real in-app electron-updater that downloads + installs in
 # place over the GitHub Releases channel (see `publish:` above). userData is
-# never touched by an update. See .planning/quick/260604-uoy-* for the design.
+# never touched by an update. See docs/design/in-app-updater-260604.md for the design.

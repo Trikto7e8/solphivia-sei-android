@@ -25,7 +25,7 @@
  * Source:
  *   - src/renderer/src/components/AutoRenewalConsentModal.tsx (modal template)
  *   - src/renderer/src/components/Button.tsx / PercentBar.tsx (reused primitives)
- *   - .planning/quick/260604-uoy-... PLAN.md Task 6
+ *   - docs/design/in-app-updater-260604.md Task 6
  */
 import React from 'react';
 import { useT } from '../lib/i18n';

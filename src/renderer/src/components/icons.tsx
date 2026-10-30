@@ -1,5 +1,5 @@
 /**
- * Inline SVG icons. Ported verbatim from .planning/.../design/project/ui.jsx.
+ * Inline SVG icons. Ported verbatim from the v0.1 design mockup (ui.jsx).
  *
  * No icon font dependency, no external SVG sprite — just typed React components
  * keyed by `size` (default 18) so callers can scale per-site (UI-SPEC sidebar

@@ -1265,7 +1265,7 @@ companion). The field is OPTIONAL with no default;
 **read it only through `effectiveAvatarMode`** (characterSchema), which folds
 the deprecated `call_overlay_enabled` boolean (`true` → `'activity'`) so old
 configs keep their overlay without a migration. The player's own tile is
-GONE; the overlay is AI-only. Design doc: `.planning/avatar-v06-260804.md`.
+GONE; the overlay is AI-only. Design doc: `docs/design/avatar-v06-260804.md`.
 
 - **Window** (`src/main/callOverlay.ts`): click-through by default with
   `setIgnoreMouseEvents(true, {forward: true})` so hover still reaches the
@@ -1523,7 +1523,7 @@ and standing in your world at once. Lines go to the SAME chat thread and the
 same memory as every other surface.
 
 The design and its measurements are committed at
-`.planning/backseat-v2-260801.md`. **Read that before changing anything here.**
+`docs/design/backseat-v2-260801.md`. **Read that before changing anything here.**
 
 - **Authority split.** The renderer owns pixels and sound: `getDisplayMedia`,
   the ring buffer, grid compositing, the rolling clip recorders, local STT, and
@@ -2124,8 +2124,8 @@ Two more things from the same case, since they are why he never got in:
 
 The companion can be launched into the player's own Stardew Valley farm or
 hosted Don't Starve Together world the way it is launched into a Minecraft
-LAN world. Design and research: `.planning/game-adapters-260908.md` (+
-`.planning/research/game-adapters-*-260908.md`, `dst-survivors-260908.md`).
+LAN world. Design and research: `docs/design/game-adapters-260908.md` (+
+`docs/design/research/game-adapters-*-260908.md`, `dst-survivors-260908.md`).
 Both tiles are `available: true` in `src/shared/games.ts` (flipped 260908 so
 the user can run the live checklist from the app itself); the live checklist
 (plan section 5, M3, per game) is still owed, and neither game self-launches
@@ -3879,9 +3879,12 @@ one is in the website repo's `README-popup.md`.
 
 ---
 
-## GSD planning
+## Design docs
 
-This project uses the GSD planning system; artifacts live in `.planning/`.
-Start with `.planning/STATE.md` (current state) and `.planning/ROADMAP.md`
-(phases) before picking up cross-cutting work. Commit planning docs alongside
-the code they describe.
+Durable design docs that code comments point at live in `docs/design/` (UI
+design system, Party redesign, chat + memory, backseat v2, avatar v0.6, game
+adapters, in-app updater, craft tool). The old GSD `.planning/` tree (phase
+plans, roadmaps, one-off experiment output) was removed on 261030; it is in
+git history if you need it. The repo is public: keep pricing, cost and margin
+numbers, security write-ups, personal paths and other internal notes out of
+it.

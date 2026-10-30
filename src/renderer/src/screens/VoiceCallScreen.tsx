@@ -623,11 +623,7 @@ export function VoiceCallScreen({ characterId }: VoiceCallScreenProps): React.Re
                   )}
                 </span>
               </div>
-              <CallControls
-                size="sm"
-                onHangUp={() => navigate({ kind: 'chat', characterId })}
-                spaceToInterrupt
-              />
+              <CallControls size="sm" onHangUp={() => navigate({ kind: 'chat', characterId })} />
               <span className={styles.miniSubtitle}>{subtitle}</span>
             </div>
           </>
@@ -793,7 +789,6 @@ export function VoiceCallScreen({ characterId }: VoiceCallScreenProps): React.Re
             onHangUp={() => navigate({ kind: 'chat', characterId })}
             backdrop={backdropOn}
             onToggleBackdrop={toggleBackdrop}
-            spaceToInterrupt
           />
         </div>
       )}
@@ -825,7 +820,6 @@ export function VoiceCallScreen({ characterId }: VoiceCallScreenProps): React.Re
             backdrop={backdropOn}
             onToggleBackdrop={toggleBackdrop}
             onArt
-            spaceToInterrupt
           />
         </div>
       ) : null}

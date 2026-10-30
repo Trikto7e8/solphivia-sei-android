@@ -190,8 +190,8 @@ interface VoiceState {
   /** Hang up the whole call. `reason` (261023) is why, for voice_call_ended
    *  and for the share the call takes with it (callEndReasons.ts). */
   endCall: (reason?: CallEndReason) => void;
-  /** 261030: the manual interrupt (call controls, overlay, Space on the call
-   *  screen). The same cut a confirmed voice barge-in makes: stop the audio,
+  /** 261030: the manual interrupt (the call-controls hand pill and the
+   *  overlay's button). The same cut a confirmed voice barge-in makes: stop the audio,
    *  cancel the line being generated, abort a pending backseat line. */
   interrupt: () => void;
   /** Accept the local-backup offer: persists stt_local_fallback = true and

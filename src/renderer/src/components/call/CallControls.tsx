@@ -20,7 +20,13 @@
  * 261030: the interrupt pill (raised hand), right after deafen, while the call is
  * live. Same cut as a confirmed voice barge-in (useVoiceStore.interrupt), for
  * when talking over her does not work: a loud game, a noisy room, a shy
- * player. Space does the same on the call screen (VoiceCallScreen).
+ * player. (The Space-key shortcut for it was removed 261031, Shawn's call: the
+ * pill and the overlay's interrupt button are the manual paths.)
+ *
+ * 261031: every pill carries the shared fast data-tip tooltip (global.css),
+ * placed ABOVE (data-tip-up) because the row sits at the bottom of the call
+ * view (below it over art, see tipUp). They used native `title` before, which takes ~1.5 s to appear and read
+ * as "no tooltip". aria-label carries the same words.
  *
  * 260803: the screen-share button. This is the ONLY entry point to backseat now
  * that the "Backseat" tile is gone from the games picker, and it is here rather
@@ -54,7 +60,6 @@ import {
 } from '../icons';
 import { useT } from '../../lib/i18n';
 import { visionBlocked, visionGateReason } from '../../lib/visionGate';
-import { isInterruptKey } from '../../lib/voice/interruptKey';
 import styles from './CallControls.module.css';
 
 export interface CallControlsProps {
@@ -74,12 +79,6 @@ export interface CallControlsProps {
    * the theme-tinted fill for a fixed dark scrim (see the CSS).
    */
   onArt?: boolean;
-  /**
-   * 261030: Space interrupts the companion while this row is mounted. Only the
-   * call screen opts in: the in-game cluster sits next to game surfaces where
-   * Space may already mean something.
-   */
-  spaceToInterrupt?: boolean;
 }
 
 export function CallControls({
@@ -88,7 +87,6 @@ export function CallControls({
   backdrop,
   onToggleBackdrop,
   onArt,
-  spaceToInterrupt,
 }: CallControlsProps): React.ReactElement {
   const t = useT();
   const muted = useUiStore((s) => s.callMuted);
@@ -100,17 +98,6 @@ export function CallControls({
   // nothing to cut, and a disabled pill would just be noise in the row.
   const interrupt = useVoiceStore((s) => s.interrupt);
   const callLive = useVoiceStore((s) => s.status === 'live');
-  const modalOpen = useUiStore((s) => s.modal !== null);
-  React.useEffect(() => {
-    if (!spaceToInterrupt || !callLive || modalOpen) return;
-    const onKey = (e: KeyboardEvent): void => {
-      if (!isInterruptKey(e)) return;
-      e.preventDefault(); // no page scroll
-      interrupt();
-    };
-    window.addEventListener('keydown', onKey);
-    return () => window.removeEventListener('keydown', onKey);
-  }, [spaceToInterrupt, callLive, modalOpen, interrupt]);
 
   // Screen share. The target is the call's first participant, the same one the
   // participant tiles route to, so this needs no prop that the two mount sites
@@ -134,7 +121,7 @@ export function CallControls({
   const llmModel = useUiStore((s) => s.llmModel);
   // A live Minecraft summon also disables the pill (260907): backseat and a
   // summon are mutually exclusive (main refuses BACKSEAT_MC_SESSION_ACTIVE),
-  // so say so up front. Every disabled state carries its reason as the title.
+  // so say so up front. Every disabled state carries its reason as the tooltip.
   const shareMcKind = useDataStore((s) =>
     shareTarget ? s.summons[shareTarget]?.kind : undefined,
   );
@@ -153,6 +140,17 @@ export function CallControls({
   const btn = small ? `${styles.pillBtn} ${styles.pillBtnSm}` : styles.pillBtn;
   const iconPx = small ? 16 : 22;
 
+  // Tooltips go ABOVE the row, which sits at the bottom of every surface it
+  // is mounted on. Over art (the backdrop view) the name + timer pill sits
+  // right above the row, so there they hang BELOW instead, into the
+  // --space-xl bottom margin, where there is only the picture to cover.
+  const tipUp = onArt ? undefined : true;
+
+  const muteLabel = muted ? t('Unmute') : t('Mute');
+  const deafenLabel = deafened ? t('Undeafen') : t('Deafen');
+  const backdropLabel = backdrop ? t('Show the call view') : t('Show the scene');
+  const shareLabel = sharing ? t('Stop sharing') : (shareReason ?? t('Share screen'));
+
   const row = [styles.controls, small ? styles.controlsSm : '', onArt ? styles.controlsOnArt : '']
     .filter(Boolean)
     .join(' ');
@@ -164,8 +162,9 @@ export function CallControls({
         className={muted ? `${btn} ${styles.pillBtnToggled}` : btn}
         onClick={() => setMuted(!muted)}
         aria-pressed={muted}
-        aria-label={muted ? t('Unmute') : t('Mute')}
-        title={muted ? t('Unmute') : t('Mute')}
+        aria-label={muteLabel}
+        data-tip={muteLabel}
+        data-tip-up={tipUp}
       >
         {muted ? <MicOffIcon size={iconPx} /> : <MicIcon size={iconPx} />}
       </button>
@@ -175,8 +174,9 @@ export function CallControls({
         className={deafened ? `${btn} ${styles.pillBtnToggled}` : btn}
         onClick={() => setDeafened(!deafened)}
         aria-pressed={deafened}
-        aria-label={deafened ? t('Undeafen') : t('Deafen')}
-        title={deafened ? t('Undeafen') : t('Deafen')}
+        aria-label={deafenLabel}
+        data-tip={deafenLabel}
+        data-tip-up={tipUp}
       >
         {deafened ? <HeadphonesOffIcon size={iconPx} /> : <HeadphonesIcon size={iconPx} />}
       </button>
@@ -187,7 +187,8 @@ export function CallControls({
           className={btn}
           onClick={interrupt}
           aria-label={t('Interrupt')}
-          title={spaceToInterrupt ? t('Interrupt (Space)') : t('Interrupt')}
+          data-tip={t('Interrupt')}
+          data-tip-up={tipUp}
         >
           <HandIcon size={iconPx} />
         </button>
@@ -199,8 +200,9 @@ export function CallControls({
           className={backdrop ? `${btn} ${styles.pillBtnToggled}` : btn}
           onClick={onToggleBackdrop}
           aria-pressed={backdrop}
-          aria-label={backdrop ? t('Show the call view') : t('Show the scene')}
-          title={backdrop ? t('Show the call view') : t('Show the scene')}
+          aria-label={backdropLabel}
+          data-tip={backdropLabel}
+          data-tip-up={tipUp}
         >
           <MountainIcon size={iconPx} />
         </button>
@@ -221,8 +223,12 @@ export function CallControls({
           !sharing && (!shareTarget || startingShare || shareVisionBlocked || shareMcActive)
         }
         aria-pressed={sharing}
-        aria-label={sharing ? t('Stop sharing your screen') : (shareReason ?? t('Share your screen'))}
-        title={sharing ? t('Stop sharing') : (shareReason ?? t('Share your screen'))}
+        aria-label={shareLabel}
+        data-tip={shareLabel}
+        data-tip-up={tipUp}
+        // A disabled reason can outrun the one-line data-tip at the 'sm' size,
+        // so it also rides the native title (same as ChatTopBar's Backseat).
+        title={shareReason ?? undefined}
       >
         {sharing ? <ScreenShareOffIcon size={iconPx} /> : <ScreenShareIcon size={iconPx} />}
       </button>
@@ -237,8 +243,9 @@ export function CallControls({
           endCall('user_hangup');
           onHangUp?.();
         }}
-        aria-label={t('Hang up')}
-        title={t('Hang up')}
+        aria-label={t('Leave call')}
+        data-tip={t('Leave call')}
+        data-tip-up={tipUp}
       >
         <PhoneOffIcon size={small ? 17 : 24} />
       </button>

@@ -856,6 +856,9 @@ export interface CallOverlayState {
   cameras?: Record<string, AvatarCamera>;
   /** MAIN-enriched: the caption overlay window is enabled. */
   captionsOn?: boolean;
+  /** 261031: the app's UI language, so the overlay's button tooltips follow
+   * it (the overlay window never boots the App that hydrates the store). */
+  lang?: 'en' | 'zh';
 }
 
 /**

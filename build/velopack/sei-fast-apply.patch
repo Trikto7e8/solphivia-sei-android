@@ -209,7 +209,7 @@ new file mode 100644
 index 00000000..3e9307d6
 --- /dev/null
 +++ b/src/bins/src/commands/sei_fast.rs
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,407 @@
 +//! SEI PATCH (not upstream Velopack): fast apply.
 +//!
 +//! Stock `apply` extracts the whole package (744 MB / 6,400 files for Sei) AFTER the app has exited, which is the
@@ -476,6 +476,12 @@ index 00000000..3e9307d6
 +/// `fs::rename` with retries, logging the first failure and the outcome instead of every attempt.
 +pub fn retry_rename(from: &Path, to: &Path, delay_ms: i32, count: i32) -> std::io::Result<()> {
 +    let sw = Instant::now();
++    // The destination's folder may not exist yet: with a staged copy nothing creates packages\VelopackTemp
++    // (upstream made it while extracting the package there), and a rename into a missing folder fails with
++    // os error 3 on every retry. Seen on a Full-only update (no delta was ever applied on that install).
++    if let Some(parent) = to.parent() {
++        let _ = fs::create_dir_all(parent);
++    }
 +    let mut res = fs::rename(from, to);
 +    if let Err(e) = &res {
 +        warn!("Rename {:?} failed ({}), retrying every {} ms up to {} times", from, e, delay_ms, count);

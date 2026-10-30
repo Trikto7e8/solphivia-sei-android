@@ -1,24 +1,32 @@
 /**
- * SPIKE (spike/velopack, 261030): Velopack startup hook for Windows.
+ * Velopack startup hook for Windows (261030).
  *
  * Side-effect module. MUST be the second import of src/main/index.ts, right
  * after remoteDebugGuard: Velopack runs install/update/uninstall hooks by
  * launching Sei.exe with `--veloapp-*` arguments and expects the process to
  * handle them and exit within 15-30 s. ES module bodies evaluate in import
  * order, so `VelopackApp.run()` here exits a hook launch before the rest of
- * the main graph evaluates (the graph is still parsed, which is part of what
- * the spike measures as hook cost).
+ * the main graph evaluates.
  *
  * Only active in a packaged win32 build. When the app was NOT installed by
  * Velopack (an NSIS install, or dev), `run()` logs "Error loading
  * manager/locator" and returns, and `velopackInstalled()` stays false, so the
- * same build keeps working under electron-updater. That property is what the
- * migration design relies on.
+ * same build keeps working under electron-updater. The NSIS -> Velopack
+ * migration relies on that.
+ *
+ * Velopack's own apply-on-startup is OFF (it shows a stock progress dialog);
+ * velopackUpdater.ts applies a pending update itself with Sei's update screen.
+ *
+ * Launch during an apply: when Update.exe is applying (packages\SeiStaged\
+ * applying.pid names a live process) and this launch was not started by it,
+ * Sei leaves a relaunch request and exits at once, so it neither blocks the
+ * folder swap nor gets killed by it. The apply starts Sei when it is done.
  */
 import { app } from 'electron';
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { bundleRequire } from './bundleRequire';
+import { applyInProgress, velopackPathsFor, type VelopackPaths } from './velopackFastApply';
 
 /** Wall-clock time this module evaluated: the earliest JS point of a launch. */
 export const velopackBootAt = Date.now();
@@ -58,6 +66,7 @@ export interface VelopackModule {
       setLogger(cb: (level: string, msg: string) => void): unknown;
       onRestarted(cb: (v: string) => void): unknown;
       onFirstRun(cb: (v: string) => void): unknown;
+      setAutoApplyOnStartup(autoApply: boolean): unknown;
       run(): void;
     };
   };
@@ -74,6 +83,7 @@ let mod: VelopackModule | null = null;
 let installed = false;
 let restartedVersion: string | null = null;
 let firstRunVersion: string | null = null;
+let paths: VelopackPaths | null = null;
 
 /** Append one line to <userData>/logs/velopack.log. Never throws. */
 export function velopackLog(line: string): void {
@@ -86,11 +96,15 @@ export function velopackLog(line: string): void {
   }
 }
 
-/** Spike timing marks, one JSON object per line in <userData>/velopack-spike.jsonl. */
-export function spikeMark(ev: string, extra: Record<string, unknown> = {}): void {
-  if (process.env.SEI_VELOPACK_SPIKE !== '1') return;
+/**
+ * Timing marks for the Windows update CI harness (velopack-update.yml), one
+ * JSON object per line in <userData>/velopack-ci.jsonl. Only written when
+ * SEI_VELOPACK_CI=1, which nothing sets outside CI.
+ */
+export function ciMark(ev: string, extra: Record<string, unknown> = {}): void {
+  if (process.env.SEI_VELOPACK_CI !== '1') return;
   try {
-    const file = path.join(app.getPath('userData'), 'velopack-spike.jsonl');
+    const file = path.join(app.getPath('userData'), 'velopack-ci.jsonl');
     mkdirSync(path.dirname(file), { recursive: true });
     appendFileSync(
       file,
@@ -101,18 +115,51 @@ export function spikeMark(ev: string, extra: Record<string, unknown> = {}): void
   }
 }
 
-if (process.env.SEI_VELOPACK_SPIKE === '1') {
-  // SPIKE harness: time each window to its first paint-ready moment. Registered
+if (process.env.SEI_VELOPACK_CI === '1') {
+  // CI harness: time each window to its first paint-ready moment. Registered
   // at import time, before index.ts creates the main window.
   let n = 0;
   app.on('browser-window-created', (_e, win) => {
     const idx = n++;
-    spikeMark('window-created', { idx });
-    win.once('ready-to-show', () => spikeMark('window-ready-to-show', { idx }));
+    ciMark('window-created', { idx });
+    win.once('ready-to-show', () => ciMark('window-ready-to-show', { idx }));
+    win.once('show', () => ciMark('window-shown', { idx, w: win.getBounds().width }));
     win.webContents.once('did-finish-load', () =>
-      spikeMark('window-loaded', { idx, url: win.webContents.getURL().slice(0, 80) }),
+      ciMark('window-loaded', { idx, url: win.webContents.getURL().slice(0, 80) }),
     );
   });
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    // EPERM: it exists but belongs to someone else (an elevated Update.exe)
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** Exits this launch when Update.exe is applying right now (see the header). */
+function leaveIfApplying(p: VelopackPaths): void {
+  const marker = path.join(p.stageDir, 'applying.pid');
+  let text: string | null = null;
+  let mtime = 0;
+  try {
+    mtime = statSync(marker).mtimeMs;
+    text = readFileSync(marker, 'utf8');
+  } catch {
+    return; // no apply running
+  }
+  if (!applyInProgress(text, mtime, Date.now(), pidAlive)) return;
+  try {
+    writeFileSync(path.join(p.stageDir, 'relaunch'), String(process.pid));
+  } catch {
+    /* the apply restarts Sei anyway when it was an in-app restart */
+  }
+  velopackLog(`launched during an update (Update.exe pid ${text.trim()}), leaving a relaunch request and exiting`);
+  ciMark('left-during-apply', { updatePid: text.trim() });
+  process.exit(0);
 }
 
 if (process.platform === 'win32' && app.isPackaged) {
@@ -126,6 +173,7 @@ if (process.platform === 'win32' && app.isPackaged) {
     builder.onFirstRun((v) => {
       firstRunVersion = v;
     });
+    builder.setAutoApplyOnStartup(false);
     builder.run();
     // run() returned, so this is a normal launch (hooks exit inside run()).
     // An UpdateManager only constructs when a Velopack locator exists, i.e.
@@ -136,11 +184,18 @@ if (process.platform === 'win32' && app.isPackaged) {
     } catch {
       installed = false;
     }
-    spikeMark('boot', { velopackInstalled: installed, restartedVersion, firstRunVersion, argv: process.argv.slice(1) });
+    paths = installed ? velopackPathsFor(process.execPath) : null;
+    ciMark('boot', { velopackInstalled: installed, restartedVersion, firstRunVersion, argv: process.argv.slice(1) });
+    if (paths && restartedVersion === null) leaveIfApplying(paths);
   } catch (err) {
     velopackLog(`velopack boot failed: ${(err as Error).message}`);
     mod = null;
   }
+}
+
+/** The install layout (root, packages, Update.exe), when this is a Velopack install. */
+export function velopackPaths(): VelopackPaths | null {
+  return paths;
 }
 
 export function velopackModule(): VelopackModule | null {

@@ -19,7 +19,7 @@
 // MUST stay the first import: refuses --remote-debugging-* / --inspect* /
 // --js-flags in packaged stable builds before anything else evaluates.
 import './remoteDebugGuard';
-// SPIKE (spike/velopack): Velopack hooks must run before the rest of main
+// Windows: Velopack hooks must run before the rest of main
 // evaluates; see velopackBoot.ts.
 import './velopackBoot';
 import { app, BrowserWindow, net, session, systemPreferences } from 'electron';
@@ -65,6 +65,7 @@ import {
 } from './quitNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
 import { initUpdater } from './updater';
+import { applyPendingAtLaunch, updateSplashStatusForLaunch } from './velopackUpdater';
 import { initNotices } from './notices';
 import { installPopupFrameGuards } from './popupFrameGuards';
 import { createSkinServer, SKIN_SERVER_DEV_PORT } from './skinServer';
@@ -1585,16 +1586,25 @@ if (!gotLock) {
     // Startup splash (260728): the white Sei logo, up before any heavy
     // bootstrap work, closed when the main window first paints. The failsafe
     // timer covers a bootstrap that errors before showing a window.
-    splashWindow = createSplashWindow();
+    // Windows, right after Update.exe restarted Sei (261030): the same splash
+    // with "Updating…" under it, matching the update overlay it replaces.
+    splashWindow = createSplashWindow({ status: updateSplashStatusForLaunch() });
     setTimeout(() => {
       if (splashWindow && !splashWindow.isDestroyed()) closeSplashWindow(splashWindow);
       splashWindow = null;
     }, 15_000);
 
-    bootstrap().catch((err) => {
-      logger.error(`bootstrap failed: ${(err as Error).message}`);
-      app.exit(1);
-    });
+    // Windows: an update that was downloaded and staged but never applied
+    // (Sei was killed) is applied now, behind the splash, instead of booting.
+    void applyPendingAtLaunch(splashWindow)
+      .catch(() => false)
+      .then((applying) => {
+        if (applying) return;
+        bootstrap().catch((err) => {
+          logger.error(`bootstrap failed: ${(err as Error).message}`);
+          app.exit(1);
+        });
+      });
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0 && mainWindow === null) {

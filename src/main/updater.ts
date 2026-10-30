@@ -32,6 +32,7 @@
  *   - src/main/updatePolicy.ts (pure level/apply derivation)
  *   - src/main/updateStateStore.ts (device-global pending/lastSeen persistence)
  */
+import { existsSync } from 'node:fs';
 import { app, net, powerMonitor, type BrowserWindow } from 'electron';
 import { IpcChannel, type WhatsNewEvent } from '../shared/ipc';
 import {
@@ -45,7 +46,7 @@ import { loadUpdateState, saveUpdateState } from './updateStateStore';
 import { restartInstallArgs } from './updateInstall';
 import { refreshNotices } from './notices';
 import { updaterLog } from './updaterLog';
-import { spikeMark, velopackInstalled } from './velopackBoot';
+import { ciMark, velopackInstalled } from './velopackBoot';
 import { createVelopackAutoUpdater } from './velopackUpdater';
 
 // Tees to the console AND <userData>/logs/updater.log. Was console-only until
@@ -368,9 +369,9 @@ function ensureAutoUpdater(): AutoUpdater | null {
   }
   if (autoUpdater && wired) return autoUpdater;
   try {
-    // SPIKE (spike/velopack): a Velopack install updates through Velopack;
-    // an NSIS install (and macOS) keeps electron-updater, so one build serves
-    // both while users migrate.
+    // Windows (261030): a Velopack install updates through Velopack; an NSIS
+    // install (and macOS) keeps electron-updater, so one build serves both
+    // while NSIS users migrate.
     const velo = process.platform === 'win32' && velopackInstalled() ? createVelopackAutoUpdater() : null;
     if (velo) {
       logger.info('updater: Velopack install detected, using the Velopack UpdateManager');
@@ -550,12 +551,19 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
  */
 async function handleUpdateDownloaded(version?: string): Promise<void> {
   updateReadyToInstall = true;
-  // SPIKE harness: CI has nobody to click "Update Sei", so restart at once.
-  if (process.env.SEI_VELOPACK_SPIKE === '1') {
-    const mode = process.env.SEI_VELOPACK_SPIKE_MODE ?? 'restart';
-    spikeMark('downloaded', { target: version, mode });
+  // CI harness (velopack-update.yml): nobody clicks "Update Sei" on a runner.
+  // SEI_VELOPACK_CI_TRIGGER names a file the harness creates when it is ready
+  // (recording, file locks in place); without it the action runs at once.
+  if (process.env.SEI_VELOPACK_CI === '1') {
+    const mode = process.env.SEI_VELOPACK_CI_MODE ?? 'restart';
+    ciMark('downloaded', { target: version, mode });
+    const trigger = process.env.SEI_VELOPACK_CI_TRIGGER;
+    if (trigger) {
+      while (!existsSync(trigger)) await new Promise((r) => setTimeout(r, 100));
+      ciMark('triggered', { mode });
+    }
     if (mode === 'quit') {
-      app.quit(); // will-quit hands the package to Update.exe, no relaunch
+      app.quit(); // the quit handler hands the package to Update.exe, no relaunch
     } else if (mode === 'restart') {
       installDownloadedUpdate();
     } // 'download-only': CI kills the process, the next launch applies it

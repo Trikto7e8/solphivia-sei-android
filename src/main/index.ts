@@ -1509,7 +1509,7 @@ async function bootstrap(): Promise<void> {
   //
   //     NOTE: the Supabase project's Site URL (or Additional Redirect URLs)
   //     must include http://localhost:54321/auth/callback for the email link
-  //     to point here. See .planning/phases/10-auth-foundation/deferred-items.md.
+  //     to point here.
   //
   //     Bind failure is non-fatal: the user can still sign in (the session
   //     IPC handlers work), but verification emails will keep redirecting

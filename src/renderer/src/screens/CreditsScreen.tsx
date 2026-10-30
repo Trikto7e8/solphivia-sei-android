@@ -40,7 +40,6 @@
  * carries percentages, credit counts and dates only.
  *
  * Sources:
- *   - .planning/quick/260724-sub-weekly-subscription-model/SPEC.md
  *   - src/renderer/src/lib/stores/useCreditsStore.ts (selectors + actions)
  */
 

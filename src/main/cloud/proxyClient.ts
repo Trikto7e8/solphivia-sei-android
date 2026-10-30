@@ -37,7 +37,7 @@
  *     `my_plan` view — so allowances can be retuned without a client release.
  *
  * Source:
- *   - .planning/quick/260724-sub-weekly-subscription-model/SPEC.md (§4 contract)
+ *   - The weekly-subscription contract (`CreditsStatus` in src/shared/ipc.ts).
  *   - Polar migration (2026-06): checkout/portal sessions are proxy-minted
  *
  * Related: `src/main/auth/edgeFunctionClient.ts` (POST wrapper with timeout),

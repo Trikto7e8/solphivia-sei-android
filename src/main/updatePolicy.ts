@@ -20,7 +20,7 @@
  * mandatory/silent path triggers ONLY when major.minor are equal and only the
  * patch component moved forward.
  *
- * Source: .planning/quick/260604-uoy-... PLAN.md "Locked design".
+ * Source: docs/design/in-app-updater-260604.md "Locked design".
  */
 import semver from 'semver';
 

@@ -36,7 +36,7 @@
  *
  * Only en and zh have local voices. Any other conversation language falls back
  * to the ENGLISH voice (it will read non-Latin text poorly; local TTS scope is
- * en+zh by decision — see .planning/china-compat-v07-260816.md W3+W4).
+ * en+zh by decision, from the 260816 china-compat stream).
  */
 import { VOICES } from 'soulcaster';
 import type { SpeechPackId } from './packs';

@@ -2886,7 +2886,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   // This comment is the coordination contract between 11-14 (cache owner) and
   // 11-12 (cache invalidator). The literal `invalidateTosCache` reference here
   // satisfies plan 11-14's acceptance criterion #6.
-  // See: src/main/auth/authState.ts:invalidateTosCache + .planning/phases/11-cloud-character-library/11-14-PLAN.md.
+  // See: src/main/auth/authState.ts:invalidateTosCache.
 
   // Skin pipeline. Lazy-import the skinStore module inside the handler
   // bodies so a future cyclic import (skinStore → characterStore → ipc →

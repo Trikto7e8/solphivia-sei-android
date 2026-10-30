@@ -798,7 +798,7 @@ export async function startCapture(
   // 260801: this replaces a 6 s poll of a small VLM asked whether the grid was
   // interesting. Measured, that model said yes far too readily and the
   // narration-novelty scheme meant to replace it carried almost no signal, so
-  // the gate is gone rather than retuned (.planning/backseat-v2-260801.md).
+  // the gate is gone rather than retuned (docs/design/backseat-v2-260801.md).
   //
   // A setTimeout chain rather than setInterval: the delay is redrawn every
   // time, and it also has to be resettable from outside (noteSpoke) so an idle

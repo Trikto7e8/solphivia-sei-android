@@ -42,10 +42,29 @@ export function waitForExit(child: ReturnType<typeof spawn>, timeoutMs: number):
 }
 
 /**
+ * The environment Windows PowerShell 5.1 runs in: this process's, plus
+ * `extra`, minus PSModulePath. A Sei started from PowerShell 7 (a terminal,
+ * a script, the CI harness) inherits a PSModulePath that lists PowerShell 7's
+ * own module folders first, and 5.1 then fails to load even its built-in
+ * Microsoft.PowerShell.Security ("the module could not be loaded"), so
+ * Get-AuthenticodeSignature never runs and every signed update is rejected
+ * (261031 CI, sig-accept). Without the variable 5.1 builds its default path.
+ */
+export function powerShellEnv(
+  base: NodeJS.ProcessEnv,
+  extra?: Record<string, string>,
+): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...base, ...(extra ?? {}) };
+  for (const k of Object.keys(env)) if (k.toLowerCase() === 'psmodulepath') delete env[k];
+  return env;
+}
+
+/**
  * Runs a script with -EncodedCommand (so nothing in it needs quoting) and
  * returns its stdout, or null when PowerShell is missing, failed to start,
- * timed out or exited non-zero. `env` is added to this process's environment:
- * pass paths through it rather than pasting them into the script.
+ * timed out or exited non-zero. `env` is added to this process's environment
+ * (powerShellEnv): pass paths through it rather than pasting them into the
+ * script.
  */
 export async function runPowerShell(
   script: string,
@@ -60,7 +79,7 @@ export async function runPowerShell(
     child = spawn(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'ignore'],
-      env: env ? { ...process.env, ...env } : process.env,
+      env: powerShellEnv(process.env, env),
     });
   } catch {
     return null;

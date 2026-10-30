@@ -13,7 +13,7 @@
  * CI (velopack-update.yml, migrate jobs) drives it with SEI_VELOPACK_CI=1 and
  * SEI_MIGRATION_FEED / SEI_MIGRATION_DELAY_MS / SEI_MIGRATION_CI_ACTION.
  */
-import { app, net } from 'electron';
+import { app, net, shell } from 'electron';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import {
@@ -22,6 +22,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  readdirSync,
   renameSync,
   rmSync,
   statfsSync,
@@ -32,7 +33,7 @@ import path from 'node:path';
 import { ciMark, pidAlive, userDataInstallId, velopackInstalled, velopackLog } from './velopackBoot';
 import { bundleRequire } from './bundleRequire';
 import { checkSigned } from './velopackVerify';
-import { powerShellExe, runPowerShell, waitForExit } from './winPowerShell';
+import { waitForExit } from './winPowerShell';
 import {
   MAX_INSTALL_ATTEMPTS,
   MIGRATION_STATE_FILE,
@@ -44,7 +45,8 @@ import {
   parseMigrationRule,
   parseMigrationState,
   parseSetupManifest,
-  pinRetargetScript,
+  pinSearchDirs,
+  shortcutPointsInto,
   safeToRemoveDir,
   asarPackageVersion,
   parseSqVersion,
@@ -259,7 +261,7 @@ function earlyBoot(): void {
       });
       void app.whenReady().then(() => {
         const root = velopackRoot();
-        if (root) void runPowerShell(pinRetargetScript(root, process.execPath), 60_000);
+        if (root) retargetPins(root, process.execPath);
       });
       return;
     case 'redirect-failed':
@@ -275,10 +277,58 @@ function earlyBoot(): void {
       });
       void app.whenReady().then(() => {
         const root = velopackRoot();
-        if (root) void runPowerShell(pinRetargetScript(root, process.execPath), 60_000);
+        if (root) retargetPins(root, process.execPath);
       });
       return;
   }
+}
+
+/**
+ * Points every shortcut (taskbar and Start pins, Start menu, Desktop) whose
+ * target is inside `fromDir` at `target`, through the shell's own Unicode
+ * shortcut API (IShellLinkW). The first cut ran a WScript.Shell script, which
+ * cannot handle a path outside the system code page: a Chinese install folder
+ * on an English Windows threw "Value does not fall within the expected range"
+ * (261031 CI, migrate peruser-unicode). Returns how many it changed.
+ */
+function retargetPins(fromDir: string, target: string): number {
+  let n = 0;
+  const visit = (dir: string, depth: number): void => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      const full = path.join(dir, e.name);
+      if (e.isDirectory()) {
+        if (depth > 0) visit(full, depth - 1);
+        continue;
+      }
+      if (!e.name.toLowerCase().endsWith('.lnk')) continue;
+      try {
+        if (!shortcutPointsInto(shell.readShortcutLink(full).target, fromDir)) continue;
+        if (shell.writeShortcutLink(full, 'update', { target, cwd: path.dirname(target) })) n++;
+      } catch {
+        // not a readable shortcut
+      }
+    }
+  };
+  try {
+    let desktop: string | null = null;
+    try {
+      desktop = app.getPath('desktop');
+    } catch {
+      desktop = null;
+    }
+    const dirs = pinSearchDirs(process.env.APPDATA || app.getPath('appData'), desktop);
+    for (const d of dirs.deep) visit(d, 4);
+    for (const d of dirs.shallow) visit(d, 0);
+  } catch (err) {
+    log(`pin retarget failed: ${(err as Error).message}`);
+  }
+  return n;
 }
 
 if (active) {
@@ -513,8 +563,8 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
   }
 
   const target = velopackLaunchTarget(root, existsSync);
-  const retargeted = await runPowerShell(pinRetargetScript(nsis.dir, target), 60_000);
-  log(`installed; pins: ${retargeted ?? 'not retargeted'}`);
+  const retargeted = `retargeted ${retargetPins(nsis.dir, target)}`;
+  log(`installed; pins: ${retargeted}`);
   writeState({ ...base, phase: 'installed', pid: undefined });
   ciMark('migration-installed', { version: m.version, pins: retargeted });
   void capture('velopack_migration', { phase: 'installed', attempt: decision.attempt, version: m.version });
@@ -559,18 +609,10 @@ async function removeNsisCopy(): Promise<void> {
     if (decision === 'keep' || decision === 'gave-up') log(`NSIS copy at ${nsisDir} left in place (${decision})`);
     return;
   }
-  // Without PowerShell the taskbar pin cannot be retargeted, and removing the
-  // NSIS copy would leave it pointing at nothing; the NSIS copy stays and
-  // redirects to this one when launched.
-  if (!powerShellExe()) {
-    log('no PowerShell; leaving the NSIS copy in place');
-    writeState({ ...state!, cleanupAttempts: Number.MAX_SAFE_INTEGER, error: 'no powershell' });
-    return;
-  }
   const s = patchState({ cleanupAttempts: state!.cleanupAttempts + 1 });
   const dir = nsisDir!;
   const root = velopackRoot();
-  if (root) await runPowerShell(pinRetargetScript(dir, velopackLaunchTarget(root, existsSync)), 60_000);
+  if (root) retargetPins(dir, velopackLaunchTarget(root, existsSync));
 
   const uninstaller = path.join(dir, 'Uninstall Sei.exe');
   if (existsSync(uninstaller)) {

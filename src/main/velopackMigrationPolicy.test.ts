@@ -19,7 +19,8 @@ import {
   parseMigrationRule,
   parseMigrationState,
   parseSetupManifest,
-  pinRetargetScript,
+  pinSearchDirs,
+  shortcutPointsInto,
   REDIRECT_BOOT_GRACE_MS,
   safeToRemoveDir,
   setupUrls,
@@ -151,7 +152,7 @@ describe('paths', () => {
   });
 });
 
-describe('uninstallArgs / pinRetargetScript', () => {
+describe('uninstallArgs / pin retargeting', () => {
   it('keeps app data and the shortcuts', () => {
     expect(uninstallArgs('C:\\P\\sei')).toEqual(['/S', '--updated', '/KEEP_APP_DATA', '--keep-shortcuts', '_?=C:\\P\\sei']);
   });
@@ -174,10 +175,31 @@ describe('uninstallArgs / pinRetargetScript', () => {
     expect(nsh).toMatch(/\$\{GetProcessInfo\} 0 \$pid \$1 \$2 \$3 \$4\s*\n\s*\$\{if\} \$3 != "\$\{APP_EXECUTABLE_FILENAME\}"/);
   });
 
-  it('quotes paths for PowerShell and matches the folder, not a prefix of its name', () => {
-    const s = pinRetargetScript("C:\\Games\\Bob's Sei\\", 'C:\\L\\Sei\\Sei.exe');
-    expect(s).toContain("$old = 'C:\\Games\\Bob''s Sei\\'");
-    expect(s).toContain("$new = 'C:\\L\\Sei\\Sei.exe'");
+  it('matches a shortcut into the folder, not into a folder whose name starts the same', () => {
+    expect(shortcutPointsInto('C:\\Games\\Sei\\Sei.exe', 'C:\\Games\\Sei')).toBe(true);
+    expect(shortcutPointsInto('C:\\Games\\Sei\\Sei.exe', 'C:\\Games\\Sei\\')).toBe(true);
+    expect(shortcutPointsInto('c:/games/sei/Sei.exe', 'C:\\Games\\Sei')).toBe(true);
+    expect(shortcutPointsInto('C:\\Games\\Sei 2\\Sei.exe', 'C:\\Games\\Sei')).toBe(false);
+    expect(shortcutPointsInto("C:\\Games\\Bob's Sei\\Sei.exe", "C:\\Games\\Bob's Sei")).toBe(true);
+    expect(shortcutPointsInto(undefined, 'C:\\Games\\Sei')).toBe(false);
+    expect(shortcutPointsInto('', 'C:\\Games\\Sei')).toBe(false);
+  });
+
+  it('handles a folder outside the system code page', () => {
+    const dir = 'C:\\\u6e38\u620f\\Sei \u6d4b\u8bd5';
+    expect(shortcutPointsInto(`${dir}\\Sei.exe`, dir)).toBe(true);
+    expect(shortcutPointsInto('C:\\\u6e38\u620f\\Sei\\Sei.exe', dir)).toBe(false);
+  });
+
+  it('searches the pins and Start menu deep, the Desktop at the top level', () => {
+    const d = pinSearchDirs('C:\\Users\\a\\AppData\\Roaming', 'C:\\Users\\a\\Desktop');
+    expect(d.deep).toEqual([
+      'C:\\Users\\a\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\TaskBar',
+      'C:\\Users\\a\\AppData\\Roaming\\Microsoft\\Internet Explorer\\Quick Launch\\User Pinned\\StartMenu',
+      'C:\\Users\\a\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs',
+    ]);
+    expect(d.shallow).toEqual(['C:\\Users\\a\\Desktop']);
+    expect(pinSearchDirs('C:\\R', null).shallow).toEqual([]);
   });
 });
 

@@ -269,27 +269,28 @@ export function uninstallSpawn(exe: string, nsisDir: string): {
   return { args: uninstallArgs(nsisDir), options: { windowsVerbatimArguments: true, argv0: `"${exe}"` } };
 }
 
-function psQuote(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`;
+/**
+ * Where a shortcut to Sei can live: taskbar and Start pins and the Start menu
+ * (searched with subfolders), and the Desktop (top level only).
+ */
+export function pinSearchDirs(appData: string, desktop: string | null): { deep: string[]; shallow: string[] } {
+  const w = path.win32;
+  const qs = w.join(appData, 'Microsoft', 'Internet Explorer', 'Quick Launch', 'User Pinned');
+  return {
+    deep: [w.join(qs, 'TaskBar'), w.join(qs, 'StartMenu'), w.join(appData, 'Microsoft', 'Windows', 'Start Menu', 'Programs')],
+    shallow: desktop ? [desktop] : [],
+  };
 }
 
-/** PowerShell that points every .lnk that targets the NSIS copy at the Velopack one. */
-export function pinRetargetScript(nsisDir: string, target: string): string {
-  const old = `${nsisDir.replace(/[\\/]+$/, '')}\\`;
-  return [
-    "$ErrorActionPreference = 'SilentlyContinue'",
-    `$old = ${psQuote(old)}`,
-    `$new = ${psQuote(target)}`,
-    '$wd = Split-Path -Parent $new',
-    '$wsh = New-Object -ComObject WScript.Shell',
-    "$qs = Join-Path $env:APPDATA 'Microsoft\\Internet Explorer\\Quick Launch\\User Pinned'",
-    "$deep = @((Join-Path $qs 'TaskBar'), (Join-Path $qs 'StartMenu'), (Join-Path $env:APPDATA 'Microsoft\\Windows\\Start Menu\\Programs'))",
-    '$n = 0',
-    'function Fix($f) { $l = $wsh.CreateShortcut($f.FullName); if ($l.TargetPath -and $l.TargetPath.StartsWith($old, [StringComparison]::OrdinalIgnoreCase)) { $l.TargetPath = $new; $l.WorkingDirectory = $wd; $l.Save(); $script:n++ } }',
-    "foreach ($d in $deep) { if (Test-Path -LiteralPath $d) { Get-ChildItem -LiteralPath $d -Filter '*.lnk' -Recurse | ForEach-Object { Fix $_ } } }",
-    "$desk = [Environment]::GetFolderPath('Desktop'); if ($desk -and (Test-Path -LiteralPath $desk)) { Get-ChildItem -LiteralPath $desk -Filter '*.lnk' | ForEach-Object { Fix $_ } }",
-    '"retargeted $n"',
-  ].join('\n');
+/**
+ * True when a shortcut's target is inside `fromDir` (the folder, not a prefix
+ * of its name: C:\Games\Sei must not match C:\Games\Sei 2). Windows paths
+ * compare without case.
+ */
+export function shortcutPointsInto(linkTarget: string | undefined, fromDir: string): boolean {
+  if (!linkTarget) return false;
+  const dir = `${fromDir.replace(/[\\/]+$/, '')}\\`.toLowerCase();
+  return linkTarget.replace(/\//g, '\\').toLowerCase().startsWith(dir);
 }
 
 /* -------------------------------------------------------------------------- */

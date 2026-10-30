@@ -64,8 +64,13 @@ jobs:
 
       # 261030 Velopack (Windows): Sei's patched Update.exe (cargo) and vpk
       # (.NET), the same pinned versions velopack-update.yml tests.
+      # On a real release a failure here (crates.io, NuGet, the upstream fetch)
+      # only skips the Velopack half, like a failed pack: it must not take the
+      # NSIS installer and the electron-updater feed down with it.
       - name: Velopack tools (patched Update.exe + vpk)
         if: runner.os == 'Windows'
+        id: velopack_tools
+        continue-on-error: ${{ !inputs.dry_run }}
         uses: ./.github/actions/velopack-tools
 
       - name: Build (${{ matrix.os }})
@@ -344,7 +349,7 @@ jobs:
         # v0.7.x, so on a real release a failure here warns and the release
         # ships without Velopack files (nothing migrates without them); a dry
         # run fails on it.
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && steps.velopack_tools.outcome == 'success'
         id: velopack
         continue-on-error: ${{ !inputs.dry_run }}
         shell: bash

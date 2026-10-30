@@ -51,8 +51,13 @@ export const DEFAULT_INSTALL_SECONDS = 100;
 /** Estimates are clamped here, so one odd sample cannot promise 10 s or 20 min. */
 export const MIN_ESTIMATE_SECONDS = 45;
 export const MAX_ESTIMATE_SECONDS = 300;
-/** How long the app waits for the window's first frame before falling back. */
-export const READY_TIMEOUT_MS = 7_000;
+/**
+ * How long the app waits for the window's first frame before falling back.
+ * Measured on windows-latest (a cold 2-4 vCPU VM): 4.8-6.6 s from spawn to
+ * first frame (two PowerShell starts, WPF load and XAML parse); 7 s timed out
+ * on 2 of 5 runs. Real failures end sooner (nonzero exit, `failed`).
+ */
+export const READY_TIMEOUT_MS = 12_000;
 /** Helper folders older than this are swept on the next launch. */
 const STALE_DIR_MS = 60 * 60 * 1000;
 const DIR_PREFIX = 'sei-update-progress-';

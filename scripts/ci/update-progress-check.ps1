@@ -3,7 +3,7 @@
 # Run by .github/workflows/nsis-upgrade-check.yml under Windows PowerShell 5.1
 # on windows-latest. Records the desktop with ffmpeg gdigrab, takes stills,
 # and asserts the window's contract:
-#   - it is up (first frame) within the app's 7 s ready budget,
+#   - it is up (first frame) within the app's 12 s ready budget (READY_TIMEOUT_MS),
 #   - it closes itself once the new Sei shows a window (outcome 'reopened'),
 #   - its fonts resolved to the bundled Oswald / Rajdhani files,
 #   - no runtime errors in its timers,
@@ -81,7 +81,9 @@ try { Note "display change result: $([SeiCiDisplay]::Set(1920, 1080))" } catch {
 Start-Sleep -Seconds 2
 $bounds = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
 Note "screen: $($bounds.Width)x$($bounds.Height)"
-if ($ReducedMotion) { Note "animations off: $([SeiCiDisplay]::SetAnimations($false))" }
+# Runner VMs ship with client-area animations OFF, which reads as reduced
+# motion; set it explicitly either way so the video shows what was meant.
+Note "client-area animations $(if ($ReducedMotion) { 'off' } else { 'on' }): $([SeiCiDisplay]::SetAnimations(-not $ReducedMotion))"
 
 function Shot([string]$name) {
   try {
@@ -206,7 +208,7 @@ Note ("click -> launcher answer: {0} ms, ready={1} reason='{2}' estimate={3}s" -
 
 if ($Blocked) {
   if ($drv.ready) { Fail 'the window came up although PowerShell scripts are blocked by policy' }
-  elseif ($drv.ms -gt 7500) { Fail "the blocked launch took $($drv.ms) ms to fall back" }
+  elseif ($drv.ms -gt 3000) { Fail "the blocked launch took $($drv.ms) ms to fall back" }
   elseif ($drv.reason -notmatch 'exited early') { Fail "expected the policy to stop the script outright, got '$($drv.reason)'" }
   else { Note "fallback OK: '$($drv.reason)' after $($drv.ms) ms (the app would now run the stock installer window)" }
   $left = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*update-progress.ps1*' })
@@ -238,7 +240,7 @@ if (-not $drv.ready) {
     if (Test-Path (Join-Path $drv.dir 'helper.log')) { Get-Content (Join-Path $drv.dir 'helper.log') | Select-Object -First 30 | ForEach-Object { Note "  helper.log: $_" } }
   }
 } else {
-  if ($drv.ms -gt 7000) { Fail "first frame took $($drv.ms) ms (budget 7000)" }
+  if ($drv.ms -gt 12000) { Fail "first frame took $($drv.ms) ms (budget 12000)" }
   $helper = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$(Split-Path -Leaf $drv.dir)*" } | Select-Object -First 1
   $hp = if ($helper) { Get-Process -Id $helper.ProcessId -ErrorAction SilentlyContinue } else { $null }
   if (-not $hp) { Fail 'cannot find the helper process' }

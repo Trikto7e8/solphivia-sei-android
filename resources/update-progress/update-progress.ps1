@@ -80,6 +80,7 @@ $S = @{
   failedAt = $null
   ribX = 0.0
   lastTick = 0.0
+  lastProbe = 0.0
   outcome = ''
   status = ''
 }
@@ -500,6 +501,10 @@ $frame.Add_Tick({
       'failed' { $line = [string]$cfg.copy.failed }
     }
     if ($line -and $line -ne $S.status) { $S.status = $line; $Status.Text = $line; Log "status: $line" }
+    if ($now - $S.lastProbe -ge 10) {
+      $S.lastProbe = $now
+      Log ("bar: t={0:n1} target={1:n3} p={2:n3} track={3:n0} fill={4:n0}" -f $t, $target, $S.p, $w, $Fill.ActualWidth)
+    }
   } catch { Log "frame: $($_.Exception.Message)" }
 })
 

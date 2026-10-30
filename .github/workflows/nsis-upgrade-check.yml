@@ -61,7 +61,7 @@ name: NSIS Upgrade Check
 #                     (scripts/ci/update-progress-launch.ts), then this branch's
 #                     installer with `--updated /S --force-run` under it, the
 #                     arguments of quitAndInstall(true, true). Asserts the window
-#                     is up inside the 7 s ready budget, no installer window,
+#                     is up inside the 12 s ready budget, no installer window,
 #                     Sei back, the window gone once Sei's window shows, the
 #                     bundled fonts in use. Artifact update-progress-upgrade.
 #   progress-preview  stand-in installer and Sei (compiled on the runner, no

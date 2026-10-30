@@ -6,6 +6,7 @@ import {
   compareVersions,
   ETA_BUCKETS,
   MAX_LAUNCH_APPLY_ATTEMPTS,
+  overlayFrameLooksRight,
   overlayFrames,
   overlaySpec,
   parseRolloutRule,
@@ -105,6 +106,29 @@ describe('overlaySpec', () => {
     expect(overlaySpec(800.4, 455, ['updating', 'error'], 8000)).toBe(
       'x=800\ny=455\nslowAfterMs=8000\nframe.updating=updating.png\nframe.error=error.png\n',
     );
+  });
+});
+
+describe('overlayFrameLooksRight', () => {
+  const frame = (w: number, h: number, alphaAt: (x: number, y: number) => number): Uint8Array => {
+    const px = new Uint8Array(w * h * 4);
+    for (let y = 0; y < h; y++)
+      for (let x = 0; x < w; x++) {
+        const i = (y * w + x) * 4;
+        px[i] = px[i + 1] = px[i + 2] = 255;
+        px[i + 3] = alphaAt(x, y);
+      }
+    return px;
+  };
+  it('accepts a transparent page with a logo', () => {
+    expect(overlayFrameLooksRight(frame(320, 170, (x, y) => (x > 100 && x < 220 && y > 40 && y < 120 ? 255 : 0)))).toBe(true);
+  });
+  it('rejects the solid white first paint', () => {
+    expect(overlayFrameLooksRight(frame(320, 170, () => 255))).toBe(false);
+  });
+  it('rejects a frame captured before the logo drew', () => {
+    expect(overlayFrameLooksRight(frame(320, 170, () => 0))).toBe(false);
+    expect(overlayFrameLooksRight(new Uint8Array(0))).toBe(false);
   });
 });
 

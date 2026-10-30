@@ -73,7 +73,7 @@ const BETA_CHANNEL = 'beta';
 /** How long a finished download waits for its stage before the restart is offered anyway. */
 const STAGE_OFFER_WAIT_MS = 3 * 60 * 1000;
 /** Bump when the splash page changes, so cached overlay frames are re-rendered. */
-const FRAMES_VERSION = '1';
+const FRAMES_VERSION = '2';
 
 export interface VelopackAutoUpdater {
   autoDownload: boolean;
@@ -174,9 +174,35 @@ export function updateSplashStatusForLaunch(): string | undefined {
  * Renders the overlay frames for `scaleFactor` and `lang` into the overlay
  * folder, unless the same set is already there. Returns the frame names.
  */
-async function ensureOverlayFrames(p: VelopackPaths, scaleFactor: number, lang: UpdateLang): Promise<string[]> {
-  const frames = overlayFrames(lang);
+let framesInFlight: { key: string; promise: Promise<string[]> } | null = null;
+
+function ensureOverlayFrames(p: VelopackPaths, scaleFactor: number, lang: UpdateLang): Promise<string[]> {
+  // Single flight: the prerender after the stage and a restart click must not
+  // write the same folder at once.
   const key = `${FRAMES_VERSION}|${scaleFactor}|${lang}`;
+  if (framesInFlight?.key === key) return framesInFlight.promise;
+  const promise = renderOverlayFramesOnce(p, scaleFactor, lang, key).finally(() => {
+    if (framesInFlight?.promise === promise) framesInFlight = null;
+  });
+  framesInFlight = { key, promise };
+  return promise;
+}
+
+/**
+ * Renders the frames right after the stage, for the display and language the
+ * update screen will most likely use, so the restart click does not spend
+ * ~1 s on it (CI 261030: 0.9 s of the 1.1 s from click to overlay).
+ */
+async function prerenderOverlayFrames(p: VelopackPaths): Promise<void> {
+  try {
+    await ensureOverlayFrames(p, screen.getPrimaryDisplay().scaleFactor, await uiLang());
+  } catch (err) {
+    log(`overlay prerender failed: ${(err as Error).message}`);
+  }
+}
+
+async function renderOverlayFramesOnce(p: VelopackPaths, scaleFactor: number, lang: UpdateLang, key: string): Promise<string[]> {
+  const frames = overlayFrames(lang);
   const keyFile = path.join(p.overlayDir, 'frames.key');
   const names = Object.keys(frames);
   try {
@@ -403,6 +429,7 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
       if (!(process.env.SEI_VELOPACK_CI === '1' && process.env.SEI_VELOPACK_CI_NOSTAGE === '1')) {
         await stage(p, packagePath(info.TargetFullRelease), STAGE_OFFER_WAIT_MS);
       }
+      await prerenderOverlayFrames(p);
       downloaded = true;
       events.emit('update-downloaded', { version: info.TargetFullRelease.Version });
       return [];

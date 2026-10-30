@@ -158,6 +158,27 @@ export function overlaySpec(x: number, y: number, frameNames: readonly string[],
   return lines.join('\n') + '\n';
 }
 
+/**
+ * True when a rendered overlay frame looks like the splash: mostly transparent
+ * (the page has no backdrop) with some opaque ink (the logo). `pixels` is
+ * 4 bytes per pixel with alpha last (BGRA or RGBA). An offscreen window's
+ * first paint can be solid white before the page commits (CI run 41028220016:
+ * 3 of 8 runs cached a white `updating` frame and the overlay showed a white
+ * box), and a capture before the logo decodes is fully transparent.
+ */
+export function overlayFrameLooksRight(pixels: Uint8Array): boolean {
+  const n = Math.floor(pixels.length / 4);
+  if (n === 0) return false;
+  let clear = 0;
+  let ink = 0;
+  for (let i = 3; i < n * 4; i += 4) {
+    const a = pixels[i];
+    if (a < 16) clear++;
+    else if (a > 200) ink++;
+  }
+  return clear / n >= 0.3 && ink / n >= 0.005;
+}
+
 /* -------------------------------------------------------------------------- */
 /*  Launch during an apply                                                     */
 /* -------------------------------------------------------------------------- */

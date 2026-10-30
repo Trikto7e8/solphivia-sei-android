@@ -6,6 +6,7 @@ import { BrowserWindow, app, nativeImage, screen } from 'electron';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { IpcChannel } from '../shared/ipc';
+import { overlayFrameLooksRight } from './velopackFastApply';
 
 export interface CreateMainWindowOptions {
   preloadPath: string;
@@ -223,7 +224,7 @@ export function createSplashWindow(opts: { status?: string } = {}): BrowserWindo
 export async function renderSplashFrames(
   statuses: Record<string, string>,
   scaleFactor: number,
-  timeoutMs = 4000,
+  timeoutMs = 8000,
 ): Promise<Record<string, Buffer>> {
   const out: Record<string, Buffer> = {};
   const logoB64 = splashLogoB64();
@@ -254,15 +255,27 @@ export async function renderSplashFrames(
         w(image);
       }
     });
+    const nextPaint = (ms: number): Promise<Electron.NativeImage | null> =>
+      Promise.race([
+        new Promise<Electron.NativeImage>((resolve) => {
+          waiter = resolve;
+          wc.invalidate();
+        }),
+        new Promise<null>((r) => setTimeout(() => r(null), ms)),
+      ]).finally(() => {
+        waiter = null;
+      });
     const deadline = Date.now() + timeoutMs;
     for (const [name, status] of Object.entries(statuses)) {
       if (Date.now() > deadline) break;
       latest = null;
       const html = splashHtml(logoB64, { status, fade: false });
-      // The page reports when its fonts are in and two frames have committed.
+      // The page reports when the logo is decoded, its fonts are in and two
+      // frames have committed.
       const page = html.replace(
         '</body>',
-        '<script>document.fonts.ready.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title="ready"})))</script></body>',
+        '<script>Promise.all([document.fonts.ready,document.querySelector("img").decode().catch(()=>{})])' +
+          '.then(()=>requestAnimationFrame(()=>requestAnimationFrame(()=>{document.title="ready"})))</script></body>',
       );
       const ready = new Promise<void>((resolve) => {
         const onTitle = (_e: Electron.Event, title: string): void => {
@@ -274,17 +287,18 @@ export async function renderSplashFrames(
         wc.on('page-title-updated', onTitle);
       });
       await wc.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(page)}`);
-      await Promise.race([ready, new Promise((r) => setTimeout(r, 1000))]);
-      const image = await Promise.race([
-        new Promise<Electron.NativeImage>((resolve) => {
-          waiter = resolve;
-          wc.invalidate();
-        }),
-        new Promise<null>((r) => setTimeout(() => r(null), 1000)),
-      ]);
-      waiter = null;
-      const img = image ?? latest;
-      if (img && !img.isEmpty()) out[name] = img.toPNG();
+      await Promise.race([ready, new Promise((r) => setTimeout(r, 1500))]);
+      // Keep asking for paints until one looks like the splash. The first
+      // paint of a fresh offscreen view can be solid white (CI 261030), and
+      // caching that frame put a white box on screen during the update.
+      const frameDeadline = Math.min(deadline, Date.now() + 1500);
+      let good: Electron.NativeImage | null = null;
+      while (!good && Date.now() < frameDeadline) {
+        const img = (await nextPaint(500)) ?? latest;
+        if (img && !img.isEmpty() && overlayFrameLooksRight(img.toBitmap())) good = img;
+        else await new Promise((r) => setTimeout(r, 50));
+      }
+      if (good) out[name] = good.toPNG();
     }
   } catch {
     /* fewer frames: the overlay shows what exists, or nothing */

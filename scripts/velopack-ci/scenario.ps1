@@ -239,7 +239,28 @@ function Velolog([string]$pattern) {
   $hits
 }
 
+# Every rendered overlay frame must look like the splash: transparent corners,
+# some opaque ink. A cached white first paint showed as a white box (run 41028220016).
+function Check-Frames {
+  $ov = Join-Path $root 'packages\SeiOverlay'
+  if (-not (Test-Path $ov)) { return }
+  Add-Type -AssemblyName System.Drawing
+  $bad = @()
+  Get-ChildItem $ov -Filter '*.png' | ForEach-Object {
+    $bmp = [System.Drawing.Bitmap]::FromFile($_.FullName)
+    try {
+      $corner = $bmp.GetPixel(0, 0).A
+      $ink = 0
+      for ($y = 0; $y -lt $bmp.Height; $y += 4) { for ($x = 0; $x -lt $bmp.Width; $x += 4) { if ($bmp.GetPixel($x, $y).A -gt 200) { $ink++ } } }
+      if ($corner -ge 16 -or $ink -lt 5) { $bad += "$($_.Name) (corner alpha $corner, ink $ink)" }
+    } finally { $bmp.Dispose() }
+  }
+  $results.overlay_frames_bad = $bad
+  if ($bad.Count -gt 0) { Fail "overlay frames do not look like the splash: $($bad -join ', ')" }
+}
+
 function Finish {
+  Check-Frames
   Dump-Logs
   Layout 'end'
   $results.final_version = CurrentVersion

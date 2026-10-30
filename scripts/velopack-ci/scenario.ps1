@@ -259,7 +259,22 @@ function Check-Frames {
   if ($bad.Count -gt 0) { Fail "overlay frames do not look like the splash: $($bad -join ', ')" }
 }
 
+# Phase timings Update.exe logs in ms (the log's own timestamps are whole seconds).
+function Apply-Timings {
+  $pick = {
+    param($pattern)
+    $line = @(Velolog $pattern | Select-Object -Last 1)
+    if ($line.Count -gt 0 -and $line[0] -match $pattern) { [int]$Matches[1] } else { $null }
+  }
+  $results.t_pid_wait_ms = & $pick 'exited \((\d+) ms after the wait started\)'
+  $results.t_swap_ms = & $pick 'Swapped the current dir in (\d+)ms'
+  $results.t_createprocess_ms = & $pick 'CreateProcess (\d+) ms'
+  $results.t_prewarm_ms = & $pick 'Prewarmed \d+ images in (\d+) ms'
+  $results.t_window_after_start_ms = & $pick 'shows a window after (\d+)ms'
+}
+
 function Finish {
+  try { Apply-Timings } catch { Write-Host "Apply-Timings: $_" }
   Check-Frames
   Dump-Logs
   Layout 'end'

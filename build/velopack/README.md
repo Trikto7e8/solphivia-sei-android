@@ -19,6 +19,8 @@ restart only swaps two folders.
 | `apply` uses the staged copy | When `v<version>.ok` matches the package (name and size) and the tree verifies, `current` is swapped with it (two renames, with upstream's rollback if the second fails). Otherwise the stock extraction runs. |
 | `apply --noHooks` | No app hooks (Sei handles none), and the new Sei is started right after the swap, before the uninstall-entry, shortcut and cleanup work. |
 | `apply --seiOverlay <dir>` | A native click-through topmost window showing PNG frames Sei rendered (its splash with "Updating…", a time estimate after `slowAfterMs`, an error frame). Up before Update.exe waits for Sei to exit, closed when the restarted Sei shows a window. On failure: the error frame for 2.5 s, then the old version starts. See `windows/sei_overlay.rs` for `overlay.txt`. |
+| Waiting for Sei to exit | The stock wait opens Sei's process for SYNCHRONIZE, which is denied for Sei's main process (every CI run logged "Access is denied" and went straight on). The patch then polls the process list every 50 ms until the pid is gone (60 s cap), and the swap renames retry every 100 ms (same 10 s / 30 s budgets as upstream's 1 s retries). |
+| Image prewarm | After a stage, every top-level `.exe`/`.dll` of the staged copy is mapped as an image once and unmapped, so creating the image section (a full read of the 190 MB `Sei.exe`, plus the on-execute scan) happens before the restart instead of inside it. |
 | `packages\SeiStaged\applying.pid` | Present while an apply runs. A Sei launched during it leaves `relaunch` and exits (`velopackBoot.ts`); a no-restart apply starts Sei when it finishes. |
 
 A stock `Update.exe` ignores the unknown flags (clap `ignore_errors`), so an

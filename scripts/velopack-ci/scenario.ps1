@@ -609,7 +609,10 @@ switch -Regex ($Scenario) {
     # Rejected for the right reason: the CI package is unsigned. A check that
     # could not run (PowerShell failing to load its modules) rejects too.
     elseif ($sig.reason -notmatch 'NotSigned') { Fail "rejected for another reason: $($sig.reason)" }
-    Start-Sleep -Seconds 5
+    # Deleting the staged copy (6000+ files) takes a while under Defender.
+    $gone = WaitMark 'signature-discarded' $From 180
+    if (-not $gone) { Fail 'the rejected package was not discarded within 3 min' } else { $results.discard_ms = $gone.ms }
+    Start-Sleep -Seconds 2
     if (Mark 'downloaded' $From) { Fail 'the rejected update was offered' }
     $leftPkg = @(Get-ChildItem "$root\packages" -Filter "*$Target*.nupkg" -ErrorAction SilentlyContinue)
     if ($leftPkg.Count -gt 0) { Fail "the rejected package was kept: $($leftPkg.Name -join ', ')" }

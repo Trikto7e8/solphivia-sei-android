@@ -428,13 +428,17 @@ function stage(p: VelopackPaths, packagePath: string, waitMs: number): Promise<v
  */
 function discardPackage(p: VelopackPaths, version: string, pkg: string, reason: string): void {
   log(`update ${version} failed its signature check (${reason}); deleting it`);
-  for (const f of [pkg, path.join(p.stageDir, `v${version}`), path.join(p.stageDir, stagedMarkerName(version))]) {
+  const t0 = Date.now();
+  // The marker goes first: a staged copy without it is never used, so a delete
+  // cut short (Sei closed, a file held) cannot leave a half-deleted copy marked good.
+  for (const f of [path.join(p.stageDir, stagedMarkerName(version)), pkg, path.join(p.stageDir, `v${version}`)]) {
     try {
       rmSync(f, { recursive: true, force: true });
     } catch (err) {
       log(`could not delete ${f}: ${(err as Error).message}`);
     }
   }
+  ciMark('signature-discarded', { target: version, ms: Date.now() - t0 });
 }
 
 export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {

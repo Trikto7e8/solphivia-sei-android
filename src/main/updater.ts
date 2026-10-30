@@ -32,6 +32,7 @@
  *   - src/main/updatePolicy.ts (pure level/apply derivation)
  *   - src/main/updateStateStore.ts (device-global pending/lastSeen persistence)
  */
+import { existsSync } from 'node:fs';
 import { app, net, powerMonitor, type BrowserWindow } from 'electron';
 import { IpcChannel, type WhatsNewEvent } from '../shared/ipc';
 import {
@@ -50,6 +51,8 @@ import {
 import { restartInstallArgs } from './updateInstall';
 import { refreshNotices } from './notices';
 import { updaterLog } from './updaterLog';
+import { ciMark, velopackInstalled } from './velopackBoot';
+import { createVelopackAutoUpdater } from './velopackUpdater';
 
 // Tees to the console AND <userData>/logs/updater.log. Was console-only until
 // 260803, which is why a week of failed Windows updates left no trace on disk
@@ -262,6 +265,23 @@ export function isUpdateReadyToInstall(): boolean {
   return updateReadyToInstall;
 }
 
+/**
+ * Windows NSIS -> Velopack migration (261030, velopackMigration.ts). Once the
+ * Velopack copy is installed beside this NSIS one, electron-updater stops: an
+ * NSIS update applied on quit would rewrite the old copy and its shortcuts.
+ * The sidebar's "Update Sei" button then restarts into the Velopack copy.
+ */
+let migrationRestart: (() => void) | null = null;
+
+export function handOffUpdatesToMigration(restart: () => void, version: string): void {
+  migrationRestart = restart;
+  if (autoUpdater) autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater = null;
+  updateReadyToInstall = false;
+  logger.info(`updater: Velopack ${version} installed beside this copy; electron-updater stopped`);
+  send(IpcChannel.app.updateDownloaded, { forced: false, onRestart: true, version });
+}
+
 /* -------------------------------------------------------------------------- */
 /*  version.json fetch (ported from updateChecker.ts)                          */
 /* -------------------------------------------------------------------------- */
@@ -380,11 +400,21 @@ function ensureAutoUpdater(): AutoUpdater | null {
     logger.info('updater disabled in dev (autoUpdater not loaded — unpackaged)');
     return null;
   }
+  if (migrationRestart) return null;
   if (autoUpdater && wired) return autoUpdater;
   try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const mod = require('electron-updater') as { autoUpdater: AutoUpdater };
-    autoUpdater = mod.autoUpdater;
+    // Windows (261030): a Velopack install updates through Velopack; an NSIS
+    // install (and macOS) keeps electron-updater, so one build serves both
+    // while NSIS users migrate.
+    const velo = process.platform === 'win32' && velopackInstalled() ? createVelopackAutoUpdater() : null;
+    if (velo) {
+      logger.info('updater: Velopack install detected, using the Velopack UpdateManager');
+      autoUpdater = velo;
+    } else {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const mod = require('electron-updater') as { autoUpdater: AutoUpdater };
+      autoUpdater = mod.autoUpdater;
+    }
   } catch (err) {
     logger.warn(`updater: failed to load electron-updater (${(err as Error).message})`);
     autoUpdater = null;
@@ -560,6 +590,24 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
 async function handleUpdateDownloaded(version?: string): Promise<void> {
   updateReadyToInstall = true;
   if (typeof version === 'string') downloadedVersion = version;
+  // CI harness (velopack-update.yml): nobody clicks "Update Sei" on a runner.
+  // SEI_VELOPACK_CI_TRIGGER names a file the harness creates when it is ready
+  // (recording, file locks in place); without it the action runs at once.
+  if (process.env.SEI_VELOPACK_CI === '1') {
+    const mode = process.env.SEI_VELOPACK_CI_MODE ?? 'restart';
+    ciMark('downloaded', { target: version, mode });
+    const trigger = process.env.SEI_VELOPACK_CI_TRIGGER;
+    if (trigger) {
+      while (!existsSync(trigger)) await new Promise((r) => setTimeout(r, 100));
+      ciMark('triggered', { mode });
+    }
+    if (mode === 'quit') {
+      app.quit(); // the quit handler hands the package to Update.exe, no relaunch
+    } else if (mode === 'restart') {
+      void installDownloadedUpdate();
+    } // 'download-only': CI kills the process, the next launch applies it
+    return;
+  }
   const apply = mandatoryApply;
   if (apply === null) {
     // Optional consented flow.
@@ -762,7 +810,6 @@ function maybeBackgroundCheck(reason: string): void {
  */
 export function initUpdater(deps: { getMainWindow: () => BrowserWindow | null }): void {
   getMainWindow = deps.getMainWindow;
-
   // Flow D — what's-new on launch (skipped in dev internally). Memoized so the
   // renderer's pull (getPendingWhatsNew) shares this one computation.
   void ensureWhatsNewComputed();
@@ -947,14 +994,17 @@ export async function downloadAcceptedUpdate(): Promise<void> {
 
 /**
  * Restart into the downloaded update. macOS: quitAndInstall() as always.
- * Windows (261030): Sei's own progress window first, then the silent
+ * Windows NSIS (261030): Sei's own progress window first, then the silent
  * installer under it; the stock installer window when that window cannot
- * start (windowsUpdateInstall.ts). `minHoldMs` = how long after the call the
- * stock installer may start at the earliest (the renderer's restart note
- * stays readable that long).
+ * start (windowsUpdateInstall.ts). Windows Velopack: quitAndInstall() is the
+ * Velopack update screen, no progress window. `minHoldMs` = how long after
+ * the call the stock installer may start at the earliest (the renderer's
+ * restart note stays readable that long).
  */
 async function restartIntoUpdate(au: AutoUpdater, minHoldMs: number): Promise<void> {
-  if (process.platform === 'win32') {
+  // A Velopack install (velopackUpdater.ts) has its own update screen and no
+  // NSIS installer to watch: its quitAndInstall is the whole restart.
+  if (process.platform === 'win32' && !velopackInstalled()) {
     try {
       const { installWithProgressWindow } = await import('./windowsUpdateInstall');
       await installWithProgressWindow({
@@ -989,6 +1039,12 @@ const WINDOWS_RESTART_NOTE_MS = 3_000;
  * it is done (see restartIntoUpdate and updateInstall.ts). No-op in dev.
  */
 export async function installDownloadedUpdate(): Promise<void> {
+  // NSIS -> Velopack migration: the Velopack copy is installed and
+  // electron-updater is stopped, so the button restarts into that copy.
+  if (migrationRestart) {
+    migrationRestart();
+    return;
+  }
   const au = ensureAutoUpdater();
   if (!au) return;
   await restartIntoUpdate(au, WINDOWS_RESTART_NOTE_MS);

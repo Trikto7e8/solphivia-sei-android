@@ -3598,6 +3598,24 @@ relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
 changelog bullet, `topChangelogLine`) instead of reopening the changelog the
 user already read; mandatory updates keep the full what's-new modal.
 
+**Windows moves to Velopack (v0.7.0, 261030).** macOS stays on
+electron-updater. Through v0.7.x every Windows release ships BOTH the NSIS
+installer (the sei.gg download and the electron-updater feed) and Velopack
+files mirrored to `dl.sei.gg/velopack`; NSIS installs move to Velopack only
+when `migration.<channel>.json` says so. `src/main/updater.ts` picks
+`velopackUpdater.ts` when the running copy was installed by Velopack. A
+Velopack update or migration Setup is applied only after its sha256 matches
+the feed AND Windows reports it Authenticode Valid and signed by the
+`WIN_PUBLISHER_NAME` baked in at build (`SEI_WIN_PUBLISHER`,
+`velopackVerify.ts`; unsigned builds skip the check), and only while the
+rollout file on dl.sei.gg allows it (an unreadable one holds the update).
+Release steps, the asset counts for publishing the draft, the three-part kill
+switch (update rollout to 0, the GitHub release back to draft, migration to
+0), rollback-by-rolling-forward, the users' way out of a broken Velopack copy,
+re-running a cancelled mirror, and the one-time move of the workflows to
+`main` are in **`docs/design/velopack-runbook.md`**. Read it before any
+Windows release.
+
 ### Startup popup (261027, replaced the notices inbox)
 
 One operator page from sei.gg shown once per install, set by the optional

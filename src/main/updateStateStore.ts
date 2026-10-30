@@ -23,7 +23,7 @@
  *
  * Sources:
  *   - src/main/wizardStateStore.ts (atomic-write + lock + coerce pattern)
- *   - .planning/quick/260604-uoy-... PLAN.md Task 3 + Flow D
+ *   - docs/design/in-app-updater-260604.md Task 3 + Flow D
  */
 import { readFile, mkdir } from 'node:fs/promises';
 import { atomicWrite } from '../bot/brain/storage/atomicWrite.js';

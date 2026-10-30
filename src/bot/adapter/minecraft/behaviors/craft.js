@@ -1,7 +1,7 @@
 // src/bot/adapter/minecraft/behaviors/craft.js
 //
 // craft(item, n) — craft N of a product item using mineflayer's built-in recipe
-// API. Decisions in .planning/quick/260617-qhs CONTEXT.md:
+// API. Decisions in docs/design/craft-tool-260617.md:
 //   - n is the number of the PRODUCT desired. Many recipes batch (1 log → 4
 //     planks), so we craft ceil(n / batchSize) repetitions (may overshoot to the
 //     batch boundary), capped by available materials, and report the ACTUAL

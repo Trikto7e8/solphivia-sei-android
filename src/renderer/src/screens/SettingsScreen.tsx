@@ -18,7 +18,7 @@
  *  - Reset-all iterates the character list; resend-verification / export /
  *    update-check state machines unchanged; all modal opens unchanged.
  *
- * Source: .planning/design/UI-REDESIGN-PARTY.md §1 + §4.7.
+ * Source: docs/design/UI-REDESIGN-PARTY.md §1 + §4.7.
  */
 
 import React, { useEffect, useState } from 'react';

@@ -141,7 +141,12 @@ function sleepSync(ms: number): void {
 /* -------------------------------------------------------------------------- */
 
 function startVelopack(exe: string, args: string[], env: NodeJS.ProcessEnv = process.env): void {
-  spawn(exe, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exe), env }).unref();
+  const child = spawn(exe, args, { detached: true, stdio: 'ignore', cwd: path.dirname(exe), env });
+  // A failed start (EACCES from antivirus) arrives as an async 'error' event;
+  // unhandled it would be an uncaught exception. The redirect-failed check
+  // covers the missing hand-off on the next launch.
+  child.on('error', (err) => log(`could not start ${exe}: ${err.message}`));
+  child.unref();
 }
 
 function earlyBoot(): void {
@@ -303,20 +308,42 @@ async function download(url: string, dest: string, m: SetupManifest): Promise<vo
   if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`);
   const hash = createHash('sha256');
   const out = createWriteStream(dest);
+  // A write error (disk full, antivirus locking the new .exe) must reject this
+  // download: with no listener it is an uncaught exception in main, and the
+  // drain wait below would never resolve.
+  const failed: { error: Error | null } = { error: null };
+  out.on('error', (err) => {
+    failed.error = err;
+  });
   let size = 0;
+  const reader = res.body.getReader();
   try {
-    const reader = res.body.getReader();
     for (;;) {
+      if (failed.error) throw failed.error;
       const { done, value } = await reader.read();
       if (done) break;
       size += value.byteLength;
       if (size > m.size) throw new Error('larger than the manifest says');
       hash.update(value);
-      if (!out.write(value)) await new Promise<void>((r) => out.once('drain', () => r()));
+      if (!out.write(value)) {
+        await new Promise<void>((r) => {
+          out.once('drain', () => r());
+          out.once('error', () => r());
+        });
+      }
     }
+  } catch (err) {
+    void reader.cancel().catch(() => {});
+    throw err;
   } finally {
-    await new Promise<void>((r) => out.end(() => r()));
+    if (!out.destroyed) {
+      await new Promise<void>((r) => {
+        out.once('error', () => r());
+        out.end(() => r());
+      });
+    }
   }
+  if (failed.error) throw failed.error;
   if (size !== m.size) throw new Error(`size ${size}, expected ${m.size}`);
   const digest = hash.digest('hex');
   if (digest !== m.sha256) throw new Error(`sha256 ${digest.slice(0, 12)}, expected ${m.sha256.slice(0, 12)}`);

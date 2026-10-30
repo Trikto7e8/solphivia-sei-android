@@ -491,7 +491,9 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
         });
         log(`apply ${pending.TargetFullRelease.Version} on quit`);
         ciMark('apply-launch', { restart: false });
-        spawn(p.updateExe, args, { detached: true, stdio: 'ignore', cwd: p.root }).unref();
+        const child = spawn(p.updateExe, args, { detached: true, stdio: 'ignore', cwd: p.root });
+        child.on('error', (err) => log(`Update.exe failed to start on quit: ${err.message}`));
+        child.unref();
       } catch (err) {
         log(`apply on quit failed: ${(err as Error).message}`);
       }

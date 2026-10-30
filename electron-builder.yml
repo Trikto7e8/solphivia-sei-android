@@ -66,7 +66,6 @@ files:
   # the cleanest evidence that these two matchers are genuinely separate.
   - "!demo/**"
   - "!ARCHITECTURE.md"
-  - "!RELEASE-NOTES.md"
   - "!README.md"
   - "!CLAUDE.md"
   # tooling / CI / git
@@ -329,7 +328,6 @@ mac:
     - "!logs/**"
     - "!memory/**"
     - "!ARCHITECTURE.md"
-    - "!RELEASE-NOTES.md"
     - "!README.md"
     - "!CLAUDE.md"
     - "!tsconfig*.json"
@@ -450,7 +448,6 @@ win:
     - "!logs/**"
     - "!memory/**"
     - "!ARCHITECTURE.md"
-    - "!RELEASE-NOTES.md"
     - "!README.md"
     - "!CLAUDE.md"
     - "!tsconfig*.json"

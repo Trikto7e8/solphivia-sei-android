@@ -122,6 +122,7 @@ foreach ($pt in $cfg.plan.curve) { $curveP.Add([double]$pt[1]) }
 # the curve. Without a completed download both are 0 and the bar starts empty.
 $startShare = 0.0; if ($null -ne $cfg.plan.startShare) { $startShare = [double]$cfg.plan.startShare }
 $openingFillSec = 0.0; if ($null -ne $cfg.plan.openingFillSec) { $openingFillSec = [double]$cfg.plan.openingFillSec }
+$openingDelay = 0.22   # the window's fade-in (Fade 1 220 below)
 $statusT = New-Object 'System.Collections.Generic.List[double]'
 $statusS = New-Object 'System.Collections.Generic.List[string]'
 foreach ($st in $cfg.plan.status) { $statusT.Add([double]$st[0]); $statusS.Add([string]$st[1]) }
@@ -182,7 +183,7 @@ $xaml = @"
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         WindowStyle="None" AllowsTransparency="True" Background="Transparent"
-        ResizeMode="NoResize" ShowInTaskbar="True" ShowActivated="True"
+        ResizeMode="NoResize" ShowInTaskbar="True" ShowActivated="True" Topmost="True"
         Width="520" Height="284" WindowStartupLocation="Manual" Opacity="0"
         UseLayoutRounding="True" SnapsToDevicePixels="True">
   <Grid Margin="30">
@@ -452,11 +453,16 @@ $frame.Add_Tick({
     $dt = [math]::Min(0.25, [math]::Max(0.0, $now - $S.lastTick)); $S.lastTick = $now
     $t = $now - $S.t0
     $target = CurveAt $t
-    if (-not $reduceMotion -and $openingFillSec -gt 0 -and $t -lt $openingFillSec) {
-      # Opening fill to the download share, ease-out (cubic). Reduced motion: no fill, the bar opens there.
-      $u = 1.0 - $t / $openingFillSec
+    if (-not $reduceMotion -and $openingFillSec -gt 0 -and $t -lt $openingDelay + $openingFillSec) {
+      # Opening fill to the download share, ease-out (cubic), once the fade-in
+      # is done. Reduced motion: no fill, the bar opens there.
+      $u = 1.0 - [math]::Max(0.0, $t - $openingDelay) / $openingFillSec
       $target = [math]::Min($target, $startShare * (1.0 - $u * $u * $u))
     }
+    # Topmost only while Sei's own window is going away (it is still up, and
+    # in front, when this window first draws), so the opening is seen; after
+    # that this is an ordinary window the user can put behind others.
+    if ($window.Topmost -and $t -ge 4) { $window.Topmost = $false }
     switch ($S.phase) {
       'opening' { $target = [math]::Max($target, $S.p + (0.93 - $S.p) * (1 - [math]::Exp(-$dt / 0.6))) }
       'done' {

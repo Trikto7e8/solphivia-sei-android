@@ -254,6 +254,21 @@ export function uninstallArgs(nsisDir: string): string[] {
   return ['/S', '--updated', '/KEEP_APP_DATA', '--keep-shortcuts', `_?=${nsisDir}`];
 }
 
+/**
+ * spawn() arguments for the uninstaller copy at `exe`. NSIS reads `_?=` only
+ * UNQUOTED and LAST on the raw command line, taking everything after it as the
+ * folder. Node quotes an argument that has a space in it, so for
+ * `C:\Games\My Sei` the uninstaller missed `_?=`, re-ran itself from temp under
+ * another name, and that copy closed Sei (261030 CI). So the line is passed
+ * verbatim, with only argv0 quoted.
+ */
+export function uninstallSpawn(exe: string, nsisDir: string): {
+  args: string[];
+  options: { windowsVerbatimArguments: true; argv0: string };
+} {
+  return { args: uninstallArgs(nsisDir), options: { windowsVerbatimArguments: true, argv0: `"${exe}"` } };
+}
+
 function psQuote(s: string): string {
   return `'${s.replace(/'/g, "''")}'`;
 }

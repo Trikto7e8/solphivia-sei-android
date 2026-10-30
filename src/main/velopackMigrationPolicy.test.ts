@@ -22,6 +22,7 @@ import {
   setupUrls,
   uninstallArgs,
   UNINSTALLER_RUN_AS,
+  uninstallSpawn,
   velopackLaunchTarget,
   type MigrationState,
   type SetupManifest,
@@ -150,6 +151,14 @@ describe('paths', () => {
 describe('uninstallArgs / pinRetargetScript', () => {
   it('keeps app data and the shortcuts', () => {
     expect(uninstallArgs('C:\\P\\sei')).toEqual(['/S', '--updated', '/KEEP_APP_DATA', '--keep-shortcuts', '_?=C:\\P\\sei']);
+  });
+
+  it('passes _?= unquoted and last, even for a folder with spaces', () => {
+    const { args, options } = uninstallSpawn('C:\\T\\x y\\Sei.exe', 'C:\\Games\\My Sei');
+    expect(options).toEqual({ windowsVerbatimArguments: true, argv0: '"C:\\T\\x y\\Sei.exe"' });
+    expect(args.at(-1)).toBe('_?=C:\\Games\\My Sei');
+    // What libuv builds from verbatim args: joined by spaces, nothing quoted.
+    expect([options.argv0, ...args].join(' ')).toBe('"C:\\T\\x y\\Sei.exe" /S --updated /KEEP_APP_DATA --keep-shortcuts _?=C:\\Games\\My Sei');
   });
 
   it("runs the uninstaller under the app's exe name, which skips electron-builder's app-running check", () => {

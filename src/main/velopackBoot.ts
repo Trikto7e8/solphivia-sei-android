@@ -113,15 +113,18 @@ export function velopackLog(line: string): void {
  */
 export function ciMark(ev: string, extra: Record<string, unknown> = {}): void {
   if (process.env.SEI_VELOPACK_CI !== '1') return;
-  try {
-    const file = path.join(app.getPath('userData'), 'velopack-ci.jsonl');
-    mkdirSync(path.dirname(file), { recursive: true });
-    appendFileSync(
-      file,
-      JSON.stringify({ ev, t: Date.now(), pid: process.pid, version: app.getVersion(), ...extra }) + '\n',
-    );
-  } catch {
-    /* best effort */
+  const line = JSON.stringify({ ev, t: Date.now(), pid: process.pid, version: app.getVersion(), ...extra }) + '\n';
+  // The harness polls this file; an append that lands while it has the file
+  // open can be refused, so retry briefly (CI only) instead of losing the mark.
+  for (let i = 0; i < 20; i++) {
+    try {
+      const file = path.join(app.getPath('userData'), 'velopack-ci.jsonl');
+      mkdirSync(path.dirname(file), { recursive: true });
+      appendFileSync(file, line);
+      return;
+    } catch {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
   }
 }
 

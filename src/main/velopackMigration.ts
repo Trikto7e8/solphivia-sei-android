@@ -44,8 +44,8 @@ import {
   pinRetargetScript,
   safeToRemoveDir,
   setupUrls,
-  uninstallArgs,
   UNINSTALLER_RUN_AS,
+  uninstallSpawn,
   velopackLaunchTarget,
   velopackRootFor,
   type MigrationRule,
@@ -504,13 +504,18 @@ async function removeNsisCopy(): Promise<void> {
       // Not 'Uninstall Sei.exe': see UNINSTALLER_RUN_AS.
       const copy = path.join(tmp, UNINSTALLER_RUN_AS);
       copyFileSync(uninstaller, copy);
-      const child = spawn(copy, uninstallArgs(dir), { windowsHide: true, stdio: 'ignore', cwd: tmp });
+      const how = uninstallSpawn(copy, dir);
+      const child = spawn(copy, how.args, { ...how.options, windowsHide: true, stdio: 'ignore', cwd: tmp });
       const r = await waitForExit(child, UNINSTALL_TIMEOUT_MS);
       log(`NSIS uninstaller: ${r.timedOut ? 'timed out' : `exit ${r.code}`}${r.error ? ` (${r.error})` : ''}`);
     } catch (err) {
       log(`NSIS uninstaller failed: ${(err as Error).message}`);
     } finally {
-      rmSync(tmp, { recursive: true, force: true });
+      try {
+        rmSync(tmp, { recursive: true, force: true });
+      } catch (err) {
+        log(`could not remove ${tmp}: ${(err as Error).message}`);
+      }
     }
   }
   // The uninstaller leaves the folder behind when anything in it was in use

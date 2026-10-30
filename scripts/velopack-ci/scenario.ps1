@@ -63,10 +63,16 @@ function Layout([string]$label) {
 }
 
 # ------------------------------------------------------------------ marks
+# Read without locking the writer out: ReadAllLines opens with FileShare.Read,
+# and the app's append landing in that window failed (a lost mark, 261030).
+function Read-Shared([string]$file) {
+  $fs = [System.IO.File]::Open($file, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]'ReadWrite, Delete')
+  try { $sr = New-Object System.IO.StreamReader($fs); $sr.ReadToEnd() -split "`r?`n" } finally { $fs.Dispose() }
+}
 function Events {
   if (-not (Test-Path $marks)) { return @() }
   $lines = $null
-  for ($i = 0; $i -lt 5 -and $null -eq $lines; $i++) { try { $lines = [System.IO.File]::ReadAllLines($marks) } catch { Start-Sleep -Milliseconds 50 } }
+  for ($i = 0; $i -lt 5 -and $null -eq $lines; $i++) { try { $lines = Read-Shared $marks } catch { Start-Sleep -Milliseconds 50 } }
   @($lines | Where-Object { $_.Trim() } | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } })
 }
 function Mark([string]$ev, [string]$ver = '', [scriptblock]$where = $null) {

@@ -26,8 +26,12 @@ vi.mock('./follow.js', () => ({
   pauseFollow: vi.fn(),
 }))
 
-function makeBot() {
+// `armed`: a stone sword in the inventory and in hand. 261030 (pass 31): the
+// automatic defend swing needs a weapon (bare hands do 1 damage a swing).
+function makeBot({ armed = true } = {}) {
   const bot = new EventEmitter()
+  bot.inventory = { items: () => (armed ? [{ name: 'stone_sword', count: 1 }] : []) }
+  bot.heldItem = armed ? { name: 'stone_sword' } : null
   bot.entity = {
     id: 1,
     position: { x: 0, y: 64, z: 0, distanceTo: (p) => Math.hypot(p.x, p.y - 64, p.z) },
@@ -107,6 +111,21 @@ describe('a hostile hitting the owner wakes the bot', () => {
     expect(seen).toHaveLength(1)
     expect(seen[0].engaged).toBe(false) // closing on a creeper is how you set it off
     expect(bot._seiOffensiveTarget).toBeUndefined()
+  })
+
+  it('without a weapon: reports the hit, does not walk into the fight', () => {
+    vi.useFakeTimers()
+    const bot = makeBot({ armed: false })
+    const seen = capture(bot)
+    startCombat(bot, cfg())
+    const zombie = mob(bot, 'zombie', 28, { x: 6, y: 64, z: 0 })
+    bot.emit('entityHurt', bot.owner, zombie)
+    vi.advanceTimersByTime(300)
+    expect(seen).toHaveLength(1)
+    expect(seen[0].engaged).toBe(false)
+    expect(bot.attack).not.toHaveBeenCalled()
+    expect(bot.pathfinder.setGoal).not.toHaveBeenCalled()
+    expect(bot._seiOffensiveTarget ?? null).toBe(null)
   })
 
   it('ignores a mob too far away to be our fight', () => {

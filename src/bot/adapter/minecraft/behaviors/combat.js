@@ -3,7 +3,7 @@ import { pauseFollow, startFollow } from './follow.js'
 import { pursuitMovements } from './attack.js'
 import { createThrottle } from '../../../brain/debounce.js'
 import { HOSTILE_MOBS, NO_MELEE_DEFEND, NO_AUTO_ENGAGE } from './hostiles.js'
-import { equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
+import { chooseWeapon, equipBestWeapon, keepWeaponInHand } from './weaponSelect.js'
 import { noteCombat } from './autoEat.js'
 import { ownerHealth } from '../observers/snapshot.js'
 import { isDeadEntity, trackEntityDeaths } from '../observers/entities.js'
@@ -183,9 +183,17 @@ export function startCombat(bot, config) {
       payload.engaged = actionTarget === target.id
       payload.actionOnIt = actionTarget === target.id
     }
+    // 261030 (quality pass 31): never without a weapon. Bare hands do 1
+    // damage a swing, so the pursuit walked her into fights she could only
+    // lose: in the combat_night eval, after a first death took her sword,
+    // this chase and the turns that followed it killed her again and again
+    // (13 of 18 deaths in two runs came unarmed, 9 of 10 in one run by
+    // drowned at the river). The event still fires, and the turn is told
+    // she has no weapon (eventAddendum in index.js).
     const canMelee =
       actionTarget == null &&
       defendOwner &&
+      chooseWeapon(bot) != null &&
       !bot._seiPaused &&
       !NO_MELEE_DEFEND.has(target.name) &&
       !bot._seiReflexActive && !bot._seiSurvivalActive && !bot._seiCriticalRetreat &&

@@ -345,11 +345,22 @@ function fillTemplate (text, vars) {
 export const ATTACKED_ADDENDUM_PVP = `Interrupted — {label} hit you. You won't hit back automatically (PvP is off) — if you wish to fight back, call setPvp({enabled:true}) and attackEntity them in the same turn; otherwise respond in character.`
 export const ATTACKED_ADDENDUM_PVP_ON = `Interrupted — {label} hit you, and you're in a PvP spar (PvP is on). Hit back with attackEntity, keep moving, and trash-talk in character. Call setPvp({enabled:false}) if they say stop.`
 export const ATTACKED_ADDENDUM_MOB = `Interrupted — {label} hit you. TELL THE PLAYER, right now in this same turn, with one short line that lets them know you are in a fight. Make it your reaction to the fight, with the attitude your persona has in one, in your own words: the player should hear who you are, not a readout of the mob, your health or what you are doing about it. They cannot see your health bar and they are not necessarily looking at you, so a fight you go quiet through is a fight they never knew happened — being asked "are you ok?" afterwards means you got this wrong. Say it even mid-swing, and say it again if it turns bad (you drop low, more arrive). Then: your reflexes swing back on their own if you stand your ground — but you do NOT have to take this fight: if you'd rather not (low health, a crowd, night), disengage instead with explore() away from it, goTo() somewhere safer, or follow() the player, and call for help if you want it.`
-export const ATTACKED_ADDENDUM = (label, kind, pvp = false) => {
+// 261030 (quality pass 31): the same hit when she owns no weapon. Bare hands do
+// 1 damage a swing; in the combat_night eval, after a first death took her
+// sword, "you do NOT have to take this fight" still read as an offer, and she
+// fought bare-handed and died again (13 of 18 deaths in two runs came unarmed).
+// The text is the mob framing above up to its " Then:" advice, with this advice
+// in its place (so the reaction half is edited in one place).
+export const ATTACKED_UNARMED_THEN = ` Then: you have no weapon, so your swings do 1 damage and most mobs take about 20 of them while each of their hits costs you 2 or 3 health. Do not stand and fight it. Get away from it with follow() on the player or goTo() somewhere away from it, and tell them you have no weapon.`
+export const attackedMobUnarmed = () => {
+  const cut = ATTACKED_ADDENDUM_MOB.indexOf(' Then:')
+  return (cut >= 0 ? ATTACKED_ADDENDUM_MOB.slice(0, cut) : ATTACKED_ADDENDUM_MOB) + ATTACKED_UNARMED_THEN
+}
+export const ATTACKED_ADDENDUM = (label, kind, pvp = false, unarmed = false) => {
   const isPlayer = kind === 'player' || kind === 'players'
   const tmpl = isPlayer
     ? (pvp ? ATTACKED_ADDENDUM_PVP_ON : ATTACKED_ADDENDUM_PVP)
-    : ATTACKED_ADDENDUM_MOB
+    : (unarmed ? attackedMobUnarmed() : ATTACKED_ADDENDUM_MOB)
   return fillTemplate(tmpl, { label })
 }
 
@@ -407,6 +418,13 @@ export const DEFEND_ADDENDUM_THREAT = `{closing} {owner}: the nearest is {ownerD
 // In the protect_player eval this used the ENGAGED wording, and she called
 // attackEntity on it again, which aborted the chase and started it over.
 export const DEFEND_ADDENDUM_ACTION = `{owner} is being hit by {label}{dist}, the mob your attackEntity is already going after. Let it run; calling attackEntity on it again only restarts the chase. Say one short line so they know you are coming.`
+// 261030 (quality pass 31): the threat and held turns when she owns no weapon.
+// Both said to attackEntity the mob, and after a death took her sword she ran at
+// it bare-handed (the river drowned in the combat_night eval) and died again.
+// `data.unarmed` is set when the turn is written (adapter eventAddendum).
+export const DEFEND_UNARMED_TEXT = `You have no weapon, so your swings do 1 damage and most mobs take about 20 of them: going after it is how you die. Do not attackEntity it. Say one short line so they know it is coming and that you have no weapon, and get away from it together (follow them, or goTo somewhere away from it), or place a block between them and it.`
+export const DEFEND_ADDENDUM_THREAT_UNARMED = `{closing} {owner}: the nearest is {ownerDist} blocks from them and {dist} blocks from you.{hp} ` + DEFEND_UNARMED_TEXT
+export const DEFEND_ADDENDUM_HELD_UNARMED = `{owner} is being hit by {label}{dist}. ` + DEFEND_UNARMED_TEXT
 export const DEFEND_ADDENDUM = (label, data) => {
   // Number(null) is 0, so test the raw value before coercing — a missing
   // distance must drop the clause, not claim the mob is on top of us.
@@ -421,9 +439,10 @@ export const DEFEND_ADDENDUM = (label, data) => {
     const closing = n > 1 ? `${n} hostiles are closing in on` : `A ${label} is closing in on`
     const od = typeof data?.ownerDistance === 'number' ? data.ownerDistance : '?'
     const hp = hpKnown ? ` ${fillTemplate(DEFEND_OWNER_HP_CLAUSE, { hp: hpRaw })}` : ''
-    return fillTemplate(DEFEND_ADDENDUM_THREAT, { closing, owner, ownerDist: od, dist: Number.isFinite(d) ? d : '?', hp })
+    return fillTemplate(data?.unarmed ? DEFEND_ADDENDUM_THREAT_UNARMED : DEFEND_ADDENDUM_THREAT, { closing, owner, ownerDist: od, dist: Number.isFinite(d) ? d : '?', hp })
   }
-  const tpl = data?.actionOnIt ? DEFEND_ADDENDUM_ACTION : data?.engaged ? DEFEND_ADDENDUM_ENGAGED : DEFEND_ADDENDUM_HELD
+  const held = data?.unarmed ? DEFEND_ADDENDUM_HELD_UNARMED : DEFEND_ADDENDUM_HELD
+  const tpl = data?.actionOnIt ? DEFEND_ADDENDUM_ACTION : data?.engaged ? DEFEND_ADDENDUM_ENGAGED : held
   let text = fillTemplate(tpl, { label, dist, owner })
   const others = typeof data?.othersOnOwner === 'number' ? data.othersOnOwner : 0
   if (data?.engaged && !data?.actionOnIt && others > 0) {
@@ -1690,7 +1709,9 @@ export function eventAddendum(event, data, visionMode = 'on-demand') {
     if (kind === 'defend') return DEFEND_ADDENDUM(label, data)
     // combat.js stamps `pvp` (the live bot._seiPvp) onto the payload so a hit
     // from a player picks "hit back" (PvP on) vs "can't hit back" (PvP off).
-    return entry(label, kind, !!data?.pvp)
+    // 261030: `unarmed` (no weapon owned) is set by the minecraft adapter when
+    // the turn is written, and picks the get-away wording for a mob hit.
+    return entry(label, kind, !!data?.pvp, data?.unarmed === true)
   }
   return entry ?? ''
 }

@@ -151,9 +151,18 @@ jobs:
               extra+=( "-c.win.azureSignOptions.endpoint=$AZURE_ENDPOINT" )
               extra+=( "-c.win.azureSignOptions.codeSigningAccountName=$AZURE_CODE_SIGNING_ACCOUNT" )
               extra+=( "-c.win.azureSignOptions.certificateProfileName=$AZURE_CERT_PROFILE" )
+              # Baked into the bundle (electron.vite.config.ts): Velopack
+              # updates and the NSIS -> Velopack Setup must be Authenticode
+              # signed by this publisher before Sei runs them
+              # (src/main/velopackVerify.ts). Set ONLY on a signed build: an
+              # unsigned build that carried it would reject every update.
+              export SEI_WIN_PUBLISHER="$WIN_PUBLISHER_NAME"
             else
               echo "Windows: Azure Trusted Signing not configured — building UNSIGNED (auto-update still works; SmartScreen will warn)."
+              export SEI_WIN_PUBLISHER=
             fi
+          else
+            export SEI_WIN_PUBLISHER=
           fi
 
           # A dry run must not publish anything, whatever the ref (electron-
@@ -161,6 +170,16 @@ jobs:
           if [ "$DRY_RUN" = true ]; then extra+=( --publish never ); fi
 
           npm run ${{ matrix.build_cmd }} -- "${extra[@]}"
+
+          if [ -n "$SEI_WIN_PUBLISHER" ]; then
+            # The Velopack signature check is only as good as the publisher it
+            # was built with: fail a signed build whose bundle lacks it.
+            if ! grep -rqF -- "$SEI_WIN_PUBLISHER" dist/main; then
+              echo "::error::SEI_WIN_PUBLISHER '$SEI_WIN_PUBLISHER' is not in dist/main: the Velopack signature check would be off in a signed build"
+              exit 1
+            fi
+            echo "Velopack signature check baked in for publisher '$SEI_WIN_PUBLISHER'"
+          fi
 
       - name: Build game packs
         # 260908 game packs: the Minecraft adapter's runtime (mineflayer,
@@ -329,8 +348,14 @@ jobs:
             Write-Output "::error::app-update.yml publisherName [$declared] is not exactly WIN_PUBLISHER_NAME '$expected'. electron-updater compares every DN component with a strict equality check, so this must match verbatim, case included."
             exit 1
           }
-          if ($sig.SignerCertificate.Subject -notlike "*$expected*") {
-            Write-Output "::error::signing cert subject '$($sig.SignerCertificate.Subject)' does not contain the declared publisherName '$expected'."
+          # The client's own rule (a plain name must equal the CN, a DN must
+          # match every part it names), not a substring test: "Sei" is inside
+          # "Seismic Ltd" too.
+          $env:PUBLISHER_MATCH_SUBJECT = [string]$sig.SignerCertificate.Subject
+          $env:PUBLISHER_MATCH_PUBLISHER = $expected
+          node --experimental-strip-types --no-warnings scripts/velopack-ci/publisher-match.mjs
+          if ($LASTEXITCODE -ne 0) {
+            Write-Output "::error::signing cert subject '$($sig.SignerCertificate.Subject)' does not match the declared publisherName '$expected' by electron-updater's rule."
             exit 1
           }
           Write-Output "✓ Windows installer signed and Valid; publisherName '$expected' matches the cert"
@@ -404,10 +429,79 @@ jobs:
           foreach ($f in $files) {
             $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
             Write-Output "$($f.Name)  status=$($sig.Status)  subject=$($sig.SignerCertificate.Subject)"
-            if ($signed -and ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike "*$($env:WIN_PUBLISHER_NAME)*")) { $bad++ }
+            if (-not $signed) { continue }
+            if ($sig.Status -ne 'Valid') { $bad++; continue }
+            # The rule the app applies before it runs these files
+            # (src/main/velopackSignature.ts publisherMatches).
+            $env:PUBLISHER_MATCH_SUBJECT = [string]$sig.SignerCertificate.Subject
+            $env:PUBLISHER_MATCH_PUBLISHER = $env:WIN_PUBLISHER_NAME
+            node --experimental-strip-types --no-warnings scripts/velopack-ci/publisher-match.mjs
+            if ($LASTEXITCODE -ne 0) { $bad++ }
           }
           if ($bad -gt 0) { Write-Output "::error::$bad Velopack file(s) are not Valid signed by '$($env:WIN_PUBLISHER_NAME)'"; exit 1 }
           if ($signed) { Write-Output 'Velopack Setup and package binaries are signed and Valid' } else { Write-Output 'Velopack output is unsigned (dry run or signing not configured)' }
+
+      - name: Smoke-launch the Velopack build (Windows)
+        # Installs the Setup that is about to ship into a clean per-user
+        # folder and starts the installed Sei once: it must boot as a
+        # Velopack install and load its main window within 3 minutes. Catches
+        # a pack that installs but cannot start (a missing file, a broken
+        # hook) before it reaches anyone. About a minute of runner time.
+        # SEI_VELOPACK_CI_MODE=none: no update check, so nothing is staged and
+        # nothing is fetched beyond what a first launch does anyway.
+        # Analytics are off for this launch (a phc_REPLACE_WITH key counts as
+        # unset; analytics.ts reads the key at runtime because release builds
+        # do not bake one) and the host points nowhere as a second guard.
+        if: runner.os == 'Windows' && steps.velopack_verify.outcome == 'success'
+        id: velopack_smoke
+        continue-on-error: ${{ !inputs.dry_run }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          UPLOAD: ${{ steps.velopack.outputs.upload }}
+          POSTHOG_KEY: phc_REPLACE_WITH_ci_disabled
+          POSTHOG_HOST: http://127.0.0.1:9
+          SEI_VELOPACK_CI: '1'
+          SEI_VELOPACK_CI_MODE: none
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $setup = Get-ChildItem $env:UPLOAD -Filter 'Sei-*-Setup.exe' | Sort-Object Name | Select-Object -First 1
+          if (-not $setup) { Write-Output '::error::no Velopack Setup to smoke-test'; exit 1 }
+          $root = Join-Path $env:LOCALAPPDATA 'Sei'
+          $userData = Join-Path $env:APPDATA 'Sei'
+          $marks = Join-Path $userData 'velopack-ci.jsonl'
+          function Stop-Sei { Get-Process -Name 'Sei' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+
+          $p = Start-Process -FilePath $setup.FullName -ArgumentList '--silent' -PassThru
+          if (-not $p.WaitForExit(300000)) { Write-Output '::error::Setup did not finish within 5 minutes'; exit 1 }
+          Write-Output "$($setup.Name): exit $($p.ExitCode)"
+          Start-Sleep -Seconds 3
+          Stop-Sei
+          $exe = Join-Path $root 'current\Sei.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { Write-Output "::error::$exe missing after install"; exit 1 }
+
+          New-Item -ItemType Directory -Force -Path $userData | Out-Null
+          Remove-Item -LiteralPath $marks -Force -ErrorAction SilentlyContinue
+          $app = Start-Process -FilePath $exe -PassThru
+          $boot = $null; $loaded = $null
+          $sw = [Diagnostics.Stopwatch]::StartNew()
+          while ($sw.Elapsed.TotalSeconds -lt 180 -and -not ($boot -and $loaded)) {
+            Start-Sleep -Milliseconds 500
+            if (-not (Test-Path -LiteralPath $marks)) { continue }
+            try {
+              $fs = [System.IO.File]::Open($marks, 'Open', 'Read', 'ReadWrite, Delete')
+              try { $lines = (New-Object System.IO.StreamReader($fs)).ReadToEnd() -split "`r?`n" } finally { $fs.Dispose() }
+            } catch { continue }
+            $events = @($lines | Where-Object { $_.Trim() } | ForEach-Object { try { $_ | ConvertFrom-Json } catch { } })
+            if (-not $boot) { $boot = $events | Where-Object { $_.ev -eq 'boot' -and $_.velopackInstalled } | Select-Object -First 1 }
+            if (-not $loaded) { $loaded = $events | Where-Object { $_.ev -eq 'window-loaded' -and $_.url -and -not ($_.url -like 'data:*') } | Select-Object -First 1 }
+          }
+          $alive = -not $app.HasExited
+          Stop-Sei
+          if (Test-Path -LiteralPath $marks) { Write-Output '--- marks'; Get-Content -LiteralPath $marks | Select-Object -First 40 }
+          if (-not $boot) { Write-Output '::error::the installed Velopack build never reported a Velopack boot'; exit 1 }
+          if (-not $loaded) { Write-Output "::error::the installed Velopack build did not load its window within 180 s (alive=$alive)"; exit 1 }
+          Write-Output "Velopack build $($boot.version) installed, booted and loaded its window in $([math]::Round($sw.Elapsed.TotalSeconds, 1)) s"
 
       - name: Collect release assets (installers + auto-update feed)
         env:
@@ -416,6 +510,7 @@ jobs:
           # release, so conclusion is 'success' even when they failed.
           VELOPACK_PACK: ${{ steps.velopack.outcome }}
           VELOPACK_VERIFY: ${{ steps.velopack_verify.outcome }}
+          VELOPACK_SMOKE: ${{ steps.velopack_smoke.outcome }}
         # CRITICAL: electron-updater needs the *.yml feed files, the macOS *.zip
         # (the mac auto-update payload — the dmg is download-only), and *.blockmap
         # files. Uploading only the dmg/exe silently breaks auto-update. Grab
@@ -444,13 +539,17 @@ jobs:
           rm -f dist-release/builder-debug.yml
           # 261030 Velopack: packages, Setup(s), releases.<channel>.json and
           # setup.<channel>.json, flat beside the NSIS installer.
-          # Only a pack whose signature check passed ships: a failed check must
-          # never put unsigned or wrongly signed Velopack files in the feed.
-          if [ "$VELOPACK_PACK" = success ] && [ "$VELOPACK_VERIFY" = success ] \
+          # Only a pack whose signature check and smoke launch passed ships: a
+          # failed check must never put unsigned, wrongly signed or broken
+          # Velopack files in the feed.
+          if [ "$VELOPACK_PACK" = success ] && [ "$VELOPACK_VERIFY" = success ] && [ "$VELOPACK_SMOKE" = success ] \
              && [ -n "$VELOPACK_UPLOAD" ] && [ -d "$VELOPACK_UPLOAD" ]; then
             cp "$VELOPACK_UPLOAD"/* dist-release/
+            n=$(find "$VELOPACK_UPLOAD" -maxdepth 1 -type f | wc -l)
+            echo "Velopack files: $n ($(cd "$VELOPACK_UPLOAD" && ls | tr '\n' ' '))"
+            echo "Velopack files in this release: $n" >> "$GITHUB_STEP_SUMMARY"
           elif [ "$RUNNER_OS" = "Windows" ]; then
-            msg="Velopack pack=${VELOPACK_PACK:-skipped} verify=${VELOPACK_VERIFY:-skipped}: this release ships WITHOUT Velopack files (no Velopack update, no migration to it)"
+            msg="Velopack pack=${VELOPACK_PACK:-skipped} verify=${VELOPACK_VERIFY:-skipped} smoke=${VELOPACK_SMOKE:-skipped}: this release ships WITHOUT Velopack files (no Velopack update, no migration to it)"
             echo "::warning::$msg"
             echo "### :warning: $msg" >> "$GITHUB_STEP_SUMMARY"
           fi

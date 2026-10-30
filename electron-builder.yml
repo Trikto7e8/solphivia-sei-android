@@ -494,6 +494,14 @@ win:
   # workflow's "Verify Windows update signature contract" step enforces it.
   signtoolOptions:
     publisherName: null
+  # 261030 update progress window: the PowerShell/WPF script, its fonts (OFL,
+  # licenses beside them), the wordmark and the icon. src/main/
+  # updateProgressHelper.ts copies them to %TEMP% and runs them from there
+  # during an in-app update, so nothing holds a handle in the install folder
+  # while the installer replaces it. Merged with the top-level extraResources.
+  extraResources:
+    - from: resources/update-progress
+      to: update-progress
 
 # 260929 one-click installer (outside-app-steps R2b). The assisted installer
 # was Welcome, install mode, Choose folder, Install, Finish: 3 to 4 clicks

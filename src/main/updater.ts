@@ -41,7 +41,12 @@ import {
   shouldShowWhatsNew,
   type ApplyTiming,
 } from './updatePolicy';
-import { loadUpdateState, saveUpdateState } from './updateStateStore';
+import {
+  INSTALL_HISTORY_MAX,
+  loadUpdateState,
+  measuredInstallSeconds,
+  saveUpdateState,
+} from './updateStateStore';
 import { restartInstallArgs } from './updateInstall';
 import { refreshNotices } from './notices';
 import { updaterLog } from './updaterLog';
@@ -129,6 +134,8 @@ type AutoUpdater = {
   checkForUpdates: () => Promise<unknown>;
   downloadUpdate: () => Promise<unknown>;
   quitAndInstall: (isSilent?: boolean, isForceRunAfter?: boolean) => void;
+  /** BaseUpdater: the downloaded installer file, null before a download. */
+  readonly installerPath?: string | null;
   on: (event: string, listener: (...args: unknown[]) => void) => void;
   setFeedURL: (options: { provider: string; url: string; channel?: string }) => void;
 };
@@ -247,6 +254,8 @@ let eventsWired = false;
  * update is silently thrown away and re-downloaded next session.
  */
 let updateReadyToInstall = false;
+/** Version of the downloaded update (shown small in the Windows progress window). */
+let downloadedVersion = '';
 
 /** Whether a downloaded update is waiting to install on the next real quit. */
 export function isUpdateReadyToInstall(): boolean {
@@ -550,6 +559,7 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
  */
 async function handleUpdateDownloaded(version?: string): Promise<void> {
   updateReadyToInstall = true;
+  if (typeof version === 'string') downloadedVersion = version;
   const apply = mandatoryApply;
   if (apply === null) {
     // Optional consented flow.
@@ -560,11 +570,8 @@ async function handleUpdateDownloaded(version?: string): Promise<void> {
   if (apply === 'now') {
     send(IpcChannel.app.updateDownloaded, { forced: true, version });
     setTimeout(() => {
-      try {
-        autoUpdater?.quitAndInstall(...restartInstallArgs(process.platform));
-      } catch (err) {
-        logger.warn(`updater: forced quitAndInstall failed (${(err as Error).message})`);
-      }
+      const au = autoUpdater;
+      if (au) void restartIntoUpdate(au, 0);
     }, FORCED_RESTART_DELAY_MS);
     return;
   }
@@ -639,12 +646,28 @@ async function runWhatsNewCheck(): Promise<void> {
   // 261005: `update_installed {from, to}`. An update relaunch otherwise only
   // shows up as another app_opened, which inflates "any event" retention.
   // lastSeenVersion is absent on a fresh install (nothing was updated).
+  // 261030: a timed Windows restart-to-update becomes one install-time sample
+  // (it sizes the next progress window's estimate) and rides update_installed.
+  const installSec = measuredInstallSeconds(state.installTiming, cur, Date.now());
+  const progressWindow = state.installTiming?.progressWindow;
+  const installSeconds =
+    installSec === null
+      ? state.installSeconds
+      : [...(state.installSeconds ?? []), installSec].slice(-INSTALL_HISTORY_MAX);
+  if (installSec !== null) {
+    logger.info(`updater: restart-to-update took ${installSec} s (progress window: ${progressWindow === true})`);
+  }
+
   if (state.lastSeenVersion && state.lastSeenVersion !== cur) {
     const from = state.lastSeenVersion;
     const viaApp = Boolean(state.pending && state.pending.version === cur);
+    const timing =
+      installSec === null ? {} : { install_s: installSec, progress_window: progressWindow === true };
     void import('./lazyAnalytics')
       .then(({ loadAnalytics }) => loadAnalytics())
-      .then(({ capture }) => capture('update_installed', { from, to: cur, via: viaApp ? 'in_app' : 'other' }))
+      .then(({ capture }) =>
+        capture('update_installed', { from, to: cur, via: viaApp ? 'in_app' : 'other', ...timing }),
+      )
       .catch(() => {});
   }
 
@@ -673,6 +696,10 @@ async function runWhatsNewCheck(): Promise<void> {
       // Clear pending once shown (or if it was for a different version — a
       // stale stash from an aborted update should not linger).
       pending: shown ? null : state.pending && state.pending.version === cur ? null : state.pending,
+      // The timing is consumed on every launch: a relaunch at the SAME version
+      // means that install did not land, and it must not count later.
+      installTiming: null,
+      ...(installSeconds && installSeconds.length > 0 ? { installSeconds } : {}),
     });
   } catch (err) {
     logger.warn(`updater: what's-new save failed (${(err as Error).message})`);
@@ -919,17 +946,51 @@ export async function downloadAcceptedUpdate(): Promise<void> {
 }
 
 /**
- * Quit and install a downloaded update (the sidebar "Update Sei" button). On
- * Windows the one-click installer shows its small "Installing, please wait"
- * progress window (no clicks) and relaunches Sei when it is done (see
- * updateInstall.ts for the exact installer arguments). No-op in dev.
+ * Restart into the downloaded update. macOS: quitAndInstall() as always.
+ * Windows (261030): Sei's own progress window first, then the silent
+ * installer under it; the stock installer window when that window cannot
+ * start (windowsUpdateInstall.ts). `minHoldMs` = how long after the call the
+ * stock installer may start at the earliest (the renderer's restart note
+ * stays readable that long).
  */
-export function installDownloadedUpdate(): void {
-  const au = ensureAutoUpdater();
-  if (!au) return;
+async function restartIntoUpdate(au: AutoUpdater, minHoldMs: number): Promise<void> {
+  if (process.platform === 'win32') {
+    try {
+      const { installWithProgressWindow } = await import('./windowsUpdateInstall');
+      await installWithProgressWindow({
+        quitAndInstall: (...args) => au.quitAndInstall(...args),
+        installerPath: au.installerPath,
+        version: downloadedVersion,
+        mainWindow: getMainWindow?.() ?? null,
+        minHoldMs,
+      });
+      return;
+    } catch (err) {
+      // Only a failed module load lands here (the installer path never throws).
+      logger.warn(`updater: progress window path failed (${(err as Error).message})`);
+    }
+  }
   try {
     au.quitAndInstall(...restartInstallArgs(process.platform));
   } catch (err) {
     logger.warn(`updater: quitAndInstall failed (${(err as Error).message})`);
   }
+}
+
+/**
+ * How long the Windows restart note stays up before the STOCK installer
+ * window replaces Sei (fallback path only; Sei's own progress window goes up
+ * as soon as it is ready). Was a renderer-side hold before 261030.
+ */
+const WINDOWS_RESTART_NOTE_MS = 3_000;
+
+/**
+ * Quit and install a downloaded update (the sidebar "Update Sei" button). On
+ * Windows Sei's own progress window covers the install and Sei reopens when
+ * it is done (see restartIntoUpdate and updateInstall.ts). No-op in dev.
+ */
+export async function installDownloadedUpdate(): Promise<void> {
+  const au = ensureAutoUpdater();
+  if (!au) return;
+  await restartIntoUpdate(au, WINDOWS_RESTART_NOTE_MS);
 }

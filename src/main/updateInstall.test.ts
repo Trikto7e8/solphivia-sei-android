@@ -12,8 +12,16 @@ describe('restartInstallArgs', () => {
     expect(isForceRunAfter).toBe(true);
   });
 
+  it("runs the installer silently under Sei's own progress window (261030)", () => {
+    // updateProgressHelper's window is up, so the stock NSIS banner would only
+    // sit on top of it: `--updated /S --force-run`, and Sei still reopens.
+    expect(restartInstallArgs('win32', { progressWindow: true })).toEqual([true, true]);
+    expect(restartInstallArgs('win32', { progressWindow: false })).toEqual([false, true]);
+  });
+
   it('leaves macOS on the default call (Squirrel relaunches on its own)', () => {
     expect(restartInstallArgs('darwin')).toEqual([]);
+    expect(restartInstallArgs('darwin', { progressWindow: true })).toEqual([]);
   });
 
   it('leaves Linux on the defaults', () => {

@@ -15,10 +15,11 @@
  *   ready        the gradient button.
  *   restarting   same button, spinning icon, disabled. On Windows a note
  *                beside it says the update takes about a minute and Sei
- *                reopens by itself; the store holds the quit back for
- *                WINDOWS_RESTART_NOTE_MS so it can be read (261030). The
- *                Windows install takes ~100 s against ~12 s on macOS, and a
- *                window that just vanishes for that long reads as a crash.
+ *                reopens by itself (261030); Sei's own update progress
+ *                window then covers the install (src/main/
+ *                windowsUpdateInstall.ts). The Windows install takes ~100 s
+ *                against ~12 s on macOS, and a window that just vanishes for
+ *                that long reads as a crash.
  *
  * A click while a call, a Minecraft companion, or a game is live asks first,
  * because the restart ends it. Otherwise it restarts straight away.

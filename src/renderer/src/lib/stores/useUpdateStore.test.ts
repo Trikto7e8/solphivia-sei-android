@@ -4,8 +4,7 @@ const installUpdate = vi.fn(async () => undefined);
 const fakeSei = { platform: 'darwin', installUpdate: () => installUpdate() };
 vi.mock('../ipcClient', () => ({ sei: fakeSei }));
 
-const { useUpdateStore, RESTART_STUCK_MS, WINDOWS_RESTART_NOTE_MS, restartNoteDelayMs, showsWindowsUpdateNote } =
-  await import('./useUpdateStore');
+const { useUpdateStore, RESTART_STUCK_MS, showsWindowsUpdateNote } = await import('./useUpdateStore');
 
 describe('useUpdateStore (261023)', () => {
   beforeEach(() => {
@@ -67,17 +66,14 @@ describe('useUpdateStore (261023)', () => {
     expect(useUpdateStore.getState().rail).toEqual({ kind: 'ready', version: '0.7.0' });
   });
 
-  it('on Windows holds the install back so the note can be read (261030)', async () => {
+  it('on Windows calls main straight away; main owns the note hold (261030)', async () => {
     fakeSei.platform = 'win32';
     const s = useUpdateStore.getState();
     s.setReady('0.7.0');
     s.restart();
     expect(useUpdateStore.getState().rail).toEqual({ kind: 'restarting', version: '0.7.0' });
-    await vi.advanceTimersByTimeAsync(WINDOWS_RESTART_NOTE_MS - 1);
-    expect(installUpdate).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(0);
     expect(installUpdate).toHaveBeenCalledTimes(1);
-    expect(WINDOWS_RESTART_NOTE_MS).toBeLessThan(RESTART_STUCK_MS);
   });
 
   it('on macOS installs straight away', async () => {
@@ -95,7 +91,5 @@ describe('Windows update note platform gate (261030)', () => {
     expect(showsWindowsUpdateNote('darwin')).toBe(false);
     expect(showsWindowsUpdateNote('linux')).toBe(false);
     expect(showsWindowsUpdateNote(undefined)).toBe(false);
-    expect(restartNoteDelayMs('win32')).toBe(WINDOWS_RESTART_NOTE_MS);
-    expect(restartNoteDelayMs('darwin')).toBe(0);
   });
 });

@@ -3990,7 +3990,7 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
 
   ipcMain.handle(IpcChannel.app.updateInstall, async (): Promise<void> => {
     const { installDownloadedUpdate } = await import('./updater');
-    installDownloadedUpdate();
+    await installDownloadedUpdate();
   });
 
   ipcMain.handle(IpcChannel.app.whatsNewGet, async () => {

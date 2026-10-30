@@ -1,6 +1,6 @@
 /**
  * How an explicit "restart to update" hands off to the installer (261023,
- * made visible 261030).
+ * made visible 261030, Sei's own progress window 261030).
  *
  * Pure (no electron import) so it unit-tests on any host; updater.ts spreads
  * the result into `autoUpdater.quitAndInstall(...)`. Both the sidebar "Update
@@ -10,15 +10,18 @@
  * isSilent, isForceRunAfter) calls `install(isSilent, isSilent ?
  * isForceRunAfter : this.autoRunAppAfterInstall)`, and NsisUpdater.doInstall
  * builds `["--updated", "/S"?, "--force-run"?]`.
- *   - (true, true), 261023 to 261030 = `--updated /S --force-run`: no window at
- *     all. The install takes a median ~104 s for real users (IQR 77-173 s: the
- *     whole app is re-unpacked), so Sei vanished for a minute and a half and
- *     looked crashed; people relaunched it mid-install.
- *   - (false, true), now = `--updated --force-run` (isForceRunAfter is ignored
- *     when not silent; autoRunAppAfterInstall, pinned true in updater.ts,
- *     supplies the --force-run). The one-click installer shows its small
- *     SpiderBanner "Installing, please wait..." window with the Sei header
- *     icon, then reopens Sei. From app-builder-lib 26.16.1's NSIS templates:
+ *   - (true, true) = `--updated /S --force-run`: no installer window. From
+ *     261023 to 261030 nothing else was on screen either. The install takes
+ *     a median ~104 s for real users (IQR 77-173 s: the whole app is
+ *     re-unpacked), so Sei vanished for a minute and a half and looked
+ *     crashed; people relaunched it mid-install. Since 261030 it runs under
+ *     Sei's own progress window (see `progressWindow` below).
+ *   - (false, true), the fallback = `--updated --force-run` (isForceRunAfter
+ *     is ignored when not silent; autoRunAppAfterInstall, pinned true in
+ *     updater.ts, supplies the --force-run). The one-click installer shows
+ *     its small SpiderBanner "Installing, please wait..." window with the
+ *     Sei header icon, then reopens Sei. From app-builder-lib 26.16.1's NSIS
+ *     templates:
  *       no clicks: oneClick.nsh has no pages but MUI_PAGE_INSTFILES (the
  *         license page is skipped when --updated, and Sei has none); the
  *         "Sei is running, click OK" box is skipped when --updated
@@ -43,7 +46,19 @@
  */
 export type QuitAndInstallArgs = [] | [isSilent: boolean, isForceRunAfter: boolean];
 
-export function restartInstallArgs(platform: NodeJS.Platform): QuitAndInstallArgs {
-  if (platform === 'win32') return [false, true];
+/**
+ * `progressWindow` (Windows): Sei's own update window is up
+ * (updateProgressHelper.ts, a PowerShell/WPF process running from %TEMP%).
+ * Then the installer runs SILENT, `--updated /S --force-run` (true, true), so
+ * the stock NSIS banner does not show on top of it, and the window covers the
+ * whole install until the new Sei is back. When that window could not start
+ * (blocked PowerShell, a slow machine, anything), it stays the visible
+ * (false, true) run above: the stock banner, exactly as before.
+ */
+export function restartInstallArgs(
+  platform: NodeJS.Platform,
+  opts: { progressWindow?: boolean } = {},
+): QuitAndInstallArgs {
+  if (platform === 'win32') return opts.progressWindow ? [true, true] : [false, true];
   return [];
 }

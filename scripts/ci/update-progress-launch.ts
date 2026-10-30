@@ -19,7 +19,7 @@
  * this process exits (the script hands over to a grandchild), exactly as it
  * outlives Sei.
  */
-import { writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildHelperConfig, launchUpdateProgressHelper } from '../../src/main/updateProgressHelper';
@@ -49,6 +49,8 @@ async function main(): Promise<void> {
     installerPath: installer,
     appExe: app,
     center: null,
+    // As in the app (windowsUpdateInstall.ts): the installer file is there.
+    downloaded: existsSync(installer),
   });
   const t0 = Date.now();
   const h = await launchUpdateProgressHelper({

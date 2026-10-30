@@ -5,6 +5,8 @@ import path from 'node:path';
 import {
   CURVE_CAP,
   DEFAULT_INSTALL_SECONDS,
+  DOWNLOAD_DONE_SHARE,
+  OPENING_FILL_SEC,
   HELPER_COPY,
   HELPER_FILES,
   buildHelperConfig,
@@ -17,7 +19,6 @@ import {
   progressAt,
   resolveHelperLang,
   resolveHelperTheme,
-  ribbingSpeed,
   statusAt,
   sweepStaleHelperDirs,
   type HelperConfig,
@@ -58,12 +59,33 @@ describe('progress curve (Harrison et al.)', () => {
     expect(progressAt(1.7 * e + 10, e) - progressAt(1.7 * e, e)).toBeGreaterThan(0.005);
   });
 
-  it('ribbing runs backwards and slows as the bar fills (CHI 2010)', () => {
-    expect(ribbingSpeed(0)).toBe(40);
-    expect(ribbingSpeed(1)).toBe(14);
-    expect(ribbingSpeed(0.5)).toBeLessThan(ribbingSpeed(0.2));
-    expect(ribbingSpeed(-1)).toBe(40);
-    expect(ribbingSpeed(2)).toBe(14);
+  it('after a completed download, opens at the download share and runs the rest over the estimate', () => {
+    const s0 = DOWNLOAD_DONE_SHARE;
+    expect(s0).toBe(0.4);
+    for (const e of [45, 100, 173, 300]) {
+      let prev = progressAt(0, e, s0);
+      expect(prev).toBe(s0);
+      for (let t = 0.5; t <= e * 6; t += 0.5) {
+        const p = progressAt(t, e, s0);
+        expect(p).toBeGreaterThanOrEqual(prev);
+        expect(p).toBeLessThanOrEqual(CURVE_CAP);
+        prev = p;
+      }
+    }
+    const e = 100;
+    // No second burst after the opening fill: calm, but never flat.
+    expect(progressAt(5, e, s0) - s0).toBeLessThan(0.04);
+    expect(progressAt(5, e, s0) - s0).toBeGreaterThan(0.01);
+    expect(progressAt(e / 2, e, s0)).toBeGreaterThan(0.6);
+    expect(progressAt(e / 2, e, s0)).toBeLessThan(0.7);
+    expect(progressAt(e, e, s0)).toBeGreaterThan(0.75);
+    expect(progressAt(e, e, s0)).toBeLessThan(0.85);
+    expect(progressAt(1.7 * e, e, s0)).toBeLessThan(0.93);
+    expect(progressAt(1.7 * e + 10, e, s0) - progressAt(1.7 * e, e, s0)).toBeGreaterThan(0.003);
+  });
+
+  it('start 0 is the plain curve (no faked progress without a download)', () => {
+    for (const t of [0, 1, 5, 50, 100, 400]) expect(progressAt(t, 100, 0)).toBe(progressAt(t, 100));
   });
 });
 
@@ -129,6 +151,20 @@ describe('plan', () => {
     expect(lines.at(-1)).toBe('Taking a little longer than usual');
   });
 
+  it('a download-done plan starts at the share with a short opening fill; otherwise at 0 with none', () => {
+    const done = buildPlan(100, HELPER_COPY.en, DOWNLOAD_DONE_SHARE);
+    expect(done.startShare).toBe(DOWNLOAD_DONE_SHARE);
+    expect(done.curve[0]).toEqual([0, DOWNLOAD_DONE_SHARE]);
+    expect(done.openingFillSec).toBe(OPENING_FILL_SEC);
+    expect(OPENING_FILL_SEC).toBeGreaterThanOrEqual(0.4);
+    expect(OPENING_FILL_SEC).toBeLessThanOrEqual(0.6);
+    // The time-left line follows the estimate, not the bar.
+    expect(done.status).toEqual(buildPlan(100, HELPER_COPY.en).status);
+    const fresh = buildPlan(100, HELPER_COPY.en);
+    expect(fresh.startShare).toBe(0);
+    expect(fresh.openingFillSec).toBe(0);
+  });
+
   it('fits in a small config file', () => {
     expect(JSON.stringify(buildPlan(300, HELPER_COPY.zh)).length).toBeLessThan(40_000);
   });
@@ -176,6 +212,17 @@ describe('config inputs', () => {
     expect(cfg.installerName).toBe('Sei-win-x64');
     expect(cfg.appName).toBe('Sei');
     expect(cfg.installerWaitSec).toBeGreaterThan(5);
+    // Not marked downloaded: no head start.
+    expect(cfg.plan.startShare).toBe(0);
+    const dl = buildHelperConfig({
+      osDark: false,
+      version: '0.7.0',
+      installerPath: 'Sei-win-x64.exe',
+      appExe: 'Sei.exe',
+      center: null,
+      downloaded: true,
+    });
+    expect(dl.plan.startShare).toBe(DOWNLOAD_DONE_SHARE);
   });
 
   it('runs Windows PowerShell by absolute path, process-scope bypass, STA', () => {

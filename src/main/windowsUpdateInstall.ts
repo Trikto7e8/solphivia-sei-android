@@ -17,6 +17,7 @@
  *
  * Never throws; every failure ends in the stock install path.
  */
+import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { app, nativeTheme, screen, type BrowserWindow } from 'electron';
@@ -87,6 +88,9 @@ export async function installWithProgressWindow(opts: WindowsInstallOptions): Pr
         history: state?.installSeconds,
         version: opts.version,
         installerPath: opts.installerPath,
+        // installerPath is set only once the download is complete and
+        // verified; the file check guards against a stale path.
+        downloaded: existsSync(opts.installerPath),
         appExe: process.execPath,
         center: windowCenter(opts.mainWindow),
       });

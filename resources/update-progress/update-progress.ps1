@@ -79,7 +79,6 @@ $S = @{
   doneAt = $null
   doneFrom = 0.0
   failedAt = $null
-  ribX = 0.0
   lastTick = 0.0
   lastProbe = 0.0
   outcome = ''
@@ -118,6 +117,11 @@ Log "start lang=$($cfg.lang) theme=$($cfg.theme) estimate=$($cfg.plan.estimateSe
 # ---- plan --------------------------------------------------------------------
 $curveP = New-Object 'System.Collections.Generic.List[double]'
 foreach ($pt in $cfg.plan.curve) { $curveP.Add([double]$pt[1]) }
+# The download is already done when this window opens (the app sets startShare
+# only then): the bar fills to that share over openingFillSec, then follows
+# the curve. Without a completed download both are 0 and the bar starts empty.
+$startShare = 0.0; if ($null -ne $cfg.plan.startShare) { $startShare = [double]$cfg.plan.startShare }
+$openingFillSec = 0.0; if ($null -ne $cfg.plan.openingFillSec) { $openingFillSec = [double]$cfg.plan.openingFillSec }
 $statusT = New-Object 'System.Collections.Generic.List[double]'
 $statusS = New-Object 'System.Collections.Generic.List[string]'
 foreach ($st in $cfg.plan.status) { $statusT.Add([double]$st[0]); $statusS.Add([string]$st[1]) }
@@ -138,28 +142,28 @@ function StatusAt([double]$t) {
 # ---- palette (mirrors src/renderer/src/styles/tokens.css + the 261029 poster) --
 $palettes = @{
   midnight = @{
-    bg = '#04070F'; text = '#F4F2EC'; text2 = '#C6CEE0'; muted = '#8A93A8'; track = '#1FFFFFFF'; edge = '#14FFFFFF'
-    under = 0.34; dots = 0.62; ribs = '#33FFFFFF'; tip = '#66FFFFFF'; pocket = '#B302040B'; vignette = '#9E010206'; shadow = 0.55
+    accent = '#76A6F0'; bg = '#04070F'; text = '#F4F2EC'; text2 = '#C6CEE0'; muted = '#8A93A8'; track = '#1FFFFFFF'; edge = '#14FFFFFF'
+    under = 0.34; dots = 0.62; pocket = '#B302040B'; vignette = '#9E010206'; shadow = 0.55
     core = '#3A6CFF'; green = '#14B084'; halo = '#7860FF'; indigo = '#3A60E6'; fill = '#5064F0'; hot = '#96ECD6'
-    ribbon = @('#28C896', '#3CBED2', '#6E96FF', '#8C6EFF'); bar = @('#14B084', '#3CBED2', '#6E96FF', '#8C6EFF')
+    ribbon = @('#28C896', '#3CBED2', '#6E96FF', '#8C6EFF')
   }
   ice = @{
-    bg = '#F3F8FF'; text = '#2A3340'; text2 = '#586273'; muted = '#7D92AB'; track = '#1416202E'; edge = '#1416202E'
-    under = 0.30; dots = 0.42; ribs = '#40FFFFFF'; tip = '#557FB0FF'; pocket = '#C7F3F8FF'; vignette = '#00FFFFFF'; shadow = 0.22
+    accent = '#3F6FC4'; bg = '#F3F8FF'; text = '#2A3340'; text2 = '#586273'; muted = '#7D92AB'; track = '#1416202E'; edge = '#1416202E'
+    under = 0.30; dots = 0.42; pocket = '#C7F3F8FF'; vignette = '#00FFFFFF'; shadow = 0.22
     core = '#7FB0FF'; green = '#5CCB93'; halo = '#A497FF'; indigo = '#6F8FE8'; fill = '#8FA8F5'; hot = '#9DE3D2'
-    ribbon = @('#5CCB93', '#6CC8DC', '#7FB0FF', '#A497FF'); bar = @('#3F7FD6', '#5A92E6', '#7FB0FF', '#8F9BFF')
+    ribbon = @('#5CCB93', '#6CC8DC', '#7FB0FF', '#A497FF')
   }
   acorn = @{
-    bg = '#F8F3EA'; text = '#3B3126'; text2 = '#6A5C4B'; muted = '#94836F'; track = '#1A3B2D1A'; edge = '#1A3B2D1A'
-    under = 0.34; dots = 0.42; ribs = '#40FFFFFF'; tip = '#55AD8A63'; pocket = '#C7F8F3EA'; vignette = '#00FFFFFF'; shadow = 0.22
+    accent = '#AD8A63'; bg = '#F8F3EA'; text = '#3B3126'; text2 = '#6A5C4B'; muted = '#94836F'; track = '#1A3B2D1A'; edge = '#1A3B2D1A'
+    under = 0.34; dots = 0.42; pocket = '#C7F8F3EA'; vignette = '#00FFFFFF'; shadow = 0.22
     core = '#E2B98A'; green = '#B7C99A'; halo = '#E8A98C'; indigo = '#C9A27A'; fill = '#D9B48C'; hot = '#F3DEC0'
-    ribbon = @('#B7C99A', '#E2C29A', '#D9A57E', '#C9967A'); bar = @('#8A6A44', '#AD8A63', '#C9A27A', '#D9B48C')
+    ribbon = @('#B7C99A', '#E2C29A', '#D9A57E', '#C9967A')
   }
   mint = @{
-    bg = '#EFF8F2'; text = '#24352B'; text2 = '#52665A'; muted = '#7B9587'; track = '#1A142D20'; edge = '#1A142D20'
-    under = 0.32; dots = 0.42; ribs = '#40FFFFFF'; tip = '#5557B47C'; pocket = '#C7EFF8F2'; vignette = '#00FFFFFF'; shadow = 0.22
+    accent = '#57B47C'; bg = '#EFF8F2'; text = '#24352B'; text2 = '#52665A'; muted = '#7B9587'; track = '#1A142D20'; edge = '#1A142D20'
+    under = 0.32; dots = 0.42; pocket = '#C7EFF8F2'; vignette = '#00FFFFFF'; shadow = 0.22
     core = '#6CC79A'; green = '#57B47C'; halo = '#7FB0FF'; indigo = '#7FD0C0'; fill = '#A6DCB8'; hot = '#B5E8D5'
-    ribbon = @('#57B47C', '#7FD0C0', '#8FC4F0', '#7FB0FF'); bar = @('#359961', '#57B47C', '#6CC79A', '#7FD0C0')
+    ribbon = @('#57B47C', '#7FD0C0', '#8FC4F0', '#7FB0FF')
   }
 }
 $pal = $palettes[[string]$cfg.theme]
@@ -209,8 +213,6 @@ $xaml = @"
         <Grid x:Name="Track" Grid.Row="4" Height="8" UseLayoutRounding="False" SnapsToDevicePixels="False">
           <Border x:Name="TrackBg" CornerRadius="4"/>
           <Rectangle x:Name="Fill" RadiusX="4" RadiusY="4" HorizontalAlignment="Left" Width="0"/>
-          <Rectangle x:Name="Ribs" RadiusX="4" RadiusY="4" HorizontalAlignment="Left" Width="0"/>
-          <Ellipse x:Name="Tip" Width="28" Height="28" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="-14,-10,0,-10" IsHitTestVisible="False"/>
         </Grid>
         <DockPanel Grid.Row="5" Margin="0,11,0,0" LastChildFill="True">
           <TextBlock x:Name="Version" DockPanel.Dock="Right" FontSize="13.5" VerticalAlignment="Bottom" Margin="12,0,0,1"/>
@@ -230,8 +232,8 @@ try {
 function N([string]$name) { return $window.FindName($name) }
 $Shadow = N 'Shadow'; $ShadowFx = N 'ShadowFx'; $Card = N 'Card'; $Base = N 'Base'; $UnderWrap = N 'UnderWrap'; $Glow = N 'Glow'
 $Dots = N 'Dots'; $Pocket = N 'Pocket'; $Vignette = N 'Vignette'; $Edge = N 'Edge'; $Logo = N 'Logo'
-$Title = N 'Title'; $Sub = N 'Sub'; $Track = N 'Track'; $TrackBg = N 'TrackBg'; $Fill = N 'Fill'; $Ribs = N 'Ribs'
-$Tip = N 'Tip'; $Version = N 'Version'; $Status = N 'Status'
+$Title = N 'Title'; $Sub = N 'Sub'; $Track = N 'Track'; $TrackBg = N 'TrackBg'; $Fill = N 'Fill'
+$Version = N 'Version'; $Status = N 'Status'
 
 $window.Title = [string]$cfg.copy.title
 try { $window.Icon = [Windows.Media.Imaging.BitmapFrame]::Create([Uri](Join-Path $dir 'icon-64.png')) } catch { Log "icon: $($_.Exception.Message)" }
@@ -388,35 +390,10 @@ if (-not $highContrast) {
   $vg.GradientStops.Add((New-Object Windows.Media.GradientStop($vc, 1)))
   $vg.Freeze(); $Vignette.Fill = $vg
 
-  # Bar fill: the poster's ribbon colours, laid across the whole track so the
-  # colour at the head says how far along it is.
-  $barBrush = New-Object Windows.Media.LinearGradientBrush
-  $barBrush.MappingMode = 'Absolute'; $barBrush.StartPoint = '0,0'; $barBrush.EndPoint = '400,0'
-  $boffs = @(0, 0.4, 0.75, 1)
-  for ($k = 0; $k -lt 4; $k++) { $barBrush.GradientStops.Add((New-Object Windows.Media.GradientStop((Col $pal.bar[$k]), $boffs[$k]))) }
-  $Fill.Fill = $barBrush
-  $tc = Col $pal.tip
-  $tipBrush = New-Object Windows.Media.RadialGradientBrush
-  $tipBrush.GradientStops.Add((New-Object Windows.Media.GradientStop($tc, 0)))
-  $tipBrush.GradientStops.Add((New-Object Windows.Media.GradientStop((WithAlpha $tc 0), 1)))
-  $tipBrush.Freeze(); $Tip.Fill = $tipBrush
+  # Bar fill: one solid colour, the theme's accent (tokens.css --accent). The
+  # background already moves; the bar stays calm (Shawn, 261030).
+  $Fill.Fill = Solid $pal.accent
 }
-
-# Backward-moving diagonal ribbing over the fill (Harrison et al., CHI 2010).
-$ribGeo = [Windows.Media.Geometry]::Parse('M0,8 L5,0 L10,0 L5,8 Z')
-$ribGroup = New-Object Windows.Media.DrawingGroup
-$ribGroup.Children.Add((New-Object Windows.Media.GeometryDrawing((Solid '#00000000'), $null, (New-Object Windows.Media.RectangleGeometry(New-Object Windows.Rect(0, 0, 12, 8))))))
-$ribColor = '#33FFFFFF'; if ($pal.ribs) { $ribColor = $pal.ribs }
-$ribGroup.Children.Add((New-Object Windows.Media.GeometryDrawing((Solid $ribColor), $null, $ribGeo)))
-$ribGroup.Freeze()
-$ribBrush = New-Object Windows.Media.DrawingBrush $ribGroup
-$ribBrush.TileMode = 'Tile'; $ribBrush.Stretch = 'None'
-$ribBrush.ViewportUnits = 'Absolute'; $ribBrush.Viewport = New-Object Windows.Rect(0, 0, 12, 8)
-$ribBrush.ViewboxUnits = 'Absolute'; $ribBrush.Viewbox = New-Object Windows.Rect(0, 0, 12, 8)
-$ribShift = New-Object Windows.Media.TranslateTransform
-$ribBrush.Transform = $ribShift
-$Ribs.Fill = $ribBrush
-if ($highContrast) { $Ribs.Visibility = 'Collapsed'; $Tip.Visibility = 'Collapsed' }
 
 # ---- placement: centred on Sei's window, kept on screen --------------------------
 $window.Add_SourceInitialized({
@@ -465,7 +442,7 @@ function Close-Window([string]$outcome) {
 }
 $window.Add_Closed({ try { $window.Dispatcher.InvokeShutdown() } catch { } })
 
-# ---- frame tick: bar, ribbing, status --------------------------------------------
+# ---- frame tick: bar, status ------------------------------------------------------
 $frame = New-Object Windows.Threading.DispatcherTimer([Windows.Threading.DispatcherPriority]::Render)
 $frame.Interval = [TimeSpan]::FromMilliseconds(33)
 $frame.Add_Tick({
@@ -475,6 +452,11 @@ $frame.Add_Tick({
     $dt = [math]::Min(0.25, [math]::Max(0.0, $now - $S.lastTick)); $S.lastTick = $now
     $t = $now - $S.t0
     $target = CurveAt $t
+    if (-not $reduceMotion -and $openingFillSec -gt 0 -and $t -lt $openingFillSec) {
+      # Opening fill to the download share, ease-out (cubic). Reduced motion: no fill, the bar opens there.
+      $u = 1.0 - $t / $openingFillSec
+      $target = [math]::Min($target, $startShare * (1.0 - $u * $u * $u))
+    }
     switch ($S.phase) {
       'opening' { $target = [math]::Max($target, $S.p + (0.93 - $S.p) * (1 - [math]::Exp(-$dt / 0.6))) }
       'done' {
@@ -488,14 +470,7 @@ $frame.Add_Tick({
     $w = $Track.ActualWidth
     if ($w -gt 0) {
       $fw = [math]::Max(8.0, $S.p * $w)
-      $Fill.Width = $fw; $Ribs.Width = $fw
-      $Tip.Margin = New-Object Windows.Thickness(($fw - 18), -10, 0, -10)
-    }
-    if (-not $reduceMotion) {
-      # 40 px/s easing to 14 px/s as the bar fills; leftward, against progress.
-      $v = 40 - 26 * $S.p
-      $S.ribX = ($S.ribX - $v * $dt) % 12
-      $ribShift.X = $S.ribX
+      $Fill.Width = $fw
     }
     $line = $null
     switch ($S.phase) {

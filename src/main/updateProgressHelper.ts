@@ -99,7 +99,7 @@ export interface HelperCopy {
 
 export const HELPER_COPY: Record<HelperLang, HelperCopy> = {
   en: {
-    title: 'Updating Sei',
+    title: 'Updating',
     subtitle: "Sei reopens by itself when it's done.",
     minutes: 'About {n} minutes left',
     oneMinute: 'About a minute left',
@@ -111,7 +111,7 @@ export const HELPER_COPY: Record<HelperLang, HelperCopy> = {
     failed: "Sei didn't reopen. Open it from the Start menu.",
   },
   zh: {
-    title: '正在更新 Sei',
+    title: '正在更新',
     subtitle: '更新完成后 Sei 会自动重新打开。',
     minutes: '大约还剩 {n} 分钟',
     oneMinute: '大约还剩 1 分钟',
@@ -138,35 +138,43 @@ export function estimateInstallSeconds(history: readonly number[] | undefined): 
 }
 
 /**
- * Bar position (0..1) at `t` seconds for an estimate of `e` seconds.
+ * The share of the whole update that is already done when the window opens.
+ * The window only starts after electron-updater has downloaded the update and
+ * verified it (sha512, signature): `installerPath` is set at that point and
+ * not before. For most users that download is the longer half of the update,
+ * so the bar opens with it counted as done work instead of starting from
+ * nothing. With no completed download the bar starts at 0 (no fake progress).
+ */
+export const DOWNLOAD_DONE_SHARE = 0.4;
+/** How long the opening fill to DOWNLOAD_DONE_SHARE takes (ease-out). Instant with reduced motion. */
+export const OPENING_FILL_SEC = 0.5;
+
+/**
+ * Bar position (0..1) at `t` seconds for an estimate of `e` seconds, starting
+ * from `start` (DOWNLOAD_DONE_SHARE after a completed download, else 0).
  *
  * Harrison et al., "Rethinking the Progress Bar" (UIST 2007): what people
  * remember is the peak and the end; pauses or stalls near the end are the
- * worst behavior, and a fast finish is the most favored. "Faster Progress
- * Bars" (CHI 2010): ribbing that moves BACKWARDS and decelerates made a bar
- * feel 11% faster (the script animates that; see ribbingSpeed).
- *
- * The real end is unknown (half of all installs run past the median), so:
- *   - a short burst (12% with a 3 s time constant) answers the click at once,
- *     the "fast first part" (Shawn, 261030);
- *   - then a front-loaded exponential approach: ~45% at half the estimate,
- *     ~70% at the estimate, ~85% at 1.7x (the slow quartile), never flat;
- *   - it never reaches CURVE_CAP, so the bar cannot sit full before the
- *     install is done. The script sprints the rest (to 100%) only when the
- *     new Sei window is up: the fast, real finish the study favors.
- * Monotonic in t, so with the script's max() guard it never moves backwards.
+ * worst behavior, and a fast finish is the most favored. So the install part
+ * is front-loaded against the estimate and never flat:
+ *   - start 0: a short burst (12% with a 3 s time constant) answers the click,
+ *     then ~45% at half the estimate, ~70% at the estimate, ~85% at 1.7x;
+ *   - start > 0: the opening fill already answered the click, so no burst; the
+ *     same exponential approach runs over the remaining share: ~65% at half
+ *     the estimate, ~80% at the estimate, ~90% at 1.7x (the slow quartile).
+ * It never reaches CURVE_CAP, so the bar cannot sit full before the install
+ * is done. The script sprints the rest (to 100%) only when the new Sei window
+ * is up: the fast, real finish the study favors. Monotonic in t, so with the
+ * script's max() guard it never moves backwards.
  */
 export const CURVE_CAP = 0.97;
-export function progressAt(t: number, e: number): number {
-  if (!(t > 0)) return 0;
+export function progressAt(t: number, e: number, start = 0): number {
+  const s0 = Math.min(0.9, Math.max(0, start));
+  if (!(t > 0)) return s0;
+  const approach = 1 - Math.exp(-t / e / 0.9);
+  if (s0 > 0) return Math.min(CURVE_CAP, s0 + (1 - s0) * 0.98 * approach);
   const burst = 0.12 * (1 - Math.exp(-t / 3));
-  const main = 0.86 * (1 - Math.exp(-t / e / 0.9));
-  return Math.min(CURVE_CAP, burst + main);
-}
-
-/** Ribbing speed in px/s (leftward), slowing as the bar fills (CHI 2010). */
-export function ribbingSpeed(p: number): number {
-  return 40 - 26 * Math.min(1, Math.max(0, p));
+  return Math.min(CURVE_CAP, burst + 0.86 * approach);
 }
 
 /**
@@ -186,22 +194,26 @@ export function statusAt(t: number, e: number, copy: HelperCopy): string {
 
 export interface HelperPlan {
   estimateSec: number;
+  /** Bar position when the window opens (DOWNLOAD_DONE_SHARE or 0). */
+  startShare: number;
+  /** Seconds the opening fill to startShare takes (the script skips it with reduced motion). */
+  openingFillSec: number;
   /** [seconds, bar 0..1], 1 s apart, through 4x the estimate (then hold). */
   curve: Array<[number, number]>;
   /** [seconds, line]: the line from each time on, only where it changes. */
   status: Array<[number, string]>;
 }
 
-export function buildPlan(estimateSec: number, copy: HelperCopy): HelperPlan {
+export function buildPlan(estimateSec: number, copy: HelperCopy, startShare = 0): HelperPlan {
   const end = Math.ceil(estimateSec * 4);
   const curve: Array<[number, number]> = [];
   const status: Array<[number, string]> = [];
   for (let t = 0; t <= end; t++) {
-    curve.push([t, Math.round(progressAt(t, estimateSec) * 10000) / 10000]);
+    curve.push([t, Math.round(progressAt(t, estimateSec, startShare) * 10000) / 10000]);
     const line = statusAt(t, estimateSec, copy);
     if (status.length === 0 || status[status.length - 1][1] !== line) status.push([t, line]);
   }
-  return { estimateSec, curve, status };
+  return { estimateSec, startShare, openingFillSec: startShare > 0 ? OPENING_FILL_SEC : 0, curve, status };
 }
 
 export interface HelperConfig {
@@ -247,6 +259,8 @@ export interface HelperConfigInputs {
   installerPath: string;
   appExe: string;
   center: { x: number; y: number } | null;
+  /** The update is downloaded and verified (the installer file exists). */
+  downloaded?: boolean;
 }
 
 /** Everything the script needs, from plain inputs (pure). */
@@ -257,7 +271,7 @@ export function buildHelperConfig(i: HelperConfigInputs): HelperConfig {
     lang,
     theme: resolveHelperTheme(i.themeMode, i.osDark),
     copy,
-    plan: buildPlan(estimateInstallSeconds(i.history), copy),
+    plan: buildPlan(estimateInstallSeconds(i.history), copy, i.downloaded ? DOWNLOAD_DONE_SHARE : 0),
     version: i.version.replace(/^v/, ''),
     installerName: processNameOf(i.installerPath),
     appName: processNameOf(i.appExe),

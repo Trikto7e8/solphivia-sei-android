@@ -12,7 +12,8 @@
 #   - a Sei process newer than the installer appearing ("Opening Sei"),
 #   - that process showing its first window (sprint to 100%, fade, exit).
 # Fallbacks: no installer within installerWaitSec -> close quietly. Installer
-# gone but no Sei after 20 s -> start Sei.exe once. Still none 30 s later ->
+# gone but no Sei after 20 s (3 s if it exited nonzero) -> start Sei.exe
+# once. Still none 30 s later ->
 # say so, close on a click or after a minute. Hard cap 15 minutes.
 #
 # Contract with the app, all files in this folder: `ready` once the window
@@ -556,12 +557,16 @@ $watch.Add_Tick({
     }
     if ($null -ne $S.installerExitAt -and $null -eq $S.appSeenAt) {
       $after = Since $S.installerExitAt
-      if (-not $S.launchedApp -and $after -gt 20 -and $cfg.appExe -and (Test-Path -LiteralPath ([string]$cfg.appExe))) {
+      # A failed install (nonzero exit, e.g. the old uninstaller refused) will
+      # not reopen Sei, so try the installed copy almost at once.
+      $failedInstall = ($null -ne $S.installerExitCode -and [int]$S.installerExitCode -ne 0)
+      $waitApp = 20.0; if ($failedInstall) { $waitApp = 3.0 }
+      if (-not $S.launchedApp -and $after -gt $waitApp -and $cfg.appExe -and (Test-Path -LiteralPath ([string]$cfg.appExe))) {
         $S.launchedApp = $true
         Log "starting $($cfg.appExe) (installer gone, no app yet)"
         try { Start-Process -FilePath ([string]$cfg.appExe) -WorkingDirectory (Split-Path -Parent ([string]$cfg.appExe)) } catch { Log "start app: $($_.Exception.Message)" }
       }
-      if ($S.phase -eq 'running' -and $after -gt 50) { $S.phase = 'failed'; $S.failedAt = $now; Log 'failed: no app after install' }
+      if ($S.phase -eq 'running' -and $after -gt ($waitApp + 30.0)) { $S.phase = 'failed'; $S.failedAt = $now; Log 'failed: no app after install' }
     }
     if ($S.phase -eq 'failed' -and (Since $S.failedAt) -gt 60) { Close-Window 'failed'; return }
     if ($now -gt 900) { Close-Window 'timeout' }

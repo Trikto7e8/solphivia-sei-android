@@ -588,11 +588,17 @@ jobs:
           name: oneclick-installer
           path: new
 
+      # From the newest one-click stable (STABLE_TAG is the old assisted
+      # installer, for the migration scenarios above): the in-app update only
+      # ever runs from a one-click install.
       - name: Download stable installer
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release download $env:STABLE_TAG -R $env:GITHUB_REPOSITORY -p 'Sei-win-x64.exe' -D old
+        run: |
+          $tag = gh release list -R $env:GITHUB_REPOSITORY --exclude-drafts --exclude-pre-releases -L 1 --json tagName -q '.[0].tagName'
+          "upgrading from $tag"
+          gh release download $tag -R $env:GITHUB_REPOSITORY -p 'Sei-win-x64.exe' -D old
 
       - name: Update under the progress window (recorded)
         shell: powershell

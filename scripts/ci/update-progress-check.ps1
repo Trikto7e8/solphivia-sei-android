@@ -250,8 +250,11 @@ if (-not $drv.ready) {
   $p = if ($installerArgs.Count -gt 0) { Start-Process -FilePath $installerExe -ArgumentList $installerArgs -PassThru } else { Start-Process -FilePath $installerExe -PassThru }
   $null = $p.Handle
   Note ("installer started at {0:n1}s with: {1}" -f $sw.Elapsed.TotalSeconds, ($installerArgs -join ' '))
-  Start-Sleep -Milliseconds 600
-  if ($Mode -eq 'upgrade' -and -not $old.HasExited) { $null = $old.CloseMainWindow() }
+  # quitAndInstall: the installer is spawned, then the app quits (about a
+  # second for Sei's before-quit work). Its own one-click check would kill a
+  # straggler after 1.3 s anyway.
+  Start-Sleep -Milliseconds 800
+  if ($Mode -eq 'upgrade') { Get-Process -Name 'Sei' -ErrorAction SilentlyContinue | Where-Object { $_.StartTime -lt $installStart } | Stop-Process -Force -ErrorAction SilentlyContinue }
 }
 
 $ev = [ordered]@{}

@@ -53,5 +53,5 @@ export {
   type LocalVoiceId,
   type LocalVoicePick,
 } from './localVoice';
-export { synthesizeLocal, transcribeLocal, packMissingError } from './engine';
+export { synthesizeKokoro, synthesizeLocal, transcribeLocal, packMissingError } from './engine';
 export { detectSpokenLanguage } from './spokenLanguage';

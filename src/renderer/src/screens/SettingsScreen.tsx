@@ -72,6 +72,7 @@ const API_KEY_BULLET_LEN = 24;
  * speech:pack-status push.
  */
 const TTS_PACK_ROWS: ReadonlyArray<{ id: string; label: string }> = [
+  { id: 'tts-kokoro', label: 'Kokoro-82M English and Italian voices' },
   { id: 'tts-en', label: 'English voices, female and male' },
   { id: 'tts-zh', label: 'Chinese voices, female and male' },
 ];
@@ -1408,6 +1409,24 @@ export function SettingsScreen(): React.ReactElement {
                     (the English pack holds both speakers). State rides the
                     speech:pack-state push; sizes are the registry's exact
                     bytes. */}
+                <div className={styles.row}>
+                  <label className={styles.label} htmlFor="local-tts-voice">{t('Local voice')}</label>
+                  <select id="local-tts-voice" value={cfg?.local_tts_voice ?? 'auto'}
+                    onChange={async (event) => {
+                      if (!cfg) return;
+                      const value = event.target.value;
+                      if (value !== 'auto' && value !== 'af_heart' && value !== 'if_sara') return;
+                      const updated: UserConfig = { ...cfg, local_tts_voice: value };
+                      setCfg(updated);
+                      try { await sei.saveConfig(updated); }
+                      catch { setCfg(cfg); setSaveError(t('Failed to save. Try again.')); }
+                    }}>
+                    <option value="auto">{t('Automatic local voices')}</option>
+                    <option value="af_heart">Kokoro · af_heart · English</option>
+                    <option value="if_sara">Kokoro · if_sara · Italiano</option>
+                  </select>
+                </div>
+                <p className={styles.helper}>{t('Kokoro uses the selected voice and pronunciation for all companions on this device. Download the Kokoro pack below first.')}</p>
                 {TTS_PACK_ROWS.map((row) => {
                   const st = packStates[row.id];
                   return (
@@ -1893,7 +1912,8 @@ export function SettingsScreen(): React.ReactElement {
             >
               {t('Apache License 2.0')}
             </button>
-            {t(', via icefall.')}
+            {t(', via icefall. Kokoro-82M by hexgrad: Apache-2.0 weights, converted and quantized by sherpa-onnx. Downloaded espeak-ng data retains its GPL license.')}
+            <button type="button" className={styles.creditLink} onClick={() => void sei.openExternal('https://huggingface.co/hexgrad/Kokoro-82M')}>Kokoro-82M</button>
           </p>
         </div>
 

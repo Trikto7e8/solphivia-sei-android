@@ -1071,6 +1071,8 @@ export const UserConfigSchema = z.object({
    * metadata.voicePitch still applies through the pitch shifter.
    */
   tts_engine: z.enum(['elevenlabs', 'local']).optional(),
+  /** Device-local, explicit Kokoro voice override. Absent preserves automatic local voices. */
+  local_tts_voice: z.enum(['auto', 'af_heart', 'if_sara']).optional(),
   /**
    * 260725: cloud users' opt-in to the local Whisper fallback. Set true once
    * the user accepts the Whisper-install prompt after a Scribe failure, so

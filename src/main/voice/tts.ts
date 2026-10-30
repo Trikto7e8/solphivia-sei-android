@@ -518,6 +518,12 @@ async function synthesizeLocalClip(
   genderHint?: string,
 ): Promise<ArrayBuffer> {
   const speech = await import('../speech');
+  const selectedVoice = (await loadConfig()).local_tts_voice;
+  if (selectedVoice === 'af_heart' || selectedVoice === 'if_sara') {
+    const { samples, sampleRate } = await speech.synthesizeKokoro(text, selectedVoice);
+    const { encodeWav } = await import('./stt');
+    return encodeWav(samples, sampleRate);
+  }
   const ready: SpeechPackId[] = [];
   for (const id of speech.SPEECH_PACK_IDS) {
     if (id.startsWith('tts-') && (await speech.packReady(id))) ready.push(id);
@@ -1051,7 +1057,11 @@ export async function voicePreviewTts(args: {
         genderHint = ownVoicePickOf(character)?.gender;
       }
     }
-    const localText = speechTextFor(line, language) || line;
+    const preset = (await loadConfig()).local_tts_voice;
+    const sampleLine = preset === 'if_sara'
+      ? 'Ciao, questa è la mia voce italiana locale. Vuoi fare qualcosa insieme?'
+      : preset === 'af_heart' ? PREVIEW_LINES.en : line;
+    const localText = speechTextFor(sampleLine, language) || sampleLine;
     return await synthesizeLocalClip(localText, voiceId ?? '', language, args.characterId ?? '', genderHint);
   }
   const voiceId = args.voiceId ?? '';

@@ -653,6 +653,7 @@ function missingPackNotice(packId: string | undefined): string {
   if (isZhPack(packId)) {
     return t('[voice unavailable, download the Chinese voice pack in Settings]');
   }
+  if (packId === 'tts-kokoro') return t('[voice unavailable, download the Kokoro voice pack in Settings]');
   if (packId === 'tts-en') {
     return t('[voice unavailable, download the English voice pack in Settings]');
   }

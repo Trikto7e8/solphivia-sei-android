@@ -75,6 +75,24 @@ public static class SeiCiDisplay {
   }
   // SPI_SETCLIENTAREAANIMATION: Settings > Accessibility > Animation effects.
   public static bool SetAnimations(bool on) { return SystemParametersInfo(0x1043, 0, on ? (IntPtr)1 : IntPtr.Zero, 3); }
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
+  [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] static extern bool GetWindowRect(IntPtr h, out RECT r);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetClassName(IntPtr h, System.Text.StringBuilder sb, int n);
+  [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, System.Text.StringBuilder sb, int n);
+  // Visible with a real on-screen area: what a user would actually see.
+  public static bool Shows(IntPtr h) {
+    if (h == IntPtr.Zero || !IsWindowVisible(h)) return false;
+    RECT r; if (!GetWindowRect(h, out r)) return false;
+    return (r.Right - r.Left) > 4 && (r.Bottom - r.Top) > 4 && r.Right > 0 && r.Bottom > 0;
+  }
+  public static string Describe(IntPtr h) {
+    if (h == IntPtr.Zero) return "none";
+    var c = new System.Text.StringBuilder(256); GetClassName(h, c, 256);
+    var t = new System.Text.StringBuilder(256); GetWindowText(h, t, 256);
+    RECT r; GetWindowRect(h, out r);
+    return string.Format("class={0} title='{1}' visible={2} rect={3},{4} {5}x{6}", c, t, IsWindowVisible(h), r.Left, r.Top, r.Right - r.Left, r.Bottom - r.Top);
+  }
 }
 '@
 try { Note "display change result: $([SeiCiDisplay]::Set(1920, 1080))" } catch { Note "display change failed: $($_.Exception.Message)" }
@@ -261,6 +279,7 @@ $ev = [ordered]@{}
 function Mark([string]$k) { if (-not $ev.Contains($k)) { $ev[$k] = [math]::Round($sw.Elapsed.TotalSeconds, 1); Note ("{0,7:n1}s  {1}" -f $ev[$k], $k) } }
 if ($drv.ready) { $ev['window'] = [math]::Round($drv.ms / 1000.0, 1); Note ("{0,7:n1}s  window (first frame)" -f $ev['window']) }
 $otherWindows = @{}
+$installerWindows = @{}; $installerShot = $false
 $nextShot = 0; $i = 1
 while ($p -and $sw.Elapsed.TotalSeconds -lt 600) {
   $t = $sw.Elapsed.TotalSeconds
@@ -270,7 +289,14 @@ while ($p -and $sw.Elapsed.TotalSeconds -lt 600) {
     if ($hp.HasExited) { Mark 'helper exited' }
   }
   $p.Refresh()
-  if (-not $p.HasExited -and $p.MainWindowHandle -ne [IntPtr]::Zero) { Mark 'INSTALLER WINDOW (should not show)' }
+  if (-not $p.HasExited -and $p.MainWindowHandle -ne [IntPtr]::Zero) {
+    # .NET reports a handle for any unowned visible window, including NSIS's
+    # zero-size/off-screen helper windows under /S. Log every one; fail only on a
+    # window with real on-screen area.
+    $desc = [SeiCiDisplay]::Describe($p.MainWindowHandle)
+    if (-not $installerWindows.ContainsKey($desc)) { $installerWindows[$desc] = 1; Note ("{0,7:n1}s  installer window handle: {1}" -f $t, $desc) }
+    if ([SeiCiDisplay]::Shows($p.MainWindowHandle)) { Mark 'INSTALLER WINDOW (should not show)'; if (-not $installerShot) { Shot 'installer-window'; $installerShot = $true } }
+  }
   if ($p.HasExited) { Mark 'installer exited' }
   $new = @(Get-Process -Name 'Sei' -ErrorAction SilentlyContinue | Where-Object { try { $_.StartTime -gt $installStart } catch { $false } })
   if ($new.Count -gt 0) { Mark 'new Sei process' }

@@ -4,6 +4,8 @@ import {
   applyArgs,
   applyInProgress,
   compareVersions,
+  isUpdaterImage,
+  tasklistImage,
   ETA_BUCKETS,
   MAX_LAUNCH_APPLY_ATTEMPTS,
   overlayFrameLooksRight,
@@ -193,5 +195,22 @@ describe('compareVersions', () => {
     expect(compareVersions('0.7.0-beta.10', '0.7.0-beta.9')).toBe(1);
     expect(compareVersions('0.6.11', '0.7.0-beta.1')).toBe(-1);
     expect(compareVersions('0.7.1', '0.7.1')).toBe(0);
+  });
+});
+
+describe('stale applying.pid guard', () => {
+  it('reads the image name out of tasklist CSV output', () => {
+    expect(tasklistImage('"Update.exe","4242","Console","1","12,345 K"\r\n')).toBe('Update.exe');
+    expect(tasklistImage('"chrome.exe","4242","Console","1","99,000 K"')).toBe('chrome.exe');
+    expect(tasklistImage('INFO: No tasks are running which match the specified criteria.')).toBeNull();
+    expect(tasklistImage(null)).toBeNull();
+  });
+
+  it('only Update.exe (or its Squirrel.exe name) counts as an apply', () => {
+    expect(isUpdaterImage('Update.exe')).toBe(true);
+    expect(isUpdaterImage('UPDATE.EXE')).toBe(true);
+    expect(isUpdaterImage('Squirrel.exe')).toBe(true);
+    expect(isUpdaterImage('Sei.exe')).toBe(false);
+    expect(isUpdaterImage('svchost.exe')).toBe(false);
   });
 });

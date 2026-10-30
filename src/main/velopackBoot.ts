@@ -23,11 +23,19 @@
  * folder swap nor gets killed by it. The apply starts Sei when it is done.
  */
 import { app } from 'electron';
-import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { bundleRequire } from './bundleRequire';
-import { applyInProgress, velopackPathsFor, type VelopackPaths } from './velopackFastApply';
+import {
+  applyInProgress,
+  isUpdaterImage,
+  RELAUNCH_LEFTOVER_AGE_MS,
+  tasklistImage,
+  velopackPathsFor,
+  type VelopackPaths,
+} from './velopackFastApply';
 
 /** Wall-clock time this module evaluated: the earliest JS point of a launch. */
 export const velopackBootAt = Date.now();
@@ -176,26 +184,85 @@ export function pidAlive(pid: number): boolean {
   }
 }
 
+/**
+ * The image name of a running pid, or null when it cannot tell (tasklist
+ * failed). Only asked when applying.pid names a live process, so a pid that
+ * Windows has since handed to another program does not keep Sei from starting
+ * for the marker's whole 10 minute life.
+ */
+function processImage(pid: number): string | null {
+  try {
+    const out = execFileSync('tasklist.exe', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+      encoding: 'utf8',
+      timeout: 3000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    return tasklistImage(out) ?? '';
+  } catch {
+    return null;
+  }
+}
+
+/** Live, and (when Windows can say) Update.exe. */
+function updaterAlive(pid: number): boolean {
+  if (!pidAlive(pid)) return false;
+  const image = processImage(pid);
+  if (image === null) return true; // cannot tell: assume the apply is real
+  if (isUpdaterImage(image)) return true;
+  velopackLog(`applying.pid names pid ${pid}, now ${image || 'not listed'}; treating the marker as stale`);
+  return false;
+}
+
 /** Exits this launch when Update.exe is applying right now (see the header). */
 function leaveIfApplying(p: VelopackPaths): void {
   const marker = path.join(p.stageDir, 'applying.pid');
+  const relaunch = path.join(p.stageDir, 'relaunch');
   let text: string | null = null;
   let mtime = 0;
   try {
     mtime = statSync(marker).mtimeMs;
     text = readFileSync(marker, 'utf8');
   } catch {
-    return; // no apply running
+    /* no apply running */
   }
-  if (!applyInProgress(text, mtime, Date.now(), pidAlive)) return;
+  if (text === null || !applyInProgress(text, mtime, Date.now(), updaterAlive)) {
+    clearLeftoverRelaunch(relaunch);
+    if (text !== null) {
+      // Update.exe died mid-apply (killed, power loss); its marker would
+      // otherwise be read again by every launch for 10 minutes.
+      try {
+        rmSync(marker, { force: true });
+      } catch {
+        /* next launch */
+      }
+    }
+    return;
+  }
   try {
-    writeFileSync(path.join(p.stageDir, 'relaunch'), String(process.pid));
+    writeFileSync(relaunch, String(process.pid));
   } catch {
     /* the apply restarts Sei anyway when it was an in-app restart */
   }
   velopackLog(`launched during an update (Update.exe pid ${text.trim()}), leaving a relaunch request and exiting`);
   ciMark('left-during-apply', { updatePid: text.trim() });
   process.exit(0);
+}
+
+/**
+ * A relaunch request whose apply never got to honour it (Update.exe killed)
+ * would make the NEXT update on quit start Sei. This launch is running, so it
+ * has done its job.
+ */
+function clearLeftoverRelaunch(file: string): void {
+  try {
+    if (Date.now() - statSync(file).mtimeMs < RELAUNCH_LEFTOVER_AGE_MS) return;
+    rmSync(file, { force: true });
+    velopackLog('removed a leftover relaunch request');
+    ciMark('relaunch-cleared');
+  } catch {
+    /* none */
+  }
 }
 
 if (process.platform === 'win32' && app.isPackaged) {

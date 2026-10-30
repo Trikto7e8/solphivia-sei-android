@@ -3,8 +3,11 @@ import { createRequire } from 'node:module';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  asarPackageVersion,
   cleanupDecision,
   earlyBootAction,
+  installingOwnerGone,
+  parseSqVersion,
   enoughDiskForMigration,
   installDecision,
   isWithin,
@@ -243,6 +246,86 @@ describe('earlyBootAction', () => {
     expect(earlyBootAction({ ...base, velopack: false, state: { ...recent, velopackSeenAt: base.now - 5_000 } }).kind).toBe('redirect');
     const old = state({ phase: 'installed', redirectAt: base.now - REDIRECT_BOOT_GRACE_MS - 1 });
     expect(earlyBootAction({ ...base, velopack: false, state: old }).kind).toBe('redirect');
+  });
+});
+
+describe('a newer NSIS install is not handed off (reinstalled from the website)', () => {
+  const base = { now: 1_000_000, pidAlive: () => true, velopackExists: true, selfPid: 5, velopack: false };
+
+  it('runs the NSIS copy when it is newer than current\\sq.version', () => {
+    const a = earlyBootAction({ ...base, state: state({ phase: 'installed' }), appVersion: '0.7.2', velopackVersion: '0.7.1' });
+    expect(a).toEqual({ kind: 'nsis-newer', velopackVersion: '0.7.1' });
+    expect(earlyBootAction({ ...base, state: state({ phase: 'done' }), appVersion: '0.7.1', velopackVersion: '0.7.1-beta.3' }).kind).toBe(
+      'nsis-newer',
+    );
+  });
+
+  it('still hands off at the same or an older version, or when sq.version is unreadable', () => {
+    for (const [app, vp] of [
+      ['0.7.1', '0.7.1'],
+      ['0.7.0', '0.7.1'],
+      ['0.7.1-beta.2', '0.7.1'],
+      ['0.7.2', null],
+    ] as const) {
+      expect(earlyBootAction({ ...base, state: state({ phase: 'installed' }), appVersion: app, velopackVersion: vp }).kind).toBe('redirect');
+    }
+  });
+
+  it('cleanup keeps an NSIS copy newer than the running Velopack copy', () => {
+    const s = state({ nsisDir: 'C:\\P\\sei' });
+    expect(cleanupDecision(s, true, { nsisVersion: '0.7.2', selfVersion: '0.7.1' })).toBe('keep-newer');
+    expect(cleanupDecision(s, true, { nsisVersion: '0.7.1', selfVersion: '0.7.1' })).toBe('run');
+    expect(cleanupDecision(s, true, { nsisVersion: null, selfVersion: '0.7.1' })).toBe('run');
+    expect(cleanupDecision(s, false, { nsisVersion: '0.7.2', selfVersion: '0.7.1' })).toBe('done');
+  });
+});
+
+describe('parseSqVersion', () => {
+  it('reads the nuspec version', () => {
+    const xml = '<?xml version="1.0"?><package><metadata><id>Sei</id><version>0.7.1-beta.2</version></metadata></package>';
+    expect(parseSqVersion(xml)).toBe('0.7.1-beta.2');
+    expect(parseSqVersion('<version>\n 0.7.0 \n</version>')).toBe('0.7.0');
+    expect(parseSqVersion('<package/>')).toBeNull();
+    expect(parseSqVersion(null)).toBeNull();
+  });
+});
+
+describe('asarPackageVersion', () => {
+  it('reads package.json out of a real app.asar without Electron', async () => {
+    const asar = createRequire(import.meta.url)('@electron/asar') as {
+      createPackage: (src: string, dest: string) => Promise<void>;
+    };
+    const os = await import('node:os');
+    const fs = await import('node:fs');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'sei-asar-'));
+    try {
+      const src = path.join(dir, 'app');
+      fs.mkdirSync(path.join(src, 'dist'), { recursive: true });
+      fs.writeFileSync(path.join(src, 'dist', 'index.js'), 'x'.repeat(5000));
+      fs.writeFileSync(path.join(src, 'package.json'), JSON.stringify({ name: 'sei', version: '0.7.2-beta.1' }));
+      const file = path.join(dir, 'app.asar');
+      await asar.createPackage(src, file);
+      const bytes = fs.readFileSync(file);
+      const readAt = (o: number, n: number): Buffer => bytes.subarray(o, o + n);
+      expect(asarPackageVersion(readAt)).toBe('0.7.2-beta.1');
+      expect(asarPackageVersion(() => Buffer.from('not an asar'))).toBeNull();
+      expect(asarPackageVersion(() => Buffer.alloc(0))).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('a migration left at installing', () => {
+  it('counts as installed for cleanup once the NSIS Sei that ran Setup is gone', () => {
+    const s = state({ phase: 'installing', pid: 42, nsisDir: 'C:\\P\\sei' });
+    expect(installingOwnerGone(s, () => false)).toBe(true);
+    expect(installingOwnerGone(s, () => true)).toBe(false);
+    expect(installingOwnerGone(state({ phase: 'installing', nsisDir: 'C:\\P\\sei' }), () => true)).toBe(true);
+    expect(installingOwnerGone(state({ phase: 'failed', pid: 42 }), () => false)).toBe(false);
+    expect(cleanupDecision(s, true, { pidAlive: () => false })).toBe('run');
+    expect(cleanupDecision(s, true, { pidAlive: () => true })).toBe('skip');
+    expect(cleanupDecision(s, true)).toBe('skip');
   });
 });
 

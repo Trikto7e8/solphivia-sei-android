@@ -204,6 +204,23 @@ export function applyInProgress(
   return isAlive(pid);
 }
 
+/**
+ * The image name in `tasklist /FI "PID eq N" /FO CSV /NH` output, or null
+ * when the pid is not listed (tasklist then prints an INFO line).
+ */
+export function tasklistImage(out: string | null | undefined): string | null {
+  const m = /^"([^"]+)","(\d+)"/m.exec(out ?? '');
+  return m ? m[1] : null;
+}
+
+/** applying.pid is written by Update.exe itself (sei_fast::mark_applying). */
+export function isUpdaterImage(image: string): boolean {
+  return /^(update|squirrel)\.exe$/i.test(image);
+}
+
+/** A relaunch request older than this, with no apply running, is a leftover. */
+export const RELAUNCH_LEFTOVER_AGE_MS = 30 * 1000;
+
 /* -------------------------------------------------------------------------- */
 /*  Staged rollout                                                             */
 /* -------------------------------------------------------------------------- */

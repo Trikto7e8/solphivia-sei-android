@@ -62,6 +62,7 @@ import {
   type VelopackPaths,
 } from './velopackFastApply';
 import { closeSplashWindow, createSplashWindow, renderSplashFrames } from './windowChrome';
+import { hasPassingVerdict, verifyPackage } from './velopackVerify';
 
 /** The feed: releases.<channel>.json plus packages, served from R2 behind dl.sei.gg. */
 const DEFAULT_FEED = 'https://dl.sei.gg/velopack';
@@ -213,20 +214,76 @@ async function renderOverlayFramesOnce(p: VelopackPaths, scaleFactor: number, la
 
 /**
  * Puts the update screen up and starts Update.exe with its overlay. Resolves
- * once the overlay is on screen (or after a short timeout); the caller quits.
+ * true once the overlay is on screen (or after a short timeout); the caller
+ * quits. Resolves false when Update.exe could not be started (antivirus, a
+ * missing file): the windows it hid are shown again and Sei keeps running.
  */
 async function launchApplyWithScreen(
   p: VelopackPaths,
   packagePath: string,
   targetVersion: string,
   existingSplash: BrowserWindow | null,
-): Promise<void> {
+): Promise<boolean> {
+  const screenState: ScreenState = { hidden: [], splash: null, spawned: false };
+  try {
+    return await showScreenAndApply(p, packagePath, targetVersion, existingSplash, screenState);
+  } catch (err) {
+    log(`update screen failed: ${(err as Error).message}`);
+    // Update.exe is running: it closes this process and applies. Otherwise
+    // nothing will, so the windows come back and Sei stays open.
+    if (screenState.spawned) return true;
+    await restoreWindows(screenState);
+    return false;
+  }
+}
+
+interface ScreenState {
+  hidden: BrowserWindow[];
+  splash: BrowserWindow | null;
+  spawned: boolean;
+}
+
+async function restoreWindows(st: ScreenState): Promise<void> {
+  try {
+    unlinkSync(splashNoteFile());
+  } catch {
+    /* none */
+  }
+  let shown = 0;
+  for (const w of st.hidden) {
+    if (w.isDestroyed()) continue;
+    w.show();
+    shown++;
+  }
+  ciMark('windows-restored', { shown });
+  const splash = st.splash;
+  if (!splash || splash.isDestroyed()) return;
+  if (st.hidden.some((w) => !w.isDestroyed())) {
+    await closeSplashWindow(splash);
+  } else {
+    // A launch-time apply: nothing else is open yet, and closing the last
+    // window quits Sei (window-all-closed). Close it once the boot opens one.
+    app.once('browser-window-created', () => void closeSplashWindow(splash));
+  }
+}
+
+async function showScreenAndApply(
+  p: VelopackPaths,
+  packagePath: string,
+  targetVersion: string,
+  existingSplash: BrowserWindow | null,
+  st: ScreenState,
+): Promise<boolean> {
   const lang = await uiLang();
   const text = updateScreenText(lang);
   if (existingSplash && !existingSplash.isDestroyed()) await closeSplashWindow(existingSplash);
   const splash = createSplashWindow({ status: text.updating });
+  st.splash = splash;
   for (const w of BrowserWindow.getAllWindows()) {
-    if (w !== splash && !w.isDestroyed() && w.isVisible()) w.hide();
+    if (w !== splash && !w.isDestroyed() && w.isVisible()) {
+      w.hide();
+      st.hidden.push(w);
+    }
   }
   if (splash) {
     await Promise.race([new Promise<void>((r) => splash.once('show', () => r())), sleep(1000)]);
@@ -268,14 +325,45 @@ async function launchApplyWithScreen(
   });
   log(`apply ${targetVersion} with restart, overlay=${overlay ? 'yes' : 'no'}`);
   ciMark('apply-launch', { restart: true, overlay: Boolean(overlay) });
-  const child = spawn(p.updateExe, args, { detached: true, stdio: 'ignore', cwd: p.root });
-  child.on('error', (err) => log(`Update.exe failed to start: ${err.message}`));
-  child.unref();
+  st.spawned = await startDetached(p.updateExe, args, p.root);
+  if (!st.spawned) {
+    ciMark('apply-spawn-failed', { restart: true });
+    await restoreWindows(st);
+    return false;
+  }
   if (overlay) {
     const shown = await waitForFile(path.join(overlay, 'shown'), OVERLAY_SHOWN_TIMEOUT_MS);
     ciMark('overlay-shown', { shown });
     if (!shown) log('overlay did not report on screen in time; quitting anyway');
   }
+  return true;
+}
+
+/**
+ * Starts Update.exe detached and resolves once it is running (the 'spawn'
+ * event) or false when it could not start. A failed start arrives as an async
+ * 'error' event, so quitting right after spawn() would leave the user with no
+ * Sei and no update.
+ */
+function startDetached(exe: string, args: string[], cwd: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    let child: ChildProcess;
+    try {
+      child = spawn(exe, args, { detached: true, stdio: 'ignore', cwd });
+    } catch (err) {
+      log(`Update.exe failed to start: ${(err as Error).message}`);
+      resolve(false);
+      return;
+    }
+    child.once('spawn', () => {
+      child.unref();
+      resolve(true);
+    });
+    child.once('error', (err) => {
+      log(`Update.exe failed to start: ${err.message}`);
+      resolve(false);
+    });
+  });
 }
 
 /* -------------------------------------------------------------------------- */
@@ -334,6 +422,21 @@ function stage(p: VelopackPaths, packagePath: string, waitMs: number): Promise<v
   return Promise.race([done, sleep(waitMs)]);
 }
 
+/**
+ * Removes a package that failed its signature check, with its staged copy, so
+ * neither the restart nor a later launch can apply it.
+ */
+function discardPackage(p: VelopackPaths, version: string, pkg: string, reason: string): void {
+  log(`update ${version} failed its signature check (${reason}); deleting it`);
+  for (const f of [pkg, path.join(p.stageDir, `v${version}`), path.join(p.stageDir, stagedMarkerName(version))]) {
+    try {
+      rmSync(f, { recursive: true, force: true });
+    } catch (err) {
+      log(`could not delete ${f}: ${(err as Error).message}`);
+    }
+  }
+}
+
 export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
   const vp = velopackModule();
   const p = velopackPaths();
@@ -346,6 +449,8 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
   let pending: VelopackUpdateInfo | null = null;
   let downloaded = false;
   let applyLaunched = false;
+  /** Versions whose download failed the signature check: not offered again this run. */
+  const rejected = new Set<string>();
 
   // A launch on the version a launch-time apply targeted: that apply worked.
   clearLaunchApplyStateIfCurrent();
@@ -379,6 +484,12 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
           return null;
         }
         const version = info.TargetFullRelease.Version;
+        if (rejected.has(version)) {
+          log(`${version} failed its signature check earlier in this run; not offering it`);
+          ciMark('check-held-by-signature', { target: version });
+          events.emit('update-not-available');
+          return null;
+        }
         if (!(await rolloutOpen(version))) {
           log(`${version} is rolling out and not offered to this install yet`);
           ciMark('check-held-by-rollout', { target: version });
@@ -416,6 +527,19 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
       if (!(process.env.SEI_VELOPACK_CI === '1' && process.env.SEI_VELOPACK_CI_NOSTAGE === '1')) {
         await stage(p, packagePath(info.TargetFullRelease), STAGE_OFFER_WAIT_MS);
       }
+      const pkg = packagePath(info.TargetFullRelease);
+      const version = info.TargetFullRelease.Version;
+      const sig = await verifyPackage(p.stageDir, version, pkg);
+      ciMark('signature-check', { target: version, ok: sig.ok, skipped: 'skipped' in sig, reason: sig.ok ? undefined : sig.reason });
+      if (!sig.ok) {
+        rejected.add(version);
+        if (pending === info) pending = null;
+        discardPackage(p, version, pkg, sig.reason);
+        const err = new Error(`update ${version} failed its signature check (${sig.reason})`);
+        events.emit('error', err);
+        throw err;
+      }
+      if ('skipped' in sig) log('signature check off: this build is unsigned');
       await prerenderOverlayFrames(p);
       downloaded = true;
       events.emit('update-downloaded', { version: info.TargetFullRelease.Version });
@@ -429,8 +553,16 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
       stopStager();
       const info = pending;
       void launchApplyWithScreen(p, packagePath(info.TargetFullRelease), info.TargetFullRelease.Version, null)
-        .catch((err) => log(`update screen failed: ${(err as Error).message}`))
-        .finally(() => app.quit());
+        .then((launched) => {
+          if (launched) {
+            app.quit();
+            return;
+          }
+          // Update.exe never started: stay open, and let the next click (or
+          // the quit) try again.
+          applyLaunched = false;
+          events.emit('error', new Error('the updater could not be started'));
+        });
     },
   };
 
@@ -456,20 +588,49 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
     return path.join(p!.packagesDir, path.basename(asset.FileName));
   }
 
-  /** rollout.<channel>.json beside the HTTP feed. Missing = everyone; unreachable = not this time. */
+  /**
+   * rollout.<channel>.json, the kill switch. Missing (404) = everyone;
+   * unreachable or unreadable = not this time. It always comes from the
+   * dl.sei.gg feed folder, also when the packages come from the GitHub
+   * fallback: GitHub releases carry no rollout rule, so an update found there
+   * is only offered when dl.sei.gg answers for its rollout file.
+   */
   async function rolloutOpen(version: string): Promise<boolean> {
-    const base = feedOverride && /^https?:\/\//i.test(feedOverride) ? feedOverride : useGithub ? null : DEFAULT_FEED;
-    if (!base) return true; // local CI feeds and the GitHub fallback carry no rollout file
-    const url = `${base.replace(/\/$/, '')}/rollout.${channel()}.json`;
+    const name = `rollout.${channel()}.json`;
+    if (feedOverride && !/^https?:\/\//i.test(feedOverride)) {
+      // CI: a local feed folder.
+      try {
+        return ruleAllows(JSON.parse(readFileSync(path.join(feedOverride, name), 'utf8')), version);
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code === 'ENOENT') return true;
+        log(`rollout file unreadable (${(err as Error).message}); holding ${version}`);
+        return false;
+      }
+    }
+    const base = feedOverride ?? DEFAULT_FEED;
+    const url = `${base.replace(/\/$/, '')}/${name}`;
     try {
-      const res = await net.fetch(url, { signal: AbortSignal.timeout(5000) });
+      const res = await net.fetch(url, { signal: AbortSignal.timeout(5000), cache: 'no-store' });
       if (res.status === 404) return true;
-      if (!res.ok) return false;
-      return rolloutAllows(parseRolloutRule(await res.json()), version, installId(p!));
+      if (!res.ok) {
+        log(`rollout check answered ${res.status}; holding ${version} for this check`);
+        return false;
+      }
+      return ruleAllows(await res.json(), version);
     } catch (err) {
       log(`rollout check failed (${(err as Error).message}); holding ${version} for this check`);
       return false;
     }
+  }
+
+  /** A rollout file that is there but not a rule holds the update, like an unreachable one. */
+  function ruleAllows(json: unknown, version: string): boolean {
+    const rule = parseRolloutRule(json);
+    if (!rule) {
+      log(`rollout file is not a rule; holding ${version}`);
+      return false;
+    }
+    return rolloutAllows(rule, version, installId(p!));
   }
 
   // Update on quit: hand the downloaded package to Update.exe, which applies it
@@ -477,7 +638,27 @@ export function createVelopackAutoUpdater(): VelopackAutoUpdater | null {
   // 'will-quit': Sei's before-quit chain ends in app.exit(0), which skips
   // will-quit but still emits quit (electron-updater hooks quit for the same
   // reason). Run 40994110388 never applied on quit with will-quit.
+  // Windows is logging off or shutting down: an apply started now would be
+  // killed mid-swap (or hold the shutdown up). The next launch applies the
+  // downloaded update behind the splash instead (applyPendingAtLaunch).
+  // 'session-end' is a window event (WM_ENDSESSION reaches each top-level
+  // window), so every window reports it.
+  let sessionEnding = false;
+  const onSessionEnd = (): void => {
+    if (sessionEnding) return;
+    sessionEnding = true;
+    log('session ending; leaving the update for the next launch');
+    ciMark('session-end');
+  };
+  for (const w of BrowserWindow.getAllWindows()) w.on('session-end', onSessionEnd);
+  app.on('browser-window-created', (_e, w) => w.on('session-end', onSessionEnd));
+
   app.on('quit', () => {
+    if (sessionEnding) {
+      stopStager();
+      ciMark('quit', { sessionEnd: true });
+      return;
+    }
     if (self.autoInstallOnAppQuit && !applyLaunched && pending && downloaded) {
       applyLaunched = true;
       stopStager();
@@ -558,13 +739,26 @@ export async function applyPendingAtLaunch(splash: BrowserWindow | null): Promis
       log(`pending ${asset.Version} not applied at launch (staged=${staged}, attempts=${state?.attempts ?? 0})`);
       return false;
     }
+    const pkg = path.join(p.packagesDir, path.basename(asset.FileName));
+    if (!hasPassingVerdict(p.stageDir, asset.Version, pkg)) {
+      // Downloaded by a build without the check, or its verdict file is gone.
+      const sig = await verifyPackage(p.stageDir, asset.Version, pkg);
+      ciMark('signature-check', { target: asset.Version, ok: sig.ok, launch: true, reason: sig.ok ? undefined : sig.reason });
+      if (!sig.ok) {
+        discardPackage(p, asset.Version, pkg, sig.reason);
+        return false;
+      }
+    }
     writeFileSync(
       launchApplyStateFile(),
       JSON.stringify({ version: asset.Version, attempts: (state?.version === asset.Version ? state.attempts : 0) + 1 }),
     );
     log(`applying pending ${asset.Version} at launch`);
     ciMark('launch-apply', { target: asset.Version });
-    await launchApplyWithScreen(p, path.join(p.packagesDir, path.basename(asset.FileName)), asset.Version, splash);
+    if (!(await launchApplyWithScreen(p, pkg, asset.Version, splash))) {
+      // Update.exe would not start; boot this version normally.
+      return false;
+    }
     app.quit();
     return true;
   } catch (err) {

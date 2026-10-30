@@ -330,13 +330,24 @@ export type EarlyBootAction =
   | { kind: 'none' }
   | { kind: 'exit'; reason: string }
   | { kind: 'redirect' }
-  | { kind: 'redirect-failed' };
+  | { kind: 'redirect-failed' }
+  /** This NSIS build is newer than the Velopack copy (reinstalled from the website): run it, stop handing off. */
+  | { kind: 'nsis-newer'; velopackVersion: string };
+
+/** The version in a Velopack install's current\sq.version (a nuspec), or null. */
+export function parseSqVersion(xml: string | null | undefined): string | null {
+  const m = /<version>\s*([^<\s]+)\s*<\/version>/i.exec(xml ?? '');
+  return m ? m[1] : null;
+}
 
 /**
  * Before the single-instance lock. A Velopack launch while the NSIS Sei is
  * still running Setup (Setup starting the app it installed) exits quietly. An
  * NSIS launch after the migration starts the Velopack copy instead, unless the
- * last hand-off never came up.
+ * last hand-off never came up, or this NSIS build is newer than the Velopack
+ * copy: a player who reinstalled from the website (say because the Velopack
+ * copy broke) gets the build they installed, not the copy it was meant to
+ * replace.
  */
 export function earlyBootAction(i: {
   velopack: boolean;
@@ -345,6 +356,10 @@ export function earlyBootAction(i: {
   pidAlive: (pid: number) => boolean;
   velopackExists: boolean;
   selfPid: number;
+  /** This build's version (the NSIS side). */
+  appVersion?: string;
+  /** The Velopack copy's current\sq.version, null when unreadable. */
+  velopackVersion?: string | null;
 }): EarlyBootAction {
   const s = i.state;
   if (!s) return { kind: 'none' };
@@ -356,23 +371,79 @@ export function earlyBootAction(i: {
   }
   if (s.phase !== 'installed' && s.phase !== 'done') return { kind: 'none' };
   if (!i.velopackExists) return { kind: 'none' };
+  if (i.appVersion && i.velopackVersion && compareVersions(i.appVersion, i.velopackVersion) > 0) {
+    return { kind: 'nsis-newer', velopackVersion: i.velopackVersion };
+  }
   if (s.redirectAt && i.now - s.redirectAt < REDIRECT_BOOT_GRACE_MS && !((s.velopackSeenAt ?? 0) >= s.redirectAt)) {
     return { kind: 'redirect-failed' };
   }
   return { kind: 'redirect' };
 }
 
-export type CleanupDecision = 'skip' | 'done' | 'keep' | 'gave-up' | 'run';
+export type CleanupDecision = 'skip' | 'done' | 'keep' | 'keep-newer' | 'gave-up' | 'run';
+
+/**
+ * True when the state is stuck at `installing` although the NSIS Sei that ran
+ * Setup is gone (it was closed or killed after Setup finished, before it wrote
+ * `installed`). Only meaningful from the Velopack copy: that it is running at
+ * all shows Setup got that far.
+ */
+export function installingOwnerGone(state: MigrationState | null, pidAlive: (pid: number) => boolean): boolean {
+  return state?.phase === 'installing' && !(state.pid && pidAlive(state.pid));
+}
 
 /**
  * Run in the Velopack Sei: remove the NSIS copy once the migration installed.
  * A per-machine copy is kept: removing it needs an admin prompt nobody asked
  * for. It stays harmless, since a launch of it hands off to the Velopack copy.
+ * An NSIS copy newer than this one is kept too: the player installed it after
+ * the migration (earlyBootAction stops handing off to us for the same reason).
  */
-export function cleanupDecision(state: MigrationState | null, nsisLeft: boolean): CleanupDecision {
-  if (!state || state.phase !== 'installed' || !state.nsisDir) return 'skip';
+export function cleanupDecision(
+  state: MigrationState | null,
+  nsisLeft: boolean,
+  opts: { pidAlive?: (pid: number) => boolean; nsisVersion?: string | null; selfVersion?: string } = {},
+): CleanupDecision {
+  if (!state || !state.nsisDir) return 'skip';
+  const installed = state.phase === 'installed' || (!!opts.pidAlive && installingOwnerGone(state, opts.pidAlive));
+  if (!installed) return 'skip';
   if (!nsisLeft) return 'done';
+  if (opts.nsisVersion && opts.selfVersion && compareVersions(opts.nsisVersion, opts.selfVersion) > 0) return 'keep-newer';
   if (state.perMachine) return 'keep';
   if (state.cleanupAttempts >= MAX_CLEANUP_ATTEMPTS) return 'gave-up';
   return 'run';
+}
+
+/**
+ * The app version inside an app.asar (its package.json), read through the
+ * archive header with plain file reads. Electron's patched fs could read
+ * `app.asar\package.json` directly, but it keeps every archive it opens open
+ * for the life of the process, which would hold the NSIS copy's app.asar
+ * against its own uninstaller. `readAt(offset, length)` returns those bytes of
+ * the archive (fewer at the end of the file).
+ */
+export function asarPackageVersion(readAt: (offset: number, length: number) => Buffer): string | null {
+  try {
+    // Two Chromium pickles: [4][headerPickleSize], then the header pickle
+    // [payloadSize][jsonLength][json]. File offsets count from 8 + headerPickleSize.
+    const sizes = readAt(0, 8);
+    if (sizes.length < 8 || sizes.readUInt32LE(0) !== 4) return null;
+    const headerSize = sizes.readUInt32LE(4);
+    if (headerSize < 8 || headerSize > 64 * 1024 * 1024) return null;
+    const header = readAt(8, headerSize);
+    if (header.length < headerSize) return null;
+    const jsonLength = header.readUInt32LE(4);
+    if (8 + jsonLength > header.length) return null;
+    const tree = JSON.parse(header.toString('utf8', 8, 8 + jsonLength)) as {
+      files?: Record<string, { size?: number; offset?: string; unpacked?: boolean }>;
+    };
+    const entry = tree.files?.['package.json'];
+    if (!entry || entry.unpacked || typeof entry.size !== 'number' || typeof entry.offset !== 'string') return null;
+    if (entry.size > 1024 * 1024) return null;
+    const body = readAt(8 + headerSize + Number(entry.offset), entry.size);
+    const version = (JSON.parse(body.toString('utf8')) as { version?: unknown }).version;
+    return typeof version === 'string' && version ? version : null;
+  } catch {
+    return null;
+  }
 }

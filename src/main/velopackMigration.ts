@@ -30,6 +30,9 @@ import {
 import os from 'node:os';
 import path from 'node:path';
 import { ciMark, pidAlive, userDataInstallId, velopackInstalled, velopackLog } from './velopackBoot';
+import { bundleRequire } from './bundleRequire';
+import { checkSigned } from './velopackVerify';
+import { powerShellExe, runPowerShell, waitForExit } from './winPowerShell';
 import {
   MAX_INSTALL_ATTEMPTS,
   MIGRATION_STATE_FILE,
@@ -43,6 +46,8 @@ import {
   parseSetupManifest,
   pinRetargetScript,
   safeToRemoveDir,
+  asarPackageVersion,
+  parseSqVersion,
   setupUrls,
   UNINSTALLER_RUN_AS,
   uninstallSpawn,
@@ -131,6 +136,48 @@ function velopackExe(): string | null {
   return root ? velopackLaunchTarget(root, existsSync) : null;
 }
 
+/** The Velopack copy's version (current\sq.version), or null. */
+function velopackCopyVersion(): string | null {
+  const root = velopackRoot();
+  if (!root) return null;
+  try {
+    return parseSqVersion(readFileSync(path.join(root, 'current', 'sq.version'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** The version of the NSIS copy in `dir`, from its app.asar, or null. */
+function nsisCopyVersion(dir: string): string | null {
+  let fd: number | null = null;
+  let originalFs: typeof import('node:fs');
+  try {
+    // Electron's unpatched fs: reads app.asar as the plain file it is.
+    originalFs = bundleRequire()('original-fs') as typeof import('node:fs');
+  } catch {
+    return null;
+  }
+  try {
+    fd = originalFs.openSync(path.join(dir, 'resources', 'app.asar'), 'r');
+    const f = fd;
+    return asarPackageVersion((offset, length) => {
+      const buf = Buffer.alloc(length);
+      const n = originalFs.readSync(f, buf, 0, length, offset);
+      return buf.subarray(0, n);
+    });
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        originalFs.closeSync(fd);
+      } catch {
+        /* closed */
+      }
+    }
+  }
+}
+
 /** Synchronous sleep for the early boot, which runs before the event loop matters. */
 function sleepSync(ms: number): void {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -170,6 +217,8 @@ function earlyBoot(): void {
     pidAlive,
     velopackExists: !!exe && existsSync(exe),
     selfPid: process.pid,
+    appVersion: app.getVersion(),
+    velopackVersion: velopack ? null : velopackCopyVersion(),
   });
   if (velopack && state && (state.phase === 'installed' || state.phase === 'done')) {
     // Proof for the NSIS copy that its last hand-off came up.
@@ -196,6 +245,23 @@ function earlyBoot(): void {
       process.exit(0);
       return;
     }
+    case 'nsis-newer':
+      // Installed from the website after the migration: this build is the one
+      // the player chose. Stop handing off, keep this copy (cleanupDecision
+      // leaves a newer NSIS copy alone too), and point the pins back here.
+      log(`this NSIS copy (${app.getVersion()}) is newer than the Velopack copy (${action.velopackVersion}); running it`);
+      ciMark('migration-nsis-newer', { velopackVersion: action.velopackVersion });
+      writeState({
+        ...state!,
+        phase: 'failed',
+        attempts: Math.max(state!.attempts, MAX_INSTALL_ATTEMPTS),
+        error: `nsis copy ${app.getVersion()} is newer than velopack ${action.velopackVersion}`,
+      });
+      void app.whenReady().then(() => {
+        const root = velopackRoot();
+        if (root) void runPowerShell(pinRetargetScript(root, process.execPath), 60_000);
+      });
+      return;
     case 'redirect-failed':
       // The Velopack copy was started a moment ago and never booted. Keep this
       // copy, put the shortcuts back on it, and stop trying for this epoch.
@@ -226,51 +292,6 @@ if (active) {
 /* -------------------------------------------------------------------------- */
 /*  Helpers                                                                    */
 /* -------------------------------------------------------------------------- */
-
-function powerShellExe(): string | null {
-  const root = winEnv().SystemRoot ?? 'C:\\Windows';
-  const exe = path.join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  return existsSync(exe) ? exe : null;
-}
-
-function waitForExit(
-  child: ReturnType<typeof spawn>,
-  timeoutMs: number,
-): Promise<{ code: number | null; timedOut: boolean; error?: string }> {
-  return new Promise((resolve) => {
-    let done = false;
-    const finish = (r: { code: number | null; timedOut: boolean; error?: string }) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      resolve(r);
-    };
-    const timer = setTimeout(() => {
-      try {
-        child.kill();
-      } catch {
-        /* gone */
-      }
-      finish({ code: null, timedOut: true });
-    }, timeoutMs);
-    child.once('error', (err) => finish({ code: null, timedOut: false, error: err.message }));
-    child.once('exit', (code) => finish({ code, timedOut: false }));
-  });
-}
-
-async function runPowerShell(script: string, timeoutMs: number): Promise<string | null> {
-  const exe = powerShellExe();
-  if (!exe) return null;
-  const encoded = Buffer.from(script, 'utf16le').toString('base64');
-  const child = spawn(exe, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded], {
-    windowsHide: true,
-    stdio: ['ignore', 'pipe', 'ignore'],
-  });
-  let out = '';
-  child.stdout?.on('data', (d: Buffer) => (out += d.toString()));
-  const r = await waitForExit(child, timeoutMs);
-  return r.code === 0 ? out.trim() : null;
-}
 
 function freeBytes(dir: string): number | null {
   try {
@@ -456,6 +477,17 @@ async function installVelopack(nsis: NsisInstall, deps: MigrationDeps): Promise<
     rmSync(tmp, { recursive: true, force: true });
     return;
   }
+  // The sha256 above comes from the same bucket as the Setup, so it only
+  // proves the download matches the bucket. Windows has to vouch for the
+  // signer before Sei runs it.
+  const sig = await checkSigned([setup]);
+  ciMark('migration-signature', { ok: sig.ok, skipped: 'skipped' in sig, reason: sig.ok ? undefined : sig.reason });
+  if (!sig.ok) {
+    fail(`setup signature: ${sig.reason}`);
+    rmSync(tmp, { recursive: true, force: true });
+    return;
+  }
+  if ('skipped' in sig) log('signature check off: this build is unsigned');
 
   writeState(base);
   ciMark('migration-installing', { version: m.version, attempt: decision.attempt });
@@ -499,8 +531,25 @@ async function removeNsisCopy(): Promise<void> {
   const nsisDir = state?.nsisDir;
   const nsisExe = nsisDir ? path.join(nsisDir, 'Sei.exe') : null;
   const left = !!nsisExe && existsSync(nsisExe);
-  const decision = cleanupDecision(state, left);
-  ciMark('migration-cleanup-check', { decision });
+  const nsisVersion = left ? nsisCopyVersion(nsisDir!) : null;
+  const decision = cleanupDecision(state, left, { pidAlive, nsisVersion, selfVersion: app.getVersion() });
+  ciMark('migration-cleanup-check', { decision, nsisVersion });
+  if (decision === 'keep-newer') {
+    log(`NSIS copy at ${nsisDir} is ${nsisVersion}, newer than this copy; keeping it`);
+    writeState({
+      ...state!,
+      phase: 'failed',
+      attempts: Math.max(state!.attempts, MAX_INSTALL_ATTEMPTS),
+      error: `nsis copy ${nsisVersion} is newer than velopack ${app.getVersion()}`,
+    });
+    return;
+  }
+  if (decision !== 'skip' && state!.phase === 'installing') {
+    // The NSIS Sei that ran Setup went away before it wrote `installed`; this
+    // copy running is the proof that it was.
+    log('migration was left at installing by a closed NSIS copy; taking it as installed');
+    writeState({ ...state!, phase: 'installed', pid: undefined });
+  }
   if (decision === 'done') {
     writeState({ ...state!, phase: 'done' });
     ciMark('migration-done');

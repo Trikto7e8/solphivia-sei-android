@@ -116,7 +116,7 @@ function Stop-Rec($rec) {
 
 # ------------------------------------------------------------------ setup
 function Install-Sei {
-  $setup = Join-Path $Feed "setup\Sei-$From-Setup.exe"
+  $setup = Join-Path $Feed "vp\setup\v$From\Sei-win-Setup.exe"
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $p = Start-Process -FilePath $setup -ArgumentList '--silent' -PassThru
   if (-not $p.WaitForExit(300000)) { throw 'Setup.exe timed out' }

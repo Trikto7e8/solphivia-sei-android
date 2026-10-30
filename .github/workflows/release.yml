@@ -5,6 +5,17 @@ on:
     tags:
       - 'v*'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        # 261030: the Windows leg as a release would run it (electron-builder,
+        # Velopack pack for the channels the live feed implies, the delta
+        # against the live feed), UNSIGNED and published nowhere, followed by
+        # mirror-release.yml in dry-run mode over the result: it reads the live
+        # dl.sei.gg feed and prints every write it would make. No mac leg, no
+        # GitHub release, no upload.
+        description: 'Dry run: Windows leg only, unsigned, nothing published; then a dry-run mirror'
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -14,13 +25,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - os: macos-latest
-            build_cmd: dist:mac
-            artifact_name: mac
-          - os: windows-latest
-            build_cmd: dist:win
-            artifact_name: win
+        include: ${{ fromJSON(inputs.dry_run && '[{"os":"windows-latest","build_cmd":"dist:win","artifact_name":"win"}]' || '[{"os":"macos-latest","build_cmd":"dist:mac","artifact_name":"mac"},{"os":"windows-latest","build_cmd":"dist:win","artifact_name":"win"}]') }}
 
     runs-on: ${{ matrix.os }}
 
@@ -46,6 +51,22 @@ jobs:
         env:
           npm_config_python: ${{ steps.setup-python.outputs.python-path }}
         run: npm ci
+
+      - name: Dry run settings
+        if: inputs.dry_run
+        shell: bash
+        run: |
+          # A dry-run build is never installed by anyone, but it must still not
+          # be able to report into production analytics (analytics.ts
+          # keyConfigured treats a phc_REPLACE_WITH_ key as unset).
+          echo "POSTHOG_KEY=phc_REPLACE_WITH_ci_disabled" >> "$GITHUB_ENV"
+          echo "::notice::DRY RUN: unsigned, published nowhere"
+
+      # 261030 Velopack (Windows): Sei's patched Update.exe (cargo) and vpk
+      # (.NET), the same pinned versions velopack-update.yml tests.
+      - name: Velopack tools (patched Update.exe + vpk)
+        if: runner.os == 'Windows'
+        uses: ./.github/actions/velopack-tools
 
       - name: Build (${{ matrix.os }})
         env:
@@ -91,13 +112,16 @@ jobs:
           # REQUIRED field, so a half-filled block in electron-builder.yml would
           # declare a publisher for an unsigned build — exactly the failure this
           # workflow now guards against.
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
-          AZURE_CLIENT_SECRET: ${{ secrets.AZURE_CLIENT_SECRET }}
-          AZURE_ENDPOINT: ${{ vars.AZURE_ENDPOINT }}
-          AZURE_CODE_SIGNING_ACCOUNT: ${{ vars.AZURE_CODE_SIGNING_ACCOUNT }}
-          AZURE_CERT_PROFILE: ${{ vars.AZURE_CERT_PROFILE }}
-          WIN_PUBLISHER_NAME: ${{ vars.WIN_PUBLISHER_NAME }}
+          # A dry run gets none of them: it builds unsigned (no signatures are
+          # spent on a build nobody installs).
+          AZURE_TENANT_ID: ${{ !inputs.dry_run && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ !inputs.dry_run && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ !inputs.dry_run && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_ENDPOINT: ${{ !inputs.dry_run && vars.AZURE_ENDPOINT || '' }}
+          AZURE_CODE_SIGNING_ACCOUNT: ${{ !inputs.dry_run && vars.AZURE_CODE_SIGNING_ACCOUNT || '' }}
+          AZURE_CERT_PROFILE: ${{ !inputs.dry_run && vars.AZURE_CERT_PROFILE || '' }}
+          WIN_PUBLISHER_NAME: ${{ !inputs.dry_run && vars.WIN_PUBLISHER_NAME || '' }}
+          DRY_RUN: ${{ inputs.dry_run || false }}
         shell: bash
         run: |
           # macOS code-signs every file in app.asar.unpacked; the prismarine-viewer
@@ -126,6 +150,10 @@ jobs:
               echo "Windows: Azure Trusted Signing not configured — building UNSIGNED (auto-update still works; SmartScreen will warn)."
             fi
           fi
+
+          # A dry run must not publish anything, whatever the ref (electron-
+          # builder's CI default publishes on a tag or onto an existing draft).
+          if [ "$DRY_RUN" = true ]; then extra+=( --publish never ); fi
 
           npm run ${{ matrix.build_cmd }} -- "${extra[@]}"
 
@@ -218,7 +246,7 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          WIN_PUBLISHER_NAME: ${{ vars.WIN_PUBLISHER_NAME }}
+          WIN_PUBLISHER_NAME: ${{ !inputs.dry_run && vars.WIN_PUBLISHER_NAME || '' }}
         run: |
           $cfg = 'release/win-unpacked/resources/app-update.yml'
           if (-not (Test-Path $cfg)) { Write-Output "::error::$cfg not found"; exit 1 }
@@ -264,8 +292,10 @@ jobs:
             exit 1
           }
 
-          $exe = Get-ChildItem release -Filter 'Sei-win-*.exe' | Select-Object -First 1
-          if (-not $exe) { Write-Output '::error::no Sei-win-*.exe in release/'; exit 1 }
+          # The NSIS installer by its exact name (electron-builder artifactName):
+          # Velopack's Setup is Sei-win-Setup.exe, which a Sei-win-* glob matches.
+          $exe = Get-Item -LiteralPath 'release/Sei-win-x64.exe' -ErrorAction SilentlyContinue
+          if (-not $exe) { Write-Output '::error::no Sei-win-x64.exe in release/'; exit 1 }
           $sig = Get-AuthenticodeSignature -LiteralPath $exe.FullName
           Write-Output "installer: $($exe.Name)  status=$($sig.Status)  subject=$($sig.SignerCertificate.Subject)"
 
@@ -300,7 +330,81 @@ jobs:
           }
           Write-Output "✓ Windows installer signed and Valid; publisherName '$expected' matches the cert"
 
+      - name: Velopack pack (Windows)
+        # 261030: the same app folder electron-builder just built (and, when
+        # signing is configured, signed) is packed as a Velopack release for
+        # each channel the version belongs to (scripts/velopack-pack.mjs:
+        # a prerelease goes to beta only, a stable to win plus beta unless
+        # beta is already at or past it), with a delta against the newest
+        # Full package in the live feed. The output (packages, Setup,
+        # releases.<channel>.json trimmed to this version, setup.<channel>.json)
+        # rides with the release assets; mirror-release.yml merges it into
+        # dl.sei.gg/velopack once the release is published. The NSIS installer
+        # stays the Windows download and the electron-updater feed through
+        # v0.7.x, so on a real release a failure here warns and the release
+        # ships without Velopack files (nothing migrates without them); a dry
+        # run fails on it.
+        if: runner.os == 'Windows'
+        id: velopack
+        continue-on-error: ${{ !inputs.dry_run }}
+        shell: bash
+        env:
+          AZURE_TENANT_ID: ${{ !inputs.dry_run && secrets.AZURE_TENANT_ID || '' }}
+          AZURE_CLIENT_ID: ${{ !inputs.dry_run && secrets.AZURE_CLIENT_ID || '' }}
+          AZURE_CLIENT_SECRET: ${{ !inputs.dry_run && secrets.AZURE_CLIENT_SECRET || '' }}
+          AZURE_ENDPOINT: ${{ !inputs.dry_run && vars.AZURE_ENDPOINT || '' }}
+          AZURE_CODE_SIGNING_ACCOUNT: ${{ !inputs.dry_run && vars.AZURE_CODE_SIGNING_ACCOUNT || '' }}
+          AZURE_CERT_PROFILE: ${{ !inputs.dry_run && vars.AZURE_CERT_PROFILE || '' }}
+        run: |
+          set -euo pipefail
+          version=$(node -p "require('./package.json').version")
+          out="$(cygpath -m "$RUNNER_TEMP")/vpk"
+          node scripts/velopack-pack.mjs --version "$version" --tag "v$version" \
+            --app release/win-unpacked --out "$out" --prev-feed https://dl.sei.gg/velopack
+          echo "upload=$out/upload" >> "$GITHUB_OUTPUT"
+
+      - name: Verify Velopack signatures (Windows)
+        # Signed release: every Setup and the Sei.exe / Update.exe inside each
+        # Full package must be Valid and carry WIN_PUBLISHER_NAME. Unsigned
+        # (dry run, or signing not configured): report what is there.
+        if: runner.os == 'Windows' && steps.velopack.outcome == 'success'
+        continue-on-error: ${{ !inputs.dry_run }}
+        shell: pwsh
+        env:
+          WIN_PUBLISHER_NAME: ${{ !inputs.dry_run && vars.WIN_PUBLISHER_NAME || '' }}
+          AZURE_TENANT_ID: ${{ !inputs.dry_run && secrets.AZURE_TENANT_ID || '' }}
+          UPLOAD: ${{ steps.velopack.outputs.upload }}
+        run: |
+          Add-Type -AssemblyName System.IO.Compression.FileSystem
+          $signed = -not [string]::IsNullOrWhiteSpace($env:WIN_PUBLISHER_NAME) -and -not [string]::IsNullOrWhiteSpace($env:AZURE_TENANT_ID)
+          $check = Join-Path $env:RUNNER_TEMP 'vpk-sigcheck'
+          New-Item -ItemType Directory -Force $check | Out-Null
+          $files = @(Get-ChildItem $env:UPLOAD -Filter 'Sei-*-Setup.exe')
+          foreach ($pkg in Get-ChildItem $env:UPLOAD -Filter '*-full.nupkg') {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($pkg.FullName)
+            try {
+              foreach ($e in $zip.Entries) {
+                if ($e.FullName -match '(^|/)(Sei\.exe|Squirrel\.exe)$') {
+                  $dest = Join-Path $check ($pkg.BaseName + '-' + $e.Name)
+                  [System.IO.Compression.ZipFileExtensions]::ExtractToFile($e, $dest, $true)
+                  $files += Get-Item $dest
+                }
+              }
+            } finally { $zip.Dispose() }
+          }
+          if ($files.Count -eq 0) { Write-Output '::error::no Velopack Setup or package in the pack output'; exit 1 }
+          $bad = 0
+          foreach ($f in $files) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            Write-Output "$($f.Name)  status=$($sig.Status)  subject=$($sig.SignerCertificate.Subject)"
+            if ($signed -and ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notlike "*$($env:WIN_PUBLISHER_NAME)*")) { $bad++ }
+          }
+          if ($bad -gt 0) { Write-Output "::error::$bad Velopack file(s) are not Valid signed by '$($env:WIN_PUBLISHER_NAME)'"; exit 1 }
+          if ($signed) { Write-Output 'Velopack Setup and package binaries are signed and Valid' } else { Write-Output 'Velopack output is unsigned (dry run or signing not configured)' }
+
       - name: Collect release assets (installers + auto-update feed)
+        env:
+          VELOPACK_UPLOAD: ${{ steps.velopack.outputs.upload }}
         # CRITICAL: electron-updater needs the *.yml feed files, the macOS *.zip
         # (the mac auto-update payload — the dmg is download-only), and *.blockmap
         # files. Uploading only the dmg/exe silently breaks auto-update. Grab
@@ -327,6 +431,13 @@ jobs:
           # builder-debug.yml is electron-builder's own debug dump, swept up by
           # the *.yml glob. It is not an update feed and must not ship.
           rm -f dist-release/builder-debug.yml
+          # 261030 Velopack: packages, Setup(s), releases.<channel>.json and
+          # setup.<channel>.json, flat beside the NSIS installer.
+          if [ -n "$VELOPACK_UPLOAD" ] && [ -d "$VELOPACK_UPLOAD" ]; then
+            cp "$VELOPACK_UPLOAD"/* dist-release/
+          elif [ "$RUNNER_OS" = "Windows" ]; then
+            echo "::warning::no Velopack output: this release ships without Velopack files, so no Windows install can migrate to it"
+          fi
           echo "Collected for ${{ matrix.artifact_name }}:"
           ls -1 dist-release/
 
@@ -352,7 +463,7 @@ jobs:
     # file:../soulcaster) aren't resolvable in a single-repo CI checkout, so the
     # Windows leg currently fails while macOS builds+notarizes fine. `always()`
     # lets the draft ship the good mac assets now; Windows is a known follow-up.
-    if: always() && startsWith(github.ref, 'refs/tags/v')
+    if: always() && startsWith(github.ref, 'refs/tags/v') && !inputs.dry_run
     steps:
       # Only for scripts/build-game-pack-manifest.mjs, which is dependency-free
       # in --from-meta mode (no npm ci here).
@@ -407,3 +518,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh release edit "${{ github.ref_name }}" --prerelease --repo "${{ github.repository }}"
+
+  # 261030: a dry run ends with the mirror the published release would get,
+  # in dry-run mode (it reads the live feed, merges, and prints every write).
+  dry-run-version:
+    if: inputs.dry_run
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: package.json
+          sparse-checkout-cone-mode: false
+      - id: v
+        run: echo "tag=v$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+
+  mirror-dry-run:
+    if: inputs.dry_run
+    needs: [build, dry-run-version]
+    uses: ./.github/workflows/mirror-release.yml
+    with:
+      tag: ${{ needs.dry-run-version.outputs.tag }}
+      artifact: sei-win
+      dry_run: true
+    secrets: inherit

@@ -24,6 +24,7 @@
  */
 import { app } from 'electron';
 import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { bundleRequire } from './bundleRequire';
 import { applyInProgress, velopackPathsFor, type VelopackPaths } from './velopackFastApply';
@@ -139,7 +140,30 @@ if (process.env.SEI_VELOPACK_CI === '1') {
   });
 }
 
-function pidAlive(pid: number): boolean {
+/**
+ * A random id for this install, kept in <userData>/update-install-id. userData
+ * is shared by the NSIS and the Velopack copy, so both read the same id: the
+ * migration and rollout buckets do not re-roll when the copy changes.
+ */
+export function userDataInstallId(): string {
+  const file = path.join(app.getPath('userData'), 'update-install-id');
+  try {
+    const id = readFileSync(file, 'utf8').trim();
+    if (id) return id;
+  } catch {
+    /* fall through */
+  }
+  const id = randomUUID();
+  try {
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, id);
+  } catch {
+    /* a fresh id per launch only makes the gates re-roll */
+  }
+  return id;
+}
+
+export function pidAlive(pid: number): boolean {
   try {
     process.kill(pid, 0);
     return true;

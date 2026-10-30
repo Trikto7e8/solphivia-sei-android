@@ -249,6 +249,23 @@ export function isUpdateReadyToInstall(): boolean {
   return updateReadyToInstall;
 }
 
+/**
+ * Windows NSIS -> Velopack migration (261030, velopackMigration.ts). Once the
+ * Velopack copy is installed beside this NSIS one, electron-updater stops: an
+ * NSIS update applied on quit would rewrite the old copy and its shortcuts.
+ * The sidebar's "Update Sei" button then restarts into the Velopack copy.
+ */
+let migrationRestart: (() => void) | null = null;
+
+export function handOffUpdatesToMigration(restart: () => void, version: string): void {
+  migrationRestart = restart;
+  if (autoUpdater) autoUpdater.autoInstallOnAppQuit = false;
+  autoUpdater = null;
+  updateReadyToInstall = false;
+  logger.info(`updater: Velopack ${version} installed beside this copy; electron-updater stopped`);
+  send(IpcChannel.app.updateDownloaded, { forced: false, onRestart: true, version });
+}
+
 /* -------------------------------------------------------------------------- */
 /*  version.json fetch (ported from updateChecker.ts)                          */
 /* -------------------------------------------------------------------------- */
@@ -367,6 +384,7 @@ function ensureAutoUpdater(): AutoUpdater | null {
     logger.info('updater disabled in dev (autoUpdater not loaded — unpackaged)');
     return null;
   }
+  if (migrationRestart) return null;
   if (autoUpdater && wired) return autoUpdater;
   try {
     // Windows (261030): a Velopack install updates through Velopack; an NSIS
@@ -942,6 +960,10 @@ export async function downloadAcceptedUpdate(): Promise<void> {
  * (see updateInstall.ts for the exact installer arguments). No-op in dev.
  */
 export function installDownloadedUpdate(): void {
+  if (migrationRestart) {
+    migrationRestart();
+    return;
+  }
   const au = ensureAutoUpdater();
   if (!au) return;
   try {

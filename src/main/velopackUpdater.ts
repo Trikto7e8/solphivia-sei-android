@@ -28,7 +28,6 @@
  *     could apply): applyPendingAtLaunch() applies it behind the splash.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, readFileSync, rmSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
@@ -40,6 +39,7 @@ import {
   velopackModule,
   velopackPaths,
   velopackRestartedVersion,
+  userDataInstallId,
   type VelopackAsset,
   type VelopackUpdateInfo,
   type VelopackUpdateManager,
@@ -122,20 +122,7 @@ function installId(p: VelopackPaths): string {
   } catch {
     /* fall through */
   }
-  const file = path.join(app.getPath('userData'), 'update-install-id');
-  try {
-    const id = readFileSync(file, 'utf8').trim();
-    if (id) return id;
-  } catch {
-    /* fall through */
-  }
-  const id = randomUUID();
-  try {
-    writeFileSync(file, id);
-  } catch {
-    /* a fresh id per launch only makes the gate re-roll */
-  }
-  return id;
+  return userDataInstallId();
 }
 
 /* -------------------------------------------------------------------------- */

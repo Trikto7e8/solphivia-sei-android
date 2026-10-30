@@ -22,6 +22,9 @@ import './remoteDebugGuard';
 // Windows: Velopack hooks must run before the rest of main
 // evaluates; see velopackBoot.ts.
 import './velopackBoot';
+// Windows NSIS -> Velopack migration: its early boot must run before the
+// single-instance lock below; see velopackMigration.ts.
+import { scheduleVelopackMigration } from './velopackMigration';
 import { app, BrowserWindow, net, session, systemPreferences } from 'electron';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -64,7 +67,7 @@ import {
   runPendingQuitNextSteps,
 } from './quitNextStep';
 import { formatPlayDuration, playSummaryText } from './chat/playSummary';
-import { initUpdater } from './updater';
+import { handOffUpdatesToMigration, initUpdater, isUpdateReadyToInstall } from './updater';
 import { applyPendingAtLaunch, updateSplashStatusForLaunch } from './velopackUpdater';
 import { initNotices } from './notices';
 import { installPopupFrameGuards } from './popupFrameGuards';
@@ -1540,6 +1543,7 @@ async function bootstrap(): Promise<void> {
   // leg of the shared cadence.
   initNotices({ getMainWindow: () => mainWindow });
   initUpdater({ getMainWindow: () => mainWindow });
+  scheduleVelopackMigration({ isUpdateReady: isUpdateReadyToInstall, handOff: handOffUpdatesToMigration });
 
   // 5d. 261013 (T120): run the "next time" check for sessions the last quit
   //     ended, once auth and the token refresh have settled. Fire and forget;

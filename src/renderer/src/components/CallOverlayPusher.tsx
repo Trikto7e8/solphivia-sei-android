@@ -115,6 +115,14 @@ export function CallOverlayPusher(): null {
     return () => off?.();
   }, []);
 
+  // 261030: the overlay's interrupt button, relayed the same way. During a
+  // share the player is in their game and the overlay is the only call
+  // control on screen, so this is the interrupt that is actually reachable.
+  useEffect(() => {
+    const off = sei.onAvatarInterruptRequest?.(() => useVoiceStore.getState().interrupt());
+    return () => off?.();
+  }, []);
+
   useEffect(() => {
     const chars = useDataStore.getState().characters;
     void sei

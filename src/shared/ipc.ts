@@ -32,6 +32,7 @@ import type { ChatgptSignInResult, ChatgptSignOutResult, ChatgptStatus } from '.
 import type { RegionStatus } from './regionGate';
 import type { PopupAction } from './popupActions';
 import type { BackseatEndReasonArg, BackseatStartTrigger, CallEndReason } from './callEndReasons';
+import type { CallInterruptCounts } from './callInterrupts';
 export type { ErrorClass } from './errorClasses';
 import type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
 export type { ChessGameState, ChessDownloadProgress, ChessReplayData } from './chessIpc';
@@ -2171,6 +2172,11 @@ export interface RendererApi {
   avatarOverlayMuteToggle(): Promise<void>;
   /** Main window: subscribe to overlay mute presses relayed by main. */
   onAvatarMuteRequest(cb: () => void): Unsubscribe;
+  /** Overlay window only (261030): the interrupt button — main relays to the
+   * main window, which runs useVoiceStore.interrupt (the barge-in cut). */
+  avatarOverlayInterrupt(): Promise<void>;
+  /** Main window: subscribe to overlay interrupt presses relayed by main. */
+  onAvatarInterruptRequest(cb: () => void): Unsubscribe;
   /** Overlay window only: toggle the caption overlay window → new enabled. */
   avatarOverlayCaptionsToggle(): Promise<boolean>;
   /** Caption window only: corner-resize stream/commit (anchor = the corner
@@ -2525,6 +2531,9 @@ export interface RendererApi {
     live?: boolean;
     /** Hang-up only (261023): why the call ended, for voice_call_ended. */
     reason?: CallEndReason;
+    /** Hang-up only (261030): this companion's interrupt counts for
+     *  voice_call_ended (shared/callInterrupts.ts). */
+    interrupts?: CallInterruptCounts;
   }): Promise<void>;
   /**
    * The call pipeline just went LIVE — ask the companion to speak first (like
@@ -3845,6 +3854,11 @@ export const IpcChannel = {
     /** Push (main → main window): relay of the overlay mute press; the main
      * window flips useUiStore.callMuted (the mic's single source of truth). */
     muteRequest: 'avatar:mute-request',
+    /** Invoke (overlay window → main, 261030): the interrupt button. */
+    overlayInterrupt: 'avatar:overlay-interrupt',
+    /** Push (main → main window): relay of the overlay interrupt press; the
+     * main window runs useVoiceStore.interrupt. */
+    interruptRequest: 'avatar:interrupt-request',
     /** Invoke (overlay window → main): toggle the caption overlay → enabled. */
     overlayCaptions: 'avatar:overlay-captions',
     /** Invoke (caption window → main): corner-resize stream/commit

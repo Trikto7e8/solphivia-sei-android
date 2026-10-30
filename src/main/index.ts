@@ -39,6 +39,7 @@ import { initCallOverlay, closeCallOverlay } from './callOverlay';
 import { trackScopedWrite, isAccountTeardownActive } from './profile/scopeBarrier';
 import { sessionEndProps, isSessionFailure, type SessionEndProps } from './sessionEnd';
 import { consumeGoodbye, gameEndHookProps, callEndHookProps, goodbyePlanPlace } from './sessionGoodbye';
+import { callInterruptProps } from '../shared/callInterrupts';
 import { endCallsForAccountSwitch } from './voice/accountSwitchCalls';
 import {
   bindPlayerEndRuntime,
@@ -1366,7 +1367,7 @@ async function bootstrap(): Promise<void> {
     },
     // Voice calls (260705): a live call ended — post the "You and X called for
     // Y" system row (renderer supplies how long audio actually flowed).
-    notifyCallEnded: (id, connectedMs, reason) => {
+    notifyCallEnded: (id, connectedMs, reason, interrupts) => {
       void trackScopedWrite(emitCallSession(id, connectedMs)).catch(() => {});
       // Analytics (260728): calls are playtime too. `connectedMs` is the time
       // audio actually flowed (the renderer only reports it for calls that
@@ -1381,6 +1382,10 @@ async function bootstrap(): Promise<void> {
         // 261023: why it ended (callEndReasons.ts), from the renderer's report.
         reason,
         ...callEndHookProps(goodbye),
+        // 261030: duck / cut / echo-rejected / manual interrupt counts. Only
+        // the renderer's hang-up carries them; a call main closes itself (quit,
+        // account switch) has none and leaves them out rather than send zeros.
+        ...(interrupts ? callInterruptProps(interrupts) : {}),
       });
       // 261013 (T119): the companion's hang-up left a plan; it came from a call.
       if (goodbye.nextStepHook) {

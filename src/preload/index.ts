@@ -417,6 +417,12 @@ const api: RendererApi = {
     ipcRenderer.on(IpcChannel.avatar.muteRequest, handler);
     return () => ipcRenderer.off(IpcChannel.avatar.muteRequest, handler);
   },
+  avatarOverlayInterrupt: () => ipcRenderer.invoke(IpcChannel.avatar.overlayInterrupt),
+  onAvatarInterruptRequest(cb: () => void) {
+    const handler = () => cb();
+    ipcRenderer.on(IpcChannel.avatar.interruptRequest, handler);
+    return () => ipcRenderer.off(IpcChannel.avatar.interruptRequest, handler);
+  },
   avatarOverlayCaptionsToggle: () => ipcRenderer.invoke(IpcChannel.avatar.overlayCaptions),
   avatarCaptionResize: (args) => ipcRenderer.invoke(IpcChannel.avatar.captionResize, args),
   avatarCaptionMove: (args) => ipcRenderer.invoke(IpcChannel.avatar.captionMove, args),

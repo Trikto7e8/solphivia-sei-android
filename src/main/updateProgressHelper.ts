@@ -230,8 +230,6 @@ export interface HelperConfig {
   /** The installed Sei.exe, started by the script only if the installer
    *  exits and no Sei comes back by itself. '' = never. */
   appExe: string;
-  /** Window centre in PHYSICAL screen pixels (Sei's window), or null. */
-  center: { x: number; y: number } | null;
   /** Seconds to wait for the installer process before giving up. */
   installerWaitSec: number;
 }
@@ -258,7 +256,6 @@ export interface HelperConfigInputs {
   version: string;
   installerPath: string;
   appExe: string;
-  center: { x: number; y: number } | null;
   /** The update is downloaded and verified (the installer file exists). */
   downloaded?: boolean;
 }
@@ -276,7 +273,6 @@ export function buildHelperConfig(i: HelperConfigInputs): HelperConfig {
     installerName: processNameOf(i.installerPath),
     appName: processNameOf(i.appExe),
     appExe: i.appExe,
-    center: i.center,
     installerWaitSec: 25,
   };
 }

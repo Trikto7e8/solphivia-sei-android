@@ -396,23 +396,21 @@ if (-not $highContrast) {
   $Fill.Fill = Solid $pal.accent
 }
 
-# ---- placement: centred on Sei's window, kept on screen --------------------------
+# ---- placement: bottom-right corner of the primary display's work area -------
+# Out of the way while the update runs (Shawn, 261031): above the taskbar,
+# CardGap px in from the work area's right and bottom edges, so the user can
+# keep using the computer. WorkArea is the PRIMARY display's area minus the
+# taskbar, in the same device-independent units as Left/Top. The window's
+# 30 px transparent shadow margin may run past the work area edge; only the
+# card is measured.
+$CardGap = 16
 $window.Add_SourceInitialized({
   try {
-    $src = [Windows.PresentationSource]::FromVisual($window)
-    $scale = 1.0
-    if ($src -and $src.CompositionTarget) { $scale = $src.CompositionTarget.TransformToDevice.M11 }
-    if ($cfg.center) {
-      $cx = [double]$cfg.center.x / $scale; $cy = [double]$cfg.center.y / $scale
-    } else {
-      $wa = [Windows.SystemParameters]::WorkArea
-      $cx = $wa.Left + $wa.Width / 2; $cy = $wa.Top + $wa.Height / 2
-    }
-    $left = $cx - $window.Width / 2; $top = $cy - $window.Height / 2
-    $vl = [Windows.SystemParameters]::VirtualScreenLeft; $vt = [Windows.SystemParameters]::VirtualScreenTop
-    $vw = [Windows.SystemParameters]::VirtualScreenWidth; $vh = [Windows.SystemParameters]::VirtualScreenHeight
-    $window.Left = [math]::Max($vl, [math]::Min($left, $vl + $vw - $window.Width))
-    $window.Top = [math]::Max($vt, [math]::Min($top, $vt + $vh - $window.Height))
+    $wa = [Windows.SystemParameters]::WorkArea
+    $pad = ($window.Width - $CW) / 2
+    $window.Left = $wa.Right - $window.Width + $pad - $CardGap
+    $window.Top = $wa.Bottom - $window.Height + $pad - $CardGap
+    Log ("corner: work area {0:n0},{1:n0} {2:n0}x{3:n0}, window at {4:n0},{5:n0}" -f $wa.Left, $wa.Top, $wa.Width, $wa.Height, $window.Left, $window.Top)
   } catch { Log "placement: $($_.Exception.Message)" }
 })
 

@@ -63,7 +63,8 @@ name: NSIS Upgrade Check
 #                     arguments of quitAndInstall(true, true). Asserts the window
 #                     is up inside the ready budget (12 s, 20 s once WPF loaded),
 #                     no installer window, Sei back, the window gone once Sei's
-#                     window shows, the bundled fonts in use. Artifact update-progress-upgrade.
+#                     window shows, the bundled fonts in use, the window in the
+#                     bottom-right corner of the work area. Artifact update-progress-upgrade.
 #   progress-preview  stand-in installer and Sei (compiled on the runner, no
 #                     build needed), one run per theme/language, one with
 #                     animations off (reduced motion), one running past its

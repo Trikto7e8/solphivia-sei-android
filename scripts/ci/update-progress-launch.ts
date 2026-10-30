@@ -48,7 +48,6 @@ async function main(): Promise<void> {
     version: arg('version') ?? '0.7.0',
     installerPath: installer,
     appExe: app,
-    center: null,
     // As in the app (windowsUpdateInstall.ts): the installer file is there.
     downloaded: existsSync(installer),
   });

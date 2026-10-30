@@ -961,7 +961,6 @@ async function restartIntoUpdate(au: AutoUpdater, minHoldMs: number): Promise<vo
         quitAndInstall: (...args) => au.quitAndInstall(...args),
         installerPath: au.installerPath,
         version: downloadedVersion,
-        mainWindow: getMainWindow?.() ?? null,
         minHoldMs,
       });
       return;

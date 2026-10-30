@@ -20,7 +20,7 @@
 import { existsSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { app, nativeTheme, screen, type BrowserWindow } from 'electron';
+import { app, nativeTheme } from 'electron';
 import { loadConfig } from './configStore';
 import { restartInstallArgs, type QuitAndInstallArgs } from './updateInstall';
 import { buildHelperConfig, launchUpdateProgressHelper, type HelperHandle } from './updateProgressHelper';
@@ -36,7 +36,6 @@ export interface WindowsInstallOptions {
   installerPath: string | null | undefined;
   /** Version being installed ('' if unknown). */
   version: string;
-  mainWindow: BrowserWindow | null;
   /** Fallback only: the stock installer starts no sooner than this after the click. */
   minHoldMs: number;
 }
@@ -45,18 +44,6 @@ function helperResourcesDir(): string {
   return app.isPackaged
     ? path.join(process.resourcesPath, 'update-progress')
     : path.join(app.getAppPath(), 'resources', 'update-progress');
-}
-
-/** Centre of Sei's window in physical pixels, so the progress window opens where Sei was. */
-function windowCenter(win: BrowserWindow | null): { x: number; y: number } | null {
-  try {
-    if (!win || win.isDestroyed() || win.isMinimized()) return null;
-    const b = win.getBounds();
-    const p = screen.dipToScreenPoint({ x: Math.round(b.x + b.width / 2), y: Math.round(b.y + b.height / 2) });
-    return { x: p.x, y: p.y };
-  } catch {
-    return null;
-  }
 }
 
 async function recordStart(startedAt: number, progressWindow: boolean): Promise<void> {
@@ -92,7 +79,6 @@ export async function installWithProgressWindow(opts: WindowsInstallOptions): Pr
         // verified; the file check guards against a stale path.
         downloaded: existsSync(opts.installerPath),
         appExe: process.execPath,
-        center: windowCenter(opts.mainWindow),
       });
       handle = await launchUpdateProgressHelper({
         resourcesDir: helperResourcesDir(),

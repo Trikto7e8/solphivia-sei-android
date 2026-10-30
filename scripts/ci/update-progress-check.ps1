@@ -87,6 +87,10 @@ public static class SeiCiDisplay {
     RECT r; if (!GetWindowRect(h, out r)) return false;
     return (r.Right - r.Left) > 4 && (r.Bottom - r.Top) > 4 && r.Right > 0 && r.Bottom > 0;
   }
+  public static int[] Rect(IntPtr h) {
+    RECT r; if (h == IntPtr.Zero || !GetWindowRect(h, out r)) return null;
+    return new int[] { r.Left, r.Top, r.Right, r.Bottom };
+  }
   public static string Describe(IntPtr h) {
     if (h == IntPtr.Zero) return "none";
     var c = new System.Text.StringBuilder(256); GetClassName(h, c, 256);
@@ -281,13 +285,17 @@ $ev = [ordered]@{}
 function Mark([string]$k) { if (-not $ev.Contains($k)) { $ev[$k] = [math]::Round($sw.Elapsed.TotalSeconds, 1); Note ("{0,7:n1}s  {1}" -f $ev[$k], $k) } }
 if ($drv.ready) { $ev['window'] = [math]::Round($drv.ms / 1000.0, 1); Note ("{0,7:n1}s  window (first frame)" -f $ev['window']) }
 $otherWindows = @{}
+$helperRect = $null
 $installerWindows = @{}; $installerShot = $false
 $nextShot = 0; $i = 1
 while ($p -and $sw.Elapsed.TotalSeconds -lt 600) {
   $t = $sw.Elapsed.TotalSeconds
   if ($hp) {
     $hp.Refresh()
-    if (-not $hp.HasExited -and $hp.MainWindowHandle -ne [IntPtr]::Zero) { Mark 'helper window visible' }
+    if (-not $hp.HasExited -and $hp.MainWindowHandle -ne [IntPtr]::Zero) {
+      Mark 'helper window visible'
+      if (-not $helperRect -and [SeiCiDisplay]::Shows($hp.MainWindowHandle)) { $helperRect = [SeiCiDisplay]::Rect($hp.MainWindowHandle) }
+    }
     if ($hp.HasExited) { Mark 'helper exited' }
   }
   $p.Refresh()
@@ -337,6 +345,16 @@ if ($drv.ready) {
     Note ("helper closed {0:n1}s after the new Sei window" -f $gap)
     if ($gap -gt 6) { Fail "the helper stayed up $gap s after Sei was back" }
   } elseif (-not $ev.Contains('helper exited')) { Fail 'the helper never exited' }
+  # Placement (261031): the card (the window minus its 30 px shadow margin;
+  # the runner is at 100% scale) sits in the bottom-right corner of the
+  # primary work area, inside it, a small gap from the right and bottom edges.
+  $wa = [System.Windows.Forms.Screen]::PrimaryScreen.WorkingArea
+  if (-not $helperRect) { Fail 'could not read the helper window rect' } else {
+    $cardR = $helperRect[2] - 30; $cardB = $helperRect[3] - 30
+    $gapR = $wa.Right - $cardR; $gapB = $wa.Bottom - $cardB
+    Note ("helper window rect {0},{1}-{2},{3}; work area {4},{5}-{6},{7}; card gap right {8} bottom {9}" -f $helperRect[0], $helperRect[1], $helperRect[2], $helperRect[3], $wa.Left, $wa.Top, $wa.Right, $wa.Bottom, $gapR, $gapB)
+    if ($gapR -lt 4 -or $gapR -gt 40 -or $gapB -lt 4 -or $gapB -gt 40) { Fail "the progress window is not in the bottom-right corner of the work area (card gap right $gapR, bottom $gapB)" }
+  }
   if ($ev.Contains('INSTALLER WINDOW (should not show)')) { Fail 'the installer showed a window under the progress window' }
   if ($otherWindows.Count -gt 0) { $otherWindows.GetEnumerator() | ForEach-Object { Fail "another window showed: $($_.Key) at $($_.Value)s" } }
   if ($p.HasExited -and $p.ExitCode -ne 0) { Fail "installer exit code $($p.ExitCode)" }

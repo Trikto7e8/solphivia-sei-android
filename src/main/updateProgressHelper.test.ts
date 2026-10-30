@@ -202,7 +202,6 @@ describe('config inputs', () => {
       version: 'v0.7.0',
       installerPath: 'C:\\x\\pending\\Sei-win-x64.exe',
       appExe: 'C:\\Programs\\sei\\Sei.exe',
-      center: { x: 960, y: 540 },
     });
     expect(cfg.lang).toBe('zh');
     expect(cfg.theme).toBe('midnight');
@@ -219,7 +218,6 @@ describe('config inputs', () => {
       version: '0.7.0',
       installerPath: 'Sei-win-x64.exe',
       appExe: 'Sei.exe',
-      center: null,
       downloaded: true,
     });
     expect(dl.plan.startShare).toBe(DOWNLOAD_DONE_SHARE);
@@ -259,7 +257,6 @@ describe('shipped resources', () => {
       version: '0.7.0',
       installerPath: 'Sei-win-x64.exe',
       appExe: 'Sei.exe',
-      center: null,
     });
     for (const k of used) expect(Object.keys(cfg), k).toContain(k);
     for (const k of copyUsed) expect(Object.keys(cfg.copy), k).toContain(k);
@@ -300,7 +297,6 @@ describe('launchUpdateProgressHelper (fail safe)', () => {
     version: '0.7.0',
     installerPath: 'Sei-win-x64.exe',
     appExe: 'Sei.exe',
-    center: null,
   });
   const fake = (name: string, body: string): string => {
     const p = path.join(scripts, name);

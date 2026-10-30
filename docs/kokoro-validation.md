@@ -70,3 +70,52 @@ these observations. No claim of acceptable conversational latency is made.
 
 This is an initial draft contribution for review, not a production-readiness
 claim. Keep the existing automatic voices as the default.
+
+## Notebook revision for Ouen's review (2026-10-30)
+
+Merged upstream `dev` at `7129cf72` without conflicts. The four requested changes
+are implemented in the code: third engine option, automatic language/gender
+matching with standard local fallback, ordered sentence-sized WAV delivery in
+calls, and preparation to retarget the existing PR to `dev`.
+
+Host: Windows x64, AMD Ryzen AI 7 PRO 350 / Radeon 860M, 16 logical CPUs,
+~31.14 GiB RAM, Node 24.20.0. `npm ci --ignore-scripts --no-audit --no-fund`
+completed; no dependency or lockfile changes were introduced by this revision.
+
+Actually completed on the notebook:
+
+- TypeScript `tsc --build`: passed.
+- Production `npm run build`: passed (main, preload, renderer). Vite reported
+  existing mixed static/dynamic-import warnings; no build error.
+- Focused regression suite with two thread workers: **200 passed, 3 skipped**
+  across 16 files (14 passed / 2 skipped). Includes speech, existing ElevenLabs
+  TTS routing, Kokoro routing/fallback/silent characters/cloud isolation,
+  configuration persistence, Settings, legacy profile compatibility,
+  sentence ordering, early delivery, errors, supersession, hang-up, and barge-in.
+- A test using the actual `createAudioQueue` with simulated browser audio shows
+  the first sentence playing/captioning while the second inference is pending;
+  clearing the queue drops its late completion and prevents the third inference.
+  This is an automated integration test, not an audible packaged-app test.
+- Downloaded the official 132,353,410-byte archive into isolated test userData.
+  SHA-256 matched the digest documented above.
+
+A first targeted test attempt hit Windows temporary-file permissions before any
+test ran. A subsequent mock imported the actual speech engine and failed; the
+mock was isolated to pure mapping modules and the full focused run then passed.
+These failed attempts are not counted as passing validation.
+
+No new full repository-suite claim is made. The full-suite baseline failures
+recorded above remain historical evidence from the other host. No packaged
+Electron call, human listening assessment, macOS/Linux test, or measured
+end-to-end first-audio comparison has been completed on this notebook.
+Sentence delivery does not promise real-time inference or gap-free speech.
+Italian chat/STT expansion remains outside this PR; see `kokoro-local.md`.
+
+Native verification completed after midnight (2026-10-31): the expanded opt-in
+installed-pack test **passed for all seven mapped voices**, with finite,
+non-silent 24 kHz PCM (one test, 47.64 s total wall time). The first native run
+caught an invalid French phonemizer alias (`fr-fr`); changing it to the pack's
+`fr` identifier fixed synthesis. The successful run still emitted an unknown
+hyphen-phoneme warning, so this does not establish pronunciation/voice quality.
+The engine cache was exercised across male/female speakers sharing a language.
+Pack readiness now checks all four language dictionaries and voice definitions.

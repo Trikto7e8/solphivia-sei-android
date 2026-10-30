@@ -55,3 +55,4 @@ export {
 } from './localVoice';
 export { synthesizeKokoro, synthesizeLocal, transcribeLocal, packMissingError } from './engine';
 export { detectSpokenLanguage } from './spokenLanguage';
+export { pickKokoroVoice } from './kokoro';

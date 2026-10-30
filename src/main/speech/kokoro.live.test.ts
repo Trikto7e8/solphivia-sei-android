@@ -4,13 +4,18 @@
 import { describe, expect, it, vi } from 'vitest';
 vi.mock('electron', () => ({ app: { getPath: () => process.env.SEI_KOKORO_LIVE_DIR ?? '/nonexistent' } }));
 describe.skipIf(!process.env.SEI_KOKORO_LIVE_DIR)('Kokoro real runtime', () => {
-  it('synthesizes both supported presets through the installed-pack path', async () => {
+  it('synthesizes every mapped voice through the installed-pack path', async () => {
     const { _setUserDataOverride } = await import('../paths');
     _setUserDataOverride(process.env.SEI_KOKORO_LIVE_DIR!);
     const { synthesizeKokoro } = await import('./engine');
     for (const [voice, text] of [
       ['af_heart', 'Hello Marco, this is a local voice test.'],
+      ['am_michael', 'Hello Marco, this is a local voice test.'],
+      ['ef_dora', 'Hola Marco, esta es una prueba de voz local.'],
+      ['em_alex', 'Hola Marco, esta es una prueba de voz local.'],
+      ['ff_siwis', 'Bonjour Marco, ceci est un test de voix locale.'],
       ['if_sara', 'Ciao Marco, questa è una prova della voce italiana locale.'],
+      ['im_nicola', 'Ciao Marco, questa è una prova della voce italiana locale.'],
     ] as const) {
       const start = performance.now();
       const audio = await synthesizeKokoro(text, voice);
@@ -20,5 +25,5 @@ describe.skipIf(!process.env.SEI_KOKORO_LIVE_DIR)('Kokoro real runtime', () => {
       expect(audio.samples.some((x) => Math.abs(x) > 0.01)).toBe(true);
       console.log(JSON.stringify({ voice, elapsedMs: performance.now() - start, duration: audio.samples.length / audio.sampleRate }));
     }
-  }, 120000);
+  }, 240000);
 });

@@ -70,7 +70,13 @@ export const SPEECH_PACKS: Record<SpeechPackId, SpeechPackDef> = {
     originUrl: TTS_RELEASE + '/kokoro-int8-multi-lang-v1_0.tar.bz2',
     archiveBytes: 132_353_410,
     dirName: 'kokoro-int8-multi-lang-v1_0',
-    requiredFiles: ['model.int8.onnx', 'voices.bin', 'tokens.txt', 'LICENSE', 'espeak-ng-data/phontab', 'espeak-ng-data/it_dict'],
+    requiredFiles: [
+      'model.int8.onnx', 'voices.bin', 'tokens.txt', 'LICENSE',
+      'espeak-ng-data/phontab', 'espeak-ng-data/en_dict', 'espeak-ng-data/es_dict',
+      'espeak-ng-data/fr_dict', 'espeak-ng-data/it_dict',
+      'espeak-ng-data/lang/gmw/en-US', 'espeak-ng-data/lang/roa/es',
+      'espeak-ng-data/lang/roa/fr', 'espeak-ng-data/lang/roa/it',
+    ],
   },
   /** en female + male: vits-piper libritts_r medium, 904 speakers (CC BY 4.0). */
   'tts-en': {

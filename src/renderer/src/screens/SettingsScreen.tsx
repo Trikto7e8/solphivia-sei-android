@@ -62,6 +62,7 @@ import { chatgptReady, useChatgptStore } from '../lib/stores/useChatgptStore';
 import { chatgptPlanIntentStep } from '../lib/chatgptPlanIntent';
 import { pickDefaultChatgptModel } from '@shared/chatgptPlan';
 import { elevenKeySettingMode } from '../lib/voicePicker';
+import { selectedTtsEngine } from '@shared/ttsEngine';
 
 const API_KEY_BULLET_LEN = 24;
 
@@ -74,7 +75,7 @@ const API_KEY_BULLET_LEN = 24;
  * speech:pack-status push.
  */
 const TTS_PACK_ROWS: ReadonlyArray<{ id: string; label: string }> = [
-  { id: 'tts-kokoro', label: 'Kokoro-82M English and Italian voices' },
+  { id: 'tts-kokoro', label: 'Kokoro-82M voices' },
   { id: 'tts-en', label: 'English voices, female and male' },
   { id: 'tts-zh', label: 'Chinese voices, female and male' },
 ];
@@ -534,10 +535,10 @@ export function SettingsScreen(): React.ReactElement {
   // speech through the sherpa-onnx voice packs in main; the per-character
   // ElevenLabs voiceId is KEPT untouched underneath (it still names gender
   // for the local mapping, and a later switch back needs it). ──
-  const ttsEngine: 'elevenlabs' | 'local' = cfg?.tts_engine ?? 'elevenlabs';
-  const onSelectTtsEngine = async (next: 'elevenlabs' | 'local'): Promise<void> => {
+  const ttsEngine = selectedTtsEngine(cfg ?? {});
+  const onSelectTtsEngine = async (next: 'elevenlabs' | 'local' | 'kokoro'): Promise<void> => {
     if (!cfg || next === ttsEngine) return;
-    const updated: UserConfig = { ...cfg, tts_engine: next };
+    const updated: UserConfig = { ...cfg, tts_engine: next, local_tts_voice: 'auto' };
     setCfg(updated);
     try {
       await sei.saveConfig(updated);
@@ -1397,6 +1398,7 @@ export function SettingsScreen(): React.ReactElement {
                 options={[
                   { value: 'elevenlabs', label: t('ElevenLabs') },
                   { value: 'local', label: t('Local') },
+                  { value: 'kokoro', label: 'Kokoro' },
                 ]}
                 onChange={(v) => void onSelectTtsEngine(v)}
               />
@@ -1430,25 +1432,10 @@ export function SettingsScreen(): React.ReactElement {
                     (the English pack holds both speakers). State rides the
                     speech:pack-state push; sizes are the registry's exact
                     bytes. */}
-                <div className={styles.row}>
-                  <label className={styles.label} htmlFor="local-tts-voice">{t('Local voice')}</label>
-                  <select id="local-tts-voice" value={cfg?.local_tts_voice ?? 'auto'}
-                    onChange={async (event) => {
-                      if (!cfg) return;
-                      const value = event.target.value;
-                      if (value !== 'auto' && value !== 'af_heart' && value !== 'if_sara') return;
-                      const updated: UserConfig = { ...cfg, local_tts_voice: value };
-                      setCfg(updated);
-                      try { await sei.saveConfig(updated); }
-                      catch { setCfg(cfg); setSaveError(t('Failed to save. Try again.')); }
-                    }}>
-                    <option value="auto">{t('Automatic local voices')}</option>
-                    <option value="af_heart">Kokoro · af_heart · English</option>
-                    <option value="if_sara">Kokoro · if_sara · Italiano</option>
-                  </select>
-                </div>
-                <p className={styles.helper}>{t('Kokoro uses the selected voice and pronunciation for all companions on this device. Download the Kokoro pack below first.')}</p>
-                {TTS_PACK_ROWS.map((row) => {
+                {ttsEngine === 'kokoro' ? (
+                  <p className={styles.helper}>{t('Kokoro chooses a voice from the chat language and companion gender. Languages or genders without a match use the standard local voice packs. Download the packs you need below.')}</p>
+                ) : null}
+                {TTS_PACK_ROWS.filter((row) => ttsEngine === 'kokoro' || row.id !== 'tts-kokoro').map((row) => {
                   const st = packStates[row.id];
                   return (
                     <div className={styles.row} key={row.id}>

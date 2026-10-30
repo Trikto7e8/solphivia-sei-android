@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { kokoroConfig, KOKORO_VOICES } from './kokoro';
+import { kokoroConfig, KOKORO_VOICES, pickKokoroVoice } from './kokoro';
 import { SPEECH_PACKS, isSpeechPackId } from './packs';
 
 const mocks = vi.hoisted(() => ({
@@ -11,6 +11,19 @@ vi.mock('./packStore', () => ({ packReady: mocks.ready, packModelDir: () => '/mo
 vi.mock('../bundleRequire', () => ({ bundleRequire: () => () => ({ OfflineTts: { createAsync: mocks.create } }) }));
 
 describe('Kokoro local synthesis', () => {
+  it('selects by language and gender without guessing an unavailable match', () => {
+    expect(pickKokoroVoice('female', 'en')).toBe('af_heart');
+    expect(pickKokoroVoice('male', 'en-US')).toBe('am_michael');
+    expect(pickKokoroVoice('female', 'es')).toBe('ef_dora');
+    expect(pickKokoroVoice('male', 'es')).toBe('em_alex');
+    expect(pickKokoroVoice('female', 'fr')).toBe('ff_siwis');
+    expect(pickKokoroVoice('male', 'fr')).toBeNull();
+    expect(pickKokoroVoice('female', 'it')).toBe('if_sara');
+    expect(pickKokoroVoice('male', 'it')).toBe('im_nicola');
+    for (const language of ['ja', 'zh', 'ko', 'constructor', '__proto__']) {
+      expect(pickKokoroVoice('female', language)).toBeNull();
+    }
+  });
   it('registers an optional pack with its actual release size', () => {
     expect(isSpeechPackId('tts-kokoro')).toBe(true);
     expect(SPEECH_PACKS['tts-kokoro'].archiveBytes).toBe(132353410);
@@ -36,7 +49,9 @@ describe('Kokoro local synthesis', () => {
     expect(mocks.create).toHaveBeenCalledTimes(3);
     expect(mocks.generate).toHaveBeenLastCalledWith({ text: 'Hello', sid: 3, speed: 0.8, enableExternalBuffer: false });
     await synthesizeKokoro('Ancora', 'if_sara');
+    await synthesizeKokoro('Hello again', 'am_michael');
     expect(mocks.create).toHaveBeenCalledTimes(3);
+    expect(mocks.generate).toHaveBeenLastCalledWith({ text: 'Hello again', sid: 16, speed: 1, enableExternalBuffer: false });
     mocks.generate.mockResolvedValue({ samples: new Float32Array(), sampleRate: 24000 });
     await expect(synthesizeKokoro('Ciao', 'if_sara')).rejects.toThrow('VOICE_TTS_FAILED');
     mocks.ready.mockResolvedValue(false);

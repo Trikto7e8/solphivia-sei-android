@@ -167,16 +167,16 @@ export async function synthesizeLocal(
 }
 
 /** One engine per phonemizer language: do not mutate a shared engine mid-call. */
-const kokoroEngines = new Map<KokoroVoice, Promise<TtsEngine>>();
+const kokoroEngines = new Map<string, Promise<TtsEngine>>();
 export async function synthesizeKokoro(text: string, voice: KokoroVoice) {
   if (!(await packReady('tts-kokoro'))) throw packMissingError('tts-kokoro');
-  let engine = kokoroEngines.get(voice);
+  const spec = KOKORO_VOICES[voice];
+  let engine = kokoroEngines.get(spec.lang);
   if (!engine) {
     engine = loadSherpa().OfflineTts.createAsync(kokoroConfig(packModelDir('tts-kokoro'), voice)) as Promise<TtsEngine>;
-    kokoroEngines.set(voice, engine);
-    engine.catch(() => kokoroEngines.delete(voice));
+    kokoroEngines.set(spec.lang, engine);
+    engine.catch(() => kokoroEngines.delete(spec.lang));
   }
-  const spec = KOKORO_VOICES[voice];
   const audio = await (await engine).generateAsync({ text, sid: spec.sid, speed: spec.rate, enableExternalBuffer: false });
   if (!audio.samples?.length || !Number.isFinite(audio.sampleRate) || audio.sampleRate <= 0) {
     throw new Error('VOICE_TTS_FAILED: Kokoro produced no usable audio');

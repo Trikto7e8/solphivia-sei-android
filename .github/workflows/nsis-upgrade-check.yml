@@ -53,6 +53,26 @@ name: NSIS Upgrade Check
 # Runner caveat: GitHub's Windows runners are admin with UAC off, so the admin
 # prompt a real per-machine user sees for the old uninstaller cannot appear here.
 #
+# Sei's own update progress window (261030, src/main/updateProgressHelper.ts,
+# resources/update-progress/update-progress.ps1), recorded as VIDEO
+# (ffmpeg gdigrab) plus stills, by scripts/ci/update-progress-check.ps1:
+#   progress-upgrade  the real path: the stable release installed and running,
+#                     the window started through the real launcher
+#                     (scripts/ci/update-progress-launch.ts), then this branch's
+#                     installer with `--updated /S --force-run` under it, the
+#                     arguments of quitAndInstall(true, true). Asserts the window
+#                     is up inside the 7 s ready budget, no installer window,
+#                     Sei back, the window gone once Sei's window shows, the
+#                     bundled fonts in use. Artifact update-progress-upgrade.
+#   progress-preview  stand-in installer and Sei (compiled on the runner, no
+#                     build needed), one run per theme/language, one with
+#                     animations off (reduced motion), one running past its
+#                     estimate ("taking longer"), and `blocked`: a machine
+#                     ExecutionPolicy (what a Group Policy sets) must make the
+#                     launcher report not-ready fast, i.e. the stock installer
+#                     window fallback. Artifacts update-progress-<variant>.
+# Dispatch with suite=progress to run only these (and the build).
+#
 # Run it from the Actions tab (workflow_dispatch), or push to a nsischeck/**
 # branch. It never publishes anything.
 on:
@@ -64,6 +84,12 @@ on:
         description: 'Stable release to upgrade from'
         required: false
         default: 'v0.6.4'
+      suite:
+        description: 'all = every scenario; progress = only the update progress window jobs'
+        required: false
+        default: 'all'
+        type: choice
+        options: [all, progress]
 
 permissions:
   contents: read
@@ -113,6 +139,7 @@ jobs:
 
   upgrade:
     needs: build
+    if: inputs.suite != 'progress'
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -474,6 +501,7 @@ jobs:
   # CopyFromScreen; if the frames come out black, the timing still stands.
   ui:
     needs: build
+    if: inputs.suite != 'progress'
     runs-on: windows-latest
     steps:
       - name: Download new installer
@@ -526,3 +554,103 @@ jobs:
           name: oneclick-ui-shots
           path: shots
           retention-days: 3
+
+  # Sei's update progress window over the real installer (see the header).
+  progress-upgrade:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Bundle the launcher driver
+        shell: bash
+        run: npx --yes esbuild@0.25.12 scripts/ci/update-progress-launch.ts --bundle --platform=node --outfile=upl.cjs
+
+      - name: Install ffmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress | Select-Object -Last 3 }
+          ffmpeg -hide_banner -version | Select-Object -First 1
+
+      - name: Download new installer
+        uses: actions/download-artifact@v4
+        with:
+          name: oneclick-installer
+          path: new
+
+      - name: Download stable installer
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release download $env:STABLE_TAG -R $env:GITHUB_REPOSITORY -p 'Sei-win-x64.exe' -D old
+
+      - name: Update under the progress window (recorded)
+        shell: powershell
+        run: |
+          & .\scripts\ci\update-progress-check.ps1 -Mode upgrade -Theme midnight -Lang en -NewInstaller new\Sei-win-x64.exe -OldInstaller old\Sei-win-x64.exe -OutDir progress-out
+          exit $LASTEXITCODE
+
+      - name: Upload video and stills
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-progress-upgrade
+          path: progress-out
+          if-no-files-found: ignore
+          retention-days: 7
+
+  progress-preview:
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { variant: midnight-en, theme: midnight, lang: en, seconds: 100, history: '', reduced: false, blocked: false }
+          - { variant: ice-zh, theme: ice, lang: zh, seconds: 60, history: '60', reduced: false, blocked: false }
+          - { variant: acorn-en-reduced-motion, theme: acorn, lang: en, seconds: 50, history: '50', reduced: true, blocked: false }
+          - { variant: mint-zh-late, theme: mint, lang: zh, seconds: 90, history: '45', reduced: false, blocked: false }
+          - { variant: blocked-fallback, theme: midnight, lang: en, seconds: 30, history: '', reduced: false, blocked: true }
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Bundle the launcher driver
+        shell: bash
+        run: npx --yes esbuild@0.25.12 scripts/ci/update-progress-launch.ts --bundle --platform=node --outfile=upl.cjs
+
+      - name: Install ffmpeg
+        shell: pwsh
+        run: |
+          if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress | Select-Object -Last 3 }
+          ffmpeg -hide_banner -version | Select-Object -First 1
+
+      - name: Progress window over a stand-in install (recorded)
+        shell: powershell
+        run: |
+          $a = @{ Mode = 'preview'; Theme = '${{ matrix.theme }}'; Lang = '${{ matrix.lang }}'; FakeInstallSeconds = ${{ matrix.seconds }}; History = '${{ matrix.history }}'; OutDir = 'progress-out' }
+          if ('${{ matrix.reduced }}' -eq 'true') { $a.ReducedMotion = $true }
+          if ('${{ matrix.blocked }}' -eq 'true') { $a.Blocked = $true }
+          & .\scripts\ci\update-progress-check.ps1 @a
+          exit $LASTEXITCODE
+
+      - name: Upload video and stills
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: update-progress-${{ matrix.variant }}
+          path: progress-out
+          if-no-files-found: ignore
+          retention-days: 7

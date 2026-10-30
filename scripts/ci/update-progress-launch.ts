@@ -16,7 +16,8 @@
  *
  * Prints one JSON line {ready, reason, dir, ms, estimateSec} (also written to
  * --out) and exits 0 when ready, 1 when not. The window keeps running after
- * this process exits (detached), exactly as it outlives Sei.
+ * this process exits (the script hands over to a grandchild), exactly as it
+ * outlives Sei.
  */
 import { writeFileSync } from 'node:fs';
 import os from 'node:os';

@@ -15,13 +15,15 @@
 # gone but no Sei after 20 s -> start Sei.exe once. Still none 30 s later ->
 # say so, close on a click or after a minute. Hard cap 15 minutes.
 #
-# Contract with the app: it writes `ready` into its folder once the window
-# has drawn its first frame. No `ready` = the app shows the stock installer
-# window instead, so a failure here never leaves the user with nothing.
+# Contract with the app, all files in this folder: `ready` once the window
+# has drawn its first frame; `failed` (the reason) when it cannot get there;
+# `pid` = the window process. The app writes `cancel` when it stops waiting.
+# No `ready` = the app shows the stock installer window instead, so a failure
+# here never leaves the user with nothing. Two stages: see "Stage 1" below.
 #
 # Keep this file ASCII: Windows PowerShell 5.1 reads a BOM-less script in the
 # ANSI code page. Non-English text arrives through config.json (UTF-8).
-param([Parameter(Mandatory = $true)][string]$ConfigPath)
+param([Parameter(Mandatory = $true)][string]$ConfigPath, [switch]$Detached)
 
 $ErrorActionPreference = 'Stop'
 $dir = Split-Path -Parent $ConfigPath
@@ -32,6 +34,32 @@ $startedAt = Get-Date
 function Log([string]$m) {
   try { [IO.File]::AppendAllText($logPath, ('{0,7:n2}s {1}' -f $clock.Elapsed.TotalSeconds, $m) + "`r`n") } catch { }
 }
+
+# Before the first frame, any way out leaves `failed` so the app falls back
+# at once instead of waiting out its ready budget.
+function Quit([int]$code, [string]$why) {
+  Log $why
+  if (-not (Test-Path -LiteralPath (Join-Path $dir 'ready'))) {
+    try { [IO.File]::WriteAllText((Join-Path $dir 'failed'), $why) } catch { }
+  }
+  exit $code
+}
+trap { Quit 1 "fatal: $($_.Exception.Message) (line $($_.InvocationInfo.ScriptLineNumber))" }
+
+# Stage 1. Sei starts this script as an ordinary child: node puts its children
+# in a kill-on-close job, so this process dies when Sei quits into the
+# installer. (Node's `detached` would avoid that, but powershell.exe started
+# as a DETACHED_PROCESS exits at once without running anything, measured on a
+# Windows runner.) So this first copy only starts the real window as a
+# grandchild, which leaves the job (it allows silent breakaway), and exits 0.
+if (-not $Detached) {
+  $exe = Join-Path $PSHOME 'powershell.exe'
+  $argv = '-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -STA -File "{0}" -ConfigPath "{1}" -Detached' -f $MyInvocation.MyCommand.Path, $ConfigPath
+  $child = Start-Process -FilePath $exe -ArgumentList $argv -WindowStyle Hidden -WorkingDirectory $dir -PassThru
+  Log "stage 1: started the window process (pid $($child.Id))"
+  exit 0
+}
+try { [IO.File]::WriteAllText((Join-Path $dir 'pid'), [string]$PID) } catch { }
 
 # Shared mutable state for the event handlers (a hashtable sidesteps the
 # script-scope rules of PowerShell scriptblocks).
@@ -78,8 +106,7 @@ try {
   $cfg = [IO.File]::ReadAllText($ConfigPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
   Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 } catch {
-  Log "init failed: $($_.Exception.Message)"
-  exit 2
+  Quit 2 "init failed: $($_.Exception.Message)"
 }
 Log "start lang=$($cfg.lang) theme=$($cfg.theme) estimate=$($cfg.plan.estimateSec)s"
 
@@ -98,9 +125,9 @@ function CurveAt([double]$t) {
   return $curveP[[int]$i] + ($curveP[[int]$i + 1] - $curveP[[int]$i]) * $f
 }
 function StatusAt([double]$t) {
-  $s = $statusS[0]
-  for ($k = 0; $k -lt $statusT.Count; $k++) { if ($statusT[$k] -le $t) { $s = $statusS[$k] } else { break } }
-  return $s
+  $label = $statusS[0]
+  for ($k = 0; $k -lt $statusT.Count; $k++) { if ($statusT[$k] -le $t) { $label = $statusS[$k] } else { break } }
+  return $label
 }
 
 # ---- palette (mirrors src/renderer/src/styles/tokens.css + the 261029 poster) --
@@ -193,8 +220,7 @@ $xaml = @"
 try {
   $window = [Windows.Markup.XamlReader]::Parse($xaml)
 } catch {
-  Log "xaml failed: $($_.Exception.Message)"
-  exit 3
+  Quit 3 "xaml failed: $($_.Exception.Message)"
 }
 function N([string]$name) { return $window.FindName($name) }
 $Shadow = N 'Shadow'; $ShadowFx = N 'ShadowFx'; $Card = N 'Card'; $Base = N 'Base'; $UnderWrap = N 'UnderWrap'; $Glow = N 'Glow'
@@ -246,11 +272,11 @@ if ($cfg.version) { $Version.Text = 'v' + [string]$cfg.version }
 $Status.Text = StatusAt 0
 
 try {
-  $logo = New-Object Windows.Media.Imaging.BitmapImage
-  $logo.BeginInit(); $logo.CacheOption = 'OnLoad'; $logo.UriSource = [Uri](Join-Path $dir 'sei-text.png'); $logo.EndInit(); $logo.Freeze()
-  $Logo.Width = [math]::Round($Logo.Height * $logo.PixelWidth / $logo.PixelHeight)
+  $logoBmp = New-Object Windows.Media.Imaging.BitmapImage
+  $logoBmp.BeginInit(); $logoBmp.CacheOption = 'OnLoad'; $logoBmp.UriSource = [Uri](Join-Path $dir 'sei-text.png'); $logoBmp.EndInit(); $logoBmp.Freeze()
+  $Logo.Width = [math]::Round($Logo.Height * $logoBmp.PixelWidth / $logoBmp.PixelHeight)
   $Logo.Fill = $textBrush
-  $Logo.OpacityMask = New-Object Windows.Media.ImageBrush $logo
+  $Logo.OpacityMask = New-Object Windows.Media.ImageBrush $logoBmp
   [Windows.Media.RenderOptions]::SetBitmapScalingMode($Logo, [Windows.Media.BitmapScalingMode]::HighQuality)
 } catch { Log "logo: $($_.Exception.Message)"; $Logo.Visibility = 'Collapsed' }
 
@@ -556,11 +582,13 @@ try {
   # into SW_HIDE (STARTUPINFO). Showing twice makes the second call the real
   # one; the window is fully transparent until the fade-in, so either way
   # nothing flickers.
+  # The app gave up waiting (its ready budget ran out): never show a window
+  # over the stock installer it is starting instead.
+  if (Test-Path -LiteralPath (Join-Path $dir 'cancel')) { Log 'cancelled by the app before showing'; exit 0 }
   $window.Show(); $window.Hide(); $window.Show()
   [Windows.Threading.Dispatcher]::Run()
 } catch {
-  Log "run: $($_.Exception.Message)"
-  exit 4
+  Quit 4 "run: $($_.Exception.Message)"
 }
 if (-not $S.outcome) { $S.outcome = 'closed'; Write-Result }
 Log 'exit'

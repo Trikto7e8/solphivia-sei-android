@@ -24,10 +24,15 @@
  *
  * Fail safe: launchUpdateProgressHelper resolves `ready: true` only once the
  * window has drawn its first frame (the script writes `ready` into its folder
- * from ContentRendered). Anything else (spawn error, the script exiting, a
- * Group Policy or Constrained Language Mode block, no `ready` within
- * READY_TIMEOUT_MS) kills the process and resolves `ready: false`, and
- * updater.ts runs the visible stock installer instead, exactly as before.
+ * from ContentRendered). Anything else (spawn error, the script exiting
+ * nonzero, the window process writing `failed`, a Group Policy or
+ * Constrained Language Mode block, no `ready` within READY_TIMEOUT_MS) writes
+ * `cancel`, kills both stages and resolves `ready: false`, and updater.ts
+ * runs the visible stock installer instead, exactly as before.
+ *
+ * Two stages: the script Sei starts only re-launches itself with -Detached
+ * (Start-Process, hidden) and exits 0. That grandchild is the window and
+ * records its pid. See the spawn below for why.
  *
  * Progress is time-based: an installer run silently exposes nothing to read.
  * This module computes the whole plan (bar curve, status lines, copy) and
@@ -38,7 +43,7 @@
  * supplies the Electron-specific inputs.
  */
 import { spawn, type ChildProcess } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** Default install estimate: the measured real-user median (261030). */
@@ -345,6 +350,21 @@ export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<H
     } catch {
       // Already gone.
     }
+    if (!dir) return;
+    // The window process is the script's second stage (see below), so the
+    // handle on `child` is not enough: tell a late starter to stand down and
+    // end a running one by the pid it recorded.
+    try {
+      writeFileSync(path.join(dir, 'cancel'), 'cancel');
+    } catch {
+      // Folder gone.
+    }
+    try {
+      const pid = Number(readFileSync(path.join(dir, 'pid'), 'utf8').trim());
+      if (Number.isInteger(pid) && pid > 0 && pid !== process.pid) process.kill(pid);
+    } catch {
+      // No pid yet, or already gone.
+    }
   };
   const fail = (reason: string): HelperHandle => {
     kill();
@@ -361,17 +381,20 @@ export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<H
     const command = opts.command ?? powershellPath();
     const args = (opts.args ?? powershellArgs)(scriptPath, configPath);
     const doSpawn = opts.spawnImpl ?? spawn;
-    // detached: outlives Sei's quit (as electron-updater spawns the installer)
-    // and, as a DETACHED_PROCESS, gets no console window. windowsHide keeps a
-    // console hidden should one appear anyway; the script re-shows its own
-    // window once, since that SW_HIDE applies to the first window shown.
-    child = doSpawn(command, args, { cwd: dir, detached: true, stdio: 'ignore', windowsHide: true });
+    // NOT detached: powershell.exe started as a DETACHED_PROCESS exits at once
+    // (code 0) without running the script, measured on a Windows runner. An
+    // attached child sits in node's kill-on-close job and would die with Sei,
+    // so the script's first stage only starts the real window as a
+    // grandchild (which leaves the job) and exits 0. windowsHide gives the
+    // first stage a console with no window.
+    child = doSpawn(command, args, { cwd: dir, stdio: 'ignore', windowsHide: true });
   } catch (err) {
     return fail(`start failed: ${(err as Error).message}`);
   }
 
   const proc = child;
   const readyFile = path.join(dir, 'ready');
+  const failedFile = path.join(dir, 'failed');
   const outcome = await new Promise<string>((resolve) => {
     let settled = false;
     const finish = (why: string): void => {
@@ -382,9 +405,23 @@ export async function launchUpdateProgressHelper(opts: LaunchOptions): Promise<H
       resolve(why);
     };
     proc.once('error', (err) => finish(`spawn error: ${err.message}`));
-    proc.once('exit', (code) => finish(`exited early (code ${code})`));
+    // Exit 0 is the first stage handing over to the window process; anything
+    // else means the script never got that far (a Group Policy block, a
+    // parse error, a failed hand-over).
+    proc.once('exit', (code, signal) => {
+      if (code !== 0) finish(`exited early (${code === null ? `signal ${signal}` : `code ${code}`})`);
+    });
     const poll = setInterval(() => {
-      if (existsSync(readyFile)) finish('');
+      if (existsSync(readyFile)) return finish('');
+      if (existsSync(failedFile)) {
+        let why = '';
+        try {
+          why = readFileSync(failedFile, 'utf8').trim().slice(0, 300);
+        } catch {
+          // Unreadable: the generic reason will do.
+        }
+        finish(`window failed: ${why || 'unknown'}`);
+      }
     }, 100);
     const timer = setTimeout(() => finish(`no first frame within ${timeoutMs} ms`), timeoutMs);
   });

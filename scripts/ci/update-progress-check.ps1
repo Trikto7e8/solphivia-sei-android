@@ -207,6 +207,7 @@ Note ("click -> launcher answer: {0} ms, ready={1} reason='{2}' estimate={3}s" -
 if ($Blocked) {
   if ($drv.ready) { Fail 'the window came up although PowerShell scripts are blocked by policy' }
   elseif ($drv.ms -gt 7500) { Fail "the blocked launch took $($drv.ms) ms to fall back" }
+  elseif ($drv.reason -notmatch 'exited early') { Fail "expected the policy to stop the script outright, got '$($drv.reason)'" }
   else { Note "fallback OK: '$($drv.reason)' after $($drv.ms) ms (the app would now run the stock installer window)" }
   $left = @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like '*update-progress.ps1*' })
   if ($left.Count -gt 0) { Fail 'a helper process is still running after the fallback' }

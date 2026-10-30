@@ -217,6 +217,20 @@ describe('shipped resources', () => {
     for (const k of used) expect(Object.keys(cfg), k).toContain(k);
     for (const k of copyUsed) expect(Object.keys(cfg.copy), k).toContain(k);
   });
+
+  it('never spells one variable two ways (PowerShell names ignore case)', () => {
+    // $logo (a BitmapImage) once overwrote $Logo (the XAML element), and the
+    // script died before its first frame on a real Windows runner.
+    const ps1 = readFileSync(path.join(RESOURCES, 'update-progress.ps1'), 'utf8');
+    const spellings = new Map<string, Set<string>>();
+    for (const [, name] of ps1.matchAll(/\$([A-Za-z_][A-Za-z0-9_]*)/g)) {
+      const key = name.toLowerCase();
+      if (!spellings.has(key)) spellings.set(key, new Set());
+      spellings.get(key)!.add(name);
+    }
+    const clashes = [...spellings.values()].filter((v) => v.size > 1).map((v) => [...v].join('/'));
+    expect(clashes).toEqual([]);
+  });
 });
 
 describe('launchUpdateProgressHelper (fail safe)', () => {
@@ -280,6 +294,42 @@ describe('launchUpdateProgressHelper (fail safe)', () => {
     expect(h.reason).toContain('exited early (code 3)');
   });
 
+  it('follows a first stage that exits 0 and hands over to a window process', async () => {
+    const stage2 = fake(
+      'stage2.js',
+      `const fs=require('fs'),p=require('path');const d=p.dirname(process.argv[2]);
+       fs.writeFileSync(p.join(d,'pid'),String(process.pid));
+       setTimeout(()=>fs.writeFileSync(p.join(d,'ready'),'ready'),300);setInterval(()=>{},1000);`,
+    );
+    const stage1 = fake(
+      'stage1.js',
+      `const {spawn}=require('child_process');
+       spawn(process.execPath,[${JSON.stringify(stage2)},process.argv[2]],{detached:true,stdio:'ignore'}).unref();
+       process.exit(0);`,
+    );
+    const h = await launch(stage1);
+    expect(h.ready).toBe(true);
+    const pid = Number(readFileSync(path.join(h.dir, 'pid'), 'utf8'));
+    expect(() => process.kill(pid, 0)).not.toThrow();
+    h.kill();
+    await new Promise((r) => setTimeout(r, 200));
+    expect(() => process.kill(pid, 0)).toThrow();
+    expect(existsSync(path.join(h.dir, 'cancel'))).toBe(true);
+  });
+
+  it('falls back at once when the window process reports `failed`', async () => {
+    const script = fake(
+      'failed.js',
+      `const fs=require('fs'),p=require('path');const d=p.dirname(process.argv[2]);
+       setTimeout(()=>fs.writeFileSync(p.join(d,'failed'),'xaml failed: boom'),100);setInterval(()=>{},1000);`,
+    );
+    const t0 = Date.now();
+    const h = await launch(script);
+    expect(h.ready).toBe(false);
+    expect(h.reason).toBe('window failed: xaml failed: boom');
+    expect(Date.now() - t0).toBeLessThan(1_500);
+  });
+
   it('kills a script that never draws, at the timeout', async () => {
     const script = fake(
       'hang.js',
@@ -293,6 +343,7 @@ describe('launchUpdateProgressHelper (fail safe)', () => {
     const pid = Number(readFileSync(path.join(h.dir, 'pid'), 'utf8'));
     await new Promise((r) => setTimeout(r, 200));
     expect(() => process.kill(pid, 0)).toThrow();
+    expect(existsSync(path.join(h.dir, 'cancel'))).toBe(true);
   });
 
   it('is not ready when the command cannot start', async () => {

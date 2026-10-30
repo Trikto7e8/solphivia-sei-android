@@ -640,11 +640,6 @@ jobs:
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress | Select-Object -Last 3 }
           ffmpeg -hide_banner -version | Select-Object -First 1
 
-      - name: Spawn diagnostic (how node can start powershell here)
-        if: matrix.variant == 'midnight-en'
-        continue-on-error: true
-        run: node scripts/ci/spawn-diag.cjs
-
       - name: Progress window over a stand-in install (recorded)
         shell: powershell
         run: |

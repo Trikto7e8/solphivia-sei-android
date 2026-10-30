@@ -534,6 +534,28 @@ export function CallOverlay(): React.ReactElement | null {
           {onCall && (
             <button
               type="button"
+              className={styles.chromeBtn}
+              title="Interrupt"
+              aria-label="Interrupt"
+              onClick={() => void sei.avatarOverlayInterrupt?.().catch(() => {})}
+            >
+              {/* Raised palm (HandIcon), redrawn on the 12px chrome grid. */}
+              <svg width="12" height="12" viewBox="0 0 24 24" aria-hidden="true">
+                <path
+                  d="M18 11V6a2 2 0 0 0-4 0 M14 10V4a2 2 0 0 0-4 0v6 M10 10.5V6a2 2 0 0 0-4 0v8 M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.9-6-2.3l-3.6-3.6a2 2 0 0 1 2.8-2.8L7 15"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.4"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+            </button>
+          )}
+
+          {onCall && (
+            <button
+              type="button"
               className={`${styles.chromeBtn} ${state.captionsOn ? styles.chromeBtnToggled : ''}`}
               title="Captions"
               aria-pressed={state.captionsOn === true}

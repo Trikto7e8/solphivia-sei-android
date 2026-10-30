@@ -17,6 +17,11 @@
  * ends so each surface can route (the fullscreen view navigates back to chat;
  * the in-game cluster simply disappears when the call state clears).
  *
+ * 261030: the interrupt pill (raised hand), right after deafen, while the call is
+ * live. Same cut as a confirmed voice barge-in (useVoiceStore.interrupt), for
+ * when talking over her does not work: a loud game, a noisy room, a shy
+ * player. Space does the same on the call screen (VoiceCallScreen).
+ *
  * 260803: the screen-share button. This is the ONLY entry point to backseat now
  * that the "Backseat" tile is gone from the games picker, and it is here rather
  * than in the games grid because sharing a screen is not a game, it is a thing
@@ -41,6 +46,7 @@ import {
   MicOffIcon,
   HeadphonesIcon,
   HeadphonesOffIcon,
+  HandIcon,
   MountainIcon,
   PhoneOffIcon,
   ScreenShareIcon,
@@ -48,6 +54,7 @@ import {
 } from '../icons';
 import { useT } from '../../lib/i18n';
 import { visionBlocked, visionGateReason } from '../../lib/visionGate';
+import { isInterruptKey } from '../../lib/voice/interruptKey';
 import styles from './CallControls.module.css';
 
 export interface CallControlsProps {
@@ -67,6 +74,12 @@ export interface CallControlsProps {
    * the theme-tinted fill for a fixed dark scrim (see the CSS).
    */
   onArt?: boolean;
+  /**
+   * 261030: Space interrupts the companion while this row is mounted. Only the
+   * call screen opts in: the in-game cluster sits next to game surfaces where
+   * Space may already mean something.
+   */
+  spaceToInterrupt?: boolean;
 }
 
 export function CallControls({
@@ -75,6 +88,7 @@ export function CallControls({
   backdrop,
   onToggleBackdrop,
   onArt,
+  spaceToInterrupt,
 }: CallControlsProps): React.ReactElement {
   const t = useT();
   const muted = useUiStore((s) => s.callMuted);
@@ -82,6 +96,21 @@ export function CallControls({
   const deafened = useUiStore((s) => s.callDeafened);
   const setDeafened = useUiStore((s) => s.setCallDeafened);
   const endCall = useVoiceStore((s) => s.endCall);
+  // 261030: the manual interrupt. Live calls only: while ringing there is
+  // nothing to cut, and a disabled pill would just be noise in the row.
+  const interrupt = useVoiceStore((s) => s.interrupt);
+  const callLive = useVoiceStore((s) => s.status === 'live');
+  const modalOpen = useUiStore((s) => s.modal !== null);
+  React.useEffect(() => {
+    if (!spaceToInterrupt || !callLive || modalOpen) return;
+    const onKey = (e: KeyboardEvent): void => {
+      if (!isInterruptKey(e)) return;
+      e.preventDefault(); // no page scroll
+      interrupt();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [spaceToInterrupt, callLive, modalOpen, interrupt]);
 
   // Screen share. The target is the call's first participant, the same one the
   // participant tiles route to, so this needs no prop that the two mount sites
@@ -151,6 +180,18 @@ export function CallControls({
       >
         {deafened ? <HeadphonesOffIcon size={iconPx} /> : <HeadphonesIcon size={iconPx} />}
       </button>
+
+      {callLive ? (
+        <button
+          type="button"
+          className={btn}
+          onClick={interrupt}
+          aria-label={t('Interrupt')}
+          title={spaceToInterrupt ? t('Interrupt (Space)') : t('Interrupt')}
+        >
+          <HandIcon size={iconPx} />
+        </button>
+      ) : null}
 
       {onToggleBackdrop ? (
         <button

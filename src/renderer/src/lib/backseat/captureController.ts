@@ -125,6 +125,16 @@ export interface CaptureHandle {
    *  the words that were still being transcribed. */
   echoFlush: () => Promise<void>;
   /**
+   * 261030: the echo reference also carries SEI'S OWN output. True for a
+   * 'track' source (Windows desktop loopback, or a virtual output device):
+   * both record the whole system mix, so the companion's TTS lands in the
+   * screen transcript and contour too. False for the macOS SCK tap, which
+   * excludes Sei. The mic echo check uses it to keep her words, which it
+   * already judges against her known lines, from counting as SCREEN evidence
+   * against the player's own interruption.
+   */
+  echoRefHasOwnAudio: boolean;
+  /**
    * 261010 staleness gate: how far the screen has moved since `at` (a line's
    * frame time), as blockMaxDelta between the thumbnails nearest `at` and
    * now (0..1). Null when there is no thumbnail within a second of `at`.
@@ -1008,6 +1018,7 @@ export async function startCapture(
       // 3s chunk, and the sentence the speakers were mid-way through matters.
       transcript: stt.textAround(t0 - 1_500, t1 + 1_500),
     }),
+    echoRefHasOwnAudio: audioSource.kind === 'track',
     echoFlush: async () => {
       try {
         await stt.tickTranscript();

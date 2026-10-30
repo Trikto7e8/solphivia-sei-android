@@ -40,6 +40,7 @@ import {
 import { GAME_IDS, isGameId, type GameId, type WorldState, type WorldStates } from '../shared/gameIpc';
 import type { HomeNextStep } from '../shared/homeNextStep';
 import { BACKSEAT_START_TRIGGERS, CALL_END_REASONS } from '../shared/callEndReasons';
+import type { CallInterruptCounts } from '../shared/callInterrupts';
 import { CharacterSchema, UserConfigSchema, UserPreferencesSchema, MAX_COMPANION_SLOTS, type Character, type UserConfig } from '../shared/characterSchema';
 import { SHOWN_PROVIDERS, GRANDFATHERED_PROVIDERS, type ProviderKind } from '../shared/llmCatalog';
 import { loadConfig } from './configStore';
@@ -210,7 +211,12 @@ export interface IpcHandlerDeps {
    * reports how long audio flowed). Posts the "You and X called for Y" system
    * row to the transcript. Wired in index.ts to emitCallSession.
    */
-  notifyCallEnded?: (characterId: string, connectedMs: number, reason: string) => void;
+  notifyCallEnded?: (
+    characterId: string,
+    connectedMs: number,
+    reason: string,
+    interrupts?: CallInterruptCounts,
+  ) => void;
   /**
    * Voice calls (260705): the call pipeline went live — make the companion
    * speak first. In-game → supervisor.greetVoiceCall port event; idle → a
@@ -2120,6 +2126,15 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         live: z.boolean().optional(),
         // Hang-up only (261023): why the call ended, for voice_call_ended.
         reason: z.enum(CALL_END_REASONS).optional(),
+        // Hang-up only (261030): interrupt counts for voice_call_ended.
+        interrupts: z
+          .object({
+            ducks: z.number().int().nonnegative(),
+            cuts: z.number().int().nonnegative(),
+            echo_rejected: z.number().int().nonnegative(),
+            manual: z.number().int().nonnegative(),
+          })
+          .optional(),
       })
       .parse(argsRaw);
     // The state transition and its account-switch cases live in callState
@@ -2127,7 +2142,9 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
     const { applyCallReport } = await import('./voice/callState');
     const fx = applyCallReport(args);
     if (fx.voiceCall !== null) deps.supervisor.setVoiceCall(args.characterId, fx.voiceCall);
-    if (fx.endedMs !== null) deps.notifyCallEnded?.(args.characterId, fx.endedMs, args.reason ?? 'unspecified');
+    if (fx.endedMs !== null) {
+      deps.notifyCallEnded?.(args.characterId, fx.endedMs, args.reason ?? 'unspecified', args.interrupts);
+    }
     if (!fx.stamp) return;
     // Presence (260707): a call is a real interaction, so stamp last_chatted at
     // BOTH edges. Game sessions and text chat already drive the "online" dot;
@@ -2445,6 +2462,14 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
   ipcMain.handle(IpcChannel.avatar.overlayMute, async () => {
     for (const w of BrowserWindow.getAllWindows()) {
       if (!w.isDestroyed()) w.webContents.send(IpcChannel.avatar.muteRequest);
+    }
+  });
+
+  // Overlay interrupt button (261030) → relay to the main window, which owns
+  // the call (useVoiceStore.interrupt runs the barge-in cut).
+  ipcMain.handle(IpcChannel.avatar.overlayInterrupt, async () => {
+    for (const w of BrowserWindow.getAllWindows()) {
+      if (!w.isDestroyed()) w.webContents.send(IpcChannel.avatar.interruptRequest);
     }
   });
 

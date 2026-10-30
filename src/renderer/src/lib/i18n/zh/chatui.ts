@@ -58,6 +58,8 @@ export const ZH_CHATUI: Record<string, string> = {
   'Stop sharing': '停止共享',
   'Stop sharing your screen': '停止共享你的屏幕',
   'Hang up': '挂断',
+  'Interrupt': '打断',
+  'Interrupt (Space)': '打断（空格键）',
 
   // Screen share (Backseat)
   'Backseat (beta)': 'Backseat（测试版）',

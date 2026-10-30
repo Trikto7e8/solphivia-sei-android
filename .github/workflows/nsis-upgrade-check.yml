@@ -71,7 +71,8 @@ name: NSIS Upgrade Check
 #                     ExecutionPolicy (what a Group Policy sets) must make the
 #                     launcher report not-ready fast, i.e. the stock installer
 #                     window fallback. Artifacts update-progress-<variant>.
-# Dispatch with suite=progress to run only these (and the build).
+# Dispatch with suite=progress to run only these (and the build), or
+# suite=preview for progress-preview alone (no build, a few minutes).
 #
 # Run it from the Actions tab (workflow_dispatch), or push to a nsischeck/**
 # branch. It never publishes anything.
@@ -85,11 +86,11 @@ on:
         required: false
         default: 'v0.6.4'
       suite:
-        description: 'all = every scenario; progress = only the update progress window jobs'
+        description: 'all = every scenario; progress = only the update progress window jobs; preview = only the stand-in progress previews (no build)'
         required: false
         default: 'all'
         type: choice
-        options: [all, progress]
+        options: [all, progress, preview]
 
 permissions:
   contents: read
@@ -99,6 +100,7 @@ env:
 
 jobs:
   build:
+    if: inputs.suite != 'preview'
     runs-on: windows-latest
     steps:
       - name: Checkout
@@ -139,7 +141,7 @@ jobs:
 
   upgrade:
     needs: build
-    if: inputs.suite != 'progress'
+    if: inputs.suite != 'progress' && inputs.suite != 'preview'
     runs-on: windows-latest
     timeout-minutes: 30
     strategy:
@@ -501,7 +503,7 @@ jobs:
   # CopyFromScreen; if the frames come out black, the timing still stands.
   ui:
     needs: build
-    if: inputs.suite != 'progress'
+    if: inputs.suite != 'progress' && inputs.suite != 'preview'
     runs-on: windows-latest
     steps:
       - name: Download new installer
@@ -558,6 +560,7 @@ jobs:
   # Sei's update progress window over the real installer (see the header).
   progress-upgrade:
     needs: build
+    if: inputs.suite != 'preview'
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
@@ -636,6 +639,11 @@ jobs:
         run: |
           if (-not (Get-Command ffmpeg -ErrorAction SilentlyContinue)) { choco install ffmpeg -y --no-progress | Select-Object -Last 3 }
           ffmpeg -hide_banner -version | Select-Object -First 1
+
+      - name: Spawn diagnostic (how node can start powershell here)
+        if: matrix.variant == 'midnight-en'
+        continue-on-error: true
+        run: node scripts/ci/spawn-diag.cjs
 
       - name: Progress window over a stand-in install (recorded)
         shell: powershell

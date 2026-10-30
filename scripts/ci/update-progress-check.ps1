@@ -223,6 +223,19 @@ if ($Blocked) {
 if (-not $drv.ready) {
   Fail "the progress window did not come up: $($drv.reason)"
   $p = $null
+  # Diagnose: run the same script attached, with its output captured.
+  if ($drv.dir -and (Test-Path (Join-Path $drv.dir 'update-progress.ps1'))) {
+    $ps = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    $so = Join-Path $OutDir 'direct-stdout.txt'; $se = Join-Path $OutDir 'direct-stderr.txt'
+    $dp = Start-Process -FilePath $ps -PassThru -WindowStyle Hidden -RedirectStandardOutput $so -RedirectStandardError $se -ArgumentList @(
+      '-NoLogo', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-STA', '-File',
+      ('"{0}"' -f (Join-Path $drv.dir 'update-progress.ps1')), '-ConfigPath', ('"{0}"' -f (Join-Path $drv.dir 'config.json')))
+    $null = $dp.Handle
+    if (-not $dp.WaitForExit(10000)) { Note 'direct run: still running after 10 s (killed)'; Stop-Process -Id $dp.Id -Force -ErrorAction SilentlyContinue }
+    else { Note "direct run: exit $($dp.ExitCode)" }
+    foreach ($f in @($so, $se)) { if (Test-Path $f) { Get-Content $f | Select-Object -First 30 | ForEach-Object { Note "  $(Split-Path -Leaf $f): $_" } } }
+    if (Test-Path (Join-Path $drv.dir 'helper.log')) { Get-Content (Join-Path $drv.dir 'helper.log') | Select-Object -First 30 | ForEach-Object { Note "  helper.log: $_" } }
+  }
 } else {
   if ($drv.ms -gt 7000) { Fail "first frame took $($drv.ms) ms (budget 7000)" }
   $helper = Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" | Where-Object { $_.CommandLine -like "*$(Split-Path -Leaf $drv.dir)*" } | Select-Object -First 1

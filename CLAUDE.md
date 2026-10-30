@@ -3530,7 +3530,12 @@ feed (`publish: github`, `sei-studio/sei`). It is loaded **only behind
 `app.isPackaged`** — `autoUpdater` throws when unpackaged, so dev runs the pure
 policy functions only. A side-channel `GET https://sei.gg/version.json` carries
 `{ version, apply, changelog }` to decide ask-first vs silent install. On macOS
-updates install from the zip artifact.
+updates install from the zip artifact. Semver alone sets the level (patch =
+mandatory, minor/major = optional, `updatePolicy.ts`), except that an optional
+`minSupported` in the policy feed (version.json, and version-beta.json for
+beta users) makes the update mandatory for installs below it
+(`applyMinSupported`, 261031); missing or invalid = no effect, timing still
+from `apply`. Velopack installs share this path.
 
 **The download never blocks the app (260801).** Two renderer surfaces, split by
 whether the state needs a decision right now: `UpdatePopup` is the modal (the

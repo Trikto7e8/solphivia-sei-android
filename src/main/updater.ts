@@ -36,9 +36,11 @@ import { existsSync } from 'node:fs';
 import { app, net, powerMonitor, type BrowserWindow } from 'electron';
 import { IpcChannel, type WhatsNewEvent } from '../shared/ipc';
 import {
+  applyMinSupported,
   deriveLevel,
   isMissingReleaseArtifacts,
   normalizeApply,
+  parseMinSupported,
   shouldShowWhatsNew,
   type ApplyTiming,
 } from './updatePolicy';
@@ -108,6 +110,8 @@ interface VersionPolicy {
   apply: ApplyTiming;
   changelog: string | null;
   downloadUrl: string;
+  /** Installs below this version must update (mandatory); null = no floor. */
+  minSupported: string | null;
 }
 
 /** Module singleton — set once by initUpdater. */
@@ -334,6 +338,7 @@ function fetchPolicyFrom(url: string): Promise<VersionPolicy | null> {
             changelog,
             downloadUrl:
               typeof json.downloadUrl === 'string' ? json.downloadUrl : 'https://sei.gg/',
+            minSupported: parseMinSupported(json.minSupported),
           });
         } catch {
           resolve(null);
@@ -497,7 +502,8 @@ function ensureAutoUpdater(): AutoUpdater | null {
 
 /**
  * Handle electron-updater's `update-available`. Derives the level from semver,
- * fetches the version.json policy (changelog + apply), and branches:
+ * fetches the version.json policy (changelog + apply + minSupported, which
+ * raises optional to mandatory below it), and branches:
  *   - optional → push app:update-available (no download yet).
  *   - mandatory → downloadUpdate() silently + stash the pending changelog;
  *     the actual install timing is decided in handleUpdateDownloaded.
@@ -514,8 +520,8 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
       ? (info as { version: string }).version
       : '';
   const currentVersion = app.getVersion();
-  const level = deriveLevel(currentVersion, latestVersion);
-  if (level === 'none') {
+  const semverLevel = deriveLevel(currentVersion, latestVersion);
+  if (semverLevel === 'none') {
     // electron-updater thinks newer, our policy says no (downgrade/equal/
     // unparseable) — treat as up to date (silently for a background check).
     if (!fromBackground) send(IpcChannel.app.updateNotAvailable);
@@ -535,6 +541,12 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
   //     mid-session. Reserve it for updates worth interrupting a live game or
   //     call for; everything else ships as on-restart.
   const apply = policy?.apply ?? 'on-restart';
+  // minSupported (261031): an install below the feed's floor takes even a
+  // minor/major update the mandatory way. Same apply timing as a patch.
+  const level = applyMinSupported(semverLevel, currentVersion, policy?.minSupported);
+  if (level !== semverLevel) {
+    logger.info(`updater: ${currentVersion} is below minSupported ${policy?.minSupported}; ${latestVersion} is mandatory`);
+  }
 
   if (level === 'optional') {
     mandatoryApply = null;
@@ -549,8 +561,9 @@ async function handleUpdateAvailable(info: unknown): Promise<void> {
     return;
   }
 
-  // mandatory (patch-only) → silent download. Stash the changelog so it can be
-  // shown on the next launch (on-restart) or right after the forced restart.
+  // mandatory (patch-only, or below minSupported) → silent download. Stash
+  // the changelog so it can be shown on the next launch (on-restart) or right
+  // after the forced restart.
   mandatoryApply = apply;
   try {
     const state = await loadUpdateState();

@@ -20,7 +20,12 @@
 //   death      the death turn itself is live (the history stops before it).
 //   armed_threat  control: the same threat with her sword still in the bag
 //              (no death). The armed text is unchanged, ok = she attacks.
-// bad (all but armed_threat) = an attackEntity call in the live turn(s).
+//   never_threat / never_hit / never_held  the early game: she never had a
+//              weapon (wooden pickaxe and logs), killed the zombie with the
+//              pickaxe, no death. These must behave as on dev (dev text),
+//              ok = she attacks.
+// bad (threat, hit, held, death) = an attackEntity call in the live turn(s).
+// The stub death sets the lost-weapon mark the way deathTracker does.
 //
 //   ELECTRON_RUN_AS_NODE=1 npx electron scripts/quality-eval/pass31-probe.mjs \
 //     --out DIR [--root TREE] [--reps 8] [--cases a,b]
@@ -136,12 +141,27 @@ const attackJudge = (wantAttack) => (r) => {
   const says = r.says.join(' | ')
   return { ok: wantAttack ? att > 0 : att === 0, attacked: att > 0, noWeapon: /no (sword|weapon)|without (a |my )?(sword|weapon)|bare.?hand|fists?|punch/i.test(says), said: says || null, acted: r.acts.map((a) => a.name) }
 }
+// Never had a weapon: the early game, a wooden pickaxe and logs. The fight
+// texts and the automatic defend must behave exactly as on dev.
+const PICK = [['wooden_pickaxe', 1], ['oak_log', 6], ['bread', 8]]
+const KILL_PICK = 'killed zombie (9 hits). You took 6 damage in this fight and are at 14/20 health.'
+const BEFORE_PICK = [
+  { t: 0, idle: true, firstSpawn: true, uses: [['say', { text: "ok we're in. alex, i'm sui. night already, lol" }], ['setGoal', { text: OWN_GOAL }]] },
+  { t: 8, player: 'its getting dark already... kinda nervous about mobs tbh', uses: [['say', { text: "stay close to me alex. all i got is a pickaxe but we're fine" }]] },
+  { t: 20, event: 'sei:attacked', data: { attacker: zombieA, attackerLabel: 'zombie', attackerKind: 'hostile_mob', pvp: false, health: 14 },
+    uses: [['say', { text: "oh it's ON. zombie on me" }], ['attackEntity', { entity: 'zombie', times: 10 }, { result: KILL_PICK, inv: [...PICK, ['rotten_flesh', 1]] }]] },
+  { t: 32, player: 'ok thanks sui. stay close pls', uses: [['say', { text: "not going anywhere" }]] },
+]
+const PICK_WORLD = { inv: PICK, holding: 'wooden_pickaxe (50/59)' }
 const CASES = {
   threat: { world: { inv: SWORD, holding: 'stone_sword (125/131)' }, steps: [...DIED, { t: 60, event: 'sei:attacked', data: THREAT, live: true }], judge: attackJudge(false) },
   hit: { world: { inv: SWORD, holding: 'stone_sword (125/131)' }, steps: [...DIED, { t: 60, event: 'sei:attacked', data: HIT, live: true }], judge: attackJudge(false) },
   held: { world: { inv: SWORD, holding: 'stone_sword (125/131)' }, steps: [...DIED, { t: 60, event: 'sei:attacked', data: HELD, live: true }], judge: attackJudge(false) },
   death: { world: { inv: SWORD, holding: 'stone_sword (125/131)' }, steps: [...BEFORE, { t: 50, event: 'sei:death', data: DEATH, inv: [], live: true }], judge: attackJudge(false) },
   armed_threat: { world: { inv: SWORD, holding: 'stone_sword (125/131)' }, steps: [...BEFORE, { t: 60, event: 'sei:attacked', data: THREAT, live: true }], judge: attackJudge(true) },
+  never_threat: { world: PICK_WORLD, steps: [...BEFORE_PICK, { t: 60, event: 'sei:attacked', data: THREAT, live: true }], judge: attackJudge(true) },
+  never_hit: { world: PICK_WORLD, steps: [...BEFORE_PICK, { t: 60, event: 'sei:attacked', data: HIT, live: true }], judge: attackJudge(true) },
+  never_held: { world: PICK_WORLD, steps: [...BEFORE_PICK, { t: 60, event: 'sei:attacked', data: HELD, live: true }], judge: attackJudge(true) },
 }
 
 // ---- runner ---------------------------------------------------------------
@@ -177,6 +197,7 @@ async function runOne({ cid, rep }) {
     entity: { position: { x: 172, y: 71, z: -1 } }, health: 20, food: 20, game: { dimension: 'overworld' },
     inventory: { items: () => (world.inv ?? []).map(([name, count]) => ({ name, count })) },
   }
+  const weaponSel = await imp('src/bot/adapter/minecraft/behaviors/weaponSelect.js')
   const realAdapter = createMinecraftAdapter({ bot, config, visionEnabled: false })
   const acts = []
   let live = false
@@ -322,6 +343,8 @@ async function runOne({ cid, rep }) {
           world.inv = st.inv ?? []
           world.holding = 'nothing'
           world.dead = true
+          // What deathTracker does on a real death (absent on refs before 261030).
+          try { weaponSel.noteLostWeapon?.(bot, st.data.lost) } catch {}
           try { orch.recordGameEvent?.('death', { deathText: st.data.deathText }) } catch {}
         } else {
           try { orch.recordGameEvent?.('attacked', st.data) } catch {}

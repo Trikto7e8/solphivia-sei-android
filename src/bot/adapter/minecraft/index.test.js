@@ -117,3 +117,20 @@ describe('look registration through the production construction shape', () => {
     expect(src).toMatch(/createMinecraftAdapter\(\{\s*bot:\s*_bot,\s*config,\s*visionEnabled:\s*true\s*\}\)/)
   })
 })
+
+// 261030 (quality pass 31): the adapter's eventAddendum is where the unarmed
+// flag is read (withWeaponState), live from the inventory when the turn is
+// written. Armed turns must get the dev text unchanged.
+describe('adapter.eventAddendum reads the weapon state when the turn is written', () => {
+  it('unarmed picks the get-away text, a picked-up sword flips it back to the armed text', async () => {
+    const { ATTACKED_ADDENDUM_MOB, attackedMobUnarmed } = await import('../../brain/promptLibrary.js')
+    let items = []
+    const bot = { chat: vi.fn(), username: 'sei', players: {}, inventory: { items: () => items } }
+    const adapter = createMinecraftAdapter({ bot, config: { adapter: { minecraft: {} } } })
+    const data = { attackerLabel: 'zombie', attackerKind: 'hostile_mob' }
+    expect(adapter.eventAddendum('sei:attacked', data)).toBe(attackedMobUnarmed().replace('{label}', 'zombie'))
+    items = [{ name: 'stone_sword', count: 1 }]
+    expect(adapter.eventAddendum('sei:attacked', data)).toBe(ATTACKED_ADDENDUM_MOB.replace('{label}', 'zombie'))
+    expect(data.unarmed).toBeUndefined()
+  })
+})

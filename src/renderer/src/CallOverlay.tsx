@@ -52,6 +52,7 @@ import { portraitSrc } from './lib/portraitSrc';
 import { pickPalette } from './lib/portraitPalettes';
 import { PixelPortrait } from './components/PixelPortrait';
 import { AvatarView } from './lib/avatar/AvatarView';
+import { useLangStore, useT } from './lib/i18n';
 import styles from './CallOverlay.module.css';
 
 /** Chrome layout — MUST match callOverlay.ts PAD_TOP/PAD_X/GAP and the .stage
@@ -98,6 +99,15 @@ export function CallOverlay(): React.ReactElement | null {
    * participant count at drag start without re-binding per push). */
   const stateRef = useRef<CallOverlayState | null>(null);
   stateRef.current = state;
+  // 261031: the chrome buttons' tooltips follow the app's UI language, which
+  // rides the state push (this window never boots the App that hydrates it).
+  // They stay native `title` tooltips: the shared data-tip CSS tooltip would
+  // be clipped by this window, which is only about 100 px wide by default.
+  const t = useT();
+  const lang = state?.lang;
+  useEffect(() => {
+    if (lang) useLangStore.getState().setLang(lang);
+  }, [lang]);
   const [hovered, setHovered] = useState(false);
   const [editing, setEditing] = useState(false);
   /** Main's polled pointer (window-local), the hover source that does not
@@ -470,7 +480,8 @@ export function CallOverlay(): React.ReactElement | null {
           <button
             type="button"
             className={styles.chromeBtn}
-            title={editing ? 'Done' : 'Edit'}
+            title={editing ? t('Done') : t('Edit')}
+            aria-label={editing ? t('Done') : t('Edit')}
             onClick={() => setEditing((v) => !v)}
           >
             {editing ? (
@@ -494,7 +505,7 @@ export function CallOverlay(): React.ReactElement | null {
             )}
           </button>
 
-          <div className={styles.dragBtn} title="Hold to move" onPointerDown={beginWindowMove}>
+          <div className={styles.dragBtn} title={t('Hold to move')} onPointerDown={beginWindowMove}>
             <svg width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">
               <circle cx="2" cy="2" r="1" /><circle cx="5" cy="2" r="1" /><circle cx="8" cy="2" r="1" />
               <circle cx="2" cy="5" r="1" /><circle cx="5" cy="5" r="1" /><circle cx="8" cy="5" r="1" />
@@ -506,7 +517,8 @@ export function CallOverlay(): React.ReactElement | null {
             <button
               type="button"
               className={`${styles.chromeBtn} ${state.muted ? styles.chromeBtnToggled : ''}`}
-              title={state.muted ? 'Unmute' : 'Mute'}
+              title={state.muted ? t('Unmute') : t('Mute')}
+              aria-label={state.muted ? t('Unmute') : t('Mute')}
               aria-pressed={state.muted === true}
               onClick={() => void sei.avatarOverlayMuteToggle?.().catch(() => {})}
             >
@@ -535,8 +547,8 @@ export function CallOverlay(): React.ReactElement | null {
             <button
               type="button"
               className={styles.chromeBtn}
-              title="Interrupt"
-              aria-label="Interrupt"
+              title={t('Interrupt')}
+              aria-label={t('Interrupt')}
               onClick={() => void sei.avatarOverlayInterrupt?.().catch(() => {})}
             >
               {/* Raised palm (HandIcon), redrawn on the 12px chrome grid. */}
@@ -557,7 +569,8 @@ export function CallOverlay(): React.ReactElement | null {
             <button
               type="button"
               className={`${styles.chromeBtn} ${state.captionsOn ? styles.chromeBtnToggled : ''}`}
-              title="Captions"
+              title={state.captionsOn ? t('Hide captions') : t('Show captions')}
+              aria-label={state.captionsOn ? t('Hide captions') : t('Show captions')}
               aria-pressed={state.captionsOn === true}
               onClick={() => void sei.avatarOverlayCaptionsToggle?.().catch(() => {})}
             >

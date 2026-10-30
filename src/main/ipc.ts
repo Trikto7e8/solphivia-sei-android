@@ -2302,6 +2302,8 @@ export function registerIpcHandlers(deps: IpcHandlerDeps): void {
         muted: z.boolean().optional(),
         lastSpoken: z.string().max(4000).nullable().optional(),
         lastSpokenId: z.string().max(64).nullable().optional(),
+        // 261031: UI language for the overlay's button tooltips.
+        lang: z.enum(['en', 'zh']).optional(),
       })
       .parse(stateRaw);
     const { updateCallOverlay } = await import('./callOverlay');

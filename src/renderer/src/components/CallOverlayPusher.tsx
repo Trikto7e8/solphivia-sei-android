@@ -29,7 +29,7 @@ import { classifyEmotion } from '../lib/avatar/emotion';
 import { lastInteractionAt } from '../lib/lastInteraction';
 import { setAvatarLevelTapEnabled } from '../lib/voice/avatarLevelTap';
 import { sei } from '../lib/ipcClient';
-import { t } from '../lib/i18n';
+import { t, useLangStore } from '../lib/i18n';
 
 export function CallOverlayPusher(): null {
   const mode = useUiStore((s) => s.avatarMode);
@@ -55,6 +55,7 @@ export function CallOverlayPusher(): null {
   const lastSpoken = useVoiceStore((s) => s.lastSpoken);
   const lastSpokenId = useVoiceStore((s) => s.lastSpokenId);
   const callMuted = useUiStore((s) => s.callMuted);
+  const lang = useLangStore((s) => s.lang);
   const chessGames = useChessStore((s) => s.games);
   const drawGames = useDrawStore((s) => s.games);
   const backseatActive = useBackseatStore((s) => s.active);
@@ -132,6 +133,7 @@ export function CallOverlayPusher(): null {
         // buttons and feed the caption box.
         onCall: callActive || backseatLive,
         muted: callMuted,
+        lang,
         lastSpoken: lastSpoken || null,
         lastSpokenId,
         participants: ids.map((id) => {
@@ -157,7 +159,7 @@ export function CallOverlayPusher(): null {
         /* overlay is best-effort; a failed push never affects the app */
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey, mode, speakingId, lastSpoken, lastSpokenId, avatarPrefs, manifests, callActive, backseatLive, callMuted]);
+  }, [idsKey, mode, speakingId, lastSpoken, lastSpokenId, avatarPrefs, manifests, callActive, backseatLive, callMuted, lang]);
 
   return null;
 }

@@ -45,6 +45,7 @@ import {
   safeToRemoveDir,
   setupUrls,
   uninstallArgs,
+  UNINSTALLER_RUN_AS,
   velopackLaunchTarget,
   velopackRootFor,
   type MigrationRule,
@@ -482,8 +483,9 @@ async function removeNsisCopy(): Promise<void> {
     if (decision === 'keep' || decision === 'gave-up') log(`NSIS copy at ${nsisDir} left in place (${decision})`);
     return;
   }
-  // Without PowerShell the NSIS uninstaller's running-app check falls back to
-  // killing every Sei.exe by name, this one included.
+  // Without PowerShell the taskbar pin cannot be retargeted, and removing the
+  // NSIS copy would leave it pointing at nothing; the NSIS copy stays and
+  // redirects to this one when launched.
   if (!powerShellExe()) {
     log('no PowerShell; leaving the NSIS copy in place');
     writeState({ ...state!, cleanupAttempts: Number.MAX_SAFE_INTEGER, error: 'no powershell' });
@@ -499,7 +501,8 @@ async function removeNsisCopy(): Promise<void> {
     const tmp = path.join(app.getPath('temp'), `sei-uninstall-${randomBytes(4).toString('hex')}`);
     try {
       mkdirSync(tmp, { recursive: true });
-      const copy = path.join(tmp, 'Uninstall Sei.exe');
+      // Not 'Uninstall Sei.exe': see UNINSTALLER_RUN_AS.
+      const copy = path.join(tmp, UNINSTALLER_RUN_AS);
       copyFileSync(uninstaller, copy);
       const child = spawn(copy, uninstallArgs(dir), { windowsHide: true, stdio: 'ignore', cwd: tmp });
       const r = await waitForExit(child, UNINSTALL_TIMEOUT_MS);

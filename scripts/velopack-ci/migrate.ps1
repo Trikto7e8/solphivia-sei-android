@@ -165,7 +165,14 @@ function Switch-Migration([int]$percent) {
   if ($LASTEXITCODE -ne 0) { throw 'velopack-rollout.mjs failed' }
 }
 $script:srv = Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', $vp -PassThru -WindowStyle Hidden
-Start-Sleep -Seconds 2
+# Wait until it answers: a fixed sleep lost the race on a busy runner once
+# (the client's first check was refused and the scenario never updated).
+$up = $false
+for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+  if ($script:srv.HasExited) { throw "the feed server exited ($($script:srv.ExitCode))" }
+  try { $null = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 2; $up = $true } catch { Start-Sleep -Milliseconds 500 }
+}
+if (-not $up) { throw 'the feed server did not answer within 30s' }
 Write-Host "setup.win.json: $((Get-Content (Join-Path $vp 'setup.win.json') -Raw) -replace '\s+', ' ')"
 
 function Launch([string]$exe, [string]$action) {
@@ -213,9 +220,9 @@ switch ($Case) {
     if (Test-Path "$root\packages\*.nupkg") { Write-Host "packages: $((Get-ChildItem "$root\packages").Name -join ', ')" }
     # ...and later starts the OLD exe (a shortcut Sei could not retarget).
     $tRedirect = Now
-    $old = Launch $nsisExe 'none'
+    $oldProc = Launch $nsisExe 'none'  # not $old: [string]$Old would coerce it
     $r = Need 'migration-redirect' 60
-    if (-not $old.WaitForExit(30000)) { Fail 'the NSIS launch did not exit after redirecting' }
+    if (-not $oldProc.WaitForExit(30000)) { Fail 'the NSIS launch did not exit after redirecting' }
     $b = Velopack-Boot 90 $tRedirect
     $results.redirect_to_boot_ms = $b.t - $r.t
   }

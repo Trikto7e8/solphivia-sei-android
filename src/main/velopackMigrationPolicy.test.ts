@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   cleanupDecision,
@@ -18,6 +21,7 @@ import {
   safeToRemoveDir,
   setupUrls,
   uninstallArgs,
+  UNINSTALLER_RUN_AS,
   velopackLaunchTarget,
   type MigrationState,
   type SetupManifest,
@@ -146,6 +150,16 @@ describe('paths', () => {
 describe('uninstallArgs / pinRetargetScript', () => {
   it('keeps app data and the shortcuts', () => {
     expect(uninstallArgs('C:\\P\\sei')).toEqual(['/S', '--updated', '/KEEP_APP_DATA', '--keep-shortcuts', '_?=C:\\P\\sei']);
+  });
+
+  it("runs the uninstaller under the app's exe name, which skips electron-builder's app-running check", () => {
+    expect(UNINSTALLER_RUN_AS).toBe('Sei.exe');
+    // The bypass lives in electron-builder's template; an upgrade that drops it
+    // would close the Velopack copy again (261030 CI).
+    const req = createRequire(import.meta.url);
+    const lib = path.dirname(req.resolve('app-builder-lib/package.json'));
+    const nsh = readFileSync(path.join(lib, 'templates/nsis/include/allowOnlyOneInstallerInstance.nsh'), 'utf8');
+    expect(nsh).toMatch(/\$\{GetProcessInfo\} 0 \$pid \$1 \$2 \$3 \$4\s*\n\s*\$\{if\} \$3 != "\$\{APP_EXECUTABLE_FILENAME\}"/);
   });
 
   it('quotes paths for PowerShell and matches the folder, not a prefix of its name', () => {

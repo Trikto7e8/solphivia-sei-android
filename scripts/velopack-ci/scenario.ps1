@@ -139,7 +139,14 @@ function Start-Feed {
   $copy | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $d 'releases.win.json') -Encoding utf8
   Write-Host "feed $Target -> $(($keep | ForEach-Object { "$($_.Version)/$($_.Type) $([math]::Round($_.Size / 1MB, 1)) MB" }) -join ', ')"
   $script:srv = Start-Process -FilePath python -ArgumentList '-m', 'http.server', '8765', '--bind', '127.0.0.1', '--directory', $steps -PassThru -WindowStyle Hidden
-  Start-Sleep -Seconds 2
+  # Wait until it answers: a fixed sleep lost the race on a busy runner once
+  # (the client's first check was refused and the scenario never updated).
+  $up = $false
+  for ($i = 0; $i -lt 60 -and -not $up; $i++) {
+    if ($script:srv.HasExited) { throw "the feed server exited ($($script:srv.ExitCode))" }
+    try { $null = Invoke-WebRequest -Uri 'http://127.0.0.1:8765/' -UseBasicParsing -TimeoutSec 2; $up = $true } catch { Start-Sleep -Milliseconds 500 }
+  }
+  if (-not $up) { throw 'the feed server did not answer within 30s' }
   $script:fullMB = [math]::Round((($keep | Where-Object { $_.Version -eq $Target -and $_.Type -eq 'Full' }).Size) / 1MB)
 }
 

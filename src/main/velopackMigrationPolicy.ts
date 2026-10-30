@@ -240,6 +240,16 @@ export function safeToRemoveDir(dir: string, env: WinEnv): boolean {
  * data, keep the (now Velopack) shortcuts, run in place (`_?=`) so it does not
  * re-spawn itself from temp and the caller can wait for it.
  */
+/**
+ * The name the NSIS uninstaller copy runs under. electron-builder's uninstaller
+ * (allowOnlyOneInstallerInstance.nsh, _CHECK_APP_RUNNING) skips its whole
+ * "is the app running" check when its OWN process name is the app's exe name.
+ * Under any other name the check closes running Sei.exe processes, and when its
+ * PowerShell probe fails (measured on windows-latest, 261030) it does that BY
+ * NAME with taskkill, which closed the Velopack copy that had started it.
+ */
+export const UNINSTALLER_RUN_AS = 'Sei.exe';
+
 export function uninstallArgs(nsisDir: string): string[] {
   return ['/S', '--updated', '/KEEP_APP_DATA', '--keep-shortcuts', `_?=${nsisDir}`];
 }

@@ -6,7 +6,7 @@
 # (SEI_VELOPACK_CI=1: marks in <userData>\velopack-ci.jsonl, a trigger file in
 # place of the "Update Sei" click), and records what the user would see.
 #
-#   restart            in-app restart, staged copy (Defender as the runner has it)
+#   restart            in-app restart, staged copy, Defender real-time protection on
 #   restart-defender-off   the same with Defender real-time protection off
 #   restart-norec      the same without video, to size the recording's overhead
 #   restart-unstaged   in-app restart without a staged copy (stock extraction)
@@ -48,16 +48,10 @@ function Stop-Sei { SeiProcs | Stop-Process -Force -ErrorAction SilentlyContinue
 function CurrentVersion { if (Test-Path "$root\current\sq.version") { ([xml](Get-Content "$root\current\sq.version")).package.metadata.version } else { '(none)' } }
 
 function Shot([string]$name) {
-  try {
-    $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds
-    $bmp = [System.Drawing.Bitmap]::new($b.Width, $b.Height)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    # CaptureBlt: layered windows (the splash, Update.exe's overlay) are only in the copy with it
-    $op = [System.Drawing.CopyPixelOperation]([int][System.Drawing.CopyPixelOperation]::SourceCopy -bor [int][System.Drawing.CopyPixelOperation]::CaptureBlt)
-    $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size, $op)
-    $bmp.Save((Join-Path $Out "shots\$name.png"), [System.Drawing.Imaging.ImageFormat]::Png)
-    $g.Dispose(); $bmp.Dispose()
-  } catch { Write-Host "screenshot failed: $_" }
+  # ffmpeg's gdigrab copies with CAPTUREBLT, so layered windows (the splash,
+  # Update.exe's overlay) are in the picture. No ffmpeg (restart-norec): none.
+  if (-not $ffmpeg) { return }
+  & $ffmpeg -hide_banner -loglevel error -y -f gdigrab -i desktop -frames:v 1 (Join-Path $Out "shots\$name.png")
 }
 
 function Layout([string]$label) {
@@ -216,9 +210,14 @@ function Restart-Metrics([long]$click, [string]$version, $oldExit) {
   Write-Host ("RESTART " + ($r | ConvertTo-Json -Compress))
 }
 
+$veloLogs = Join-Path $env:LOCALAPPDATA 'velopack'
+function VeloLogFiles {
+  @(Get-ChildItem $veloLogs -Filter '*.log' -Force -ErrorAction SilentlyContinue) +
+  @(Get-ChildItem $root -Filter '*.log' -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike '*\current\*' })
+}
 function Dump-Logs {
   Write-Host '----- Update.exe / Velopack logs -----'
-  Get-ChildItem $root -Filter '*.log' -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike '*\current\*' } | ForEach-Object {
+  VeloLogFiles | ForEach-Object {
     Write-Host "### $($_.FullName)"
     Get-Content $_.FullName -Tail 250 | ForEach-Object { Write-Host $_ }
     Copy-Item $_.FullName (Join-Path $Out $_.Name) -ErrorAction SilentlyContinue
@@ -234,7 +233,7 @@ function Dump-Logs {
 
 function Velolog([string]$pattern) {
   $hits = @()
-  Get-ChildItem $root -Filter '*.log' -Recurse -Force -ErrorAction SilentlyContinue | Where-Object { $_.FullName -notlike '*\current\*' } | ForEach-Object {
+  VeloLogFiles | ForEach-Object {
     $hits += @(Select-String -Path $_.FullName -Pattern $pattern -ErrorAction SilentlyContinue | ForEach-Object { $_.Line })
   }
   $hits
@@ -256,7 +255,10 @@ function Finish {
 
 # ------------------------------------------------------------------ runner facts
 try {
-  if ($Scenario -eq 'restart-defender-off') { Set-MpPreference -DisableRealtimeMonitoring $true; Start-Sleep -Seconds 2 }
+  # Users run with Defender real-time protection on; the runner image ships with
+  # it off. Turn it on for every scenario except the one that measures without it.
+  $wantOn = $Scenario -ne 'restart-defender-off'
+  try { Set-MpPreference -DisableRealtimeMonitoring (-not $wantOn) -ErrorAction Stop; Start-Sleep -Seconds 3 } catch { Write-Host "Set-MpPreference failed: $_" }
   $mp = Get-MpComputerStatus
   $results.defender_realtime = [bool]$mp.RealTimeProtectionEnabled
   $results.defender_onaccess = [bool]$mp.OnAccessProtectionEnabled
@@ -395,6 +397,12 @@ switch -Regex ($Scenario) {
     Prepare 'download-only'
     $old = Start-Sei
     Wait-Downloaded | Out-Null
+    if ($results.stage_result -notlike 'ok*') {
+      # 'downloaded' is offered after at most 3 min; the stage may still be running.
+      $s = WaitMark 'stage-done' $From 600
+      $results.stage_result = if ($s) { $s.result } else { 'not finished in 10 min' }
+      $results.stage_ms = if ($s) { $s.ms } else { $null }
+    }
     if ($results.stage_result -notlike 'ok*') { Fail "stage did not finish: $($results.stage_result)" }
     Stop-Sei   # killed: never applied
     Layout 'killed with a staged update pending'

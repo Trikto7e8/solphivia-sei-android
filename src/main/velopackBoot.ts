@@ -23,7 +23,7 @@
  * folder swap nor gets killed by it. The apply starts Sei when it is done.
  */
 import { app } from 'electron';
-import { appendFileSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { bundleRequire } from './bundleRequire';
 import { applyInProgress, velopackPathsFor, type VelopackPaths } from './velopackFastApply';
@@ -86,11 +86,20 @@ let firstRunVersion: string | null = null;
 let paths: VelopackPaths | null = null;
 
 /** Append one line to <userData>/logs/velopack.log. Never throws. */
+const VELOPACK_LOG_MAX_BYTES = 1024 * 1024;
+
 export function velopackLog(line: string): void {
   try {
     const dir = path.join(app.getPath('userData'), 'logs');
     mkdirSync(dir, { recursive: true });
-    appendFileSync(path.join(dir, 'velopack.log'), `${new Date().toISOString()} ${line}\n`);
+    const file = path.join(dir, 'velopack.log');
+    try {
+      // One update check is ~10 lines; keep the last ~1 MB plus one older file.
+      if (statSync(file).size > VELOPACK_LOG_MAX_BYTES) renameSync(file, path.join(dir, 'velopack.old.log'));
+    } catch {
+      /* no file yet */
+    }
+    appendFileSync(file, `${new Date().toISOString()} ${line}\n`);
   } catch {
     /* best effort */
   }
@@ -166,7 +175,10 @@ if (process.platform === 'win32' && app.isPackaged) {
   try {
     mod = bundleRequire()('velopack') as VelopackModule;
     const builder = mod.VelopackApp.build();
-    builder.setLogger((level, msg) => velopackLog(`[${level}] ${msg}`));
+    // trace and debug carry hex dumps of every HTTP exchange.
+    builder.setLogger((level, msg) => {
+      if (level !== 'trace' && level !== 'debug') velopackLog(`[${level}] ${msg}`);
+    });
     builder.onRestarted((v) => {
       restartedVersion = v;
     });

@@ -143,16 +143,16 @@ index 29d9b652..ad11d597 100644
  mod start_windows_impl;
 diff --git a/src/bins/src/commands/sei_fast.rs b/src/bins/src/commands/sei_fast.rs
 new file mode 100644
-index 00000000..b5330984
+index 00000000..0a863610
 --- /dev/null
 +++ b/src/bins/src/commands/sei_fast.rs
-@@ -0,0 +1,301 @@
+@@ -0,0 +1,312 @@
 +//! SEI PATCH (not upstream Velopack): fast apply.
 +//!
 +//! Stock `apply` extracts the whole package (744 MB / 6,400 files for Sei) AFTER the app has exited, which is the
 +//! ~20 s blank gap of an in-app restart. This module moves that work to while the app is still running:
 +//!
-+//!   `Update.exe stage --package <nupkg>` (started by Sei right after a download, at background priority) extracts
++//!   `Update.exe stage --package <nupkg>` (started by Sei right after a download, at below-normal CPU priority) extracts
 +//!   the package to `<packages>\SeiStaged\v<version>.partial`, renames it to `v<version>` when complete and writes
 +//!   `v<version>.ok` with the package's name and size. A kill at any point leaves no `.ok`, so the copy is ignored
 +//!   and cleaned up by the next stage.
@@ -180,7 +180,7 @@ index 00000000..b5330984
 +use velopack::{bundle, bundle::BundleZip, constants, locator::VelopackLocator, lockfile::LockFile, process, wide_strings::string_to_wide};
 +use ::windows::Win32::{
 +    Storage::FileSystem::GetDiskFreeSpaceExW,
-+    System::Threading::{GetCurrentProcess, SetPriorityClass, PROCESS_MODE_BACKGROUND_BEGIN},
++    System::Threading::{GetCurrentProcess, SetPriorityClass, BELOW_NORMAL_PRIORITY_CLASS, PROCESS_MODE_BACKGROUND_BEGIN},
 +};
 +
 +pub const STAGE_DIR: &str = "SeiStaged";
@@ -213,6 +213,17 @@ index 00000000..b5330984
 +    let name = package.file_name().ok_or_else(|| anyhow!("package path has no file name"))?.to_string_lossy().to_string();
 +    let size = fs::metadata(package)?.len();
 +    Ok(format!("{}|{}", name, size))
++}
++
++/// Below-normal CPU priority with normal I/O, for the stage. Background mode (very low I/O priority) made a
++/// 744 MB extraction take 90-160 s on a CI runner against ~12 s at normal priority, long enough that a user who
++/// restarts soon after the download would usually miss the staged copy.
++pub fn set_stage_priority() {
++    unsafe {
++        if let Err(e) = SetPriorityClass(GetCurrentProcess(), BELOW_NORMAL_PRIORITY_CLASS) {
++            warn!("Could not lower the priority: {}", e);
++        }
++    }
 +}
 +
 +/// Low CPU, I/O and memory priority for the rest of this process.
@@ -277,7 +288,7 @@ index 00000000..b5330984
 +
 +/// `Update.exe stage --package <nupkg>`.
 +pub fn stage(locator: &VelopackLocator, package: &Path) -> Result<()> {
-+    set_background_priority();
++    set_stage_priority();
 +    let sw = Instant::now();
 +    let root = stage_root(locator);
 +    fs::create_dir_all(&root)?;

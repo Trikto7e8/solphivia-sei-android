@@ -18,7 +18,7 @@ name: Velopack Windows update
 # Nothing here writes to dl.sei.gg or a GitHub release.
 on:
   push:
-    branches: ['feat/velopack-windows', 'dev']
+    branches: ['feat/velopack-windows', 'dev', 'release/**']
     paths:
       - '.github/workflows/velopack-update.yml'
       - 'build/velopack/**'

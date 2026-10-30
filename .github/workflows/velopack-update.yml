@@ -185,17 +185,17 @@ jobs:
           done
           echo "win-unpacked: $(find release/win-unpacked -type f | wc -l) files, $(du -sb release/win-unpacked | cut -f1) bytes" | tee -a "$OUT/timing/summary.txt"
           ls -la "$OUT/vp" "$OUT/setup" | tee -a "$OUT/timing/summary.txt"
-          cat "$OUT/vp/releases.win.json"
+          cat "$OUT/vp/releases.win.json"; echo
           # The package must carry Sei's Update.exe (Velopack copies it over the installed one on every update).
-          python - "$OUT/vp" "$RUNNER_TEMP/update-exe/update.exe" <<'PY'
-          import hashlib, sys, zipfile, glob, os
-          want = hashlib.sha256(open(sys.argv[2], 'rb').read()).hexdigest()
+          # vpk rewrites its icon resource (--icon), so look for the patch's own flag instead of a hash.
+          python - "$OUT/vp" <<'PY'
+          import sys, zipfile, glob, os
           for nupkg in sorted(glob.glob(os.path.join(sys.argv[1], '*-full.nupkg'))):
               z = zipfile.ZipFile(nupkg)
               names = [n for n in z.namelist() if n.lower().endswith('squirrel.exe')]
-              got = hashlib.sha256(z.read(names[0])).hexdigest() if names else None
-              print(os.path.basename(nupkg), names, 'patched' if got == want else f'NOT PATCHED ({got})')
-              if got != want: sys.exit(1)
+              ok = bool(names) and b'seiOverlay' in z.read(names[0])
+              print(os.path.basename(nupkg), names, 'patched' if ok else 'NOT PATCHED')
+              if not ok: sys.exit(1)
           PY
 
       - uses: actions/upload-artifact@v4

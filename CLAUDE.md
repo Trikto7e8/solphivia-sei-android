@@ -3530,7 +3530,12 @@ feed (`publish: github`, `sei-studio/sei`). It is loaded **only behind
 `app.isPackaged`** — `autoUpdater` throws when unpackaged, so dev runs the pure
 policy functions only. A side-channel `GET https://sei.gg/version.json` carries
 `{ version, apply, changelog }` to decide ask-first vs silent install. On macOS
-updates install from the zip artifact.
+updates install from the zip artifact. Semver alone sets the level (patch =
+mandatory, minor/major = optional, `updatePolicy.ts`), except that an optional
+`minSupported` in the policy feed (version.json, and version-beta.json for
+beta users) makes the update mandatory for installs below it
+(`applyMinSupported`, 261031); missing or invalid = no effect, timing still
+from `apply`. Velopack installs share this path.
 
 **The download never blocks the app (260801).** Two renderer surfaces, split by
 whether the state needs a decision right now: `UpdatePopup` is the modal (the
@@ -3555,21 +3560,66 @@ downloading, a `--green` to `--accent-strong` block when ready, a spinner while
 restarting. It replaced the corner `UpdatePill`, which was easy to dismiss and
 forget. A click while a call, a companion bot, chess, a screen share or a
 Draw! turn is live confirms first (`liveSessionForRestart`). The install args
-come from `src/main/updateInstall.ts` (`restartInstallArgs`): on Windows
-`quitAndInstall(true, true)`, which NsisUpdater turns into
-`--updated /S --force-run`, so no installer window appears and the one-click
-installer reopens Sei when it is done (the old bare `quitAndInstall()` was
-`--updated --force-run`: it also reopened Sei, but showed the "Installing,
-please wait" banner meanwhile). macOS ignores the args (Squirrel relaunches).
-The update-on-quit run stays `--updated /S` with no relaunch.
-`build/installer.nsh` tells the two silent runs apart by `--force-run`: the
-one-time legacy per-machine cleanup (a UAC prompt) runs on the in-app restart
-but never on the quit run. `.github/workflows/nsis-upgrade-check.yml` covers
-both paths (relaunch or not, no visible installer window, the timing). An
+come from `src/main/updateInstall.ts` (`restartInstallArgs`). macOS ignores
+them (Squirrel relaunches). The update-on-quit run stays `--updated /S` with
+no relaunch. `build/installer.nsh` tells the silent runs apart by
+`--force-run`: the one-time legacy per-machine cleanup (a UAC prompt) runs on
+the in-app restart but never on the quit run.
+
+**Windows restart = Sei's own update progress window (261030, corner 261031).**
+The install re-unpacks the whole app (median ~104 s for real users), and with
+nothing on screen people thought Sei had crashed. On win32 `restartIntoUpdate`
+in updater.ts (both "Update Sei" and the forced `apply:'now'` restart) calls
+`installWithProgressWindow` (`src/main/windowsUpdateInstall.ts`):
+`updateProgressHelper.ts` copies `resources/update-progress/` (a Windows
+PowerShell 5.1 + WPF script, bundled Oswald/Rajdhani fonts, logo) to a private
+`%TEMP%` folder and starts it in two stages (stage 1 is Sei's child and only
+starts the detached window process, which escapes node's kill-on-close job).
+Everything the window says, its theme (from `theme_mode`), language (en/zh)
+and its time-based bar curve (estimate from past `installSeconds`, the
+download counted as the first 40%) come from a `config.json` built and
+unit-tested in TypeScript; the script only plays it back and watches the
+installer process, the new Sei process and its first window, then sprints to
+100% and fades out. Once the window reports `ready` (first frame, within
+12 s, 20 s if WPF already loaded) Sei quits with `quitAndInstall(true, true)`
+= `--updated /S --force-run`, so no installer window shows under it. No
+`ready` (Group Policy blocks scripts, Constrained Language Mode, a slow
+machine) = the stock path, `quitAndInstall(false, true)` = `--updated
+--force-run`, the one-click "Installing, please wait" banner. The window sits
+in the **bottom-right corner of the primary display's work area** (above the
+taskbar, the card 16 px in from the edges; Shawn, 261031) so the user can keep
+using the computer, is topmost only for its first 4 s (while Sei's own window
+is going away), is draggable, and if no Sei comes back it starts `Sei.exe`
+itself, then says so and closes on a click or after a minute (hard cap 15
+min). The script must stay ASCII (PS 5.1 reads BOM-less scripts in the ANSI
+code page); non-English text arrives through config.json. CI:
+`nsis-upgrade-check.yml` `suite=progress` runs the real upgrade under the
+window, `suite=preview` (no build, a few minutes) records each theme/language
+over a stand-in installer and asserts the corner placement; stills and video
+are the artifacts. An
+An
 accepted OPTIONAL download stashes `pending` with `brief: true`, so the
 relaunch shows the small `UpdatedToast` ("Updated to Sei X" plus the first
 changelog bullet, `topChangelogLine`) instead of reopening the changelog the
 user already read; mandatory updates keep the full what's-new modal.
+
+**Windows moves to Velopack (v0.7.0, 261030).** macOS stays on
+electron-updater. Through v0.7.x every Windows release ships BOTH the NSIS
+installer (the sei.gg download and the electron-updater feed) and Velopack
+files mirrored to `dl.sei.gg/velopack`; NSIS installs move to Velopack only
+when `migration.<channel>.json` says so. `src/main/updater.ts` picks
+`velopackUpdater.ts` when the running copy was installed by Velopack. A
+Velopack update or migration Setup is applied only after its sha256 matches
+the feed AND Windows reports it Authenticode Valid and signed by the
+`WIN_PUBLISHER_NAME` baked in at build (`SEI_WIN_PUBLISHER`,
+`velopackVerify.ts`; unsigned builds skip the check), and only while the
+rollout file on dl.sei.gg allows it (an unreadable one holds the update).
+Release steps, the asset counts for publishing the draft, the three-part kill
+switch (update rollout to 0, the GitHub release back to draft, migration to
+0), rollback-by-rolling-forward, the users' way out of a broken Velopack copy,
+re-running a cancelled mirror, and the one-time move of the workflows to
+`main` are in **`docs/design/velopack-runbook.md`**. Read it before any
+Windows release.
 
 ### Startup popup (261027, replaced the notices inbox)
 

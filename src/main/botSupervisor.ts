@@ -897,6 +897,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
   interface FailureReporter {
     /** Set once the backend kind is read, so even pre-fork failures carry it. */
     backend: AiBackendKind | null;
+    /** 261031: the bot's in-game name, once resolved; redacted to `[bot]`. */
+    botName: string | null;
     /**
      * 260926: set at fork. `marks` is read live from the session at fire
      * time, so a failure carries every phase the bot reached.
@@ -919,6 +921,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     let fired = false;
     const reporter: FailureReporter = {
       backend: null,
+      botName: null,
       boot: null,
       fire(partial) {
         if (fired) return;
@@ -935,6 +938,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
             ...(partial.reclassifiedFrom ? { reclassifiedFrom: partial.reclassifiedFrom } : {}),
             durationMs: Date.now() - startedAtMs,
             backend: reporter.backend,
+            ...(reporter.botName ? { botName: reporter.botName } : {}),
             boot: reporter.boot
               ? { attemptStartMs: startedAtMs, forkAtMs: reporter.boot.forkAtMs, marks: reporter.boot.marks() ?? {} }
               : undefined,
@@ -983,6 +987,7 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // module owns the naming rule and the collision test (Minecraft: compared
     // case-insensitively to match MC's username handling).
     const username = module.effectiveUsername(character);
+    reporter.botName = username;
     // 260909: some games seat ONE companion per world (Don't Starve Together's
     // helper runs a single body; a second offer replaced the first and, via a
     // link-reset race, left a brainless survivor standing). Refuse a second
@@ -1381,8 +1386,8 @@ export function createBotSupervisor(opts: BotSupervisorOptions): BotSupervisor {
     // the renderer only saw "Bot exited before summon-ready (code=1)" with
     // no signal about which require()/throw blew up). 260720: raised 4KB→16KB
     // so the failed-summon diagnostic (onSummonFailure) keeps enough context
-    // to survive redaction + the analytics 8KB per-field cap with the actual
-    // crash still in frame.
+    // to survive redaction + the analytics per-field cap (2KB since 261031)
+    // with the actual crash still in frame.
     const buffers = { stdout: '', stderr: '' };
     const tails = { stdout: '', stderr: '' };
     const TAIL_MAX = 16_384;

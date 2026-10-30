@@ -1369,6 +1369,7 @@ export function App(): React.ReactElement {
       {updatePopup ? (
         <UpdatePopup
           state={updatePopup}
+          platform={sei.platform}
           onUpdateNow={() => {
             // Consent to download the optional update. The modal closes right
             // away and the sidebar progress bar takes over at 0%, so the user

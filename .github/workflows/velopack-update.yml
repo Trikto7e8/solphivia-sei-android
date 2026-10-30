@@ -1,0 +1,274 @@
+name: Velopack Windows update
+
+# Windows updates on Velopack with Sei's fast apply (261030). Builds the
+# patched Update.exe (build/velopack/README.md), packs this branch twice as
+# Velopack releases (0.6.90 and 0.6.91, unsigned, never published), and runs
+# every update scenario on its own clean windows-latest runner
+# (scripts/velopack-ci/scenario.ps1 lists them). Each scenario uploads its
+# marks, logs, numbers (result.json) and a video with a silent audio track.
+on:
+  push:
+    branches: ['feat/velopack-windows']
+    paths:
+      - '.github/workflows/velopack-update.yml'
+      - 'build/velopack/**'
+      - 'scripts/velopack-ci/**'
+      - 'src/main/velopack*.ts'
+      - 'src/main/updater.ts'
+      - 'src/main/windowChrome.ts'
+      - 'src/main/index.ts'
+      - 'electron-builder.yml'
+      - 'package.json'
+  workflow_dispatch:
+    inputs:
+      scenarios:
+        description: 'Comma-separated scenarios (empty = all)'
+        required: false
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: velopack-update-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Upstream commit the patch applies to; the vpk tool and the velopack npm
+  # package are the release built from it.
+  VELOPACK_COMMIT: '8d2844f324a69bd848719ef465b1ae12c5060524'
+  VPK_VERSION: '1.3.39-g8d2844f'
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/velopack-ci
+      - name: Parse the scenario script
+        shell: pwsh
+        run: |
+          $errs = $null
+          [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/velopack-ci/scenario.ps1", [ref]$null, [ref]$errs) | Out-Null
+          if ($errs) { $errs | ForEach-Object { Write-Host "::error::line $($_.Extent.StartLineNumber): $($_.Message)" }; exit 1 }
+          Write-Host 'scenario.ps1 parses'
+
+  update-exe:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    env:
+      RUSTFLAGS: -C target-feature=+crt-static
+    steps:
+      - name: No CRLF conversion (the patch must apply byte for byte)
+        run: git config --global core.autocrlf false
+
+      - name: Checkout Sei
+        uses: actions/checkout@v6
+        with:
+          path: sei
+
+      - name: Checkout Velopack
+        uses: actions/checkout@v6
+        with:
+          repository: velopack/velopack
+          ref: ${{ env.VELOPACK_COMMIT }}
+          path: velo
+
+      - name: Apply Sei's patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd velo
+          git apply --verbose ../sei/build/velopack/sei-fast-apply.patch
+          sed -i 's/^version = "0.0.0-local"/version = "1.3.39-sei"/' Cargo.toml
+          git diff --stat
+
+      - name: Rust target
+        run: rustup target add x86_64-pc-windows-msvc
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: velo
+          key: sei-update-exe
+
+      - name: Build Update.exe
+        working-directory: velo
+        run: cargo build --target x86_64-pc-windows-msvc --features windows --release -p velopack_bins --bin update
+
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir out
+          cp velo/target/x86_64-pc-windows-msvc/release/update.exe out/update.exe
+          ls -la out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sei-update-exe
+          path: out/update.exe
+          retention-days: 7
+
+  build:
+    needs: update-exe
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: 'npm'
+
+      - name: Setup Python (distutils for headless-gl native build)
+        uses: actions/setup-python@v5
+        id: setup-python
+        with:
+          python-version: '3.11'
+
+      - name: Setup .NET (vpk)
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Patched Update.exe
+        uses: actions/download-artifact@v4
+        with:
+          name: sei-update-exe
+          path: ${{ runner.temp }}/update-exe
+
+      - name: Install vpk and put Sei's Update.exe in its vendor folder
+        shell: bash
+        run: |
+          set -euo pipefail
+          dotnet tool install -g vpk --version "$VPK_VERSION"
+          vpk pack --help | head -80
+          VENDOR=$(find "$USERPROFILE/.dotnet/tools/.store/vpk" -type d -name vendor | head -1)
+          echo "vendor: $VENDOR"; ls -la "$VENDOR"
+          for f in update.exe update_x64.exe; do
+            cp "$RUNNER_TEMP/update-exe/update.exe" "$VENDOR/$f"
+          done
+          ls -la "$VENDOR"
+
+      - name: Install dependencies
+        env:
+          npm_config_python: ${{ steps.setup-python.outputs.python-path }}
+        run: npm ci
+
+      - name: Build two Velopack releases
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Outputs live OUTSIDE the checkout: electron-builder packs "**/*".
+          OUT="$(cygpath -m "$RUNNER_TEMP")/vpout"; mkdir -p "$OUT/vp" "$OUT/setup" "$OUT/timing"
+          npx electron-vite build
+          for v in 0.6.90 0.6.91; do
+            npm pkg set version=$v
+            rm -rf release/win-unpacked
+            t0=$(date +%s)
+            npx electron-builder --win dir --x64 --publish never > "$OUT/timing/eb-$v.log" 2>&1 || { tail -50 "$OUT/timing/eb-$v.log"; exit 1; }
+            t1=$(date +%s)
+            vpk --skip-updates pack -u Sei -v $v -p release/win-unpacked -e Sei.exe --runtime win-x64 \
+              --packTitle Sei --packAuthors Sei --channel win --noPortable \
+              --icon build/installerHeaderIcon.ico --aumid com.sei.app \
+              --skipVeloAppCheck -o "$OUT/vp" > "$OUT/timing/vpk-$v.log" 2>&1 || { tail -80 "$OUT/timing/vpk-$v.log"; exit 1; }
+            t2=$(date +%s)
+            grep -E -i "delta|warn|error|complete" "$OUT/timing/vpk-$v.log" || true
+            mv "$OUT/vp/Sei-win-Setup.exe" "$OUT/setup/Sei-$v-Setup.exe"
+            echo "$v electron-builder-dir=$((t1-t0))s vpk-pack=$((t2-t1))s" | tee -a "$OUT/timing/summary.txt"
+          done
+          echo "win-unpacked: $(find release/win-unpacked -type f | wc -l) files, $(du -sb release/win-unpacked | cut -f1) bytes" | tee -a "$OUT/timing/summary.txt"
+          ls -la "$OUT/vp" "$OUT/setup" | tee -a "$OUT/timing/summary.txt"
+          cat "$OUT/vp/releases.win.json"
+          # The package must carry Sei's Update.exe (Velopack copies it over the installed one on every update).
+          python - "$OUT/vp" "$RUNNER_TEMP/update-exe/update.exe" <<'PY'
+          import hashlib, sys, zipfile, glob, os
+          want = hashlib.sha256(open(sys.argv[2], 'rb').read()).hexdigest()
+          for nupkg in sorted(glob.glob(os.path.join(sys.argv[1], '*-full.nupkg'))):
+              z = zipfile.ZipFile(nupkg)
+              names = [n for n in z.namelist() if n.lower().endswith('squirrel.exe')]
+              got = hashlib.sha256(z.read(names[0])).hexdigest() if names else None
+              print(os.path.basename(nupkg), names, 'patched' if got == want else f'NOT PATCHED ({got})')
+              if got != want: sys.exit(1)
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: velopack-feed
+          path: |
+            ${{ runner.temp }}/vpout/vp
+            ${{ runner.temp }}/vpout/setup
+          retention-days: 7
+
+      - if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: velopack-build-timing
+          path: ${{ runner.temp }}/vpout/timing
+          retention-days: 7
+
+  scenarios:
+    needs: [lint, build]
+    runs-on: windows-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - restart
+          - restart-defender-off
+          - restart-norec
+          - restart-unstaged
+          - rollback-swap1
+          - rollback-swap2
+          - launch-during-apply
+          - quit
+          - next-launch
+          - low-disk
+          - rollout
+    steps:
+      - name: Skip unless selected
+        id: sel
+        shell: bash
+        run: |
+          s="${{ github.event.inputs.scenarios }}"
+          if [ -z "$s" ] || [[ ",$s," == *",${{ matrix.scenario }},"* ]]; then echo "run=1" >> "$GITHUB_OUTPUT"; else echo "run=0" >> "$GITHUB_OUTPUT"; fi
+
+      - if: steps.sel.outputs.run == '1'
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: scripts/velopack-ci
+
+      - if: steps.sel.outputs.run == '1'
+        uses: actions/download-artifact@v4
+        with:
+          name: velopack-feed
+          path: feed
+
+      - name: ffmpeg (screen recording)
+        if: steps.sel.outputs.run == '1' && matrix.scenario != 'restart-norec'
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'ffmpeg.zip'
+          Invoke-WebRequest 'https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip' -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'ffmpeg')
+          $bin = (Get-ChildItem (Join-Path $env:RUNNER_TEMP 'ffmpeg') -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          Add-Content $env:GITHUB_PATH $bin
+
+      - name: Run ${{ matrix.scenario }}
+        if: steps.sel.outputs.run == '1'
+        shell: pwsh
+        run: ./scripts/velopack-ci/scenario.ps1 -Scenario '${{ matrix.scenario }}' -Feed feed -Out out
+
+      - if: always() && steps.sel.outputs.run == '1'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scenario-${{ matrix.scenario }}
+          path: out
+          retention-days: 14

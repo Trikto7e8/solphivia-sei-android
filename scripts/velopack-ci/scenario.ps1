@@ -18,6 +18,16 @@
 #   next-launch        downloaded + staged, Sei killed; the next launch applies
 #   low-disk           too little disk to stage: skipped, the restart still works
 #   rollout            rollout.win.json holds the version back, then releases it
+#   sig-reject         Sei expects a publisher the package is not signed by: the
+#                      download is thrown away and never offered; with the check
+#                      off (an unsigned build) the same package installs
+#   sig-accept         the package re-signed with a certificate this runner
+#                      trusts (testsign.ps1): checked, accepted, applied
+#   restart-spawn-fail Update.exe cannot be started at the restart: Sei stays
+#                      open with its windows back, and the next launch applies
+#   session-end        Windows ends the session (WM_QUERYENDSESSION and
+#                      WM_ENDSESSION sent to Sei's windows): the quit does not
+#                      start an apply, and the next launch applies
 param(
   [Parameter(Mandatory = $true)][string]$Scenario,
   [string]$Feed = 'feed',
@@ -156,7 +166,7 @@ function Start-Feed {
   $script:fullMB = [math]::Round((($keep | Where-Object { $_.Version -eq $Target -and $_.Type -eq 'Full' }).Size) / 1MB)
 }
 
-function Prepare([string]$mode, [switch]$NoStage) {
+function Prepare([string]$mode, [switch]$NoStage, [string]$Publisher = '') {
   Stop-Sei
   Remove-Item $marks, $trigger -Force -ErrorAction SilentlyContinue
   $env:SEI_VELOPACK_CI = '1'
@@ -164,6 +174,64 @@ function Prepare([string]$mode, [switch]$NoStage) {
   $env:SEI_VELOPACK_CI_TRIGGER = $trigger
   $env:SEI_VELOPACK_FEED = "http://127.0.0.1:8765/$Target"
   $env:SEI_VELOPACK_CI_NOSTAGE = if ($NoStage) { '1' } else { '' }
+  # Empty removes it: the CI build is unsigned, so the signature check is off.
+  $env:SEI_VELOPACK_CI_PUBLISHER = $Publisher
+}
+
+# sig-accept: sign the target's Full package with the runner's test
+# certificate, then fix its size and hashes in the feed. The delta was made
+# from the unsigned package, so it is dropped and the client takes the Full.
+function Sign-FeedPackage {
+  $relFile = Join-Path $Feed 'vp\releases.win.json'
+  $all = Get-Content $relFile -Raw | ConvertFrom-Json
+  $full = @($all.Assets | Where-Object { $_.Version -eq $Target -and $_.Type -eq 'Full' })[0]
+  $pkg = Join-Path $Feed "vp\$($full.FileName)"
+  $env:SEI_TESTSIGN_FILES = ''
+  $env:SEI_TESTSIGN_PACKAGE = $pkg
+  & powershell.exe -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'testsign.ps1')
+  if ($LASTEXITCODE -ne 0) { throw "testsign.ps1 failed ($LASTEXITCODE)" }
+  $env:SEI_TESTSIGN_PACKAGE = ''
+  $full.Size = (Get-Item $pkg).Length
+  foreach ($alg in 'SHA1', 'SHA256') {
+    $old = $full.PSObject.Properties[$alg]
+    if (-not $old) { continue }
+    $h = (Get-FileHash $pkg -Algorithm $alg).Hash
+    if ([string]$old.Value -cmatch '^[0-9a-f]+$') { $h = $h.ToLowerInvariant() }
+    $full.$alg = $h
+  }
+  $all.Assets = @($all.Assets | Where-Object { -not ($_.Version -eq $Target -and $_.Type -eq 'Delta') })
+  $all | ConvertTo-Json -Depth 6 | Set-Content $relFile -Encoding utf8
+  Write-Host "signed $($full.FileName): $([math]::Round($full.Size / 1MB, 1)) MB"
+}
+
+# session-end: what Windows sends every top-level window of the app at log off
+# or shut down. Only the browser process's windows (no --type= switch).
+function Send-EndSession([int]$appPid) {
+  if (-not ('SeiCiEndSession' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+public static class SeiCiEndSession {
+  delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+  [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll")] static extern IntPtr SendMessageTimeout(IntPtr h, uint msg, IntPtr w, IntPtr l, uint flags, uint timeout, out IntPtr result);
+  public static int Send(uint pid) {
+    var hs = new List<IntPtr>();
+    EnumProc f = (h, l) => { uint p; GetWindowThreadProcessId(h, out p); if (p == pid) hs.Add(h); return true; };
+    EnumWindows(f, IntPtr.Zero);
+    GC.KeepAlive(f);
+    IntPtr r;
+    IntPtr logoff = new IntPtr(unchecked((int)0x80000000));
+    foreach (var h in hs) SendMessageTimeout(h, 0x0011, IntPtr.Zero, logoff, 2, 5000, out r);
+    foreach (var h in hs) SendMessageTimeout(h, 0x0016, new IntPtr(1), logoff, 2, 5000, out r);
+    return hs.Count;
+  }
+}
+'@
+  }
+  [SeiCiEndSession]::Send([uint32]$appPid)
 }
 
 function Start-Sei {
@@ -318,6 +386,7 @@ $results.screen = "$([System.Windows.Forms.Screen]::PrimaryScreen.Bounds.Width)x
 Write-Host ("RUNNER " + ($results | ConvertTo-Json -Compress))
 
 Install-Sei
+if ($Scenario -eq 'sig-accept') { Sign-FeedPackage }
 Start-Feed
 Layout "installed $From"
 
@@ -528,6 +597,110 @@ switch -Regex ($Scenario) {
     $results.offered_after_release = [bool]$got
     if (-not $got) { Fail 'the update was not offered once the rollout admitted this install' }
     Timeline 0
+  }
+
+  '^sig-reject$' {
+    Prepare 'restart' -Publisher 'CN=Sei CI Not The Signer'
+    $old = Start-Sei
+    $sig = WaitMark 'signature-check' $From 480
+    if (-not $sig) { Fail 'no signature check within 8 min'; Finish }
+    $results.signature = $sig
+    if ($sig.ok) { Fail 'a package not signed by the expected publisher passed' }
+    Start-Sleep -Seconds 5
+    if (Mark 'downloaded' $From) { Fail 'the rejected update was offered' }
+    $leftPkg = @(Get-ChildItem "$root\packages" -Filter "*$Target*.nupkg" -ErrorAction SilentlyContinue)
+    if ($leftPkg.Count -gt 0) { Fail "the rejected package was kept: $($leftPkg.Name -join ', ')" }
+    if (Test-Path "$root\packages\SeiStaged\v$Target") { Fail 'the staged copy of the rejected package was kept' }
+    if ($old.HasExited) { Fail 'Sei exited after the rejection' }
+    Layout 'after the rejection'
+    Timeline 0
+    # The same package with the check off (what an unsigned build does) installs.
+    Prepare 'restart'
+    $old = Start-Sei
+    Wait-Downloaded | Out-Null
+    $click = (Pull).t
+    $oldExit = Wait-AppLoaded $Target 150 $old
+    Restart-Metrics $click $Target $oldExit
+    if (-not (Mark 'window-loaded' $Target $isApp)) { Fail "Sei $Target never loaded once the check was off" }
+  }
+
+  '^sig-accept$' {
+    Prepare 'restart' -Publisher 'CN=Sei CI Test Signer, O=Sei CI'
+    $old = Start-Sei
+    Wait-Downloaded | Out-Null
+    $sig = Mark 'signature-check' $From
+    $results.signature = $sig
+    if (-not $sig -or -not $sig.ok -or $sig.skipped) { Fail "the signed package was not accepted: $($sig | ConvertTo-Json -Compress)" }
+    if ($results.stage_result -notlike 'ok*') { Fail "stage did not finish: $($results.stage_result)" }
+    $results.verdict_file = Test-Path "$root\packages\SeiStaged\v$Target.sig"
+    $click = (Pull).t
+    $oldExit = Wait-AppLoaded $Target 150 $old
+    Restart-Metrics $click $Target $oldExit
+    Timeline $click
+    if (-not (Mark 'window-loaded' $Target $isApp)) { Fail "Sei $Target never loaded after the signed restart" }
+    if (-not (Velolog 'Using staged copy')) { Fail 'apply did not use the staged copy' }
+  }
+
+  '^restart-spawn-fail$' {
+    Prepare 'restart'
+    $old = Start-Sei
+    Wait-Downloaded | Out-Null
+    $upd = Join-Path $root 'Update.exe'
+    Rename-Item -LiteralPath $upd 'Update.exe.ci-moved'
+    $rec = Start-Rec $Scenario 30
+    $click = (Pull).t
+    $failed = WaitMark 'apply-spawn-failed' $From 60
+    $restored = WaitMark 'windows-restored' $From 30
+    Start-Sleep -Seconds 5
+    Shot "$Scenario-after"
+    Stop-Rec $rec
+    Timeline $click
+    $results.spawn_failed_ms = if ($failed) { $failed.t - $click } else { $null }
+    $results.windows_restored = if ($restored) { $restored.shown } else { $null }
+    if (-not $failed) { Fail 'no apply-spawn-failed mark' }
+    if (-not $restored -or $restored.shown -lt 1) { Fail 'the windows were not shown again' }
+    if ($old.HasExited) { Fail 'Sei quit although Update.exe never started' }
+    if (Mark 'quit' $From) { Fail 'Sei quit after the failed start' }
+    Rename-Item -LiteralPath (Join-Path $root 'Update.exe.ci-moved') 'Update.exe'
+    Stop-Sei
+    # The update is still downloaded and staged: the next launch applies it.
+    Prepare 'download-only'
+    $t = Now
+    Start-Sei | Out-Null
+    $l = WaitMark 'window-loaded' $Target 150 $isApp
+    $results.next_launch_loaded_ms = if ($l) { $l.t - $t } else { $null }
+    if (-not $l) { Fail "the launch after the failed restart did not reach $Target" }
+  }
+
+  '^session-end$' {
+    Prepare 'quit'
+    $old = Start-Sei
+    Wait-Downloaded | Out-Null
+    $n = Send-EndSession $old.Id
+    $results.endsession_windows = $n
+    Write-Host "sent the session end to $n windows"
+    $se = WaitMark 'session-end' $From 30
+    if (-not $se) { Fail 'Sei never saw the session end' }
+    # Windows would end the process; the CI quit runs the same quit handler.
+    # (If Electron quits on its own after WM_ENDSESSION, nobody reads the trigger.)
+    $click = Now
+    Set-Content $trigger '1'
+    if (-not $old.WaitForExit(60000)) { Fail 'Sei did not quit' }
+    $q = WaitMark 'quit' $From 30
+    $results.quit_session_end = if ($q) { [bool]$q.sessionEnd } else { $null }
+    if (-not $q -or -not $q.sessionEnd) { Fail 'the quit did not know the session was ending' }
+    Start-Sleep -Seconds 15
+    if (Mark 'apply-launch' $From) { Fail 'an apply was started while the session ended' }
+    if (@(Get-Process -Name 'Update' -ErrorAction SilentlyContinue).Count -gt 0) { Fail 'Update.exe is running' }
+    if ((CurrentVersion) -ne $From) { Fail "the update was applied during the session end ($(CurrentVersion))" }
+    Timeline $click
+    Prepare 'download-only'
+    $t = Now
+    Start-Sei | Out-Null
+    $l = WaitMark 'window-loaded' $Target 150 $isApp
+    $results.launch_apply_mark = [bool](Mark 'launch-apply' $From)
+    $results.next_launch_loaded_ms = if ($l) { $l.t - $t } else { $null }
+    if (-not $l) { Fail "the next launch did not apply $Target" }
   }
 
   default { throw "unknown scenario $Scenario" }

@@ -17,8 +17,15 @@
 #                    the user closes Sei and starts the OLD exe, which hands over
 #   permachine       v0.6.4 "Anyone who uses this computer"; the per-user copy
 #                    migrates, the per-machine leftover stays (HKLM, no UAC)
+#   peruser-unicode  a folder with Chinese characters and a space
+#                    (C:\游戏\Sei 测试), migrated like peruser-default
 #   setup-killed     the Velopack Setup is killed mid-install: the NSIS copy
 #                    keeps working, and the next launch migrates
+#   sig-reject       the Setup is not signed by the publisher Sei expects: it
+#                    is never run, and the NSIS copy keeps working
+#   nsis-newer       after a full migration, an NSIS build newer than the
+#                    Velopack copy is installed: it runs instead of handing
+#                    off, and the Velopack copy leaves it alone
 param(
   [Parameter(Mandatory = $true)][string]$Case,
   [string]$Feed = 'feed',
@@ -41,6 +48,10 @@ $failures = [System.Collections.Generic.List[string]]::new()
 $results = [ordered]@{ case = $Case }
 $wsh = New-Object -ComObject WScript.Shell
 $pinDir = Join-Path $env:APPDATA 'Microsoft\Internet Explorer\Quick Launch\User Pinned\TaskBar'
+# C:\游戏\Sei 测试, spelled with char codes so the file's encoding cannot matter
+$unicodeDir = 'C:\' + [char]0x6E38 + [char]0x620F + '\Sei ' + [char]0x6D4B + [char]0x8BD5
+# A publisher the CI packages are not signed by (they are unsigned)
+$wrongPublisher = 'CN=Sei CI Not The Signer'
 
 function Fail([string]$m) { Write-Host "::error::${Case}: $m"; $failures.Add($m) }
 function Now { [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds() }
@@ -135,7 +146,7 @@ function Finish {
 
 # ------------------------------------------------------------------ 1. the NSIS install
 $oldExe = Join-Path $Old 'Sei-win-x64.exe'
-$instArgs = switch ($Case) { 'peruser-custom' { @('/S', '/D=C:\Games\My Sei') } 'permachine' { @('/S', '/allusers') } default { @('/S') } }
+$instArgs = switch ($Case) { 'peruser-custom' { @('/S', '/D=C:\Games\My Sei') } 'peruser-unicode' { @('/S', "/D=$unicodeDir") } 'permachine' { @('/S', '/allusers') } default { @('/S') } }
 $p = Start-Process -FilePath $oldExe -ArgumentList $instArgs -PassThru
 if (-not $p.WaitForExit(300000)) { throw 'old NSIS install timed out' }
 Stop-Sei
@@ -159,6 +170,7 @@ $nsisExe = Join-Path $nsisDir 'Sei.exe'
 $results.nsis_dir = $nsisDir
 Write-Host "NSIS $From at $nsisDir (exe $((Get-Item $nsisExe).VersionInfo.ProductVersion))"
 if ($Case -eq 'peruser-custom' -and $nsisDir -ne 'C:\Games\My Sei') { Fail "custom folder not kept: $nsisDir" }
+if ($Case -eq 'peruser-unicode' -and $nsisDir -ne $unicodeDir) { Fail "Chinese folder not kept: $nsisDir" }
 # A taskbar pin, as the file Explorer writes for one.
 New-Item -ItemType Directory -Force -Path $pinDir | Out-Null
 $pin = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')); $pin.TargetPath = $nsisExe; $pin.WorkingDirectory = $nsisDir; $pin.Save()
@@ -181,8 +193,10 @@ for ($i = 0; $i -lt 60 -and -not $up; $i++) {
 if (-not $up) { throw 'the feed server did not answer within 30s' }
 Write-Host "setup.win.json: $((Get-Content (Join-Path $vp 'setup.win.json') -Raw) -replace '\s+', ' ')"
 
-function Launch([string]$exe, [string]$action) {
+function Launch([string]$exe, [string]$action, [string]$publisher = '') {
   $env:SEI_VELOPACK_CI = '1'
+  # Empty removes it: the CI build is unsigned, so the check is off by default.
+  $env:SEI_VELOPACK_CI_PUBLISHER = $publisher
   $env:SEI_VELOPACK_CI_MODE = 'none'
   $env:SEI_MIGRATION_FEED = 'http://127.0.0.1:8765'
   $env:SEI_MIGRATION_DELAY_MS = '3000'
@@ -266,6 +280,29 @@ switch ($Case) {
     $null = Need 'migration-installed' 300
     $null = Velopack-Boot 90 $c.t
   }
+  'sig-reject' {
+    Switch-Migration 100
+    $p = Launch $nsisExe 'restart' $wrongPublisher
+    $c = Need 'migration-check' 60
+    if (-not $c.decision.ok) { Fail "the check said $($c.decision | ConvertTo-Json -Compress)" }
+    $sig = Need 'migration-signature' 300
+    $results.signature = $sig
+    if ($sig.ok) { Fail 'a Setup not signed by the expected publisher passed the check' }
+    if ($sig.skipped) { Fail 'the signature check was skipped' }
+    $f = Need 'migration-failed' 30
+    $results.failed_error = $f.error
+    if ($f.error -notlike 'setup signature:*') { Fail "failed for another reason: $($f.error)" }
+    Start-Sleep -Seconds 5
+    if (Mark 'migration-installing') { Fail 'the Setup was started despite the rejection' }
+    if (@(Get-Process -Name 'sei-velopack-setup' -ErrorAction SilentlyContinue).Count -gt 0) { Fail 'the Setup is running' }
+    if (Test-Path "$root\current\Sei.exe") { Fail 'a Velopack copy was installed' }
+    if ($p.HasExited) { Fail 'the NSIS copy exited after the rejection' }
+    if ((MigState).phase -ne 'failed') { Fail "state after the rejection is $((MigState).phase)" }
+    $pinNow = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')).TargetPath
+    if ($pinNow -ne $nsisExe) { Fail "the pin was moved to $pinNow" }
+    State 'after the rejected Setup'
+    Finish
+  }
   default {
     Switch-Migration 100
     $p = Launch $nsisExe 'restart'
@@ -308,4 +345,49 @@ Start-Process -FilePath (Join-Path $pinDir 'Sei.lnk') | Out-Null
 $b = Velopack-Boot 90 $tPin
 $results.pin_boot = $b.pid
 if (Mark 'migration-redirect' ([scriptblock]::Create("param(`$e) `$e.t -gt $tPin"))) { Fail 'the pin started the NSIS copy' }
+
+# ------------------------------------------------------------------ 5. nsis-newer
+if ($Case -eq 'nsis-newer') {
+  Stop-Sei
+  # CI has one NSIS build (0.6.90) and a Velopack copy at 0.6.91, so the
+  # Velopack copy is made to report an older version: what the NSIS side reads
+  # is current\sq.version. In the field: Velopack 0.7.0 broken, the player
+  # installs NSIS 0.7.1 from the website.
+  $sq = "$root\current\sq.version"
+  $x = [xml](Get-Content $sq -Raw)
+  $x.package.metadata.version = '0.6.80'
+  $x.Save($sq)
+  $p = Start-Process -FilePath (Join-Path $Feed "nsis\Sei-$From-nsis.exe") -ArgumentList @('/S') -PassThru
+  if (-not $p.WaitForExit(300000)) { throw "the $From NSIS reinstall timed out" }
+  Start-Sleep -Seconds 3
+  Stop-Sei
+  $e2 = @(Entries | Where-Object { $_.Root -eq 'HKCU' -and $_.Version -eq $From }) | Select-Object -First 1
+  if (-not $e2) { State 'after the NSIS reinstall'; Fail "no $From NSIS entry after the reinstall"; Finish }
+  $nsisDir2 = Split-Path -Parent ([regex]::Match($e2.Uninstall, '^"([^"]+)"').Groups[1].Value)
+  $nsisExe2 = Join-Path $nsisDir2 'Sei.exe'
+  $results.nsis_newer_dir = $nsisDir2
+  State 'NSIS reinstalled over an older Velopack copy'
+  $tNew = Now
+  $p = Launch $nsisExe2 'restart'
+  $nn = Need 'migration-nsis-newer' 60 ([scriptblock]::Create("param(`$e) `$e.t -gt $tNew"))
+  $results.nsis_newer_seen = $nn.velopackVersion
+  Start-Sleep -Seconds 15
+  if ($p.HasExited) { Fail 'the newer NSIS copy exited (handed off?)' }
+  if (Mark 'migration-redirect' ([scriptblock]::Create("param(`$e) `$e.t -gt $tNew"))) { Fail 'the newer NSIS copy handed off to the older Velopack copy' }
+  if (Mark 'migration-installing' ([scriptblock]::Create("param(`$e) `$e.t -gt $tNew"))) { Fail 'the newer NSIS copy started a migration again' }
+  if ((MigState).phase -ne 'failed') { Fail "state after nsis-newer is $((MigState).phase)" }
+  $pinNow = $wsh.CreateShortcut((Join-Path $pinDir 'Sei.lnk')).TargetPath
+  if ($pinNow -ne $nsisExe2) { Fail "the pin points at $pinNow, not the newer NSIS copy" }
+  State 'newer NSIS copy running'
+  Stop-Sei
+  # The Velopack copy, started anyway, must leave the newer NSIS copy alone.
+  $tVp = Now
+  $v = Launch "$root\current\Sei.exe" 'none'
+  $null = Velopack-Boot 90 $tVp
+  $cc = WaitMark 'migration-cleanup-check' 60 ([scriptblock]::Create("param(`$e) `$e.t -gt $tVp"))
+  $results.velopack_cleanup_decision = if ($cc) { $cc.decision } else { 'no check' }
+  Start-Sleep -Seconds 15
+  if (-not (Test-Path $nsisExe2)) { Fail 'the Velopack copy removed the newer NSIS copy' }
+  if (Mark 'migration-done' ([scriptblock]::Create("param(`$e) `$e.t -gt $tVp"))) { Fail 'the Velopack copy marked the migration done over the newer NSIS copy' }
+}
 Finish

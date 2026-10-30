@@ -10,11 +10,15 @@ name: Velopack Windows update
 #              audio track
 #   migrate    the NSIS -> Velopack migration from a real old NSIS release
 #              (scripts/velopack-ci/migrate.ps1)
+#   authenticode  the signature check updates must pass (velopackSignature.ts)
+#              against signed, unsigned, tampered and someone-else-signed files
+#              and packages, and the real CI package (scripts/velopack-ci/
+#              authenticode.ps1)
 #   rollout-dry-run  velopack-rollout.yml itself, as a dry run against R2
 # Nothing here writes to dl.sei.gg or a GitHub release.
 on:
   push:
-    branches: ['feat/velopack-windows']
+    branches: ['feat/velopack-windows', 'dev']
     paths:
       - '.github/workflows/velopack-update.yml'
       - 'build/velopack/**'
@@ -26,6 +30,8 @@ on:
       - '.github/workflows/mirror-release.yml'
       - '.github/workflows/release.yml'
       - 'src/main/velopack*.ts'
+      - 'src/main/winPowerShell.ts'
+      - 'electron.vite.config.ts'
       - 'src/main/updater.ts'
       - 'src/main/windowChrome.ts'
       - 'src/main/index.ts'
@@ -59,14 +65,14 @@ jobs:
         shell: pwsh
         run: |
           $bad = $false
-          foreach ($f in 'scenario.ps1', 'migrate.ps1') {
+          foreach ($f in 'scenario.ps1', 'migrate.ps1', 'testsign.ps1', 'authenticode.ps1') {
             $errs = $null
             [System.Management.Automation.Language.Parser]::ParseFile("$PWD/scripts/velopack-ci/$f", [ref]$null, [ref]$errs) | Out-Null
             if ($errs) { $bad = $true; $errs | ForEach-Object { Write-Host "::error::${f} line $($_.Extent.StartLineNumber): $($_.Message)" } } else { Write-Host "$f parses" }
           }
           if ($bad) { exit 1 }
       - name: Syntax-check the release scripts
-        run: for f in scripts/velopack-*.mjs scripts/lib/velopack*.mjs; do node --check "$f"; done
+        run: for f in scripts/velopack-*.mjs scripts/lib/velopack*.mjs scripts/velopack-ci/*.mjs; do node --check "$f"; done
 
   build:
     runs-on: windows-latest
@@ -174,7 +180,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [peruser-default, peruser-custom, permachine, setup-killed]
+        case: [peruser-default, peruser-custom, peruser-unicode, permachine, setup-killed, sig-reject, nsis-newer]
     steps:
       - uses: actions/checkout@v6
         with:
@@ -212,6 +218,35 @@ jobs:
           path: out
           retention-days: 14
 
+  authenticode:
+    needs: [lint, build]
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            /package.json
+            scripts/velopack-ci
+            src/main/velopackSignature.ts
+            src/main/winPowerShell.ts
+          sparse-checkout-cone-mode: false
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: velopack-feed
+          path: feed
+
+      - name: Authenticode cases
+        # Windows PowerShell 5.1: the PKI cmdlets, and the PowerShell Sei runs
+        # the check in.
+        shell: powershell
+        run: ./scripts/velopack-ci/authenticode.ps1 -Feed feed
+
   rollout-dry-run:
     needs: lint
     uses: ./.github/workflows/velopack-rollout.yml
@@ -241,6 +276,10 @@ jobs:
           - next-launch
           - low-disk
           - rollout
+          - sig-reject
+          - sig-accept
+          - restart-spawn-fail
+          - session-end
     steps:
       - name: Skip unless selected
         id: sel
